@@ -61,11 +61,52 @@ export interface DisplayState {
 }
 
 /**
+ * Memory block information from Exec memory management
+ */
+export interface MemoryBlock {
+  address: number;
+  size: number;
+  free: boolean;
+  attributes: number;
+  /** Optional segment name if this block maps to a loaded program segment */
+  segmentName?: string;
+}
+
+/**
+ * Memory region information
+ */
+export interface MemoryRegion {
+  lower: number;
+  upper: number;
+  attributes: number;
+  firstChunk: number;
+}
+
+/**
+ * Comprehensive memory information from Exec structures
+ */
+export interface MemoryInfo {
+  execBase: number;
+  memList: number;
+  totalChip: number;
+  totalFast: number;
+  freeChip: number;
+  freeFast: number;
+  blocks: MemoryBlock[];
+  regions: MemoryRegion[];
+}
+
+/**
  * Messages from extension to webview
  */
 export interface UpdateDisplayStateMessage {
   command: "updateDisplayState";
   displayState: DisplayState;
+}
+
+export interface UpdateMemoryInfoMessage {
+  command: "updateMemoryInfo";
+  memoryInfo: MemoryInfo;
 }
 
 /**

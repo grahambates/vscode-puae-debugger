@@ -3,14 +3,18 @@ import "@vscode-elements/elements";
 import "./App.css";
 import {
   DisplayState,
+  MemoryInfo,
   UpdateDisplayStateMessage,
+  UpdateMemoryInfoMessage,
 } from "../../shared/stateViewerTypes";
 import { DisplayTab } from "./DisplayTab";
+import { MemoryTab } from "./MemoryTab";
 
 const vscode = acquireVsCodeApi();
 
 export function App() {
   const [displayState, setDisplayState] = useState<DisplayState | null>(null);
+  const [memoryInfo, setMemoryInfo] = useState<MemoryInfo | null>(null);
 
   // Send ready message on mount
   useEffect(() => {
@@ -25,6 +29,9 @@ export function App() {
       if (message.command === "updateDisplayState") {
         const updateMessage = message as UpdateDisplayStateMessage;
         setDisplayState(updateMessage.displayState);
+      } else if (message.command === "updateMemoryInfo") {
+        const updateMessage = message as UpdateMemoryInfoMessage;
+        setMemoryInfo(updateMessage.memoryInfo);
       }
     };
 
@@ -39,10 +46,18 @@ export function App() {
       {displayState ? (
         <vscode-tabs>
           <vscode-tab-header>Display</vscode-tab-header>
+          <vscode-tab-header>Memory Allocations</vscode-tab-header>
           {/* <vscode-tab-header>Sprites</vscode-tab-header> */}
 
           <vscode-tab-panel>
             <DisplayTab displayState={displayState} />
+          </vscode-tab-panel>
+          <vscode-tab-panel>
+            {memoryInfo ? (
+              <MemoryTab memoryInfo={memoryInfo} />
+            ) : (
+              <div className="loading">Loading memory info...</div>
+            )}
           </vscode-tab-panel>
           <vscode-tab-panel>
             <div className="coming-soon">

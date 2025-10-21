@@ -11,6 +11,14 @@ export interface MemoryBlock {
   size: number;
   free: boolean;
   attributes: number;
+  segmentName?: string;
+}
+
+export interface MemoryRegion {
+  lower: number;
+  upper: number;
+  attributes: number;
+  firstChunk: number;
 }
 
 export interface ExecMemoryInfo {
@@ -21,6 +29,7 @@ export interface ExecMemoryInfo {
   freeChip: number;
   freeFast: number;
   blocks: MemoryBlock[];
+  regions: MemoryRegion[];
 }
 
 export interface AllocatedHunk {
@@ -72,6 +81,7 @@ export class AmigaMemoryMapper {
     let freeChip = 0;
     let freeFast = 0;
     const blocks: MemoryBlock[] = [];
+    const regions: MemoryRegion[] = [];
 
     // Walk the memory header list
     let memHeader = await this.vAmiga.peek32(memListAddr);
@@ -104,6 +114,14 @@ export class AmigaMemoryMapper {
             freeFast += free;
           }
 
+          // Store region info
+          regions.push({
+            lower,
+            upper,
+            attributes,
+            firstChunk,
+          });
+
           // Walk free chunks in this memory header
           await this.walkFreeChunks(firstChunk, attributes, blocks);
         }
@@ -113,6 +131,10 @@ export class AmigaMemoryMapper {
       memHeader = await this.vAmiga.peek32(memHeader);
       safetyCounter++;
     }
+
+    // Calculate allocated blocks by finding gaps between free blocks
+    this.calculateAllocatedBlocks(regions, blocks);
+
     return {
       execBase,
       memList: memListAddr,
@@ -121,6 +143,7 @@ export class AmigaMemoryMapper {
       freeChip,
       freeFast,
       blocks,
+      regions,
     };
   }
 
@@ -149,6 +172,81 @@ export class AmigaMemoryMapper {
 
       chunk = nextChunk;
       chunkCount++;
+    }
+  }
+
+  /**
+   * Calculate allocated blocks by finding gaps between free blocks within each region
+   */
+  private calculateAllocatedBlocks(
+    regions: MemoryRegion[],
+    blocks: MemoryBlock[],
+  ): void {
+    for (const region of regions) {
+      // Get all free blocks in this region and sort by address
+      const freeBlocksInRegion = blocks
+        .filter(
+          (b) => b.free && b.address >= region.lower && b.address < region.upper,
+        )
+        .sort((a, b) => a.address - b.address);
+
+      // Track allocated regions between free blocks
+      const allocatedBlocks: MemoryBlock[] = [];
+
+      // Check if there's allocated space before the first free block
+      if (freeBlocksInRegion.length > 0) {
+        const firstFree = freeBlocksInRegion[0];
+        if (firstFree.address > region.lower) {
+          allocatedBlocks.push({
+            address: region.lower,
+            size: firstFree.address - region.lower,
+            free: false,
+            attributes: region.attributes,
+          });
+        }
+      } else {
+        // No free blocks means entire region is allocated
+        allocatedBlocks.push({
+          address: region.lower,
+          size: region.upper - region.lower,
+          free: false,
+          attributes: region.attributes,
+        });
+      }
+
+      // Find gaps between consecutive free blocks
+      for (let i = 0; i < freeBlocksInRegion.length - 1; i++) {
+        const currentFree = freeBlocksInRegion[i];
+        const nextFree = freeBlocksInRegion[i + 1];
+        const endOfCurrent = currentFree.address + currentFree.size;
+
+        if (nextFree.address > endOfCurrent) {
+          // There's a gap - this is allocated memory
+          allocatedBlocks.push({
+            address: endOfCurrent,
+            size: nextFree.address - endOfCurrent,
+            free: false,
+            attributes: region.attributes,
+          });
+        }
+      }
+
+      // Check if there's allocated space after the last free block
+      if (freeBlocksInRegion.length > 0) {
+        const lastFree = freeBlocksInRegion[freeBlocksInRegion.length - 1];
+        const endOfLast = lastFree.address + lastFree.size;
+        if (endOfLast < region.upper) {
+          allocatedBlocks.push({
+            address: endOfLast,
+            size: region.upper - endOfLast,
+            free: false,
+            attributes: region.attributes,
+          });
+        }
+      }
+
+      // Add allocated blocks to the main blocks array
+      blocks.push(...allocatedBlocks);
     }
   }
 

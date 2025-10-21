@@ -5,9 +5,11 @@ import {
   DisplayState,
   AmigaColor,
   UpdateDisplayStateMessage,
+  UpdateMemoryInfoMessage,
   StateViewerMessage,
 } from "./shared/stateViewerTypes";
 import { parseBplcon0Register, parseBplcon1Register, parseBplcon2Register, parseBplcon3Register } from "./amigaRegisterParsers";
+import { AmigaMemoryMapper } from "./amigaMemoryMapper";
 
 /**
  * Provides a webview for visualizing Amiga system state including
@@ -19,11 +21,13 @@ export class StateViewerProvider {
   private panel?: vscode.WebviewPanel;
   private emulatorMessageListener?: vscode.Disposable;
   private isEmulatorRunning = false;
+  private memoryMapper: AmigaMemoryMapper;
 
   constructor(
     private readonly extensionUri: vscode.Uri,
     private readonly vAmiga: VAmiga,
   ) {
+    this.memoryMapper = new AmigaMemoryMapper(vAmiga);
     // Listen for emulator state changes to auto-refresh panel
     this.emulatorMessageListener = this.vAmiga.onDidReceiveMessage(
       (message) => {
@@ -39,6 +43,7 @@ export class StateViewerProvider {
           (message.state === "paused" || message.state === "stopped")
         ) {
           this.refreshDisplayState();
+          this.refreshMemoryInfo();
         }
       },
     );
@@ -85,9 +90,11 @@ export class StateViewerProvider {
       switch (message.command) {
         case "ready":
           await this.refreshDisplayState();
+          await this.refreshMemoryInfo();
           break;
         case "refresh":
           await this.refreshDisplayState();
+          await this.refreshMemoryInfo();
           break;
       }
     });
@@ -188,6 +195,77 @@ export class StateViewerProvider {
       this.panel.webview.postMessage(message);
     } catch (error) {
       console.error("Failed to refresh display state:", error);
+    }
+  }
+
+  /**
+   * Fetches current memory info and sends to webview
+   */
+  private async refreshMemoryInfo(): Promise<void> {
+    if (!this.panel) {
+      return;
+    }
+
+    const adapter = VamigaDebugAdapter.getActiveAdapter();
+    if (!adapter) {
+      return;
+    }
+
+    try {
+      const memoryInfo = await this.memoryMapper.getMemoryInfo();
+
+      // Try to map allocated blocks to program segments
+      // Match blocks to segments by address overlap
+      try {
+        const sourceMap = adapter.getSourceMap();
+        const segments = sourceMap.getSegmentsInfo();
+
+        if (segments.length > 0) {
+          for (const block of memoryInfo.blocks) {
+            if (!block.free) {
+              const blockEnd = block.address + block.size;
+              const matchingSegments: string[] = [];
+
+              for (const segment of segments) {
+                const segmentEnd = segment.address + segment.size;
+
+                // Check if block and segment overlap
+                const overlaps = block.address < segmentEnd && blockEnd > segment.address;
+
+                if (overlaps) {
+                  // Calculate overlap percentage
+                  const overlapStart = Math.max(block.address, segment.address);
+                  const overlapEnd = Math.min(blockEnd, segmentEnd);
+                  const overlapSize = overlapEnd - overlapStart;
+
+                  // Tag if significant overlap (>= 50% of segment or >= 50% of block)
+                  const segmentOverlapPercent = (overlapSize / segment.size) * 100;
+                  const blockOverlapPercent = (overlapSize / block.size) * 100;
+
+                  if (segmentOverlapPercent >= 50 || blockOverlapPercent >= 50) {
+                    matchingSegments.push(segment.name);
+                  }
+                }
+              }
+
+              if (matchingSegments.length > 0) {
+                block.segmentName = matchingSegments.join(', ');
+              }
+            }
+          }
+        }
+      } catch (sourceMapError) {
+        // Source map not available or program not loaded - continue without segment names
+      }
+
+      const message: UpdateMemoryInfoMessage = {
+        command: "updateMemoryInfo",
+        memoryInfo,
+      };
+
+      this.panel.webview.postMessage(message);
+    } catch (error) {
+      console.error("Failed to refresh memory info:", error);
     }
   }
 
