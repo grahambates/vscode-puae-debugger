@@ -17,7 +17,7 @@
 
 .memory-info-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
   gap: 12px;
   margin-bottom: 24px;
 }
@@ -43,7 +43,7 @@
 
 .memory-regions {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
   gap: 20px;
   margin-top: 16px;
 }
@@ -102,6 +102,10 @@
   background: linear-gradient(90deg, #4a90e2 0%, #357abd 100%);
 }
 
+.memory-bar-fill.slow {
+  background: linear-gradient(90deg, #e8a735 0%, #c98d2a 100%);
+}
+
 .memory-bar-fill.fast {
   background: linear-gradient(90deg, #50c878 0%, #3da35d 100%);
 }
@@ -120,10 +124,6 @@
 
 .memory-type-section {
   margin-bottom: 32px;
-  padding: 16px;
-  background: var(--vscode-editor-background);
-  border: 1px solid var(--vscode-panel-border);
-  border-radius: 4px;
 }
 
 .memory-type-header {
@@ -174,10 +174,33 @@
   border-bottom: 1px solid var(--vscode-panel-border);
 }
 
+/* Fixed column widths */
+.blocks-table th:nth-child(1),
+.blocks-table td:nth-child(1) {
+  width: 110px; /* Address */
+}
+
+.blocks-table th:nth-child(2),
+.blocks-table td:nth-child(2) {
+  width: 90px; /* Size */
+}
+
+.blocks-table th:nth-child(3),
+.blocks-table td:nth-child(3) {
+  width: auto; /* Segment (fills remaining space) */
+}
+
+.blocks-table th:nth-child(4),
+.blocks-table td:nth-child(4) {
+  width: 100px; /* Status */
+}
+
 .blocks-table td {
   padding: 8px 12px;
   font-size: 13px;
   border-bottom: 1px solid var(--vscode-panel-border);
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .blocks-table tbody tr:last-child td {
@@ -205,9 +228,41 @@
 
 .blocks-table .segment {
   font-family: var(--vscode-editor-font-family);
+  font-size: 13px;
+}
+
+.blocks-table .address-link,
+.blocks-table .segment-link {
+  background: none;
+  border: none;
+  padding: 0;
+  font-family: var(--vscode-editor-font-family);
+  font-size: 13px;
+  color: var(--vscode-textLink-foreground);
+  cursor: pointer;
+  text-decoration: none;
+  display: inline;
+}
+
+.blocks-table .address-link:hover,
+.blocks-table .segment-link:hover {
+  text-decoration: underline;
+  color: var(--vscode-textLink-activeForeground);
+}
+
+.blocks-table .address-link:focus,
+.blocks-table .segment-link:focus {
+  outline: 1px solid var(--vscode-focusBorder);
+  outline-offset: 2px;
+}
+
+.blocks-table .segment-link {
   color: var(--vscode-symbolIcon-classForeground);
   font-weight: 500;
-  font-size: 13px;
+}
+
+.blocks-table .segment-link:hover {
+  color: var(--vscode-textLink-activeForeground);
 }
 
 .blocks-table .status {

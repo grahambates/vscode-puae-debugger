@@ -61,6 +61,14 @@ export interface DisplayState {
 }
 
 /**
+ * Segment information for a memory block
+ */
+export interface SegmentInfo {
+  name: string;
+  address: number;
+}
+
+/**
  * Memory block information from Exec memory management
  */
 export interface MemoryBlock {
@@ -70,6 +78,8 @@ export interface MemoryBlock {
   attributes: number;
   /** Optional segment name if this block maps to a loaded program segment */
   segmentName?: string;
+  /** Optional array of segments that map to this block */
+  segments?: SegmentInfo[];
 }
 
 /**
@@ -89,8 +99,10 @@ export interface MemoryInfo {
   execBase: number;
   memList: number;
   totalChip: number;
+  totalSlow: number;
   totalFast: number;
   freeChip: number;
+  freeSlow: number;
   freeFast: number;
   blocks: MemoryBlock[];
   regions: MemoryRegion[];
@@ -120,4 +132,9 @@ export interface RefreshMessage {
   command: "refresh";
 }
 
-export type StateViewerMessage = ReadyMessage | RefreshMessage;
+export interface OpenMemoryViewerMessage {
+  command: "openMemoryViewer";
+  address: number;
+}
+
+export type StateViewerMessage = ReadyMessage | RefreshMessage | OpenMemoryViewerMessage;

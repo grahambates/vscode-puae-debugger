@@ -3,6 +3,7 @@ import "./MemoryTab.css";
 
 interface MemoryTabProps {
   memoryInfo: MemoryInfo;
+  vscode: ReturnType<typeof acquireVsCodeApi>;
 }
 
 function formatBytes(bytes: number): string {
@@ -19,48 +20,43 @@ function formatAddress(address: number): string {
   return `0x${address.toString(16).toUpperCase().padStart(6, "0")}`;
 }
 
-function getMemoryTypeName(attributes: number): string {
-  const MEMF_CHIP = 0x00000002;
-  const MEMF_FAST = 0x00000004;
-
-  if (attributes & MEMF_CHIP) {
-    return "CHIP";
-  } else if (attributes & MEMF_FAST) {
-    return "FAST";
-  }
-  return "OTHER";
-}
-
-export function MemoryTab({ memoryInfo }: MemoryTabProps) {
+export function MemoryTab({ memoryInfo, vscode }: MemoryTabProps) {
+  const openMemoryViewer = (address: number) => {
+    vscode.postMessage({
+      command: "openMemoryViewer",
+      address,
+    });
+  };
   const chipUsed = memoryInfo.totalChip - memoryInfo.freeChip;
+  const slowUsed = memoryInfo.totalSlow - memoryInfo.freeSlow;
   const fastUsed = memoryInfo.totalFast - memoryInfo.freeFast;
   const chipPercent =
     memoryInfo.totalChip > 0
       ? ((chipUsed / memoryInfo.totalChip) * 100).toFixed(1)
+      : "0.0";
+  const slowPercent =
+    memoryInfo.totalSlow > 0
+      ? ((slowUsed / memoryInfo.totalSlow) * 100).toFixed(1)
       : "0.0";
   const fastPercent =
     memoryInfo.totalFast > 0
       ? ((fastUsed / memoryInfo.totalFast) * 100).toFixed(1)
       : "0.0";
 
-  // Group blocks by type and status
-  const chipFreeBlocks = memoryInfo.blocks
-    .filter((b) => b.free && (b.attributes & 0x02))
+  // Group blocks by type and sort by address
+  const chipBlocks = memoryInfo.blocks
+    .filter((b) => b.attributes & 0x02)
     .sort((a, b) => a.address - b.address);
-  const chipAllocatedBlocks = memoryInfo.blocks
-    .filter((b) => !b.free && (b.attributes & 0x02))
+  const slowBlocks = memoryInfo.blocks
+    .filter((b) => !(b.attributes & 0x02) && b.address >= 0xc00000 && b.address < 0xe00000)
     .sort((a, b) => a.address - b.address);
-  const fastFreeBlocks = memoryInfo.blocks
-    .filter((b) => b.free && (b.attributes & 0x04))
-    .sort((a, b) => a.address - b.address);
-  const fastAllocatedBlocks = memoryInfo.blocks
-    .filter((b) => !b.free && (b.attributes & 0x04))
+  const fastBlocks = memoryInfo.blocks
+    .filter((b) => !(b.attributes & 0x02) && (b.address < 0xc00000 || b.address >= 0xe00000))
     .sort((a, b) => a.address - b.address);
 
   return (
     <div className="memory-tab">
       <div className="memory-summary">
-        <h2>Memory Summary</h2>
         <div className="memory-info-grid">
           <div className="info-item">
             <span className="label">ExecBase:</span>
@@ -99,6 +95,34 @@ export function MemoryTab({ memoryInfo }: MemoryTabProps) {
             </div>
           </div>
 
+          {memoryInfo.totalSlow > 0 && (
+            <div className="memory-region slow-memory">
+              <h3>SLOW Memory</h3>
+              <div className="memory-stats">
+                <div className="stat-row">
+                  <span className="label">Total:</span>
+                  <span className="value">{formatBytes(memoryInfo.totalSlow)}</span>
+                </div>
+                <div className="stat-row">
+                  <span className="label">Free:</span>
+                  <span className="value">{formatBytes(memoryInfo.freeSlow)}</span>
+                </div>
+                <div className="stat-row">
+                  <span className="label">Used:</span>
+                  <span className="value">
+                    {formatBytes(slowUsed)} ({slowPercent}%)
+                  </span>
+                </div>
+              </div>
+              <div className="memory-bar">
+                <div
+                  className="memory-bar-fill slow"
+                  style={{ width: `${slowPercent}%` }}
+                ></div>
+              </div>
+            </div>
+          )}
+
           <div className="memory-region fast-memory">
             <h3>FAST Memory</h3>
             <div className="memory-stats">
@@ -128,154 +152,178 @@ export function MemoryTab({ memoryInfo }: MemoryTabProps) {
       </div>
 
       <div className="memory-blocks">
-        <h2>Memory Blocks</h2>
 
         {/* CHIP Memory Section */}
-        {(chipFreeBlocks.length > 0 || chipAllocatedBlocks.length > 0) && (
+        {chipBlocks.length > 0 && (
           <div className="memory-type-section">
             <h3 className="memory-type-header">CHIP Memory</h3>
+            <table className="blocks-table">
+              <thead>
+                <tr>
+                  <th>Address</th>
+                  <th>Size</th>
+                  <th>Segment</th>
+                  <th>Status</th>
+                </tr>
+              </thead>
+              <tbody>
+                {chipBlocks.map((block, idx) => (
+                  <tr key={idx} className={block.free ? "free-row" : "allocated-row"}>
+                    <td className="address">
+                      <button
+                        className="address-link"
+                        onClick={() => openMemoryViewer(block.address)}
+                        title="Open in Memory Viewer"
+                      >
+                        {formatAddress(block.address)}
+                      </button>
+                    </td>
+                    <td className="size">{formatBytes(block.size)}</td>
+                    <td className="segment">
+                      {block.segments && block.segments.length > 0 ? (
+                        <>
+                          {block.segments.map((segment, segIdx) => (
+                            <span key={segIdx}>
+                              {segIdx > 0 && ", "}
+                              <button
+                                className="segment-link"
+                                onClick={() => openMemoryViewer(segment.address)}
+                                title="Open in Memory Viewer"
+                              >
+                                {segment.name}
+                              </button>
+                            </span>
+                          ))}
+                        </>
+                      ) : (
+                        "-"
+                      )}
+                    </td>
+                    <td className={`status ${block.free ? "free" : "allocated"}`}>
+                      {block.free ? "Free" : "Allocated"}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
 
-            {chipAllocatedBlocks.length > 0 && (
-              <div className="blocks-section">
-                <h4 className="blocks-subsection-header">
-                  Allocated Blocks ({chipAllocatedBlocks.length})
-                </h4>
-                <table className="blocks-table">
-                  <thead>
-                    <tr>
-                      <th>Address</th>
-                      <th>End Address</th>
-                      <th>Size</th>
-                      <th>Segment</th>
-                      <th>Status</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {chipAllocatedBlocks.map((block, idx) => (
-                      <tr key={idx} className="allocated-row">
-                        <td className="address">{formatAddress(block.address)}</td>
-                        <td className="address">
-                          {formatAddress(block.address + block.size)}
-                        </td>
-                        <td className="size">{formatBytes(block.size)}</td>
-                        <td className="segment">
-                          {block.segmentName || "-"}
-                        </td>
-                        <td className="status allocated">Allocated</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )}
-
-            {chipFreeBlocks.length > 0 && (
-              <div className="blocks-section">
-                <h4 className="blocks-subsection-header">
-                  Free Blocks ({chipFreeBlocks.length})
-                </h4>
-                <table className="blocks-table">
-                  <thead>
-                    <tr>
-                      <th>Address</th>
-                      <th>End Address</th>
-                      <th>Size</th>
-                      <th>Status</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {chipFreeBlocks.map((block, idx) => (
-                      <tr key={idx} className="free-row">
-                        <td className="address">{formatAddress(block.address)}</td>
-                        <td className="address">
-                          {formatAddress(block.address + block.size)}
-                        </td>
-                        <td className="size">{formatBytes(block.size)}</td>
-                        <td className="status free">Free</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )}
+        {/* SLOW Memory Section */}
+        {slowBlocks.length > 0 && (
+          <div className="memory-type-section">
+            <h3 className="memory-type-header">SLOW Memory</h3>
+            <table className="blocks-table">
+              <thead>
+                <tr>
+                  <th>Address</th>
+                  <th>Size</th>
+                  <th>Segment</th>
+                  <th>Status</th>
+                </tr>
+              </thead>
+              <tbody>
+                {slowBlocks.map((block, idx) => (
+                  <tr key={idx} className={block.free ? "free-row" : "allocated-row"}>
+                    <td className="address">
+                      <button
+                        className="address-link"
+                        onClick={() => openMemoryViewer(block.address)}
+                        title="Open in Memory Viewer"
+                      >
+                        {formatAddress(block.address)}
+                      </button>
+                    </td>
+                    <td className="size">{formatBytes(block.size)}</td>
+                    <td className="segment">
+                      {block.segments && block.segments.length > 0 ? (
+                        <>
+                          {block.segments.map((segment, segIdx) => (
+                            <span key={segIdx}>
+                              {segIdx > 0 && ", "}
+                              <button
+                                className="segment-link"
+                                onClick={() => openMemoryViewer(segment.address)}
+                                title="Open in Memory Viewer"
+                              >
+                                {segment.name}
+                              </button>
+                            </span>
+                          ))}
+                        </>
+                      ) : (
+                        "-"
+                      )}
+                    </td>
+                    <td className={`status ${block.free ? "free" : "allocated"}`}>
+                      {block.free ? "Free" : "Allocated"}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           </div>
         )}
 
         {/* FAST Memory Section */}
-        {(fastFreeBlocks.length > 0 || fastAllocatedBlocks.length > 0) && (
+        {fastBlocks.length > 0 && (
           <div className="memory-type-section">
             <h3 className="memory-type-header">FAST Memory</h3>
-
-            {fastAllocatedBlocks.length > 0 && (
-              <div className="blocks-section">
-                <h4 className="blocks-subsection-header">
-                  Allocated Blocks ({fastAllocatedBlocks.length})
-                </h4>
-                <table className="blocks-table">
-                  <thead>
-                    <tr>
-                      <th>Address</th>
-                      <th>End Address</th>
-                      <th>Size</th>
-                      <th>Segment</th>
-                      <th>Status</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {fastAllocatedBlocks.map((block, idx) => (
-                      <tr key={idx} className="allocated-row">
-                        <td className="address">{formatAddress(block.address)}</td>
-                        <td className="address">
-                          {formatAddress(block.address + block.size)}
-                        </td>
-                        <td className="size">{formatBytes(block.size)}</td>
-                        <td className="segment">
-                          {block.segmentName || "-"}
-                        </td>
-                        <td className="status allocated">Allocated</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )}
-
-            {fastFreeBlocks.length > 0 && (
-              <div className="blocks-section">
-                <h4 className="blocks-subsection-header">
-                  Free Blocks ({fastFreeBlocks.length})
-                </h4>
-                <table className="blocks-table">
-                  <thead>
-                    <tr>
-                      <th>Address</th>
-                      <th>End Address</th>
-                      <th>Size</th>
-                      <th>Status</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {fastFreeBlocks.map((block, idx) => (
-                      <tr key={idx} className="free-row">
-                        <td className="address">{formatAddress(block.address)}</td>
-                        <td className="address">
-                          {formatAddress(block.address + block.size)}
-                        </td>
-                        <td className="size">{formatBytes(block.size)}</td>
-                        <td className="status free">Free</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )}
+            <table className="blocks-table">
+              <thead>
+                <tr>
+                  <th>Address</th>
+                  <th>Size</th>
+                  <th>Segment</th>
+                  <th>Status</th>
+                </tr>
+              </thead>
+              <tbody>
+                {fastBlocks.map((block, idx) => (
+                  <tr key={idx} className={block.free ? "free-row" : "allocated-row"}>
+                    <td className="address">
+                      <button
+                        className="address-link"
+                        onClick={() => openMemoryViewer(block.address)}
+                        title="Open in Memory Viewer"
+                      >
+                        {formatAddress(block.address)}
+                      </button>
+                    </td>
+                    <td className="size">{formatBytes(block.size)}</td>
+                    <td className="segment">
+                      {block.segments && block.segments.length > 0 ? (
+                        <>
+                          {block.segments.map((segment, segIdx) => (
+                            <span key={segIdx}>
+                              {segIdx > 0 && ", "}
+                              <button
+                                className="segment-link"
+                                onClick={() => openMemoryViewer(segment.address)}
+                                title="Open in Memory Viewer"
+                              >
+                                {segment.name}
+                              </button>
+                            </span>
+                          ))}
+                        </>
+                      ) : (
+                        "-"
+                      )}
+                    </td>
+                    <td className={`status ${block.free ? "free" : "allocated"}`}>
+                      {block.free ? "Free" : "Allocated"}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           </div>
         )}
 
-        {chipFreeBlocks.length === 0 &&
-          chipAllocatedBlocks.length === 0 &&
-          fastFreeBlocks.length === 0 &&
-          fastAllocatedBlocks.length === 0 && (
+        {chipBlocks.length === 0 &&
+          slowBlocks.length === 0 &&
+          fastBlocks.length === 0 && (
             <div className="no-blocks">No memory blocks found</div>
           )}
       </div>

@@ -96,6 +96,16 @@ export class StateViewerProvider {
           await this.refreshDisplayState();
           await this.refreshMemoryInfo();
           break;
+        case "openMemoryViewer": {
+          // Convert address to hex string format for memory viewer
+          const addressHex = `0x${message.address.toString(16)}`;
+          await vscode.commands.executeCommand(
+            "vamiga-debugger.openMemoryViewer",
+            undefined,
+            addressHex,
+          );
+          break;
+        }
       }
     });
   }
@@ -224,7 +234,7 @@ export class StateViewerProvider {
           for (const block of memoryInfo.blocks) {
             if (!block.free) {
               const blockEnd = block.address + block.size;
-              const matchingSegments: string[] = [];
+              const matchingSegments: Array<{ name: string; address: number }> = [];
 
               for (const segment of segments) {
                 const segmentEnd = segment.address + segment.size;
@@ -243,18 +253,22 @@ export class StateViewerProvider {
                   const blockOverlapPercent = (overlapSize / block.size) * 100;
 
                   if (segmentOverlapPercent >= 50 || blockOverlapPercent >= 50) {
-                    matchingSegments.push(segment.name);
+                    matchingSegments.push({
+                      name: segment.name,
+                      address: segment.address,
+                    });
                   }
                 }
               }
 
               if (matchingSegments.length > 0) {
-                block.segmentName = matchingSegments.join(', ');
+                block.segments = matchingSegments;
+                block.segmentName = matchingSegments.map(s => s.name).join(', ');
               }
             }
           }
         }
-      } catch (sourceMapError) {
+      } catch (_sourceMapError) {
         // Source map not available or program not loaded - continue without segment names
       }
 

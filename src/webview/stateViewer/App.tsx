@@ -54,7 +54,7 @@ export function App() {
           </vscode-tab-panel>
           <vscode-tab-panel>
             {memoryInfo ? (
-              <MemoryTab memoryInfo={memoryInfo} />
+              <MemoryTab memoryInfo={memoryInfo} vscode={vscode} />
             ) : (
               <div className="loading">Loading memory info...</div>
             )}

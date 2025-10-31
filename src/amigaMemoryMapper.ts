@@ -6,12 +6,18 @@
 import { VAmiga } from "./vAmiga";
 import { Hunk, MemoryType } from "./amigaHunkParser";
 
+export interface SegmentInfo {
+  name: string;
+  address: number;
+}
+
 export interface MemoryBlock {
   address: number;
   size: number;
   free: boolean;
   attributes: number;
   segmentName?: string;
+  segments?: SegmentInfo[];
 }
 
 export interface MemoryRegion {
@@ -25,8 +31,10 @@ export interface ExecMemoryInfo {
   execBase: number;
   memList: number;
   totalChip: number;
+  totalSlow: number;
   totalFast: number;
   freeChip: number;
+  freeSlow: number;
   freeFast: number;
   blocks: MemoryBlock[];
   regions: MemoryRegion[];
@@ -56,6 +64,28 @@ export const MEMF_KICK = 0x00000400;
 // Node types
 export const NT_MEMORY = 10;
 
+// Memory type classification
+export enum MemoryClass {
+  CHIP = "CHIP",
+  SLOW = "SLOW",
+  FAST = "FAST",
+}
+
+/**
+ * Classify memory region based on attributes and address
+ * Slow RAM is typically in the 0xC00000-0xDFFFFF range (A500 trapdoor expansion)
+ */
+export function classifyMemory(attributes: number, lower: number): MemoryClass {
+  if (attributes & MEMF_CHIP) {
+    return MemoryClass.CHIP;
+  }
+  // Slow RAM is typically in the ranger memory space (0xC00000-0xDFFFFF)
+  if (lower >= 0xc00000 && lower < 0xe00000) {
+    return MemoryClass.SLOW;
+  }
+  return MemoryClass.FAST;
+}
+
 export class AmigaMemoryMapper {
   constructor(private vAmiga: VAmiga) {}
 
@@ -77,8 +107,10 @@ export class AmigaMemoryMapper {
     const memListAddr = execBase + memListOffset;
 
     let totalChip = 0;
+    let totalSlow = 0;
     let totalFast = 0;
     let freeChip = 0;
+    let freeSlow = 0;
     let freeFast = 0;
     const blocks: MemoryBlock[] = [];
     const regions: MemoryRegion[] = [];
@@ -105,10 +137,14 @@ export class AmigaMemoryMapper {
         // Validate memory region makes sense
         if (lower < upper && lower < 0x1000000 && upper < 0x1000000) {
           const regionSize = upper - lower;
+          const memClass = classifyMemory(attributes, lower);
 
-          if (attributes & MEMF_CHIP) {
+          if (memClass === MemoryClass.CHIP) {
             totalChip += regionSize;
             freeChip += free;
+          } else if (memClass === MemoryClass.SLOW) {
+            totalSlow += regionSize;
+            freeSlow += free;
           } else {
             totalFast += regionSize;
             freeFast += free;
@@ -139,8 +175,10 @@ export class AmigaMemoryMapper {
       execBase,
       memList: memListAddr,
       totalChip,
+      totalSlow,
       totalFast,
       freeChip,
+      freeSlow,
       freeFast,
       blocks,
       regions,

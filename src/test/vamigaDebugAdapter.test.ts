@@ -194,7 +194,7 @@ describe("VamigaDebugAdapter - Simplified Tests", () => {
       await (adapter as any).evaluateRequest(response, args);
 
       // Verify: Response contains correct result (now includes decimal value)
-      assert.strictEqual(response.body?.result, "0x4a = 74"); // 0x42 + 8 = 0x4a = 74
+      assert.strictEqual(response.body?.result, "0x4a | 74 | 0b1001010"); // 0x42 + 8 = 0x4a = 74
       assert.strictEqual(response.success, true);
     });
 

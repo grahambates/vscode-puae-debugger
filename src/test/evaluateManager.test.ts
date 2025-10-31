@@ -344,7 +344,7 @@ describe("EvaluateManager - Comprehensive Tests", () => {
         expression: "d0",
       });
 
-      assert.strictEqual(result.result, "0x00000042 = 66");
+      assert.strictEqual(result.result, "0x00000042 | 66 | 0b1000010");
       assert.strictEqual(result.variablesReference, 0);
     });
 
@@ -393,7 +393,7 @@ describe("EvaluateManager - Comprehensive Tests", () => {
         expression: "d0 + d1",
       });
 
-      assert.strictEqual(result.result, "0xf = 15");
+      assert.strictEqual(result.result, "0xf | 15 | 0b1111");
       assert.strictEqual(result.variablesReference, 0);
     });
 
