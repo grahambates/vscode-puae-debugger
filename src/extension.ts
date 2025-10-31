@@ -90,7 +90,7 @@ export function activate(context: vscode.ExtensionContext) {
     vscode.commands.registerCommand(
       "vamiga-debugger.viewVariableInMemory",
       async (item) => {
-        if (item?.container?.name === "Symbols") {
+        if (item?.container?.name === "Symbols" || item?.container?.name === "Custom Registers") {
           await memoryViewer.show(item.variable.name);
         } else if (item?.variable?.memoryReference) {
           await memoryViewer.show(item.variable.memoryReference);

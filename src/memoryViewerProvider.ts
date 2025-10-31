@@ -15,7 +15,9 @@ import {
   ToggleLiveUpdateMessage,
   UpdateStateMessage,
   UpdateStateMessageProps,
+  ViewMode,
 } from "./shared/memoryViewerTypes";
+import { parseLine } from "./sourceParsing";
 
 interface MemoryViewerPanel {
   target?: MemoryRange;
@@ -133,7 +135,6 @@ export class MemoryViewerProvider {
       dereferencePointer: false,
       fetchedChunks: new Set(),
     };
-
     this.panels.set(panelId, panel);
 
     webviewPanel.webview.html = this.getHtmlContent(webviewPanel.webview);
@@ -208,6 +209,54 @@ export class MemoryViewerProvider {
         }
       }
     });
+  }
+
+  private async guessViewMode(
+    panel: MemoryViewerPanel,
+  ): Promise<ViewMode | undefined> {
+    // Check custom register names
+    if (panel.addressInput.match(/^COP[1-2]LC/)) {
+      return "copper";
+    }
+    if (
+      panel.addressInput.match(/^BPL[1-8]PT/) ||
+      panel.addressInput.match(/^SPR[1-8]PT/)
+    ) {
+      return "visual";
+    }
+    // Try to guess from source code
+    const sourceMap = VamigaDebugAdapter.getActiveAdapter()?.getSourceMap();
+    if (!sourceMap) {
+      return;
+    }
+    const range = await this.evaluateAddressInput(panel);
+    if (!range) {
+      return;
+    }
+    const location = sourceMap.lookupAddress(range?.address);
+    if (!location) {
+      return;
+    }
+    // get source line at location
+    const document = await vscode.workspace.openTextDocument(location.path);
+    // Read lines until we find a mnemonic
+    for (let i = location.line - 1; i < location.line + 2; i++) {
+      const { mnemonic, operands } = parseLine(document.lineAt(i).text);
+      if (!mnemonic) {
+        continue;
+      }
+      if (
+        mnemonic.value.match(/incbin/i) &&
+        operands?.[0].value.match(/(image|img|sprite|spr|\.bpl)/)
+      ) {
+        // INCBIN something image-like
+        return "visual";
+      }
+      if (!["dc", "ds", "dcb", "blk"].includes(mnemonic.value)) {
+        // Any non-data mnemonic
+        return "disassembly";
+      }
+    }
   }
 
   /**
@@ -310,6 +359,10 @@ export class MemoryViewerProvider {
       // This should match what App does
       if (target?.address !== panel.target?.address) {
         panel.fetchedChunks.clear();
+        const viewMode = await this.guessViewMode(panel);
+        if (viewMode) {
+          this.sendStateToWebview(panel.webviewPanel, { viewMode });
+        }
       }
       panel.target = target;
     } catch (err) {

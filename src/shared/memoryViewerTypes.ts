@@ -13,9 +13,12 @@ export interface Suggestion {
   description?: string;
 }
 
+export type ViewMode =  "hex" | "visual" | "disassembly" | "copper";
+
 // Backend messages
 
 export interface UpdateStateMessageProps {
+  viewMode?: ViewMode,
   addressInput?: string;
   target?: MemoryRange;
   symbols?: Record<string, number>;

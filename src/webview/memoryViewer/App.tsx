@@ -15,6 +15,7 @@ import {
   Suggestion,
   SuggestionsDataMessage,
   UpdateStateMessage,
+  ViewMode,
 } from "../../shared/memoryViewerTypes";
 
 const vscode = acquireVsCodeApi();
@@ -22,6 +23,8 @@ const vscode = acquireVsCodeApi();
 function formatHex(value: number): string {
   return "0x" + value.toString(16).toUpperCase().padStart(8, "0");
 }
+
+const viewModes = ["hex", "visual", "disassembly", "copper"] as const;
 
 export function App() {
   const [target, setTarget] = useState<MemoryRange | undefined>(undefined);
@@ -35,9 +38,7 @@ export function App() {
 
   const [addressInput, setAddressInput] = useState<string>("");
   const [dereferencePointer, setDereferencePointer] = useState(false);
-  const [viewMode, setViewMode] = useState<
-    "hex" | "visual" | "disassembly" | "copper"
-  >("hex");
+  const [viewMode, setViewMode] = useState<ViewMode>("hex");
   const [liveUpdate, setLiveUpdate] = useState<boolean>(false);
   const [selectedRegion, setSelectedRegion] = useState<
     MemoryRegion | undefined
@@ -60,6 +61,9 @@ export function App() {
     const applyPendingUpdate = () => {
       if (!pendingUpdate) {
         return;
+      }
+      if (pendingUpdate.viewMode !== undefined) {
+        setViewMode(pendingUpdate.viewMode);
       }
       if (pendingUpdate.addressInput !== undefined) {
         setAddressInput(pendingUpdate.addressInput);
@@ -335,9 +339,9 @@ export function App() {
 
       {target !== undefined && selectedRegion ? (
         <vscode-tabs
+          selectedIndex={viewModes.indexOf(viewMode)}
           onvsc-tabs-select={(e) => {
-            const modes = ["hex", "visual", "disassembly", "copper"] as const;
-            setViewMode(modes[e.detail.selectedIndex]);
+            setViewMode(viewModes[e.detail.selectedIndex]);
           }}
         >
           <vscode-tab-header>Hex Dump</vscode-tab-header>
