@@ -7,8 +7,14 @@ import {
   UpdateDisplayStateMessage,
   UpdateMemoryInfoMessage,
   StateViewerMessage,
+  ShowErrorMessage,
 } from "./shared/stateViewerTypes";
-import { parseBplcon0Register, parseBplcon1Register, parseBplcon2Register, parseBplcon3Register } from "./amigaRegisterParsers";
+import {
+  parseBplcon0Register,
+  parseBplcon1Register,
+  parseBplcon2Register,
+  parseBplcon3Register,
+} from "./amigaRegisterParsers";
 import { AmigaMemoryMapper } from "./amigaMemoryMapper";
 
 /**
@@ -86,28 +92,38 @@ export class StateViewerProvider {
       this.panel = undefined;
     });
 
-    this.panel.webview.onDidReceiveMessage(async (message: StateViewerMessage) => {
-      switch (message.command) {
-        case "ready":
-          await this.refreshDisplayState();
-          await this.refreshMemoryInfo();
-          break;
-        case "refresh":
-          await this.refreshDisplayState();
-          await this.refreshMemoryInfo();
-          break;
-        case "openMemoryViewer": {
-          // Convert address to hex string format for memory viewer
-          const addressHex = `0x${message.address.toString(16)}`;
-          await vscode.commands.executeCommand(
-            "vamiga-debugger.openMemoryViewer",
-            undefined,
-            addressHex,
-          );
-          break;
+    this.panel.webview.onDidReceiveMessage(
+      async (message: StateViewerMessage) => {
+        try {
+          switch (message.command) {
+            case "ready":
+              await this.refreshDisplayState();
+              await this.refreshMemoryInfo();
+              break;
+            case "refresh":
+              await this.refreshDisplayState();
+              await this.refreshMemoryInfo();
+              break;
+            case "openMemoryViewer": {
+              // Convert address to hex string format for memory viewer
+              const addressHex = `0x${message.address.toString(16)}`;
+              await vscode.commands.executeCommand(
+                "vamiga-debugger.openMemoryViewer",
+                undefined,
+                addressHex,
+              );
+              break;
+            }
+          }
+        } catch (error) {
+          const errorMessage = error instanceof Error ? error.message : String(error);
+          this.panel?.webview.postMessage({
+            command: "showError",
+            error: errorMessage,
+          } as ShowErrorMessage);
         }
-      }
-    });
+      },
+    );
   }
 
   /**
@@ -132,7 +148,6 @@ export class StateViewerProvider {
       }
     }
 
-
     // Get display window registers
     const diwstrt = registers.DIWSTRT.value;
     const diwstop = registers.DIWSTOP.value;
@@ -141,21 +156,47 @@ export class StateViewerProvider {
 
     // Get display control registers
     const bplcon0 = registers.BPLCON0.value;
-    const bplcon0Parsed = parseBplcon0Register(Number(bplcon0)).map(v => v.value);
-    const [hires, bitplanes, ham, dpf, _color, _genlock, _lightpen, interlaced, _extResync, ecsEna] = bplcon0Parsed;
+    const bplcon0Parsed = parseBplcon0Register(Number(bplcon0)).map(
+      (v) => v.value,
+    );
+    const [
+      hires,
+      bitplanes,
+      ham,
+      dpf,
+      _color,
+      _genlock,
+      _lightpen,
+      interlaced,
+      _extResync,
+      ecsEna,
+    ] = bplcon0Parsed;
 
     const bplcon1 = registers.BPLCON1.value;
-    const bplcon1Parsed = parseBplcon1Register(Number(bplcon1)).map(v => v.value as number);
+    const bplcon1Parsed = parseBplcon1Register(Number(bplcon1)).map(
+      (v) => v.value as number,
+    );
     const [pf2h, pf1h] = bplcon1Parsed;
 
-        const bplcon2 = registers.BPLCON2.value;
-    const bplcon2Parsed = parseBplcon2Register(Number(bplcon2)).map(v => v.value);
+    const bplcon2 = registers.BPLCON2.value;
+    const bplcon2Parsed = parseBplcon2Register(Number(bplcon2)).map(
+      (v) => v.value,
+    );
     const [pf2Pri, pf2p, pf1p] = bplcon2Parsed;
 
-
     const bplcon3 = registers.BPLCON3.value;
-    const bplcon3Parsed = parseBplcon3Register(Number(bplcon3)).map(v => v.value);
-    const [_bank, _pf2of, _spriteRes, borderSprites, borderTransparent, _zsClkEn, borderBlank] = bplcon3Parsed;
+    const bplcon3Parsed = parseBplcon3Register(Number(bplcon3)).map(
+      (v) => v.value,
+    );
+    const [
+      _bank,
+      _pf2of,
+      _spriteRes,
+      borderSprites,
+      borderTransparent,
+      _zsClkEn,
+      borderBlank,
+    ] = bplcon3Parsed;
 
     return {
       palette,
@@ -190,22 +231,18 @@ export class StateViewerProvider {
 
     const adapter = VamigaDebugAdapter.getActiveAdapter();
     if (!adapter) {
-      return;
+      throw new Error("Debugger is not running");
     }
 
-    try {
-      const registers = await this.vAmiga.getAllCustomRegisters();
-      const displayState = this.parseDisplayState(registers);
+    const registers = await this.vAmiga.getAllCustomRegisters();
+    const displayState = this.parseDisplayState(registers);
 
-      const message: UpdateDisplayStateMessage = {
-        command: "updateDisplayState",
-        displayState,
-      };
+    const message: UpdateDisplayStateMessage = {
+      command: "updateDisplayState",
+      displayState,
+    };
 
-      this.panel.webview.postMessage(message);
-    } catch (error) {
-      console.error("Failed to refresh display state:", error);
-    }
+    this.panel.webview.postMessage(message);
   }
 
   /**
@@ -218,69 +255,70 @@ export class StateViewerProvider {
 
     const adapter = VamigaDebugAdapter.getActiveAdapter();
     if (!adapter) {
-      return;
+      throw new Error("Debugger is not running");
     }
 
+    const memoryInfo = await this.memoryMapper.getMemoryInfo();
+
+    // Try to map allocated blocks to program segments
+    // Match blocks to segments by address overlap
     try {
-      const memoryInfo = await this.memoryMapper.getMemoryInfo();
+      const sourceMap = adapter.getSourceMap();
+      const segments = sourceMap.getSegmentsInfo();
 
-      // Try to map allocated blocks to program segments
-      // Match blocks to segments by address overlap
-      try {
-        const sourceMap = adapter.getSourceMap();
-        const segments = sourceMap.getSegmentsInfo();
+      if (segments.length > 0) {
+        for (const block of memoryInfo.blocks) {
+          if (!block.free) {
+            const blockEnd = block.address + block.size;
+            const matchingSegments: Array<{ name: string; address: number }> =
+              [];
 
-        if (segments.length > 0) {
-          for (const block of memoryInfo.blocks) {
-            if (!block.free) {
-              const blockEnd = block.address + block.size;
-              const matchingSegments: Array<{ name: string; address: number }> = [];
+            for (const segment of segments) {
+              const segmentEnd = segment.address + segment.size;
 
-              for (const segment of segments) {
-                const segmentEnd = segment.address + segment.size;
+              // Check if block and segment overlap
+              const overlaps =
+                block.address < segmentEnd && blockEnd > segment.address;
 
-                // Check if block and segment overlap
-                const overlaps = block.address < segmentEnd && blockEnd > segment.address;
+              if (overlaps) {
+                // Calculate overlap percentage
+                const overlapStart = Math.max(block.address, segment.address);
+                const overlapEnd = Math.min(blockEnd, segmentEnd);
+                const overlapSize = overlapEnd - overlapStart;
 
-                if (overlaps) {
-                  // Calculate overlap percentage
-                  const overlapStart = Math.max(block.address, segment.address);
-                  const overlapEnd = Math.min(blockEnd, segmentEnd);
-                  const overlapSize = overlapEnd - overlapStart;
+                // Tag if significant overlap (>= 50% of segment or >= 50% of block)
+                const segmentOverlapPercent =
+                  (overlapSize / segment.size) * 100;
+                const blockOverlapPercent = (overlapSize / block.size) * 100;
 
-                  // Tag if significant overlap (>= 50% of segment or >= 50% of block)
-                  const segmentOverlapPercent = (overlapSize / segment.size) * 100;
-                  const blockOverlapPercent = (overlapSize / block.size) * 100;
-
-                  if (segmentOverlapPercent >= 50 || blockOverlapPercent >= 50) {
-                    matchingSegments.push({
-                      name: segment.name,
-                      address: segment.address,
-                    });
-                  }
+                if (segmentOverlapPercent >= 50 || blockOverlapPercent >= 50) {
+                  matchingSegments.push({
+                    name: segment.name,
+                    address: segment.address,
+                  });
                 }
               }
+            }
 
-              if (matchingSegments.length > 0) {
-                block.segments = matchingSegments;
-                block.segmentName = matchingSegments.map(s => s.name).join(', ');
-              }
+            if (matchingSegments.length > 0) {
+              block.segments = matchingSegments;
+              block.segmentName = matchingSegments
+                .map((s) => s.name)
+                .join(", ");
             }
           }
         }
-      } catch (_sourceMapError) {
-        // Source map not available or program not loaded - continue without segment names
       }
-
-      const message: UpdateMemoryInfoMessage = {
-        command: "updateMemoryInfo",
-        memoryInfo,
-      };
-
-      this.panel.webview.postMessage(message);
-    } catch (error) {
-      console.error("Failed to refresh memory info:", error);
+    } catch (_sourceMapError) {
+      // Source map not available or program not loaded - continue without segment names
     }
+
+    const message: UpdateMemoryInfoMessage = {
+      command: "updateMemoryInfo",
+      memoryInfo,
+    };
+
+    this.panel.webview.postMessage(message);
   }
 
   /**

@@ -24,9 +24,7 @@ body {
   color: var(--vscode-descriptionForeground);
 }
 
-.coming-soon {
-  padding: 40px;
-  text-align: center;
-  color: var(--vscode-descriptionForeground);
-  font-style: italic;
+.error {
+  color: var(--vscode-errorForeground);
+  margin: 10px 0;
 }

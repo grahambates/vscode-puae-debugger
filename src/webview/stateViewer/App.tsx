@@ -4,6 +4,7 @@ import "./App.css";
 import {
   DisplayState,
   MemoryInfo,
+  ShowErrorMessage,
   UpdateDisplayStateMessage,
   UpdateMemoryInfoMessage,
 } from "../../shared/stateViewerTypes";
@@ -15,6 +16,7 @@ const vscode = acquireVsCodeApi();
 export function App() {
   const [displayState, setDisplayState] = useState<DisplayState | null>(null);
   const [memoryInfo, setMemoryInfo] = useState<MemoryInfo | null>(null);
+  const [error, setError] = useState<string | null>(null);
 
   // Send ready message on mount
   useEffect(() => {
@@ -29,9 +31,14 @@ export function App() {
       if (message.command === "updateDisplayState") {
         const updateMessage = message as UpdateDisplayStateMessage;
         setDisplayState(updateMessage.displayState);
+        setError(null);
       } else if (message.command === "updateMemoryInfo") {
         const updateMessage = message as UpdateMemoryInfoMessage;
         setMemoryInfo(updateMessage.memoryInfo);
+        setError(null);
+      } else if (message.command === "showError") {
+        const updateMessage = message as ShowErrorMessage;
+        setError(updateMessage.error);
       }
     };
 
@@ -43,31 +50,18 @@ export function App() {
 
   return (
     <div className="state-viewer">
-      {displayState ? (
-        <vscode-tabs>
-          <vscode-tab-header>Display</vscode-tab-header>
-          <vscode-tab-header>Memory Allocations</vscode-tab-header>
-          {/* <vscode-tab-header>Sprites</vscode-tab-header> */}
+      {error ? <div className="error">{error}</div> : ""}
 
-          <vscode-tab-panel>
-            <DisplayTab displayState={displayState} />
-          </vscode-tab-panel>
-          <vscode-tab-panel>
-            {memoryInfo ? (
-              <MemoryTab memoryInfo={memoryInfo} vscode={vscode} />
-            ) : (
-              <div className="loading">Loading memory info...</div>
-            )}
-          </vscode-tab-panel>
-          <vscode-tab-panel>
-            <div className="coming-soon">
-              Coming soon...
-            </div>
-          </vscode-tab-panel>
-        </vscode-tabs>
-      ) : (
-        <div className="loading">Loading state...</div>
-      )}
+      <vscode-tabs>
+        <vscode-tab-header>Display</vscode-tab-header>
+        <vscode-tab-header>Memory Allocations</vscode-tab-header>
+        <vscode-tab-panel>
+          {displayState && <DisplayTab displayState={displayState} />}
+        </vscode-tab-panel>
+        <vscode-tab-panel>
+          {memoryInfo && <MemoryTab memoryInfo={memoryInfo} vscode={vscode} />}
+        </vscode-tab-panel>
+      </vscode-tabs>
     </div>
   );
 }

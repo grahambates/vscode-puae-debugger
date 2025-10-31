@@ -121,6 +121,11 @@ export interface UpdateMemoryInfoMessage {
   memoryInfo: MemoryInfo;
 }
 
+export interface ShowErrorMessage {
+  command: 'showError';
+  error: string;
+}
+
 /**
  * Messages from webview to extension
  */
