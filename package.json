@@ -2,7 +2,7 @@
   "name": "vscode-vamiga-debugger",
   "displayName": "VAmiga Debugger",
   "description": "Debug Amiga programs with an integrated VAmiga emulator in vscode",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "author": "Graham Bates",
   "publisher": "gigabates",
   "license": "SEE LICENSE IN LICENSE.txt",
@@ -471,4 +471,3 @@
     ]
   }
 }
-
