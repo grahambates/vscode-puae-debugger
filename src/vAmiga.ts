@@ -861,8 +861,6 @@ export class VAmiga {
           `Kickstart ROM file not found: ${options.kickstartRomPath}`,
         );
       }
-      const romDir = dirname(options.kickstartRomPath);
-      localResourceRoots.push(vscode.Uri.file(romDir));
     }
     if (options.kickstartExtPath) {
       if (!existsSync(options.kickstartExtPath)) {
@@ -870,8 +868,6 @@ export class VAmiga {
           `Kickstart extension ROM file not found: ${options.kickstartExtPath}`,
         );
       }
-      const extDir = dirname(options.kickstartExtPath);
-      localResourceRoots.push(vscode.Uri.file(extDir));
     }
 
     // Create new panel
@@ -957,6 +953,14 @@ export class VAmiga {
     return this.panel.webview.asWebviewUri(fileUri);
   }
 
+  private absolutePathToDataUri(absolutePath: string): string {
+    if (!existsSync(absolutePath)) {
+      throw new Error(`File not found: ${absolutePath}`);
+    }
+    const data = readFileSync(absolutePath);
+    return `data:application/octet-stream;base64,${data.toString("base64")}`;
+  }
+
   private getHtmlForWebview(callParams: CallParams): string {
     if (!this.panel) {
       throw new Error("Panel not initialized");
@@ -1008,10 +1012,10 @@ export class VAmiga {
         ? this.absolutePathToWebviewUri(options.programPath).toString()
         : undefined,
       kickstart_rom_url: options.kickstartRomPath
-        ? this.absolutePathToWebviewUri(options.kickstartRomPath).toString()
+        ? this.absolutePathToDataUri(options.kickstartRomPath)
         : undefined,
       kickstart_ext_url: options.kickstartExtPath
-        ? this.absolutePathToWebviewUri(options.kickstartExtPath).toString()
+        ? this.absolutePathToDataUri(options.kickstartExtPath)
         : undefined,
     };
     return params;
