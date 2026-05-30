@@ -1,11 +1,15 @@
 import { join, isAbsolute } from "path";
 import {
+  DW_AT, DW_FORM, DW_TAG,
   DWARFData,
+  DebugInfoEntry,
+  CompilationUnit,
   LineNumberState,
   LineNumberInstruction,
   LineNumberProgram,
 } from "./dwarfParser";
-import { SourceMap, Location, Segment } from "./sourceMap";
+import { SourceMap, ScopeEntry, Variable, LocalLocation, Location, Segment, InlineFrame, InlineEntry, TypeDescriptor, FieldDescriptor } from "./sourceMap";
+import { DebugFrame } from "./dwarfParser";
 import { MemoryType } from "./amigaHunkParser";
 
 /**
@@ -31,7 +35,7 @@ export function sourceMapFromDwarf(
   const segments: Segment[] = [];
 
   // Section offsets matching original, unfiltered indexes
-  const sectionOffsets = [];
+  const sectionOffsets: ({ loaded: true; offset: number } | { loaded: false })[] = [];
   let i = 0;
 
   // Build sections from ELF section headers
@@ -68,9 +72,9 @@ export function sourceMapFromDwarf(
         size: header.size,
         memType,
       });
-      sectionOffsets.push(offsets[i++] - header.addr);
+      sectionOffsets.push({ loaded: true, offset: offsets[i++] - header.addr });
     } else {
-      sectionOffsets.push(0); // zero for filtered sections
+      sectionOffsets.push({ loaded: false });
     }
   }
 
@@ -229,13 +233,397 @@ export function sourceMapFromDwarf(
 
   // Extract symbols from ELF symbol table
   for (const elfSymbol of dwarfData.elfSymbols) {
-    if (sectionOffsets[elfSymbol.sectionIndex]) {
-      symbols[elfSymbol.name] =
-        elfSymbol.value + sectionOffsets[elfSymbol.sectionIndex];
+    const section = sectionOffsets[elfSymbol.sectionIndex];
+    if (section?.loaded) {
+      symbols[elfSymbol.name] = elfSymbol.value + section.offset;
     }
   }
 
-  return new SourceMap(segments, sources, symbols, locations);
+  const relocate = makeRelocate(dwarfData, sectionOffsets);
+  const scopeTable = buildScopeTable(dwarfData, relocate);
+  const relocatedDebugFrame = dwarfData.debugFrame
+    ? relocateDebugFrame(dwarfData.debugFrame, relocate)
+    : undefined;
+  const inlineTable = buildInlineTable(dwarfData, relocate, baseDir);
+  const globalVars = buildGlobalsTable(dwarfData, relocate);
+  return new SourceMap(segments, sources, symbols, locations, scopeTable, relocatedDebugFrame, inlineTable, globalVars);
+}
+
+function relocateDebugFrame(
+  debugFrame: DebugFrame,
+  relocate: (addr: number) => number | undefined,
+): DebugFrame {
+  const fdes = debugFrame.fdes.map(fde => {
+    const newPcStart = relocate(fde.pcStart);
+    return newPcStart !== undefined ? { ...fde, pcStart: newPcStart } : fde;
+  });
+  return { cies: debugFrame.cies, fdes };
+}
+
+// Returns a function that maps an ELF-space address to its loaded address,
+// or undefined if the address doesn't fall within any loaded section.
+function makeRelocate(
+  dwarfData: DWARFData,
+  sectionOffsets: Array<{ loaded: true; offset: number } | { loaded: false }>,
+): (addr: number) => number | undefined {
+  const sectionList = [...dwarfData.sections.values()];
+  return (addr: number) => {
+    for (let i = 0; i < sectionList.length; i++) {
+      const header = sectionList[i];
+      const so = sectionOffsets[i];
+      if (so?.loaded && addr >= header.addr && addr < header.addr + header.size) {
+        // so.offset = loadedBase - header.addr, so result = loadedBase + (addr - header.addr)
+        return so.offset + addr;
+      }
+    }
+    return undefined;
+  };
+}
+
+// --- Scope table (locals lookup) ---
+
+function findAttribute(die: DebugInfoEntry, name: number) {
+  return die.attributes.find((attr) => attr.name === name);
+}
+
+function isNumber(value: unknown): value is number {
+  return typeof value === 'number' && !Number.isNaN(value);
+}
+
+function getDieRange(die: DebugInfoEntry): { low: number; high: number } | undefined {
+  const lowAttr = findAttribute(die, DW_AT.low_pc);
+  const highAttr = findAttribute(die, DW_AT.high_pc);
+  if (!lowAttr || !highAttr) return undefined;
+  if (!isNumber(lowAttr.value) || !isNumber(highAttr.value)) return undefined;
+  const low = lowAttr.value;
+  const highValue = highAttr.value;
+  const high = highAttr.form === DW_FORM.addr ? highValue : low + highValue;
+  return { low, high };
+}
+
+interface CuCtx {
+  debugRanges: Uint8Array | undefined;
+  addressSize: number;
+  cuBasePc: number;
+  isLittleEndian: boolean;
+}
+
+function* iterDebugRanges(
+  debugRanges: Uint8Array,
+  rangesOffset: number,
+  cuBasePc: number,
+  addressSize: number,
+  isLittleEndian: boolean,
+): Generator<{ low: number; high: number }> {
+  const view = new DataView(debugRanges.buffer, debugRanges.byteOffset, debugRanges.byteLength);
+  const readAddr = (off: number): number => {
+    if (addressSize === 8) {
+      const lo = view.getUint32(off, isLittleEndian);
+      const hi = view.getUint32(off + 4, isLittleEndian);
+      return isLittleEndian ? lo + hi * 0x100000000 : hi + lo * 0x100000000;
+    }
+    return view.getUint32(off, isLittleEndian);
+  };
+  const baseSentinel = addressSize === 4 ? 0xffffffff : Number.MAX_SAFE_INTEGER;
+  let base = cuBasePc;
+  let offset = rangesOffset;
+  while (offset + addressSize * 2 <= debugRanges.byteLength) {
+    const begin = readAddr(offset);
+    const end = readAddr(offset + addressSize);
+    offset += addressSize * 2;
+    if (begin === 0 && end === 0) break;
+    if (begin >= baseSentinel) { base = end; continue; }
+    yield { low: base + begin, high: base + end };
+  }
+}
+
+function* getDieIntervals(die: DebugInfoEntry, ctx: CuCtx): Generator<{ low: number; high: number }> {
+  const range = getDieRange(die);
+  if (range) { yield range; return; }
+  const rangesAttr = findAttribute(die, DW_AT.ranges);
+  if (rangesAttr && isNumber(rangesAttr.value) && ctx.debugRanges) {
+    yield* iterDebugRanges(ctx.debugRanges, rangesAttr.value, ctx.cuBasePc, ctx.addressSize, ctx.isLittleEndian);
+  }
+}
+
+function getCuBasePc(cu: CompilationUnit): number {
+  for (const die of cu.dies) {
+    const lowAttr = findAttribute(die, DW_AT.low_pc);
+    if (isNumber(lowAttr?.value)) return lowAttr!.value;
+  }
+  return 0;
+}
+
+function getTypeDie(die: DebugInfoEntry): DebugInfoEntry | undefined {
+  const attr = findAttribute(die, DW_AT.type);
+  return attr?.value?.die as DebugInfoEntry | undefined;
+}
+
+function getFrameBase(die: DebugInfoEntry): 'cfa' | 'other' {
+  const attr = findAttribute(die, DW_AT.frame_base);
+  if (!attr || typeof attr.value !== 'object' || attr.value === null) return 'other';
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const ops = (attr.value as any).ops as Array<any> | undefined;
+  if (ops && ops.length > 0 && ops[0].op === 'DW_OP_call_frame_cfa') return 'cfa';
+  return 'other';
+}
+
+function typeNameFromDie(die: DebugInfoEntry, depth = 0): string {
+  if (depth > 8) return '<...>';
+  const tagName = (): string => findAttribute(die, DW_AT.name)?.value as string ?? '<anonymous>';
+  switch (die.tag) {
+    case DW_TAG.base_type:
+    case DW_TAG.typedef:
+      return findAttribute(die, DW_AT.name)?.value as string ?? '<unknown>';
+    case DW_TAG.pointer_type: {
+      const inner = getTypeDie(die);
+      return (inner ? typeNameFromDie(inner, depth + 1) : 'void') + ' *';
+    }
+    case DW_TAG.const_type: {
+      const inner = getTypeDie(die);
+      return 'const ' + (inner ? typeNameFromDie(inner, depth + 1) : 'void');
+    }
+    case DW_TAG.array_type: {
+      const inner = getTypeDie(die);
+      return (inner ? typeNameFromDie(inner, depth + 1) : '<unknown>') + '[]';
+    }
+    case DW_TAG.structure_type:   return 'struct ' + tagName();
+    case DW_TAG.union_type:       return 'union '  + tagName();
+    case DW_TAG.enumeration_type: return 'enum '   + tagName();
+    default: return '<unknown>';
+  }
+}
+
+function resolveLocation(
+  die: DebugInfoEntry,
+  relocate: (addr: number) => number | undefined,
+  frameBase: 'cfa' | 'other' = 'other',
+): LocalLocation {
+  const attr = findAttribute(die, DW_AT.location);
+  if (!attr || typeof attr.value !== 'object' || attr.value === null) return { kind: 'unknown' };
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const ops = attr.value.ops as Array<any> | undefined;
+  if (!ops || ops.length === 0) return { kind: 'unknown' };
+  const op = ops[0];
+  if (op.op === 'DW_OP_fbreg' && op.value !== undefined) {
+    if (frameBase === 'cfa') return { kind: 'cfa', offset: op.value };
+    return { kind: 'fbreg', offset: op.value };
+  }
+  if (op.op.startsWith('DW_OP_breg') && op.reg !== undefined && op.value !== undefined)
+    return { kind: 'breg', reg: op.reg, offset: op.value };
+  if (op.op === 'DW_OP_addr' && op.value !== undefined) {
+    const address = relocate(op.value) ?? op.value;
+    return { kind: 'addr', address };
+  }
+  return { kind: 'unknown' };
+}
+
+function resolveByteSize(typeDie: DebugInfoEntry | undefined, addressSize: number, depth = 0): number {
+  if (!typeDie || depth > 8) return 0;
+  const byteSizeAttr = findAttribute(typeDie, DW_AT.byte_size);
+  if (byteSizeAttr && isNumber(byteSizeAttr.value)) return byteSizeAttr.value;
+  switch (typeDie.tag) {
+    case DW_TAG.pointer_type: return addressSize;
+    case DW_TAG.typedef:
+    case DW_TAG.const_type: {
+      const inner = getTypeDie(typeDie);
+      return resolveByteSize(inner, addressSize, depth + 1);
+    }
+    default: return 0;
+  }
+}
+
+function buildTypeDescriptor(typeDie: DebugInfoEntry | undefined, addressSize: number, depth = 0): TypeDescriptor {
+  if (!typeDie || depth > 8) return { kind: 'unknown', typeName: '?', byteSize: 0 };
+  const typeName = typeNameFromDie(typeDie);
+  const byteSize = resolveByteSize(typeDie, addressSize);
+  switch (typeDie.tag) {
+    case DW_TAG.base_type:
+      return { kind: 'primitive', typeName, byteSize };
+    case DW_TAG.pointer_type: {
+      const pointeeDie = getTypeDie(typeDie);
+      const pointee = buildTypeDescriptor(pointeeDie, addressSize, depth + 1);
+      return { kind: 'pointer', typeName, byteSize: addressSize, pointee };
+    }
+    case DW_TAG.structure_type:
+      // Fields are resolved lazily via a closure — avoids upfront cost and handles
+      // self-referential structs (e.g. struct Struct { Struct* next; }) naturally.
+      return { kind: 'struct', typeName, byteSize, getFields: () => buildFieldDescriptors(typeDie, addressSize) };
+    case DW_TAG.array_type: {
+      const elementDie = getTypeDie(typeDie);
+      const elementType = buildTypeDescriptor(elementDie, addressSize, depth + 1);
+      const subrange = typeDie.children.find(c => c.tag === DW_TAG.subrange_type);
+      const upperBound = subrange ? findAttribute(subrange, DW_AT.upper_bound)?.value : undefined;
+      const elementCount = isNumber(upperBound) ? upperBound + 1 : 0;
+      return { kind: 'array', typeName, byteSize: elementCount * elementType.byteSize, elementCount, elementType };
+    }
+    case DW_TAG.typedef:
+    case DW_TAG.const_type:
+    case DW_TAG.volatile_type:
+    case DW_TAG.restrict_type:
+      return buildTypeDescriptor(getTypeDie(typeDie), addressSize, depth + 1);
+    default:
+      return { kind: 'primitive', typeName, byteSize };
+  }
+}
+
+function buildFieldDescriptors(structDie: DebugInfoEntry, addressSize: number): FieldDescriptor[] {
+  return structDie.children
+    .filter(m => m.tag === DW_TAG.member)
+    .map(member => {
+      const name = findAttribute(member, DW_AT.name)?.value as string ?? '???';
+      const type = buildTypeDescriptor(getTypeDie(member), addressSize);
+      const rawOffset = findAttribute(member, DW_AT.data_member_location)?.value;
+      return { name, offset: typeof rawOffset === 'number' ? rawOffset : 0, type };
+    });
+}
+
+function dieToLocalVar(
+  die: DebugInfoEntry,
+  relocate: (addr: number) => number | undefined,
+  addressSize: number,
+  frameBase: 'cfa' | 'other' = 'other',
+): Variable {
+  const name = findAttribute(die, DW_AT.name)?.value as string | undefined ?? '???';
+  const typeDie = getTypeDie(die);
+  const typeName = typeDie ? typeNameFromDie(typeDie) : '<unknown>';
+  const byteSize = resolveByteSize(typeDie, addressSize);
+  const location = resolveLocation(die, relocate, frameBase);
+  const typeDescriptor = buildTypeDescriptor(typeDie, addressSize);
+  return { name, typeName, byteSize, location, typeDescriptor };
+}
+
+function buildScopeTable(
+  dwarfData: DWARFData,
+  relocate: (addr: number) => number | undefined,
+): ScopeEntry[] {
+  const entries: ScopeEntry[] = [];
+
+  for (const cu of dwarfData.compilationUnits) {
+    const ctx: CuCtx = {
+      debugRanges: dwarfData.debugRanges,
+      addressSize: cu.addressSize,
+      cuBasePc: getCuBasePc(cu),
+      isLittleEndian: dwarfData.isLittleEndian,
+    };
+
+    function visit(die: DebugInfoEntry, inSubprogram: boolean, frameBase: 'cfa' | 'other' = 'other') {
+      const currentInSubprogram = inSubprogram || die.tag === DW_TAG.subprogram;
+      const currentFrameBase = die.tag === DW_TAG.subprogram ? getFrameBase(die) : frameBase;
+
+      if (currentInSubprogram && (die.tag === DW_TAG.subprogram || die.tag === DW_TAG.lexical_block)) {
+        const vars = die.children
+          .filter((c) => c.tag === DW_TAG.variable || c.tag === DW_TAG.formal_parameter)
+          .map((c) => dieToLocalVar(c, relocate, ctx.addressSize, currentFrameBase));
+        if (vars.length > 0) {
+          for (const interval of getDieIntervals(die, ctx)) {
+            const relocLow = relocate(interval.low);
+            if (relocLow === undefined) continue;
+            const delta = relocLow - interval.low;
+            entries.push({ low: relocLow, high: interval.high + delta, vars });
+          }
+        }
+      }
+
+      for (const child of die.children) {
+        visit(child, currentInSubprogram, currentFrameBase);
+      }
+    }
+
+    for (const die of cu.dies) {
+      visit(die, false);
+    }
+  }
+
+  entries.sort((a, b) => a.low - b.low);
+  return entries;
+}
+
+function buildGlobalsTable(
+  dwarfData: DWARFData,
+  relocate: (addr: number) => number | undefined,
+): Variable[] {
+  const globals: Variable[] = [];
+  for (const cu of dwarfData.compilationUnits) {
+    const root = cu.dies[0];
+    if (!root) continue;
+    for (const die of root.children) {
+      if (die.tag !== DW_TAG.variable) continue;
+      const location = resolveLocation(die, relocate);
+      if (location.kind !== 'addr') continue;
+      const name = findAttribute(die, DW_AT.name)?.value as string ?? '???';
+      const typeDie = getTypeDie(die);
+      const typeName = typeDie ? typeNameFromDie(typeDie) : '<unknown>';
+      const byteSize = resolveByteSize(typeDie, cu.addressSize);
+      const typeDescriptor = buildTypeDescriptor(typeDie, cu.addressSize);
+      globals.push({ name, typeName, byteSize, location, typeDescriptor });
+    }
+  }
+  return globals;
+}
+
+function buildInlineTable(
+  dwarfData: DWARFData,
+  relocate: (addr: number) => number | undefined,
+  baseDir: string,
+): InlineEntry[] {
+  const entries: InlineEntry[] = [];
+
+  for (const cu of dwarfData.compilationUnits) {
+    const stmtListAttr = findAttribute(cu.dies[0], DW_AT.stmt_list);
+    const stmtList = isNumber(stmtListAttr?.value) ? stmtListAttr.value : undefined;
+    const program = stmtList !== undefined
+      ? dwarfData.lineNumberPrograms.find(p => p.sectionOffset === stmtList)
+      : dwarfData.lineNumberPrograms[0];
+
+    const ctx: CuCtx = {
+      debugRanges: dwarfData.debugRanges,
+      addressSize: cu.addressSize,
+      cuBasePc: getCuBasePc(cu),
+      isLittleEndian: dwarfData.isLittleEndian,
+    };
+
+    function resolveCallPath(callFile: number): string {
+      if (!program) return '';
+      const fileIndex = program.version >= 5 ? callFile : callFile - 1;
+      const fileEntry = program.fileNames[fileIndex];
+      if (!fileEntry) return '';
+      let filePath = fileEntry.name;
+      const dirIndex = program.version >= 5
+        ? fileEntry.directoryIndex
+        : fileEntry.directoryIndex > 0 ? fileEntry.directoryIndex - 1 : -1;
+      if (dirIndex >= 0 && dirIndex < program.includeDirectories.length) {
+        filePath = join(program.includeDirectories[dirIndex], filePath);
+      }
+      if (!isAbsolute(filePath)) filePath = join(baseDir, filePath);
+      return filePath;
+    }
+
+    function visit(die: DebugInfoEntry, depth: number) {
+      if (die.tag === DW_TAG.inlined_subroutine) {
+        const originDie = findAttribute(die, DW_AT.abstract_origin)?.value?.die as DebugInfoEntry | undefined;
+        const name = (originDie ? findAttribute(originDie, DW_AT.name)?.value as string | undefined : undefined) ?? '???';
+        const callFile = findAttribute(die, DW_AT.call_file)?.value as number | undefined ?? 0;
+        const callLine = findAttribute(die, DW_AT.call_line)?.value as number | undefined ?? 0;
+        const callPath = resolveCallPath(callFile);
+
+        for (const interval of getDieIntervals(die, ctx)) {
+          const relocLow = relocate(interval.low);
+          if (relocLow === undefined) continue;
+          const delta = relocLow - interval.low;
+          entries.push({ low: relocLow, high: interval.high + delta, depth, frame: { name, callPath, callLine } as InlineFrame });
+        }
+
+        for (const child of die.children) visit(child, depth + 1);
+      } else {
+        for (const child of die.children) visit(child, depth);
+      }
+    }
+
+    for (const die of cu.dies) visit(die, 0);
+  }
+
+  return entries;
 }
 
 function executeLineNumberInstruction(

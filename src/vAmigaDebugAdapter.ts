@@ -178,6 +178,7 @@ export class VamigaDebugAdapter extends LoggingDebugSession {
     address: number;
     isSupervisor: boolean;
   } | null = null;
+  private frameIdToPc = new Map<number, number>();
 
   private disposables: (vscode.Disposable | undefined)[] = [];
 
@@ -427,6 +428,11 @@ export class VamigaDebugAdapter extends LoggingDebugSession {
         this.exceptionInstruction,
       );
       this.exceptionInstruction = null; // clear after using it once
+      this.frameIdToPc.clear();
+      for (const f of stk) {
+        if (f.instructionPointerReference)
+          this.frameIdToPc.set(f.id, parseInt(f.instructionPointerReference, 16));
+      }
       response.body = {
         stackFrames: stk,
         totalFrames: stk.length,
@@ -442,8 +448,10 @@ export class VamigaDebugAdapter extends LoggingDebugSession {
     }
   }
 
-  protected scopesRequest(response: DebugProtocol.ScopesResponse): void {
-    const scopes = this.variablesManager?.getScopes() ?? [];
+  protected scopesRequest(response: DebugProtocol.ScopesResponse, args: DebugProtocol.ScopesArguments): void {
+    const pc = this.frameIdToPc.get(args.frameId) ?? null;
+    const regs = this.stackManager?.getFrameRegs(args.frameId) ?? null;
+    const scopes = this.variablesManager?.getScopes(pc, regs) ?? [];
     response.body = { scopes };
     this.sendResponse(response);
   }
