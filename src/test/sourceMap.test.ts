@@ -106,13 +106,14 @@ describe("SourceMap Tests", () => {
       assert.strictEqual(location.line, 10);
     });
 
-    it("should not find address beyond 10 byte range", () => {
-      const location = sourceMap.lookupAddress(0x1015); // 21 bytes from 0x1000, 11 bytes from 0x1020 - both out of range
-      // Based on the algorithm, this should not find anything since both are > 10 bytes away
-      assert.strictEqual(location, undefined);
+    it("should find address far from line table entry (mid-statement floor search)", () => {
+      const location = sourceMap.lookupAddress(0x1015); // Between 0x1000 and 0x1020 — a C statement spanning many instructions
+      assert.ok(location);
+      assert.strictEqual(location.address, 0x1000);
+      assert.strictEqual(location.line, 10);
     });
 
-    it("should return undefined for non-existent address", () => {
+    it("should return undefined for address outside any loaded segment", () => {
       const location = sourceMap.lookupAddress(0x5000);
       assert.strictEqual(location, undefined);
     });
@@ -217,6 +218,27 @@ describe("SourceMap Tests", () => {
       assert.ok(offset);
       assert.strictEqual(offset.symbol, "buffer");
       assert.strictEqual(offset.offset, 0x50);
+    });
+
+    it("should prefer the nearest symbol when symbols are packed adjacently", () => {
+      // Simulates packed data variables: int (4 bytes) then short (2 bytes) then char (1 byte)
+      const packedMap = new SourceMap(
+        [{ name: "DATA", address: 0x2034, size: 0x10, memType: MemoryType.CHIP }],
+        testSources,
+        { global_int: 0x2034, global_short: 0x2038, global_char: 0x203a },
+        [],
+      );
+      // Exact match for global_short must not return global_int+4
+      const shortOffset = packedMap.findSymbolOffset(0x2038);
+      assert.ok(shortOffset);
+      assert.strictEqual(shortOffset.symbol, "global_short");
+      assert.strictEqual(shortOffset.offset, 0);
+
+      // Exact match for global_char must not return global_short+2 or global_int+6
+      const charOffset = packedMap.findSymbolOffset(0x203a);
+      assert.ok(charOffset);
+      assert.strictEqual(charOffset.symbol, "global_char");
+      assert.strictEqual(charOffset.offset, 0);
     });
   });
 
