@@ -354,7 +354,7 @@ describe("VamigaDebugAdapter - Simplified Tests", () => {
       // Test: Get scopes should use VariablesManager
       const scopesResponse =
         createMockResponse<DebugProtocol.ScopesResponse>("scopes");
-      (adapter as any).scopesRequest(scopesResponse);
+      (adapter as any).scopesRequest(scopesResponse, { frameId: 0 });
 
       // Verify: Should return empty scopes if VariablesManager not initialized (before launch)
       assert.ok(scopesResponse.body);

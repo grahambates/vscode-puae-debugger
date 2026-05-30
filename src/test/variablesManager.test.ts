@@ -17,6 +17,7 @@ describe("VariablesManager - Comprehensive Tests", () => {
   beforeEach(() => {
     mockVAmiga = sinon.createStubInstance(VAmiga);
     mockSourceMap = sinon.createStubInstance(SourceMap);
+    mockSourceMap.getGlobalVariables.returns([]);
     variablesManager = new VariablesManager(mockVAmiga, mockSourceMap);
   });
 
@@ -25,7 +26,7 @@ describe("VariablesManager - Comprehensive Tests", () => {
   });
 
   describe("Scopes Management", () => {
-    it("should return all scopes", () => {
+    it("should return all scopes with Symbols when no DWARF globals", () => {
       const scopes = variablesManager.getScopes();
 
       assert.strictEqual(scopes.length, 5);
@@ -34,6 +35,92 @@ describe("VariablesManager - Comprehensive Tests", () => {
       assert.strictEqual(scopes[2].name, "Vectors");
       assert.strictEqual(scopes[3].name, "Symbols");
       assert.strictEqual(scopes[4].name, "Segments");
+    });
+
+    it("should show Globals scope after Locals and keep Symbols when DWARF globals are present", () => {
+      mockSourceMap.getLocalsForPc.returns([{ name: 'x', byteSize: 4, typeName: 'int', location: { kind: 'addr', address: 0x1000 }, typeDescriptor: { kind: 'primitive', typeName: 'int', byteSize: 4 } }]);
+      mockSourceMap.getGlobalVariables.returns([{
+        name: 'global_int', typeName: 'int', byteSize: 4,
+        location: { kind: 'addr', address: 0x2040 },
+        typeDescriptor: { kind: 'primitive', typeName: 'int', byteSize: 4 },
+      }]);
+      const scopes = variablesManager.getScopes(0x1000);
+      assert.strictEqual(scopes[0].name, 'Locals');
+      assert.strictEqual(scopes[1].name, 'Globals');
+      assert.ok(scopes.some(s => s.name === 'Symbols'), 'Expected Symbols scope to remain');
+    });
+
+    it("should expand Globals scope using type information", async () => {
+      mockSourceMap.getGlobalVariables.returns([
+        { name: 'global_int',   typeName: 'int',   byteSize: 4, location: { kind: 'addr', address: 0x2040 }, typeDescriptor: { kind: 'primitive', typeName: 'int',   byteSize: 4 } },
+        { name: 'global_short', typeName: 'short', byteSize: 2, location: { kind: 'addr', address: 0x2044 }, typeDescriptor: { kind: 'primitive', typeName: 'short', byteSize: 2 } },
+      ]);
+      mockVAmiga.peek32.withArgs(0x2040).resolves(0x11111111);
+      mockVAmiga.peek16.withArgs(0x2044).resolves(0x2222);
+      mockSourceMap.findSymbolOffset.returns(undefined);
+
+      const scopes = variablesManager.getScopes();
+      const globalsScope = scopes.find(s => s.name === 'Globals');
+      assert.ok(globalsScope);
+
+      const vars = await variablesManager.getVariables(globalsScope!.variablesReference);
+      assert.strictEqual(vars.length, 2);
+      // sorted by name: global_int, global_short
+      assert.strictEqual(vars[0].name, 'global_int');
+      assert.ok(vars[0].value.includes('11111111'));
+      assert.strictEqual(vars[0].type, 'int');
+      assert.strictEqual(vars[1].name, 'global_short');
+      assert.ok(vars[1].value.includes('2222'));
+      assert.strictEqual(vars[1].type, 'short');
+    });
+
+    it("should expand a struct-typed global into its fields", async () => {
+      const STRUCT_ADDR = 0x2050;
+      mockSourceMap.getGlobalVariables.returns([{
+        name: 's', typeName: 'struct Struct', byteSize: 7,
+        location: { kind: 'addr', address: STRUCT_ADDR },
+        typeDescriptor: {
+          kind: 'struct', typeName: 'struct Struct', byteSize: 7,
+          getFields: () => [
+            { name: '_int',   offset: 0, type: { kind: 'primitive', typeName: 'int',   byteSize: 4 } },
+            { name: '_short', offset: 4, type: { kind: 'primitive', typeName: 'short', byteSize: 2 } },
+            { name: '_char',  offset: 6, type: { kind: 'primitive', typeName: 'char',  byteSize: 1 } },
+          ],
+        },
+      }]);
+      mockSourceMap.findSymbolOffset.returns(undefined);
+      mockVAmiga.peek32.withArgs(STRUCT_ADDR + 0).resolves(0x99999999);
+      mockVAmiga.peek16.withArgs(STRUCT_ADDR + 4).resolves(0x8888);
+      mockVAmiga.peek8.withArgs(STRUCT_ADDR + 6).resolves(0x77);
+
+      const scopes = variablesManager.getScopes();
+      const globalsScope = scopes.find(s => s.name === 'Globals');
+      assert.ok(globalsScope);
+
+      const vars = await variablesManager.getVariables(globalsScope!.variablesReference);
+      assert.strictEqual(vars.length, 1);
+      assert.strictEqual(vars[0].name, 's');
+      assert.ok(vars[0].variablesReference !== 0, 'Expected expandable handle for struct global');
+
+      const fields = await variablesManager.getVariables(vars[0].variablesReference);
+      assert.strictEqual(fields.length, 3);
+      assert.strictEqual(fields[0].name, '_int');
+      assert.ok(fields[0].value.includes('99999999'));
+      assert.strictEqual(fields[1].name, '_short');
+      assert.ok(fields[1].value.includes('8888'));
+      assert.strictEqual(fields[2].name, '_char');
+      assert.ok(fields[2].value.includes('77'));
+    });
+
+    it("should include Locals scope only when there are locals for the PC", () => {
+      mockSourceMap.getLocalsForPc.returns([{ name: 'x', byteSize: 4, typeName: 'int', location: { kind: 'addr', address: 0x1000 }, typeDescriptor: { kind: 'primitive', typeName: 'int', byteSize: 4 } }]);
+      const scopes = variablesManager.getScopes(0x1000);
+      assert.strictEqual(scopes[0].name, "Locals");
+      assert.strictEqual(scopes.length, 6);
+
+      mockSourceMap.getLocalsForPc.returns([]);
+      const emptyScopes = variablesManager.getScopes(0x2000);
+      assert.ok(!emptyScopes.some(s => s.name === "Locals"));
     });
 
     it("should create unique variable handles for each scope", () => {
@@ -47,6 +134,354 @@ describe("VariablesManager - Comprehensive Tests", () => {
         uniqueReferences.size,
         "All references should be unique",
       );
+    });
+  });
+
+  describe("Local Pointer Variables", () => {
+    const mockCpuBase: CpuInfo = {
+      pc: "0x1000", d0:"0", d1:"0", d2:"0", d3:"0", d4:"0", d5:"0", d6:"0", d7:"0",
+      a0:"0", a1:"0", a2:"0", a3:"0", a4:"0", a5:"0", a6:"0", a7:"0x8000",
+      sr:"0", usp:"0", msp:"0", isp:"0", vbr:"0", irc:"0", sfc:"0", dfc:"0", cacr:"0", caar:"0",
+    };
+
+    it("should show dereferenced value inline and create child handle for int*", async () => {
+      mockVAmiga.getCpuInfo.resolves(mockCpuBase);
+      mockVAmiga.isValidAddress.returns(true);
+      mockSourceMap.getLocalsForPc.returns([{
+        name: 'ptr', typeName: 'int *', byteSize: 4,
+        location: { kind: 'addr', address: 0x3000 },
+        typeDescriptor: { kind: 'pointer', typeName: 'int *', byteSize: 4,
+                          pointee: { kind: 'primitive', typeName: 'int', byteSize: 4 } },
+      }]);
+      mockVAmiga.peek32.withArgs(0x3000).resolves(0x00001234);  // pointer value
+      mockVAmiga.peek32.withArgs(0x00001234).resolves(0x22222222); // dereferenced value
+      mockSourceMap.findSymbolOffset.returns(undefined);
+      mockSourceMap.getCfaForPc.returns(undefined);
+
+      const scopes = variablesManager.getScopes(0x1000);
+      const localsRef = scopes[0].variablesReference;
+      const vars = await variablesManager.getVariables(localsRef);
+
+      assert.strictEqual(vars.length, 1);
+      assert.ok(vars[0].value.includes('0x22222222'), `Expected dereffed value in "${vars[0].value}"`);
+      assert.ok(vars[0].value.includes('(') && vars[0].value.includes(')'), `Expected parens in "${vars[0].value}"`);
+      assert.ok(vars[0].variablesReference !== 0, 'Expected non-zero variablesReference for pointer');
+
+      const children = await variablesManager.getVariables(vars[0].variablesReference);
+      assert.strictEqual(children.length, 1);
+      assert.strictEqual(children[0].name, 'value');
+      assert.strictEqual(children[0].type, 'int');
+      assert.ok(children[0].value.includes('22222222'));
+    });
+
+    it("should show plain pointer address for void*", async () => {
+      mockVAmiga.getCpuInfo.resolves(mockCpuBase);
+      mockVAmiga.isValidAddress.returns(true);
+      mockSourceMap.getLocalsForPc.returns([{
+        name: 'vp', typeName: 'void *', byteSize: 4,
+        location: { kind: 'addr', address: 0x4000 },
+        typeDescriptor: { kind: 'pointer', typeName: 'void *', byteSize: 4,
+                          pointee: { kind: 'unknown', typeName: 'void', byteSize: 0 } },
+      }]);
+      mockVAmiga.peek32.withArgs(0x4000).resolves(0x00005678);
+      mockSourceMap.findSymbolOffset.returns(undefined);
+
+      const scopes = variablesManager.getScopes(0x1000);
+      const localsRef = scopes[0].variablesReference;
+      const vars = await variablesManager.getVariables(localsRef);
+
+      assert.ok(!vars[0].value.includes('('), 'Expected no parens for void*');
+      assert.strictEqual(vars[0].variablesReference, 0, 'Expected no child handle for void*');
+    });
+
+    it("should not dereference when pointer value is not a valid address", async () => {
+      mockVAmiga.getCpuInfo.resolves(mockCpuBase);
+      mockVAmiga.isValidAddress.returns(false);
+      mockSourceMap.getLocalsForPc.returns([{
+        name: 'ptr', typeName: 'int *', byteSize: 4,
+        location: { kind: 'addr', address: 0x5000 },
+        typeDescriptor: { kind: 'pointer', typeName: 'int *', byteSize: 4,
+                          pointee: { kind: 'primitive', typeName: 'int', byteSize: 4 } },
+      }]);
+      mockVAmiga.peek32.withArgs(0x5000).resolves(0xDEADBEEF);
+
+      const scopes = variablesManager.getScopes(0x1000);
+      const localsRef = scopes[0].variablesReference;
+      const vars = await variablesManager.getVariables(localsRef);
+
+      assert.ok(!vars[0].value.includes('('), 'Expected no parens for invalid address');
+      assert.strictEqual(vars[0].variablesReference, 0);
+    });
+
+    it("should show address and expand to fields for a pointer-to-struct", async () => {
+      const PTR_ADDR = 0x6000;
+      const STRUCT_ADDR = 0x2024;
+      mockVAmiga.getCpuInfo.resolves(mockCpuBase);
+      mockVAmiga.isValidAddress.returns(true);
+      mockSourceMap.getLocalsForPc.returns([{
+        name: 'ptr_struct',
+        typeName: 'struct Struct *',
+        byteSize: 4,
+        location: { kind: 'addr', address: PTR_ADDR },
+        typeDescriptor: {
+          kind: 'pointer', typeName: 'struct Struct *', byteSize: 4,
+          pointee: {
+            kind: 'struct', typeName: 'struct Struct', byteSize: 7,
+            getFields: () => [
+              { name: '_int',   offset: 0, type: { kind: 'primitive', typeName: 'int',       byteSize: 4 } },
+              { name: '_short', offset: 4, type: { kind: 'primitive', typeName: 'short int', byteSize: 2 } },
+              { name: '_char',  offset: 6, type: { kind: 'primitive', typeName: 'char',      byteSize: 1 } },
+            ],
+          },
+        },
+      }]);
+      mockSourceMap.findSymbolOffset.returns(undefined);
+      mockVAmiga.peek32.withArgs(PTR_ADDR).resolves(STRUCT_ADDR);
+      mockVAmiga.peek32.withArgs(STRUCT_ADDR + 0).resolves(0x99999999);
+      mockVAmiga.peek16.withArgs(STRUCT_ADDR + 4).resolves(0x8888);
+      mockVAmiga.peek8.withArgs(STRUCT_ADDR + 6).resolves(0x77);
+
+      const scopes = variablesManager.getScopes(0x1000);
+      const localsRef = scopes[0].variablesReference;
+      const vars = await variablesManager.getVariables(localsRef);
+
+      assert.strictEqual(vars.length, 1);
+      assert.ok(vars[0].value.includes('0x00002024'), `Expected pointer address in "${vars[0].value}"`);
+      assert.ok(vars[0].variablesReference !== 0, 'Expected non-zero variablesReference for struct pointer');
+
+      const fields = await variablesManager.getVariables(vars[0].variablesReference);
+      assert.strictEqual(fields.length, 3);
+      assert.strictEqual(fields[0].name, '_int');
+      assert.ok(fields[0].value.includes('99999999'));
+      assert.strictEqual(fields[0].type, 'int');
+      assert.strictEqual(fields[1].name, '_short');
+      assert.ok(fields[1].value.includes('8888'));
+      assert.strictEqual(fields[1].type, 'short int');
+      assert.strictEqual(fields[2].name, '_char');
+      assert.ok(fields[2].value.includes('77'));
+      assert.strictEqual(fields[2].type, 'char');
+    });
+
+    it("should dereference a pointer field inside a struct", async () => {
+      const PTR_VAR_ADDR = 0x6000;
+      const STRUCT_ADDR  = 0x2028;
+      const INT_ADDR     = 0x2024;
+      mockVAmiga.getCpuInfo.resolves(mockCpuBase);
+      mockVAmiga.isValidAddress.returns(true);
+      mockSourceMap.getLocalsForPc.returns([{
+        name: 'ptr_struct',
+        typeName: 'struct Struct *',
+        byteSize: 4,
+        location: { kind: 'addr', address: PTR_VAR_ADDR },
+        typeDescriptor: {
+          kind: 'pointer', typeName: 'struct Struct *', byteSize: 4,
+          pointee: {
+            kind: 'struct', typeName: 'struct Struct', byteSize: 8,
+            getFields: () => [
+              { name: '_int_ptr', offset: 0, type: { kind: 'pointer', typeName: 'int *', byteSize: 4,
+                                                     pointee: { kind: 'primitive', typeName: 'int', byteSize: 4 } } },
+              { name: '_short',   offset: 4, type: { kind: 'primitive', typeName: 'short int', byteSize: 2 } },
+              { name: '_char',    offset: 6, type: { kind: 'primitive', typeName: 'char',      byteSize: 1 } },
+            ],
+          },
+        },
+      }]);
+      mockSourceMap.findSymbolOffset.returns(undefined);
+      mockVAmiga.peek32.withArgs(PTR_VAR_ADDR).resolves(STRUCT_ADDR);
+      mockVAmiga.peek32.withArgs(STRUCT_ADDR + 0).resolves(INT_ADDR);
+      mockVAmiga.peek32.withArgs(INT_ADDR).resolves(0x99999999);
+      mockVAmiga.peek16.withArgs(STRUCT_ADDR + 4).resolves(0x8888);
+      mockVAmiga.peek8.withArgs(STRUCT_ADDR + 6).resolves(0x77);
+
+      const scopes = variablesManager.getScopes(0x1000);
+      const localsRef = scopes[0].variablesReference;
+      const vars = await variablesManager.getVariables(localsRef);
+
+      assert.strictEqual(vars.length, 1);
+      assert.ok(vars[0].value.includes('0x00002028'), `Expected struct address in "${vars[0].value}"`);
+      assert.ok(vars[0].variablesReference !== 0, 'Expected expandable handle for struct pointer');
+
+      const fields = await variablesManager.getVariables(vars[0].variablesReference);
+      assert.strictEqual(fields.length, 3);
+
+      const intPtrField = fields.find(f => f.name === '_int_ptr');
+      assert.ok(intPtrField, '_int_ptr field should exist');
+      assert.ok(intPtrField!.value.includes('0x00002024'), `Expected pointer addr in "${intPtrField!.value}"`);
+      assert.ok(intPtrField!.value.includes('('), `Expected dereffed value in parens: "${intPtrField!.value}"`);
+      assert.ok(intPtrField!.variablesReference !== 0, 'Expected expandable handle for _int_ptr');
+
+      const shortField = fields.find(f => f.name === '_short');
+      assert.ok(shortField!.value.includes('8888'));
+      const charField = fields.find(f => f.name === '_char');
+      assert.ok(charField!.value.includes('77'));
+    });
+
+    it("should display char* as a quoted string inline", async () => {
+      const PTR_ADDR = 0x7000;
+      const STR_ADDR = 0x0000A1B0;
+      mockVAmiga.getCpuInfo.resolves(mockCpuBase);
+      mockVAmiga.isValidAddress.returns(true);
+      mockSourceMap.getLocalsForPc.returns([{
+        name: 'hello', typeName: 'const char *', byteSize: 4,
+        location: { kind: 'addr', address: PTR_ADDR },
+        typeDescriptor: { kind: 'pointer', typeName: 'const char *', byteSize: 4,
+                          pointee: { kind: 'primitive', typeName: 'char', byteSize: 1 } },
+      }]);
+      mockVAmiga.peek32.withArgs(PTR_ADDR).resolves(STR_ADDR);
+      mockSourceMap.findSymbolOffset.returns(undefined);
+      // Spell out "hello!" then null terminator
+      const str = 'hello!';
+      for (let i = 0; i < str.length; i++)
+        mockVAmiga.peek8.withArgs(STR_ADDR + i).resolves(str.charCodeAt(i));
+      mockVAmiga.peek8.withArgs(STR_ADDR + str.length).resolves(0);
+
+      const scopes = variablesManager.getScopes(0x1000);
+      const localsRef = scopes[0].variablesReference;
+      const vars = await variablesManager.getVariables(localsRef);
+
+      assert.strictEqual(vars.length, 1);
+      assert.ok(vars[0].value.includes('"hello!"'), `Expected quoted string in "${vars[0].value}"`);
+      assert.strictEqual(vars[0].variablesReference, 0, 'Expected no child handle for string');
+    });
+
+    it("should truncate char* display at 256 bytes", async () => {
+      const PTR_ADDR = 0x7100;
+      const STR_ADDR = 0x0000B000;
+      mockVAmiga.getCpuInfo.resolves(mockCpuBase);
+      mockVAmiga.isValidAddress.returns(true);
+      mockSourceMap.getLocalsForPc.returns([{
+        name: 'longstr', typeName: 'char *', byteSize: 4,
+        location: { kind: 'addr', address: PTR_ADDR },
+        typeDescriptor: { kind: 'pointer', typeName: 'char *', byteSize: 4,
+                          pointee: { kind: 'primitive', typeName: 'char', byteSize: 1 } },
+      }]);
+      mockVAmiga.peek32.withArgs(PTR_ADDR).resolves(STR_ADDR);
+      mockSourceMap.findSymbolOffset.returns(undefined);
+      // All 256 bytes are 'A' — no null terminator within the limit
+      for (let i = 0; i < 256; i++)
+        mockVAmiga.peek8.withArgs(STR_ADDR + i).resolves(0x41); // 'A'
+
+      const scopes = variablesManager.getScopes(0x1000);
+      const localsRef = scopes[0].variablesReference;
+      const vars = await variablesManager.getVariables(localsRef);
+
+      assert.ok(vars[0].value.endsWith('..."'), `Expected truncation ellipsis in "${vars[0].value}"`);
+    });
+  });
+
+  describe("Local Array Variables", () => {
+    const mockCpuBase: CpuInfo = {
+      pc: "0x1000", d0:"0", d1:"0", d2:"0", d3:"0", d4:"0", d5:"0", d6:"0", d7:"0",
+      a0:"0", a1:"0", a2:"0", a3:"0", a4:"0", a5:"0", a6:"0", a7:"0x8000",
+      sr:"0", usp:"0", msp:"0", isp:"0", vbr:"0", irc:"0", sfc:"0", dfc:"0", cacr:"0", caar:"0",
+    };
+
+    it("should show element count and expand to indexed elements for int array", async () => {
+      const ARRAY_ADDR = 0x7FD4;
+      mockVAmiga.getCpuInfo.resolves(mockCpuBase);
+      mockSourceMap.getLocalsForPc.returns([{
+        name: 'array', typeName: 'int[]', byteSize: 40,
+        location: { kind: 'addr', address: ARRAY_ADDR },
+        typeDescriptor: {
+          kind: 'array', typeName: 'int[]', byteSize: 40, elementCount: 10,
+          elementType: { kind: 'primitive', typeName: 'int', byteSize: 4 },
+        },
+      }]);
+      for (let i = 0; i < 10; i++) {
+        mockVAmiga.peek32.withArgs(ARRAY_ADDR + i * 4).resolves(i + 1);
+      }
+      mockSourceMap.findSymbolOffset.returns(undefined);
+
+      const scopes = variablesManager.getScopes(0x1000);
+      const vars = await variablesManager.getVariables(scopes[0].variablesReference);
+
+      assert.strictEqual(vars.length, 1);
+      assert.strictEqual(vars[0].name, 'array');
+      assert.ok(vars[0].value.includes('10'), `Expected element count in "${vars[0].value}"`);
+      assert.ok(vars[0].variablesReference !== 0, 'Expected expandable handle for array');
+
+      const elements = await variablesManager.getVariables(vars[0].variablesReference);
+      assert.strictEqual(elements.length, 10);
+      assert.strictEqual(elements[0].name, '[0]');
+      assert.strictEqual(elements[0].type, 'int');
+      assert.strictEqual(elements[9].name, '[9]');
+    });
+
+    it("should paginate arrays larger than 100 elements into page groups", async () => {
+      const ARRAY_ADDR = 0x5000;
+      mockVAmiga.getCpuInfo.resolves(mockCpuBase);
+      mockSourceMap.getLocalsForPc.returns([{
+        name: 'big', typeName: 'int[]', byteSize: 600,
+        location: { kind: 'addr', address: ARRAY_ADDR },
+        typeDescriptor: {
+          kind: 'array', typeName: 'int[]', byteSize: 600, elementCount: 150,
+          elementType: { kind: 'primitive', typeName: 'int', byteSize: 4 },
+        },
+      }]);
+      mockSourceMap.findSymbolOffset.returns(undefined);
+      mockVAmiga.peek32.resolves(0x42);
+
+      const scopes = variablesManager.getScopes(0x1000);
+      const vars = await variablesManager.getVariables(scopes[0].variablesReference);
+      assert.ok(vars[0].value.includes('150'));
+
+      const pages = await variablesManager.getVariables(vars[0].variablesReference);
+      assert.strictEqual(pages.length, 2);
+      assert.strictEqual(pages[0].name, '[0..99]');
+      assert.strictEqual(pages[1].name, '[100..149]');
+      assert.ok(pages[0].variablesReference !== 0);
+      assert.ok(pages[1].variablesReference !== 0);
+
+      const firstPage = await variablesManager.getVariables(pages[0].variablesReference);
+      assert.strictEqual(firstPage.length, 100);
+      assert.strictEqual(firstPage[0].name, '[0]');
+      assert.strictEqual(firstPage[99].name, '[99]');
+
+      const secondPage = await variablesManager.getVariables(pages[1].variablesReference);
+      assert.strictEqual(secondPage.length, 50);
+      assert.strictEqual(secondPage[0].name, '[100]');
+      assert.strictEqual(secondPage[49].name, '[149]');
+    });
+
+    it("should paginate recursively for very large arrays", async () => {
+      const ARRAY_ADDR = 0x5000;
+      mockVAmiga.getCpuInfo.resolves(mockCpuBase);
+      // 10001 elements: top-level pageSize=10000 → 2 pages; second level pageSize=100 → 100 sub-pages
+      mockSourceMap.getLocalsForPc.returns([{
+        name: 'huge', typeName: 'int[]', byteSize: 40004,
+        location: { kind: 'addr', address: ARRAY_ADDR },
+        typeDescriptor: {
+          kind: 'array', typeName: 'int[]', byteSize: 40004, elementCount: 10001,
+          elementType: { kind: 'primitive', typeName: 'int', byteSize: 4 },
+        },
+      }]);
+      mockSourceMap.findSymbolOffset.returns(undefined);
+      mockVAmiga.peek32.resolves(0x1);
+
+      const scopes = variablesManager.getScopes(0x1000);
+      const vars = await variablesManager.getVariables(scopes[0].variablesReference);
+
+      const topPages = await variablesManager.getVariables(vars[0].variablesReference);
+      assert.strictEqual(topPages.length, 2);
+      assert.strictEqual(topPages[0].name, '[0..9999]');
+      assert.strictEqual(topPages[1].name, '[10000..10000]');
+
+      // [0..9999] has 10000 elements → 100 sub-pages of 100 each
+      const midPages = await variablesManager.getVariables(topPages[0].variablesReference);
+      assert.strictEqual(midPages.length, 100);
+      assert.strictEqual(midPages[0].name, '[0..99]');
+      assert.strictEqual(midPages[99].name, '[9900..9999]');
+
+      // [0..99] has 100 elements → rendered directly
+      const leafElements = await variablesManager.getVariables(midPages[0].variablesReference);
+      assert.strictEqual(leafElements.length, 100);
+      assert.strictEqual(leafElements[0].name, '[0]');
+      assert.strictEqual(leafElements[99].name, '[99]');
+
+      // [10000..10000] → single element
+      const tailElements = await variablesManager.getVariables(topPages[1].variablesReference);
+      assert.strictEqual(tailElements.length, 1);
+      assert.strictEqual(tailElements[0].name, '[10000]');
     });
   });
 
