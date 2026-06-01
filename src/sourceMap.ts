@@ -94,9 +94,8 @@ export class SourceMap {
     private globalVars: Variable[] = [],
   ) {
     for (const location of locations) {
-      // Don't overwrite existing address mappings - first wins
-      // This handles cases where multiple DWARF line programs map the same address
-      // (e.g., assembly files with C macro expansions)
+      // Don't overwrite existing address mappings - first wins.
+      // Deduplication for C/C++ vs assembly is handled upstream in sourceMapFromDwarf.
       if (!this.locationsByAddress.has(location.address)) {
         this.locationsByAddress.set(location.address, location);
       }
