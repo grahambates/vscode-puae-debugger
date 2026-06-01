@@ -485,6 +485,119 @@ describe("VariablesManager - Comprehensive Tests", () => {
     });
   });
 
+  describe("evaluateVariableByName (hover/evaluate)", () => {
+    const mockCpuBase: CpuInfo = {
+      pc: "0x1000", d0:"0", d1:"0", d2:"0", d3:"0", d4:"0", d5:"0", d6:"0", d7:"0",
+      a0:"0", a1:"0", a2:"0", a3:"0", a4:"0", a5:"0", a6:"0", a7:"0x8000",
+      sr:"0", usp:"0", msp:"0", isp:"0", vbr:"0", irc:"0", sfc:"0", dfc:"0", cacr:"0", caar:"0",
+    };
+
+    beforeEach(() => {
+      mockVAmiga.getCpuInfo.resolves(mockCpuBase);
+      mockSourceMap.findSymbolOffset.returns(undefined);
+      mockSourceMap.getCfaForPc.returns(undefined);
+      mockSourceMap.getLocalsForPc.returns([]);
+      mockSourceMap.getGlobalVariables.returns([]);
+    });
+
+    it("resolves a primitive local by name with value, type and memoryReference", async () => {
+      mockSourceMap.getLocalsForPc.returns([{
+        name: 'count', typeName: 'int', byteSize: 4,
+        location: { kind: 'addr', address: 0x3000 },
+        typeDescriptor: { kind: 'primitive', typeName: 'int', byteSize: 4 },
+      }]);
+      mockVAmiga.peek32.withArgs(0x3000).resolves(0x0000002a);
+
+      const res = await variablesManager.evaluateVariableByName('count', 0x1000, null);
+      assert.ok(res, 'Expected a result');
+      assert.ok(res!.value.includes('2a') || res!.value.includes('42'), `Unexpected value "${res!.value}"`);
+      assert.strictEqual(res!.type, 'int');
+      assert.strictEqual(res!.memoryReference, '0x00003000');
+      assert.strictEqual(res!.variablesReference, 0);
+    });
+
+    it("resolves a local via fbreg using the frame regs snapshot (A5 = reg 13)", async () => {
+      mockSourceMap.getLocalsForPc.returns([{
+        name: 'local', typeName: 'int', byteSize: 4,
+        location: { kind: 'fbreg', offset: 8 },
+        typeDescriptor: { kind: 'primitive', typeName: 'int', byteSize: 4 },
+      }]);
+      const regs = new Map<number, number>([[13, 0x4000]]);
+      mockVAmiga.peek32.withArgs(0x4008).resolves(0x11);
+
+      const res = await variablesManager.evaluateVariableByName('local', 0x1000, regs);
+      assert.ok(res, 'Expected a result');
+      assert.strictEqual(res!.memoryReference, '0x00004008');
+    });
+
+    it("returns a non-zero variablesReference for a struct local (expandable hover)", async () => {
+      mockSourceMap.getLocalsForPc.returns([{
+        name: 's', typeName: 'struct Struct', byteSize: 7,
+        location: { kind: 'addr', address: 0x2050 },
+        typeDescriptor: {
+          kind: 'struct', typeName: 'struct Struct', byteSize: 7,
+          getFields: () => [
+            { name: '_int', offset: 0, type: { kind: 'primitive', typeName: 'int', byteSize: 4 } },
+          ],
+        },
+      }]);
+
+      const res = await variablesManager.evaluateVariableByName('s', 0x1000, null);
+      assert.ok(res, 'Expected a result');
+      assert.ok(res!.variablesReference !== 0, 'Expected expandable handle for struct');
+      assert.strictEqual(res!.type, 'struct Struct');
+    });
+
+    it("falls back to a global when no local matches", async () => {
+      mockSourceMap.getGlobalVariables.returns([{
+        name: 'global_int', typeName: 'int', byteSize: 4,
+        location: { kind: 'addr', address: 0x2040 },
+        typeDescriptor: { kind: 'primitive', typeName: 'int', byteSize: 4 },
+      }]);
+      mockVAmiga.peek32.withArgs(0x2040).resolves(0x99);
+
+      const res = await variablesManager.evaluateVariableByName('global_int', 0x1000, null);
+      assert.ok(res, 'Expected a result');
+      assert.strictEqual(res!.memoryReference, '0x00002040');
+      assert.strictEqual(res!.type, 'int');
+    });
+
+    it("prefers a local over a global of the same name (shadowing)", async () => {
+      mockSourceMap.getLocalsForPc.returns([{
+        name: 'x', typeName: 'int', byteSize: 4,
+        location: { kind: 'addr', address: 0x3000 },
+        typeDescriptor: { kind: 'primitive', typeName: 'int', byteSize: 4 },
+      }]);
+      mockSourceMap.getGlobalVariables.returns([{
+        name: 'x', typeName: 'int', byteSize: 4,
+        location: { kind: 'addr', address: 0x2040 },
+        typeDescriptor: { kind: 'primitive', typeName: 'int', byteSize: 4 },
+      }]);
+      mockVAmiga.peek32.resolves(0x1);
+
+      const res = await variablesManager.evaluateVariableByName('x', 0x1000, null);
+      assert.ok(res, 'Expected a result');
+      assert.strictEqual(res!.memoryReference, '0x00003000', 'Expected local address, not global');
+    });
+
+    it("skips locals when pc is null and resolves only globals", async () => {
+      mockSourceMap.getLocalsForPc.returns([{
+        name: 'x', typeName: 'int', byteSize: 4,
+        location: { kind: 'addr', address: 0x3000 },
+        typeDescriptor: { kind: 'primitive', typeName: 'int', byteSize: 4 },
+      }]);
+
+      const res = await variablesManager.evaluateVariableByName('x', null, null);
+      assert.strictEqual(res, undefined, 'Expected no local resolution when pc is null');
+      assert.ok(mockSourceMap.getLocalsForPc.notCalled, 'getLocalsForPc should not be called with null pc');
+    });
+
+    it("returns undefined for an unknown name", async () => {
+      const res = await variablesManager.evaluateVariableByName('nope', 0x1000, null);
+      assert.strictEqual(res, undefined);
+    });
+  });
+
   describe("CPU Register Variables", () => {
     it("should return all CPU register variables", async () => {
       const mockCpuInfo: CpuInfo = {

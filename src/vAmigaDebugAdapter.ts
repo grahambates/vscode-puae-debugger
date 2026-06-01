@@ -809,7 +809,21 @@ export class VamigaDebugAdapter extends LoggingDebugSession {
     }
 
     try {
-      response.body = await this.getEvaluateManager().evaluateFormatted(args);
+      // Resolve the hovered/evaluated frame's pc and register snapshot (same as scopesRequest) so
+      // the evaluate path can look up C/C++ locals/globals by name.
+      const pc =
+        args.frameId !== undefined
+          ? (this.frameIdToPc.get(args.frameId) ?? null)
+          : null;
+      const regs =
+        args.frameId !== undefined
+          ? (this.stackManager?.getFrameRegs(args.frameId) ?? null)
+          : null;
+      response.body = await this.getEvaluateManager().evaluateFormatted(
+        args,
+        pc,
+        regs,
+      );
       this.sendResponse(response);
     } catch (err) {
       this.sendError(

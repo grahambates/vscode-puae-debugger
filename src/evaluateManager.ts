@@ -246,14 +246,33 @@ export class EvaluateManager {
    * @param args Evaluation request arguments from DAP
    * @returns Formatted evaluation response for DAP
    */
-  public async evaluateFormatted({
-    expression,
-    context,
-    source,
-    line,
-  }: DebugProtocol.EvaluateRequest["arguments"]): Promise<
-    DebugProtocol.EvaluateResponse["body"]
-  > {
+  public async evaluateFormatted(
+    {
+      expression,
+      context,
+      source,
+      line,
+    }: DebugProtocol.EvaluateRequest["arguments"],
+    pc: number | null = null,
+    regs: Map<number, number> | null = null,
+  ): Promise<DebugProtocol.EvaluateResponse["body"]> {
+    // C/C++ DWARF path: resolve a simple local/global by name, reusing the exact formatting from
+    // the Locals/Globals views. Kept strictly separate from the assembly evaluate path below - on a
+    // miss we fall through to the unchanged register/symbol/expression handling.
+    const dwarfVar = await this.variablesManager.evaluateVariableByName(
+      expression.trim(),
+      pc,
+      regs,
+    );
+    if (dwarfVar) {
+      return {
+        result: dwarfVar.value,
+        type: dwarfVar.type,
+        memoryReference: dwarfVar.memoryReference,
+        variablesReference: dwarfVar.variablesReference,
+      };
+    }
+
     const {
       value,
       memoryReference,

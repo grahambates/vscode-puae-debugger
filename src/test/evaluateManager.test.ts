@@ -407,6 +407,72 @@ describe("EvaluateManager - Comprehensive Tests", () => {
     });
   });
 
+  describe("C/C++ DWARF variable resolution", () => {
+    it("returns the DWARF result (incl. variablesReference) when a local/global resolves", async () => {
+      mockVariablesManager.evaluateVariableByName.resolves({
+        value: "0x0000002a | 42",
+        type: "int",
+        memoryReference: "0x3000",
+        variablesReference: 0,
+      });
+
+      const result = await evaluateManager.evaluateFormatted(
+        { expression: "count", context: "hover" },
+        0x1000,
+        null,
+      );
+
+      assert.strictEqual(result.result, "0x0000002a | 42");
+      assert.strictEqual(result.type, "int");
+      assert.strictEqual(result.memoryReference, "0x3000");
+      assert.strictEqual(result.variablesReference, 0);
+    });
+
+    it("passes an expandable variablesReference through for struct/array hovers", async () => {
+      mockVariablesManager.evaluateVariableByName.resolves({
+        value: "0x00002050",
+        type: "struct Struct",
+        memoryReference: "0x2050",
+        variablesReference: 99,
+      });
+
+      const result = await evaluateManager.evaluateFormatted(
+        { expression: "s", context: "hover" },
+        0x1000,
+        null,
+      );
+
+      assert.strictEqual(result.variablesReference, 99);
+    });
+
+    it("forwards the trimmed expression and pc/regs to the resolver", async () => {
+      const regs = new Map<number, number>([[13, 0x4000]]);
+      mockVariablesManager.evaluateVariableByName.resolves({
+        value: "42",
+        type: "int",
+        variablesReference: 0,
+      });
+
+      await evaluateManager.evaluateFormatted(
+        { expression: "  count  ", context: "hover" },
+        0x1234,
+        regs,
+      );
+
+      assert.ok(mockVariablesManager.evaluateVariableByName.calledOnceWith("count", 0x1234, regs));
+    });
+
+    it("falls back to the assembly evaluate path when the resolver returns undefined", async () => {
+      mockVariablesManager.evaluateVariableByName.resolves(undefined);
+      mockVariablesManager.getFlatVariables.resolves({ d0: 0x42 });
+      mockVAmiga.getCpuInfo.resolves(createMockCpuInfo({ d0: "0x42" }));
+
+      const result = await evaluateManager.evaluateFormatted({ expression: "d0" });
+
+      assert.strictEqual(result.result, "0x00000042 | 66 | 0b1000010");
+    });
+  });
+
   describe("Error Handling", () => {
     it("should handle invalid variable references", async () => {
       mockVariablesManager.getFlatVariables.resolves({});

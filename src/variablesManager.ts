@@ -491,6 +491,51 @@ export class VariablesManager {
     return locals;
   }
 
+  /**
+   * Resolves a simple C/C++ variable name to a rendered value for the evaluate/hover path.
+   *
+   * This is the single home for C/C++ DWARF resolution + formatting in the evaluate path: it reuses
+   * the exact same `locationToAddress` + `renderTypedValue` machinery as the Locals/Globals views,
+   * so a hovered variable reads identically to its row in the Variables view. It contains no
+   * assembly-style logic; callers fall back to the assembly evaluate path on `undefined`.
+   *
+   * Locals (in the given frame) take precedence over globals of the same name.
+   *
+   * @param name Exact variable identifier to resolve
+   * @param pc Program counter of the hovered frame (null skips local resolution)
+   * @param regs Frame register snapshot (for unwound frames), or null for the live CPU state
+   * @returns Rendered value/type/handles, or undefined if no matching local or global exists
+   */
+  public async evaluateVariableByName(
+    name: string,
+    pc: number | null,
+    regs: Map<number, number> | null,
+  ): Promise<{ value: string; type?: string; variablesReference: number; memoryReference?: string } | undefined> {
+    if (!this.sourceMap) return undefined;
+
+    // Locals first - scoped to the hovered frame's pc
+    if (pc !== null) {
+      const local = this.sourceMap.getLocalsForPc(pc).find((v) => v.name === name);
+      if (local) {
+        const cpuInfo = await this.vAmiga.getCpuInfo();
+        const address = this.locationToAddress(local.location, cpuInfo, pc, regs);
+        if (address !== undefined) {
+          const { value, variablesReference } = await this.renderTypedValue(address, local.typeDescriptor);
+          return { value, type: local.typeName, variablesReference, memoryReference: formatHex(address) };
+        }
+      }
+    }
+
+    // Globals fallback
+    const global = this.sourceMap.getGlobalVariables().find((v) => v.name === name);
+    if (global && global.location.kind === 'addr') {
+      const { value, variablesReference } = await this.renderTypedValue(global.location.address, global.typeDescriptor);
+      return { value, type: global.typeName, variablesReference, memoryReference: formatHex(global.location.address) };
+    }
+
+    return undefined;
+  }
+
   private async renderTypedValue(address: number, type: TypeDescriptor): Promise<{ value: string; variablesReference: number }> {
     switch (type.kind) {
       case 'primitive':
