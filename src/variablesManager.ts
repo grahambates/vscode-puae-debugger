@@ -492,25 +492,24 @@ export class VariablesManager {
   }
 
   /**
-   * Resolves a simple C/C++ variable name to a rendered value for the evaluate/hover path.
-   *
-   * This is the single home for C/C++ DWARF resolution + formatting in the evaluate path: it reuses
-   * the exact same `locationToAddress` + `renderTypedValue` machinery as the Locals/Globals views,
-   * so a hovered variable reads identically to its row in the Variables view. It contains no
-   * assembly-style logic; callers fall back to the assembly evaluate path on `undefined`.
+   * Resolves a bare C/C++ variable name to its memory address + type (an "lvalue"), without
+   * rendering. This is the typed-lvalue seed for both the simple hover path
+   * (`evaluateVariableByName`) and the compound expression evaluator. It reuses the same
+   * `locationToAddress` + DWARF scope/global tables as the Locals/Globals views, so addresses
+   * match exactly. Contains no assembly-style logic.
    *
    * Locals (in the given frame) take precedence over globals of the same name.
    *
    * @param name Exact variable identifier to resolve
    * @param pc Program counter of the hovered frame (null skips local resolution)
    * @param regs Frame register snapshot (for unwound frames), or null for the live CPU state
-   * @returns Rendered value/type/handles, or undefined if no matching local or global exists
+   * @returns The variable's address, type descriptor and type name, or undefined if not found
    */
-  public async evaluateVariableByName(
+  public async resolveNameToLValue(
     name: string,
     pc: number | null,
     regs: Map<number, number> | null,
-  ): Promise<{ value: string; type?: string; variablesReference: number; memoryReference?: string } | undefined> {
+  ): Promise<{ address: number; type: TypeDescriptor; typeName: string } | undefined> {
     if (!this.sourceMap) return undefined;
 
     // Locals first - scoped to the hovered frame's pc
@@ -520,8 +519,7 @@ export class VariablesManager {
         const cpuInfo = await this.vAmiga.getCpuInfo();
         const address = this.locationToAddress(local.location, cpuInfo, pc, regs);
         if (address !== undefined) {
-          const { value, variablesReference } = await this.renderTypedValue(address, local.typeDescriptor);
-          return { value, type: local.typeName, variablesReference, memoryReference: formatHex(address) };
+          return { address, type: local.typeDescriptor, typeName: local.typeName };
         }
       }
     }
@@ -529,11 +527,30 @@ export class VariablesManager {
     // Globals fallback
     const global = this.sourceMap.getGlobalVariables().find((v) => v.name === name);
     if (global && global.location.kind === 'addr') {
-      const { value, variablesReference } = await this.renderTypedValue(global.location.address, global.typeDescriptor);
-      return { value, type: global.typeName, variablesReference, memoryReference: formatHex(global.location.address) };
+      return { address: global.location.address, type: global.typeDescriptor, typeName: global.typeName };
     }
 
     return undefined;
+  }
+
+  /**
+   * Renders the value at an address for a given type into the DAP body shape used by hover and the
+   * Variables view. Thin public wrapper over `renderTypedValue` so the expression evaluator produces
+   * output identical to the Variables view (same formatting, same expandable variablesReference).
+   */
+  public async renderLValue(
+    address: number,
+    type: TypeDescriptor,
+  ): Promise<{ value: string; variablesReference: number }> {
+    return this.renderTypedValue(address, type);
+  }
+
+  /**
+   * Reads a primitive/pointer value at an address as a number. Used by the expression evaluator for
+   * array indices (`arr[i]`) and pointer arithmetic. Returns undefined for non-scalar sizes.
+   */
+  public async readScalar(address: number, type: TypeDescriptor): Promise<number | undefined> {
+    return this.peekBySize(address, type.byteSize);
   }
 
   private async renderTypedValue(address: number, type: TypeDescriptor): Promise<{ value: string; variablesReference: number }> {

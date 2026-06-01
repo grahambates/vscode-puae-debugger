@@ -18,6 +18,7 @@ import { VAmiga } from "./vAmiga";
 import { SourceMap } from "./sourceMap";
 import { VariablesManager } from "./variablesManager";
 import { DisassemblyManager } from "./disassemblyManager";
+import { CExpressionEvaluator } from "./cExpressionEvaluator";
 
 /**
  * Result of evaluating an expression in the debug context.
@@ -129,6 +130,7 @@ const asyncFunctions = Object.keys(requiredArgs);
  */
 export class EvaluateManager {
   private parser: Parser;
+  private cExpr: CExpressionEvaluator;
 
   /**
    * Creates a new EvaluateManager instance.
@@ -153,6 +155,7 @@ export class EvaluateManager {
       i16,
       i8,
     };
+    this.cExpr = new CExpressionEvaluator(vAmiga, sourceMap, variablesManager);
   }
 
   /**
@@ -256,21 +259,19 @@ export class EvaluateManager {
     pc: number | null = null,
     regs: Map<number, number> | null = null,
   ): Promise<DebugProtocol.EvaluateResponse["body"]> {
-    // C/C++ DWARF path: resolve a simple local/global by name, reusing the exact formatting from
-    // the Locals/Globals views. Kept strictly separate from the assembly evaluate path below - on a
-    // miss we fall through to the unchanged register/symbol/expression handling.
-    const dwarfVar = await this.variablesManager.evaluateVariableByName(
-      expression.trim(),
-      pc,
-      regs,
-    );
-    if (dwarfVar) {
-      return {
-        result: dwarfVar.value,
-        type: dwarfVar.type,
-        memoryReference: dwarfVar.memoryReference,
-        variablesReference: dwarfVar.variablesReference,
-      };
+    // C/C++ DWARF path: evaluate a compound C navigation expression (names, `.` `->` `[]` `*` `&`),
+    // reusing the exact formatting from the Locals/Globals views. Kept strictly separate from the
+    // assembly evaluate path below - on a miss (not a resolvable C expression) we fall through to the
+    // unchanged register/symbol/expression handling.
+    const cResult = await this.cExpr.evaluateToBody(expression.trim(), pc, regs);
+    if (cResult) {
+      // VS Code shows the DAP `type` field in the Variables/Watch views, but not on the top-level
+      // hovered item (microsoft/vscode#244477). For hover, fold the type into the value string so it
+      // is visible; other contexts (watch has a type column, repl) keep the value clean.
+      if (context === "hover" && cResult.type) {
+        return { ...cResult, result: `(${cResult.type}) ${cResult.result}` };
+      }
+      return cResult;
     }
 
     const {
