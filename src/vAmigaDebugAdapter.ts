@@ -48,6 +48,7 @@ import { LoadedProgram } from "./amigaMemoryMapper";
 import { sourceMapFromDwarf } from "./dwarfSourceMap";
 import { sourceMapFromHunks } from "./amigaHunkSourceMap";
 import { SourceMap } from "./sourceMap";
+import { kickstartSymbolModule, KickstartSymbolModule } from "./kickstart";
 import { formatHex } from "./numbers";
 import {
   allFunctions,
@@ -177,6 +178,8 @@ export class VamigaDebugAdapter extends LoggingDebugSession {
   private hunks: Hunk[] = [];
   private dwarfData?: DWARFData;
   private sourceMap?: SourceMap;
+  // Resolved Kickstart ROM symbols (if the loaded ROM matched), merged into the source map on attach.
+  private kickstartSymbols?: KickstartSymbolModule;
   private exceptionInstruction: {
     address: number;
     isSupervisor: boolean;
@@ -312,6 +315,32 @@ export class VamigaDebugAdapter extends LoggingDebugSession {
         "error reading debug symbols",
         err,
       );
+    }
+
+    // Load Kickstart ROM symbols if the configured ROM is one we have symbols for.
+    // Best-effort: a missing/unreadable/unknown ROM must not abort the launch.
+    const kickstartRomPath = args.emulatorOptions?.kickstartRomPath;
+    if (kickstartRomPath) {
+      try {
+        const romBuffer = await readFile(kickstartRomPath);
+        this.kickstartSymbols = kickstartSymbolModule(romBuffer);
+        if (this.kickstartSymbols) {
+          const symbolCount = Object.keys(this.kickstartSymbols.symbols).length;
+          this.sendEvent(
+            new OutputEvent(
+              `Loaded symbols for ${this.kickstartSymbols.name}\n`,
+            ),
+          );
+          logger.log(
+            `Loaded ${symbolCount} Kickstart symbols ` +
+              `(${this.kickstartSymbols.name}) at base 0x${this.kickstartSymbols.base.toString(16)}`,
+          );
+        } else {
+          logger.log(`No Kickstart symbols available for ROM ${kickstartRomPath}`);
+        }
+      } catch (err) {
+        logger.warn(`Could not read Kickstart ROM for symbols: ${this.errorString(err)}`);
+      }
     }
 
     try {
@@ -1090,6 +1119,14 @@ export class VamigaDebugAdapter extends LoggingDebugSession {
         this.sourceMap = sourceMapFromHunks(this.hunks, offsets);
       } else {
         throw new Error("No debug symbols");
+      }
+
+      // Merge Kickstart ROM symbols (if resolved) so OS calls show names in stack/disassembly.
+      if (this.kickstartSymbols) {
+        this.sourceMap.addSymbolModule(
+          this.kickstartSymbols.segment,
+          this.kickstartSymbols.symbols,
+        );
       }
 
       // Initialize specialized manager classes for debugging functionality:

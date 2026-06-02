@@ -415,7 +415,8 @@
     "test:unit": "jest",
     "test:coverage": "jest --coverage",
     "format": "prettier --write \"src/**/*.{ts,tsx}\"",
-    "format:check": "prettier --check \"src/**/*.{ts,tsx}\""
+    "format:check": "prettier --check \"src/**/*.{ts,tsx}\"",
+    "gen:kickstart-symbols": "node scripts/gen-kickstart-symbols.mjs"
   },
   "dependencies": {
     "@vscode/codicons": "^0.0.41",
