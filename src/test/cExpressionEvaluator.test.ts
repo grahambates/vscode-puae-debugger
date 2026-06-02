@@ -250,4 +250,47 @@ describe("CExpressionEvaluator", () => {
       assert.ok(res!.result.includes("11"));
     });
   });
+
+  describe("evaluateToLValue (write-target resolution)", () => {
+    it("resolves a struct member to its address and type", async () => {
+      setLocals({ name: "s", typeName: "struct S", byteSize: 7, location: { kind: "addr", address: 0x3000 }, typeDescriptor: structType() });
+
+      const lv = await evaluator.evaluateToLValue("s._short", 0x1000, null);
+      assert.ok(lv);
+      assert.strictEqual(lv!.address, 0x3004);
+      assert.strictEqual(lv!.type.typeName, "short");
+    });
+
+    it("resolves through a pointer (arrow)", async () => {
+      setLocals({ name: "p", typeName: "struct S *", byteSize: 4, location: { kind: "addr", address: 0x3000 },
+        typeDescriptor: { kind: "pointer", typeName: "struct S *", byteSize: 4, pointee: structType() } });
+      mockVAmiga.peek32.withArgs(0x3000).resolves(0x5000);
+
+      const lv = await evaluator.evaluateToLValue("p->_int", 0x1000, null);
+      assert.ok(lv);
+      assert.strictEqual(lv!.address, 0x5000);
+      assert.strictEqual(lv!.type.typeName, "int");
+    });
+
+    it("resolves an array element", async () => {
+      setLocals({ name: "arr", typeName: "int[10]", byteSize: 40, location: { kind: "addr", address: 0x4000 },
+        typeDescriptor: { kind: "array", typeName: "int[10]", byteSize: 40, elementCount: 10, elementType: { kind: "primitive", typeName: "int", byteSize: 4 } } });
+
+      const lv = await evaluator.evaluateToLValue("arr[2]", 0x1000, null);
+      assert.ok(lv);
+      assert.strictEqual(lv!.address, 0x4008);
+      assert.strictEqual(lv!.type.typeName, "int");
+    });
+
+    it("returns undefined for address-of, literals, unknown names and type mismatches", async () => {
+      setLocals(
+        { name: "s", typeName: "struct S", byteSize: 7, location: { kind: "addr", address: 0x3000 }, typeDescriptor: structType() },
+        { name: "n", typeName: "int", byteSize: 4, location: { kind: "addr", address: 0x6000 }, typeDescriptor: { kind: "primitive", typeName: "int", byteSize: 4 } },
+      );
+      assert.strictEqual(await evaluator.evaluateToLValue("&s", 0x1000, null), undefined);
+      assert.strictEqual(await evaluator.evaluateToLValue("42", 0x1000, null), undefined);
+      assert.strictEqual(await evaluator.evaluateToLValue("nope", 0x1000, null), undefined);
+      assert.strictEqual(await evaluator.evaluateToLValue("*n", 0x1000, null), undefined);
+    });
+  });
 });

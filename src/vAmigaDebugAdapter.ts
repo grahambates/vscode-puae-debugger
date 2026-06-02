@@ -238,6 +238,7 @@ export class VamigaDebugAdapter extends LoggingDebugSession {
     response.body = response.body || {};
     response.body.supportsConfigurationDoneRequest = true;
     response.body.supportsSetVariable = true;
+    response.body.supportsSetExpression = true;
     response.body.supportsReadMemoryRequest = true;
     response.body.supportsWriteMemoryRequest = true;
     response.body.supportsDisassembleRequest = true;
@@ -498,6 +499,38 @@ export class VamigaDebugAdapter extends LoggingDebugSession {
         response,
         ErrorCode.VARIABLE_UPDATE_ERROR,
         `Error updating variable`,
+        err,
+      );
+    }
+  }
+
+  protected async setExpressionRequest(
+    response: DebugProtocol.SetExpressionResponse,
+    args: DebugProtocol.SetExpressionArguments,
+  ): Promise<void> {
+    try {
+      // Resolve the frame's pc and register snapshot (same as evaluateRequest) so the C/C++
+      // expression evaluator can locate locals for the write target.
+      const pc =
+        args.frameId !== undefined
+          ? (this.frameIdToPc.get(args.frameId) ?? null)
+          : null;
+      const regs =
+        args.frameId !== undefined
+          ? (this.stackManager?.getFrameRegs(args.frameId) ?? null)
+          : null;
+      response.body = await this.getEvaluateManager().setExpression(
+        args.expression,
+        args.value,
+        pc,
+        regs,
+      );
+      this.sendResponse(response);
+    } catch (err) {
+      this.sendError(
+        response,
+        ErrorCode.VARIABLE_UPDATE_ERROR,
+        `Error setting '${args.expression}'`,
         err,
       );
     }

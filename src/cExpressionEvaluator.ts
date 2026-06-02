@@ -242,35 +242,64 @@ export class CExpressionEvaluator {
     pc: number | null,
     regs: Map<number, number> | null,
   ): Promise<DebugProtocol.EvaluateResponse["body"] | undefined> {
+    const result = await this.evaluate(expression, pc, regs);
+    if (!result) return undefined;
+
+    if (result.kind === "lvalue") {
+      const { value, variablesReference } = await this.variablesManager.renderLValue(
+        result.address,
+        result.type,
+      );
+      return {
+        result: value,
+        type: result.type.typeName,
+        memoryReference: formatHex(result.address),
+        variablesReference,
+      };
+    }
+    if (result.kind === "addressOf") {
+      return {
+        result: formatAddress(result.address, this.sourceMap),
+        type: `${result.pointeeTypeName} *`,
+        memoryReference: formatHex(result.address),
+        variablesReference: 0,
+      };
+    }
+    // Top-level integer result (shouldn't normally occur given the bare-num guard) → fall back.
+    return undefined;
+  }
+
+  /**
+   * Resolves a compound C/C++ expression to a writable lvalue (memory address + type), or
+   * `undefined` if it is not an addressable value (a bare literal, `&x`, an unknown name, or a type
+   * mismatch). This is the write-target resolver for `setExpression`, sharing the read navigator.
+   */
+  public async evaluateToLValue(
+    expression: string,
+    pc: number | null,
+    regs: Map<number, number> | null,
+  ): Promise<{ address: number; type: TypeDescriptor } | undefined> {
+    const result = await this.evaluate(expression, pc, regs);
+    if (result?.kind !== "lvalue") return undefined;
+    return { address: result.address, type: result.type };
+  }
+
+  /**
+   * Parses and navigates an expression to an EvalResult, or `undefined` for non-C input (parse
+   * failure, a bare numeric literal, unknown name, or type mismatch). Shared by the read
+   * (`evaluateToBody`) and write (`evaluateToLValue`) entry points.
+   */
+  private async evaluate(
+    expression: string,
+    pc: number | null,
+    regs: Map<number, number> | null,
+  ): Promise<EvalResult | undefined> {
     const ast = parse(expression);
     if (!ast) return undefined;
-    // A bare numeric literal isn't program data — let the assembly path format it.
+    // A bare numeric literal isn't program data — let the assembly path handle it.
     if (ast.kind === "num") return undefined;
-
     try {
-      const result = await this.evalNode(ast, pc, regs);
-      if (result.kind === "lvalue") {
-        const { value, variablesReference } = await this.variablesManager.renderLValue(
-          result.address,
-          result.type,
-        );
-        return {
-          result: value,
-          type: result.type.typeName,
-          memoryReference: formatHex(result.address),
-          variablesReference,
-        };
-      }
-      if (result.kind === "addressOf") {
-        return {
-          result: formatAddress(result.address, this.sourceMap),
-          type: `${result.pointeeTypeName} *`,
-          memoryReference: formatHex(result.address),
-          variablesReference: 0,
-        };
-      }
-      // Top-level integer result (shouldn't normally occur given the bare-num guard) → fall back.
-      return undefined;
+      return await this.evalNode(ast, pc, regs);
     } catch (err) {
       if (err instanceof EvalError) return undefined;
       throw err;

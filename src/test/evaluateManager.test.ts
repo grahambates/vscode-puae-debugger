@@ -510,6 +510,49 @@ describe("EvaluateManager - Comprehensive Tests", () => {
     });
   });
 
+  describe("setExpression (value editing)", () => {
+    it("writes a C lvalue to memory and returns the re-rendered value", async () => {
+      mockVariablesManager.resolveNameToLValue.resolves({
+        address: 0x3000,
+        type: { kind: "primitive", typeName: "int", byteSize: 4 },
+        typeName: "int",
+      });
+      mockVariablesManager.writeScalar.resolves("0x0000007b | 123");
+      mockVariablesManager.renderLValue.resolves({ value: "0x0000007b | 123", variablesReference: 0 });
+
+      const body = await evaluateManager.setExpression("count", "123", 0x1000, null);
+
+      assert.ok(mockVariablesManager.writeScalar.calledOnceWith(0x3000, sinon.match.any, 123));
+      assert.strictEqual(body.value, "0x0000007b | 123");
+      assert.strictEqual(body.type, "int");
+      assert.strictEqual(body.memoryReference, "0x00003000");
+      assert.strictEqual(body.variablesReference, 0);
+    });
+
+    it("falls back to writing a CPU register via VariablesManager", async () => {
+      mockVariablesManager.resolveNameToLValue.resolves(undefined);
+      mockVAmiga.getCpuInfo.resolves(createMockCpuInfo({ d0: "0x0" }));
+      mockVariablesManager.writeRegister.resolves("0x0000002a | 42");
+
+      const body = await evaluateManager.setExpression("d0", "42");
+
+      assert.ok(mockVariablesManager.writeRegister.calledWith("d0", 42));
+      assert.strictEqual(body.value, "0x0000002a | 42");
+    });
+
+    it("throws for an invalid (non-numeric) value", async () => {
+      await assert.rejects(() => evaluateManager.setExpression("count", "abc", 0x1000, null));
+    });
+
+    it("throws when the expression is not assignable", async () => {
+      mockVariablesManager.resolveNameToLValue.resolves(undefined);
+      mockVAmiga.getCpuInfo.resolves(createMockCpuInfo({}));
+      mockVAmiga.getAllCustomRegisters.resolves({});
+
+      await assert.rejects(() => evaluateManager.setExpression("nope", "1", 0x1000, null));
+    });
+  });
+
   describe("Error Handling", () => {
     it("should handle invalid variable references", async () => {
       mockVariablesManager.getFlatVariables.resolves({});

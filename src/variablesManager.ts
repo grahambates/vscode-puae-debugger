@@ -134,22 +134,76 @@ export class VariablesManager {
     value: number,
   ): Promise<string> {
     const id = this.variableHandles.get(variableReference);
-    let res;
-    if (id === "registers") {
-      res = await this.vAmiga.setRegister(name, value);
-      return res.value;
-    } else if (id === "custom") {
-      const custom = customAddresses[name as keyof typeof customAddresses];
-      if (custom.long) {
-        await this.vAmiga.pokeCustom32(custom.address, value);
-        return formatHex(value);
-      } else {
-        await this.vAmiga.pokeCustom16(custom.address, value);
-        return formatHex(value, 4);
-      }
+    if (id === "registers" || id === "custom") {
+      return this.writeRegister(name, value);
+    } else if (id === "locals" || id === "globals") {
+      // Resolve the name to its address+type via the same path that renders it. A Locals handle
+      // only exists when pc !== null (see getScopes); a Globals handle resolves with pc = null.
+      const ctx = this.localsContextByRef.get(variableReference);
+      const lv = await this.resolveNameToLValue(name, ctx?.pc ?? null, ctx?.regs ?? null);
+      if (!lv) throw new Error(`Variable access error: '${name}' not found`);
+      return this.writeScalar(lv.address, lv.type, value);
+    } else if (id === "struct_ptr") {
+      const ctx = this.structPtrByRef.get(variableReference);
+      const field = ctx?.getFields().find((f) => f.name === name);
+      if (!ctx || !field) throw new Error(`Variable access error: field '${name}' not found`);
+      return this.writeScalar(ctx.ptrAddress + field.offset, field.type, value);
+    } else if (id === "array") {
+      const ctx = this.arrayByRef.get(variableReference);
+      const idx = Number(name.replace(/[[\]]/g, ""));
+      if (!ctx || Number.isNaN(idx))
+        throw new Error(`Variable access error: array element '${name}' not found`);
+      return this.writeScalar(ctx.baseAddress + idx * ctx.elementType.byteSize, ctx.elementType, value);
     } else {
       throw new Error("Variable access error: Variable is not writeable");
     }
+  }
+
+  /**
+   * Writes a CPU or custom chip register by name and returns the new formatted value. Single source
+   * of truth for register writes, shared by the Variables-view `setVariable` and the Watch
+   * `setExpression` paths. Dispatches on whether the name is a custom register.
+   */
+  public async writeRegister(name: string, value: number): Promise<string> {
+    const custom = customAddresses[name as keyof typeof customAddresses];
+    if (custom) {
+      if (custom.long) {
+        await this.vAmiga.pokeCustom32(custom.address, value);
+        return formatHex(value);
+      }
+      await this.vAmiga.pokeCustom16(custom.address, value);
+      return formatHex(value, 4);
+    }
+    const res = await this.vAmiga.setRegister(name, value);
+    return res.value;
+  }
+
+  /**
+   * Writes a scalar value to memory at an address for a given type, then returns the re-rendered
+   * value. The write complement of `readScalar` / `renderLValue`, shared by the Variables-view
+   * `setVariable` and the Watch `setExpression` paths. Only primitives and pointers (1/2/4 bytes)
+   * are writable; structs/arrays throw.
+   */
+  public async writeScalar(address: number, type: TypeDescriptor, value: number): Promise<string> {
+    if (type.kind !== "primitive" && type.kind !== "pointer")
+      throw new Error("Variable access error: value is not a writable scalar");
+    if (type.byteSize === 4) await this.vAmiga.poke32(address, u32(value));
+    else if (type.byteSize === 2) await this.vAmiga.poke16(address, u16(value));
+    else if (type.byteSize === 1) await this.vAmiga.poke8(address, u8(value));
+    else throw new Error("Variable access error: value is not a writable scalar");
+    return (await this.renderLValue(address, type)).value;
+  }
+
+  /**
+   * Presentation hint for a rendered row: writable scalars (primitives/pointers, 1/2/4 bytes) are
+   * left editable so VS Code enables "Set Value"; everything else (structs, arrays, page rows) is
+   * marked read-only.
+   */
+  private attrsFor(type: TypeDescriptor): DebugProtocol.VariablePresentationHint {
+    const writable =
+      (type.kind === "primitive" || type.kind === "pointer") &&
+      [1, 2, 4].includes(type.byteSize);
+    return writable ? {} : { attributes: ["readOnly"] };
   }
 
   public async registerVariables(): Promise<DebugProtocol.Variable[]> {
@@ -336,7 +390,7 @@ export class VariablesManager {
         value,
         type: v.typeName,
         variablesReference,
-        presentationHint: { attributes: ['readOnly'] },
+        presentationHint: this.attrsFor(v.typeDescriptor),
       };
     }));
     result.sort((a, b) => (a.name < b.name ? -1 : 1));
@@ -482,7 +536,7 @@ export class VariablesManager {
         value,
         type: v.typeName,
         variablesReference,
-        presentationHint: { attributes: ["readOnly"] },
+        presentationHint: this.attrsFor(v.typeDescriptor),
       };
     }));
   // Sort by name
@@ -638,7 +692,7 @@ export class VariablesManager {
         value,
         type: elementType.typeName,
         variablesReference,
-        presentationHint: { attributes: ['readOnly'] },
+        presentationHint: this.attrsFor(elementType),
       };
     }));
   }
@@ -655,7 +709,7 @@ export class VariablesManager {
         value,
         type: field.type.typeName,
         variablesReference,
-        presentationHint: { attributes: ['readOnly'] },
+        presentationHint: this.attrsFor(field.type),
       };
     }));
   }

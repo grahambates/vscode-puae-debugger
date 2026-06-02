@@ -2,7 +2,7 @@ import * as assert from "assert";
 import * as sinon from "sinon";
 import { VariablesManager } from "../variablesManager";
 import { VAmiga, CpuInfo } from "../vAmiga";
-import { SourceMap } from "../sourceMap";
+import { SourceMap, TypeDescriptor } from "../sourceMap";
 import { MemoryType } from "../amigaHunkParser";
 
 /**
@@ -591,6 +591,112 @@ describe("VariablesManager - Comprehensive Tests", () => {
     it("returns undefined for an unknown name", async () => {
       const res = await variablesManager.resolveNameToLValue('nope', 0x1000, null);
       assert.strictEqual(res, undefined);
+    });
+  });
+
+  describe("value editing (writeScalar / setVariable / read-only hints)", () => {
+    const cpuBase: CpuInfo = {
+      pc: "0x1000", d0:"0", d1:"0", d2:"0", d3:"0", d4:"0", d5:"0", d6:"0", d7:"0",
+      a0:"0", a1:"0", a2:"0", a3:"0", a4:"0", a5:"0", a6:"0", a7:"0x8000",
+      sr:"0", usp:"0", msp:"0", isp:"0", vbr:"0", irc:"0", sfc:"0", dfc:"0", cacr:"0", caar:"0",
+    };
+    const intType: TypeDescriptor = { kind: "primitive", typeName: "int", byteSize: 4 };
+    const shortType: TypeDescriptor = { kind: "primitive", typeName: "short", byteSize: 2 };
+    const charType: TypeDescriptor = { kind: "primitive", typeName: "char", byteSize: 1 };
+    const structDesc = (): TypeDescriptor => ({
+      kind: "struct", typeName: "struct S", byteSize: 7,
+      getFields: () => [
+        { name: "_int", offset: 0, type: intType },
+        { name: "_short", offset: 4, type: shortType },
+      ],
+    });
+    const arrType: TypeDescriptor = { kind: "array", typeName: "int[10]", byteSize: 40, elementCount: 10, elementType: intType };
+
+    beforeEach(() => {
+      mockVAmiga.getCpuInfo.resolves(cpuBase);
+      mockVAmiga.isValidAddress.returns(true);
+      mockSourceMap.getLocalsForPc.returns([]);
+      mockSourceMap.getGlobalVariables.returns([]);
+      mockSourceMap.findSymbolOffset.returns(undefined);
+      mockSourceMap.getCfaForPc.returns(undefined);
+    });
+
+    const localsRef = () => variablesManager.getScopes(0x1000).find((s) => s.name === "Locals")!.variablesReference;
+
+    it("writeScalar pokes by byte size and returns the re-rendered value", async () => {
+      mockVAmiga.peek32.withArgs(0x100).resolves(0x1234);
+      mockVAmiga.peek16.withArgs(0x200).resolves(0x56);
+      mockVAmiga.peek8.withArgs(0x300).resolves(0x7);
+
+      await variablesManager.writeScalar(0x100, intType, 0x1234);
+      assert.ok(mockVAmiga.poke32.calledWith(0x100, 0x1234));
+      await variablesManager.writeScalar(0x200, shortType, 0x56);
+      assert.ok(mockVAmiga.poke16.calledWith(0x200, 0x56));
+      await variablesManager.writeScalar(0x300, charType, 0x7);
+      assert.ok(mockVAmiga.poke8.calledWith(0x300, 0x7));
+    });
+
+    it("writeScalar rejects non-scalar types", async () => {
+      await assert.rejects(() => variablesManager.writeScalar(0x100, structDesc(), 1));
+      await assert.rejects(() => variablesManager.writeScalar(0x100, arrType, 1));
+    });
+
+    it("setVariable writes a local to memory", async () => {
+      mockSourceMap.getLocalsForPc.returns([{ name: "count", typeName: "int", byteSize: 4, location: { kind: "addr", address: 0x3000 }, typeDescriptor: intType }]);
+      mockVAmiga.peek32.withArgs(0x3000).resolves(0x42);
+
+      await variablesManager.setVariable(localsRef(), "count", 0x42);
+      assert.ok(mockVAmiga.poke32.calledWith(0x3000, 0x42));
+    });
+
+    it("setVariable writes a global to memory", async () => {
+      mockSourceMap.getGlobalVariables.returns([{ name: "g", typeName: "int", byteSize: 4, location: { kind: "addr", address: 0x2040 }, typeDescriptor: intType }]);
+      mockVAmiga.peek32.withArgs(0x2040).resolves(0x99);
+      const ref = variablesManager.getScopes(0x1000).find((s) => s.name === "Globals")!.variablesReference;
+
+      await variablesManager.setVariable(ref, "g", 0x99);
+      assert.ok(mockVAmiga.poke32.calledWith(0x2040, 0x99));
+    });
+
+    it("setVariable writes a struct field to memory", async () => {
+      mockSourceMap.getLocalsForPc.returns([{ name: "s", typeName: "struct S", byteSize: 7, location: { kind: "addr", address: 0x2050 }, typeDescriptor: structDesc() }]);
+      mockVAmiga.peek16.withArgs(0x2054).resolves(0x12);
+      const vars = await variablesManager.getVariables(localsRef());
+      const structRef = vars[0].variablesReference;
+
+      await variablesManager.setVariable(structRef, "_short", 0x12);
+      assert.ok(mockVAmiga.poke16.calledWith(0x2054, 0x12));
+    });
+
+    it("setVariable writes an array element to memory", async () => {
+      mockSourceMap.getLocalsForPc.returns([{ name: "arr", typeName: "int[10]", byteSize: 40, location: { kind: "addr", address: 0x4000 }, typeDescriptor: arrType }]);
+      mockVAmiga.peek32.resolves(0);
+      const vars = await variablesManager.getVariables(localsRef());
+      const arrRef = vars[0].variablesReference;
+
+      await variablesManager.setVariable(arrRef, "[2]", 0x7);
+      assert.ok(mockVAmiga.poke32.calledWith(0x4008, 0x7));
+    });
+
+    it("setVariable still writes CPU registers", async () => {
+      mockVAmiga.setRegister.resolves({ name: "d0", value: "0x00000005" } as never);
+      const ref = variablesManager.getScopes(0x1000).find((s) => s.name === "CPU Registers")!.variablesReference;
+
+      const res = await variablesManager.setVariable(ref, "d0", 5);
+      assert.ok(mockVAmiga.setRegister.calledWith("d0", 5));
+      assert.strictEqual(res, "0x00000005");
+    });
+
+    it("marks scalar leaf rows editable and containers read-only", async () => {
+      mockSourceMap.getLocalsForPc.returns([
+        { name: "count", typeName: "int", byteSize: 4, location: { kind: "addr", address: 0x3000 }, typeDescriptor: intType },
+        { name: "s", typeName: "struct S", byteSize: 7, location: { kind: "addr", address: 0x2050 }, typeDescriptor: structDesc() },
+      ]);
+      mockVAmiga.peek32.withArgs(0x3000).resolves(0x42);
+      const vars = await variablesManager.getVariables(localsRef());
+
+      assert.deepStrictEqual(vars.find((v) => v.name === "count")!.presentationHint, {});
+      assert.deepStrictEqual(vars.find((v) => v.name === "s")!.presentationHint, { attributes: ["readOnly"] });
     });
   });
 
