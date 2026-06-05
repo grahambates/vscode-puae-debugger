@@ -119,6 +119,10 @@ export function buildCallTree(samples: InstructionSample[], sourceMap: SourceMap
 export function buildProfileModel(samples: InstructionSample[], sourceMap: SourceMap, cyclesPerMicroSecond = 7.09379): IProfileModel {
   const locations: ILocation[] = [];
   const locByPc = new Map<number, number>();
+  // Key: "functionName:url" — all instructions within the same function share one location.
+  // This matches the V8/CDP convention where callFrame.lineNumber = function declaration line,
+  // not the current instruction's source line.
+  const locByFunc = new Map<string, number>();
 
   // Synthetic root location (node 0). Never rendered — buildColumns stops before it.
   locations.push({
@@ -135,23 +139,28 @@ export function buildProfileModel(samples: InstructionSample[], sourceMap: Sourc
     let idx = locByPc.get(pc);
     if (idx === undefined) {
       const f = symbolicate(pc, sourceMap);
-      idx = locations.length;
-      locations.push({
-        id: idx,
-        selfTime: 0,
-        aggregateTime: 0,
-        ticks: 0,
-        // No source line ⇒ treat as system/OS (renders gray); program code is User.
-        category: f.file ? Category.User : Category.System,
-        callFrame: {
-          functionName: f.func,
-          url: f.file ?? "",
-          scriptId: "0",
-          lineNumber: f.line !== undefined ? f.line : -1,
-          columnNumber: 0,
-        },
-        address: pc,
-      });
+      const funcKey = `${f.func}:${f.file ?? ""}`;
+      idx = locByFunc.get(funcKey);
+      if (idx === undefined) {
+        idx = locations.length;
+        locations.push({
+          id: idx,
+          selfTime: 0,
+          aggregateTime: 0,
+          ticks: 0,
+          // No source file ⇒ treat as system/OS (renders gray); program code is User.
+          category: f.file ? Category.User : Category.System,
+          callFrame: {
+            functionName: f.func,
+            url: f.file ?? "",
+            scriptId: "0",
+            lineNumber: f.line !== undefined ? f.line : -1,
+            columnNumber: 0,
+          },
+          address: pc,
+        });
+        locByFunc.set(funcKey, idx);
+      }
       locByPc.set(pc, idx);
     }
     return idx;
@@ -268,7 +277,6 @@ export class ProfilerManager {
       `[profiler] captured: total=${res.total} instr, inRange=${res.inRange}, ` +
         `samples=${samples.length}, range=[0x${(res.start >>> 0).toString(16)},0x${(res.end >>> 0).toString(16)})`,
     );
-
     if (samples.length === 0) {
       const range = `[0x${(res.start >>> 0).toString(16)}, 0x${(res.end >>> 0).toString(16)})`;
       const hint =

@@ -46,6 +46,20 @@ body {
   color: var(--vscode-descriptionForeground);
 }
 
+/* Split layout: flame chart above, time view below */
+.split-pane {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.split-divider {
+  flex: 0 0 1px;
+  background: var(--vscode-panel-border);
+}
+
 .flame {
   position: relative;
   flex: 1;
@@ -189,4 +203,160 @@ body {
   margin-top: 4px;
   color: var(--vscode-descriptionForeground);
   font-size: 11px;
+}
+
+/* ── TimeView (top-down function table) ─────────────────────────────────────
+   Ported from vscode-amiga-debug table/time-view.module.css
+   ──────────────────────────────────────────────────────────────────────── */
+
+.time-view {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+  font-family: var(--vscode-editor-font-family);
+  font-size: 12px;
+}
+
+.tv-rows {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden; /* react-window List v2 manages its own scroll */
+}
+
+.tv-row {
+  display: flex;
+  align-items: center;
+  height: 20px;
+  cursor: default;
+  box-sizing: border-box;
+}
+
+.tv-row:focus {
+  outline: 0;
+  background: var(--vscode-list-focusBackground);
+  color: var(--vscode-list-focusForeground);
+}
+
+.tv-header {
+  flex-shrink: 0;
+  border-bottom: 1px solid var(--vscode-panel-border);
+  background: var(--vscode-editor-background);
+}
+
+.tv-duration {
+  text-align: right;
+  width: 110px;
+  flex-shrink: 0;
+  margin: 0 4px;
+  color: var(--vscode-terminal-ansiYellow);
+  position: relative;
+  z-index: 0;
+}
+
+.tv-duration span {
+  position: relative; /* above the impact bar */
+}
+
+.tv-heading {
+  color: var(--vscode-foreground);
+  font-size: 11px;
+  user-select: none;
+}
+
+.tv-heading.tv-sorted {
+  font-weight: bold;
+}
+
+.tv-heading .codicon {
+  vertical-align: middle;
+  font-size: 11px;
+}
+
+.tv-duration.tv-heading {
+  cursor: pointer;
+}
+
+.tv-duration.tv-heading:hover {
+  background: var(--vscode-toolbar-hoverBackground);
+}
+
+.tv-location {
+  display: flex;
+  align-items: center;
+  flex: 1;
+  overflow: hidden;
+  color: var(--vscode-terminal-foreground);
+  min-width: 0;
+}
+
+.tv-location.tv-heading {
+  padding-left: 10px;
+  color: var(--vscode-foreground);
+  font-size: 11px;
+}
+
+.tv-expander {
+  flex-shrink: 0;
+  width: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0.7;
+  cursor: pointer;
+  user-select: none;
+}
+
+.tv-expander:hover {
+  opacity: 1;
+}
+
+.tv-fn {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  max-width: 80%;
+}
+
+.tv-file {
+  font-family: var(--vscode-font-family);
+  direction: rtl;
+  flex: 1;
+  margin-left: 2em;
+  font-size: 0.8em;
+  opacity: 0.8;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.tv-file a {
+  color: var(--vscode-terminal-foreground);
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.tv-file a:hover {
+  text-decoration: underline;
+}
+
+.tv-impact-bar {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  right: 0;
+  left: 0;
+  background: rgba(255, 255, 255, 0.1);
+  z-index: -1;
+  transform-origin: 100%;
+  border-bottom: 2px solid rgba(255, 255, 255, 0.2);
+}
+
+.vscode-light .tv-impact-bar {
+  background: rgba(0, 0, 0, 0.2);
+}
+
+.vscode-high-contrast .tv-impact-bar {
+  background: #fff;
 }

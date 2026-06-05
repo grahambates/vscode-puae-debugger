@@ -2,7 +2,9 @@ import { useState, useEffect, useMemo, useCallback } from "react";
 import "./App.css";
 import { IProfileModel, ProfilerOutboundMessage } from "../../shared/profilerTypes";
 import { FlameGraph } from "./FlameGraph";
-import { DisplayUnit, unitOptions } from "./display";
+import { TimeView } from "./TimeView";
+import { createTopDownGraph } from "./topDownGraph";
+import { DisplayUnit, unitOptions, Timing } from "./display";
 import { IRichFilter } from "./filter";
 
 const vscode = acquireVsCodeApi();
@@ -57,6 +59,16 @@ export function App() {
     [filterText, caseSensitive, useRegex],
   );
 
+  const timing = useMemo<Timing>(
+    () => model ? { cyclesPerMicroSecond: model.cyclesPerMicroSecond, duration: model.duration } : { cyclesPerMicroSecond: 7.09379, duration: 1 },
+    [model],
+  );
+
+  const dataTable = useMemo(
+    () => (model ? Object.values(createTopDownGraph(model).children) : []),
+    [model],
+  );
+
   return (
     <div className="profiler">
       <div className="toolbar">
@@ -104,9 +116,13 @@ export function App() {
       </div>
       {error && <div className="error">{error}</div>}
       {model ? (
-        <FlameGraph model={model} displayUnit={unit} filter={filter} onOpenSource={openSource} />
+        <div className="split-pane">
+          <FlameGraph model={model} displayUnit={unit} filter={filter} onOpenSource={openSource} />
+          <div className="split-divider" />
+          <TimeView data={dataTable} filter={filter} displayUnit={unit} timing={timing} onOpenSource={openSource} />
+        </div>
       ) : (
-        !error && <div className="hint">Click “Capture frame” to profile one frame of CPU execution.</div>
+        !error && <div className="hint">{"Click \"Capture frame\" to profile one frame of CPU execution."}</div>
       )}
     </div>
   );
