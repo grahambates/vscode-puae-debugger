@@ -1,6 +1,8 @@
 import { MemoryType } from "./amigaHunkParser";
 import { normalize } from "path";
-import { DebugFrame, evaluateCfaAtPc } from "./dwarfParser";
+import { DebugFrame, evaluateCfaAtPc, evaluateUnwindRows, UnwindRow } from "./dwarfParser";
+
+export type { UnwindRow };
 
 export interface InlineFrame {
   name: string;
@@ -205,6 +207,14 @@ export class SourceMap {
   public getCfaForPc(pc: number): { reg: number; offset: number } | undefined {
     if (!this.debugFrame) return undefined;
     return evaluateCfaAtPc(pc, this.debugFrame);
+  }
+
+  // All unwind rows for the program ([startPc, endPc) ranges of constant unwind
+  // state) derived from DWARF .debug_frame. The CPU profiler builds its whole
+  // unwind table from these (see src/unwindTable.ts).
+  public getUnwindRows(): UnwindRow[] {
+    if (!this.debugFrame) return [];
+    return evaluateUnwindRows(this.debugFrame);
   }
 
   // Returns inline frames for the given PC, ordered innermost-first (deepest nesting first).

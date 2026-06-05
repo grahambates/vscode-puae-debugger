@@ -2310,6 +2310,29 @@ postMessage({ type: 'ready' });
         }
     }
 
+    // --- CPU profiler (vscode-vamiga-debugger) -------------------------------
+    // Upload the per-code-location unwind table (Uint8Array of 6-byte entries) plus
+    // the program text range it covers.
+    wasm_profile_set_unwind = function (buffer, startAddr, endAddr) {
+        const ptr = Module._malloc(buffer.length);
+        Module.HEAPU8.set(buffer, ptr);
+        const ok = Module._wasm_profile_set_unwind(ptr, buffer.length, startAddr, endAddr);
+        Module._free(ptr);
+        if (!ok) {
+            throw new Error('wasm_profile_set_unwind failed');
+        }
+    }
+    wasm_profile_start = Module.cwrap('wasm_profile_start', 'number', ['number']);
+    wasm_profile_stop = Module.cwrap('wasm_profile_stop', 'undefined');
+    // Read the raw u32 profile stream straight off the heap and copy it out (the
+    // heap view is invalidated on the next capture). Returns the buffer plus capture
+    // diagnostics (range + instruction counts) for tracing empty results.
+    wasm_profile_get_data = function () {
+        const obj = JSON.parse(Module.ccall('wasm_profile_get_data', 'string', [], []));
+        const view = new Uint8Array(Module.HEAPU8.buffer, obj.address, obj.size);
+        return { data: new Uint8Array(view), start: obj.start, end: obj.end, total: obj.total, inRange: obj.inRange };
+    }
+
     // Initialize worker after all WASM functions are available - failure is fatal
     initEmulationWorker();
 
@@ -2732,6 +2755,25 @@ postMessage({ type: 'ready' });
                     break;
                 case 'getCpuTrace':
                     rpcRequest(() => JSON.parse(wasm_get_cpu_trace(message.args.count)));
+                    break;
+                case 'profileSetUnwind':
+                    rpcRequest(() => {
+                        wasm_profile_set_unwind(message.args.data, message.args.startAddr, message.args.endAddr);
+                        return { ok: true };
+                    });
+                    break;
+                case 'startProfiling':
+                    rpcRequest(() => {
+                        return { ok: !!wasm_profile_start(message.args.numFrames ?? 1) };
+                    });
+                    break;
+                case 'stopProfiling':
+                    rpcRequest(() => { wasm_profile_stop(); return { ok: true }; });
+                    break;
+                case 'getProfileData':
+                    // Returns the raw u32 profile stream as a Uint8Array (binary transfer,
+                    // no JSON/base64 — the extension decodes + symbolicates) plus diagnostics.
+                    rpcRequest(() => wasm_profile_get_data());
                     break;
                 case 'stepBack':
                     rpcRequest(() => {

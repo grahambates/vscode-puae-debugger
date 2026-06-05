@@ -53,6 +53,11 @@
         "command": "vamiga-debugger.openStateViewer",
         "title": "VAmiga: Open State Viewer",
         "icon": "$(symbol-misc)"
+      },
+      {
+        "command": "vamiga-debugger.openProfiler",
+        "title": "VAmiga: Open CPU Profiler",
+        "icon": "$(dashboard)"
       }
     ],
     "menus": {
@@ -67,6 +72,10 @@
         },
         {
           "command": "vamiga-debugger.openStateViewer",
+          "when": "debugType == 'vamiga'"
+        },
+        {
+          "command": "vamiga-debugger.openProfiler",
           "when": "debugType == 'vamiga'"
         }
       ],
@@ -87,9 +96,14 @@
           "group": "navigation@53"
         },
         {
-          "command": "vamiga-debugger.openStateViewer",
+          "command": "vamiga-debugger.openProfiler",
           "when": "debugType == 'vamiga'",
           "group": "navigation@54"
+        },
+        {
+          "command": "vamiga-debugger.openStateViewer",
+          "when": "debugType == 'vamiga'",
+          "group": "navigation@55"
         }
       ],
       "debug/variables/context": [

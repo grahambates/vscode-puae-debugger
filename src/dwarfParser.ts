@@ -1889,6 +1889,125 @@ export function evaluateCfaAtPc(
   return { reg: cfaReg, offset: cfaOffset };
 }
 
+// A contiguous [startPc, endPc) range of code over which the unwind state is
+// constant. CFA = register[cfaReg] + cfaOffset; raOffset / r13Offset are the
+// CFA-relative byte offsets where the return address / A5 are saved (omitted when
+// the column has no CFA-offset rule, e.g. a leaf frame or a frame that never saves A5).
+export interface UnwindRow {
+  startPc: number;
+  endPc: number;
+  cfaReg: number;
+  cfaOffset: number;
+  raOffset?: number;
+  r13Offset?: number;
+}
+
+// Generate the unwind rows for one FDE in a single forward pass over its CFA
+// program. The unwind state is a step function that only changes at advance_loc /
+// set_loc boundaries, so we emit one row per constant-state range — far cheaper
+// than replaying the program for every individual PC.
+function fdeUnwindRows(fde: DebugFrameFDE): UnwindRow[] {
+  const { codeAlignFactor, dataAlignFactor, returnAddressColumn } = fde.cie;
+  const A5_COLUMN = 13; // m68k DWARF: regs 0-7 = D0-D7, 8-15 = A0-A7, so A5 = 13
+
+  // A register's unwind rule. `offset` is the byte offset from CFA where the saved
+  // value lives; `other` means a non-CFA-offset rule (saved in a register, unchanged,
+  // or undefined) which we cannot express as a CFA offset.
+  type RegRule = { kind: "offset"; offset: number } | { kind: "other" };
+
+  let cfaReg = 0;
+  let cfaOffset = 0;
+  let rules = new Map<number, RegRule>();
+  let initialRules = new Map<number, RegRule>(); // snapshot after CIE, for DW_CFA.restore
+  const stateStack: Map<number, RegRule>[] = [];
+
+  // Apply one state-changing (non-location) instruction.
+  const applyState = (instr: CfaInstruction): void => {
+    switch (instr.op) {
+      case DW_CFA.def_cfa:           cfaReg = instr.reg ?? cfaReg; cfaOffset = instr.offset ?? 0; break;
+      case DW_CFA.def_cfa_register:  cfaReg = instr.reg ?? cfaReg; break;
+      case DW_CFA.def_cfa_offset:    cfaOffset = instr.offset ?? 0; break;
+      case DW_CFA.def_cfa_sf:        cfaReg = instr.reg ?? cfaReg; cfaOffset = (instr.factoredOffset ?? 0) * dataAlignFactor; break;
+      case DW_CFA.def_cfa_offset_sf: cfaOffset = (instr.factoredOffset ?? 0) * dataAlignFactor; break;
+      // Register save rules — only the CFA-offset forms give us a usable offset.
+      case DW_CFA.offset:
+      case DW_CFA.offset_extended:
+      case DW_CFA.offset_extended_sf:
+        if (instr.reg !== undefined) rules.set(instr.reg, { kind: "offset", offset: (instr.factoredOffset ?? 0) * dataAlignFactor });
+        break;
+      case DW_CFA.register:
+      case DW_CFA.same_value:
+      case DW_CFA.undefined:
+      case DW_CFA.expression:
+        if (instr.reg !== undefined) rules.set(instr.reg, { kind: "other" });
+        break;
+      case DW_CFA.restore:
+      case DW_CFA.restore_extended:
+        if (instr.reg !== undefined) {
+          const init = initialRules.get(instr.reg);
+          if (init) rules.set(instr.reg, init); else rules.delete(instr.reg);
+        }
+        break;
+      case DW_CFA.remember_state: stateStack.push(new Map(rules)); break;
+      case DW_CFA.restore_state:  if (stateStack.length) rules = stateStack.pop()!; break;
+    }
+  };
+
+  const snapshot = (startPc: number, endPc: number): UnwindRow => {
+    const row: UnwindRow = { startPc, endPc, cfaReg, cfaOffset };
+    const ra = rules.get(returnAddressColumn);
+    if (ra?.kind === "offset") row.raOffset = ra.offset;
+    const a5 = rules.get(A5_COLUMN);
+    if (a5?.kind === "offset") row.r13Offset = a5.offset;
+    return row;
+  };
+
+  // CIE initial instructions establish the base state (in practice they carry no
+  // location advance; any would just be part of the initial state).
+  for (const instr of fde.cie.initialInstructions) applyState(instr);
+  initialRules = new Map(rules);
+
+  const rows: UnwindRow[] = [];
+  const end = fde.pcStart + fde.pcRange;
+  let loc = fde.pcStart;
+  let rowStart = loc;
+
+  for (const instr of fde.instructions) {
+    let newLoc: number | undefined;
+    switch (instr.op) {
+      case DW_CFA.advance_loc:
+      case DW_CFA.advance_loc1:
+      case DW_CFA.advance_loc2:
+      case DW_CFA.advance_loc4: newLoc = loc + (instr.delta ?? 0) * codeAlignFactor; break;
+      case DW_CFA.set_loc:      newLoc = instr.address ?? loc; break;
+    }
+    if (newLoc !== undefined) {
+      // The state accumulated so far applies to [rowStart, newLoc).
+      if (newLoc > rowStart) rows.push(snapshot(rowStart, newLoc));
+      rowStart = newLoc;
+      loc = newLoc;
+    } else {
+      applyState(instr);
+    }
+  }
+  if (end > rowStart) rows.push(snapshot(rowStart, end));
+  return rows;
+}
+
+/**
+ * Build unwind rows for the whole program (every FDE), each a [startPc, endPc)
+ * range of constant unwind state. This is the bulk form used to build the
+ * CPU-profiler unwind table; see `src/unwindTable.ts`. The profiler needs
+ * the whole table, so there is intentionally no per-PC point-query variant.
+ */
+export function evaluateUnwindRows(debugFrame: DebugFrame): UnwindRow[] {
+  const rows: UnwindRow[] = [];
+  for (const fde of debugFrame.fdes) {
+    for (const row of fdeUnwindRows(fde)) rows.push(row);
+  }
+  return rows;
+}
+
 export function formatSectionFlags(flags: ELFSectionFlags): string {
   const parts: string[] = [];
 
