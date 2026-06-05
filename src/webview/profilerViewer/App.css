@@ -33,11 +33,6 @@ body {
   cursor: default;
 }
 
-.summary {
-  font-size: 12px;
-  color: var(--vscode-descriptionForeground);
-}
-
 .error {
   margin: 8px 10px;
   padding: 6px 10px;
@@ -54,21 +49,82 @@ body {
 .flame {
   position: relative;
   flex: 1;
-  overflow: auto;
-  padding: 4px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  min-height: 0;
+}
+
+.flame .canvas-wrap {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
 }
 
 .flame canvas {
   display: block;
 }
 
-.flame .reset {
-  margin-bottom: 4px;
-  background: var(--vscode-button-secondaryBackground);
-  color: var(--vscode-button-secondaryForeground);
-  border: none;
-  padding: 2px 8px;
+/* Horizontal pan scrollbar synced to the zoom (child width = canvasWidth / range). */
+.flame .hscroll {
+  flex: 0 0 auto;
+  overflow-x: scroll;
+  overflow-y: hidden;
+  height: 14px;
+}
+
+.flame .hscroll > div {
+  height: 1px;
+}
+
+.toolbar .filter-box {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.toolbar .filter {
+  flex: 1;
+  min-width: 0;
+  background: var(--vscode-input-background);
+  color: var(--vscode-input-foreground);
+  border: 1px solid var(--vscode-input-border, transparent);
+  padding: 3px 6px;
+  border-radius: 2px;
+}
+
+.toolbar .filter::placeholder {
+  color: var(--vscode-input-placeholderForeground);
+}
+
+.toolbar .toggle {
+  background: transparent;
+  color: var(--vscode-foreground);
+  border: 1px solid transparent;
+  padding: 2px 5px;
+  border-radius: 3px;
   cursor: pointer;
+  font: 600 11px monospace;
+  line-height: 1;
+}
+
+.toolbar .toggle:hover {
+  background: var(--vscode-toolbar-hoverBackground);
+}
+
+.toolbar .toggle.active {
+  background: var(--vscode-inputOption-activeBackground);
+  border-color: var(--vscode-inputOption-activeBorder);
+  color: var(--vscode-inputOption-activeForeground);
+}
+
+.toolbar .unit {
+  background: var(--vscode-dropdown-background);
+  color: var(--vscode-dropdown-foreground);
+  border: 1px solid var(--vscode-dropdown-border);
+  padding: 3px 6px;
   border-radius: 2px;
 }
 
@@ -88,10 +144,49 @@ body {
 
 .tooltip .tt-func {
   font-weight: bold;
-  font-family: monospace;
 }
 
 .tooltip .tt-loc {
   color: var(--vscode-descriptionForeground);
-  font-family: monospace;
+  margin-bottom: 3px;
+}
+
+/* Middle-ellipsis for file paths (ported from the old middleOutCompression.module.css). */
+.tooltip .middle-out {
+  display: block;
+  max-width: 440px;
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+.tooltip .middle-out span {
+  display: inline-block;
+  vertical-align: bottom;
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+.tooltip .middle-out span:first-child {
+  text-overflow: ellipsis;
+}
+
+.tooltip .middle-out span:last-child {
+  direction: rtl;
+}
+
+.tooltip .tt-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  font-variant-numeric: tabular-nums;
+}
+
+.tooltip .tt-row span:first-child {
+  color: var(--vscode-descriptionForeground);
+}
+
+.tooltip .tt-hint {
+  margin-top: 4px;
+  color: var(--vscode-descriptionForeground);
+  font-size: 11px;
 }

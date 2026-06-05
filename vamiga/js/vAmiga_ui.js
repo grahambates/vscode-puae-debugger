@@ -2330,7 +2330,7 @@ postMessage({ type: 'ready' });
     wasm_profile_get_data = function () {
         const obj = JSON.parse(Module.ccall('wasm_profile_get_data', 'string', [], []));
         const view = new Uint8Array(Module.HEAPU8.buffer, obj.address, obj.size);
-        return { data: new Uint8Array(view), start: obj.start, end: obj.end, total: obj.total, inRange: obj.inRange };
+        return { data: new Uint8Array(view), start: obj.start, end: obj.end, total: obj.total, inRange: obj.inRange, frameCycles: obj.frameCycles, isPAL: obj.isPAL };
     }
 
     // Initialize worker after all WASM functions are available - failure is fatal

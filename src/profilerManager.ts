@@ -1,8 +1,16 @@
 import { SourceMap } from "./sourceMap";
 import { buildUnwindTable } from "./unwindTable";
-import { ProfileFrame, CallTreeNode, ProfileResult } from "./shared/profilerTypes";
+import {
+  ProfileFrame,
+  CallTreeNode,
+  ProfileResult,
+  IProfileModel,
+  IComputedNode,
+  ILocation,
+  Category,
+} from "./shared/profilerTypes";
 
-export type { ProfileFrame, CallTreeNode, ProfileResult };
+export type { ProfileFrame, CallTreeNode, ProfileResult, IProfileModel };
 
 // Minimal RPC surface (VAmiga.sendRpcCommand) — kept as an interface so the manager
 // is unit-testable with a mock and doesn't pull in the whole VAmiga/webview module.
@@ -100,6 +108,113 @@ export function buildCallTree(samples: InstructionSample[], sourceMap: SourceMap
   return { uniqueFrames, root, totalCycles, sampleCount: samples.length };
 }
 
+// Build the time-ordered IProfileModel the flame chart renders, from the per-
+// instruction samples. Ports the structure of the old vscode-amiga-debug
+// `buildModel` but sources it from our stacks instead of a CDP profile:
+//   - locations[] interned per PC (symbolicated once),
+//   - nodes[] a call tree (synthetic root = node 0, real frames hang below it),
+//   - samples[] the leaf node id per instruction in execution order (samples[0] is
+//     a dummy paired with timeDeltas — matches the offset buildColumns expects),
+//   - timeDeltas[] the per-instruction cycle cost; duration = total cycles.
+export function buildProfileModel(samples: InstructionSample[], sourceMap: SourceMap, cyclesPerMicroSecond = 7.09379): IProfileModel {
+  const locations: ILocation[] = [];
+  const locByPc = new Map<number, number>();
+
+  // Synthetic root location (node 0). Never rendered — buildColumns stops before it.
+  locations.push({
+    id: 0,
+    selfTime: 0,
+    aggregateTime: 0,
+    ticks: 0,
+    category: Category.System,
+    callFrame: { functionName: "(all)", url: "", scriptId: "root", lineNumber: -1, columnNumber: 0 },
+    address: 0,
+  });
+
+  const internLocation = (pc: number): number => {
+    let idx = locByPc.get(pc);
+    if (idx === undefined) {
+      const f = symbolicate(pc, sourceMap);
+      idx = locations.length;
+      locations.push({
+        id: idx,
+        selfTime: 0,
+        aggregateTime: 0,
+        ticks: 0,
+        // No source line ⇒ treat as system/OS (renders gray); program code is User.
+        category: f.file ? Category.User : Category.System,
+        callFrame: {
+          functionName: f.func,
+          url: f.file ?? "",
+          scriptId: "0",
+          lineNumber: f.line !== undefined ? f.line : -1,
+          columnNumber: 0,
+        },
+        address: pc,
+      });
+      locByPc.set(pc, idx);
+    }
+    return idx;
+  };
+
+  // Call tree: synthetic root node 0, then a child per distinct (parent, location).
+  const nodes: IComputedNode[] = [
+    { id: 0, selfTime: 0, aggregateTime: 0, children: [], locationId: 0 },
+  ];
+  const childByNode = new Map<number, Map<number, number>>();
+  const childNode = (parentId: number, locId: number): number => {
+    let m = childByNode.get(parentId);
+    if (!m) { m = new Map(); childByNode.set(parentId, m); }
+    let cid = m.get(locId);
+    if (cid === undefined) {
+      cid = nodes.length;
+      nodes.push({ id: cid, selfTime: 0, aggregateTime: 0, children: [], parent: parentId, locationId: locId });
+      nodes[parentId].children.push(cid);
+      m.set(locId, cid);
+    }
+    return cid;
+  };
+
+  const sampleIds: number[] = [0]; // samples[0] dummy; pairs with timeDeltas[i-1]
+  const timeDeltas: number[] = [];
+  let duration = 0;
+  for (const s of samples) {
+    // Stacks are leaf-first; descend outermost→leaf so the path hangs off the root.
+    let nodeId = 0;
+    for (let i = s.stack.length - 1; i >= 0; i--) {
+      nodeId = childNode(nodeId, internLocation(s.stack[i]));
+    }
+    nodes[nodeId].selfTime += s.cycles;
+    sampleIds.push(nodeId);
+    timeDeltas.push(s.cycles);
+    duration += s.cycles;
+  }
+
+  // Aggregate (inclusive) time per node, folded back into the shared locations.
+  const computeAgg = (id: number): number => {
+    const n = nodes[id];
+    if (n.aggregateTime) return n.aggregateTime;
+    let total = n.selfTime;
+    for (const c of n.children) total += computeAgg(c);
+    return (n.aggregateTime = total);
+  };
+  for (let i = 0; i < nodes.length; i++) {
+    const n = nodes[i];
+    const loc = locations[n.locationId];
+    loc.aggregateTime += computeAgg(i);
+    loc.selfTime += n.selfTime;
+  }
+
+  return {
+    nodes,
+    locations,
+    samples: sampleIds,
+    timeDeltas,
+    duration,
+    cyclesPerMicroSecond,
+  };
+}
+
 // Orchestrates a capture: upload the unwind table, run the profiled frame(s),
 // read back the binary stream, decode + aggregate into a call tree. All heavy
 // work (symbolication, aggregation) happens here, once, so the webview only ever
@@ -110,7 +225,15 @@ export class ProfilerManager {
     private readonly getSourceMap: () => SourceMap | undefined,
   ) {}
 
-  public async capture(numFrames = 1): Promise<ProfileResult> {
+  // Per-instruction samples from the last capture, retained as a first-class
+  // artifact for the later coverage / disassembly-tracing phases (they need
+  // per-instruction PC+cycle data, not just the aggregated chart).
+  private lastSamples: InstructionSample[] = [];
+  public getSamples(): readonly InstructionSample[] {
+    return this.lastSamples;
+  }
+
+  public async capture(numFrames = 1): Promise<IProfileModel> {
     const sourceMap = this.getSourceMap();
     if (!sourceMap) throw new Error("Profiler: no source map (is a program loaded with DWARF info?)");
 
@@ -133,11 +256,14 @@ export class ProfilerManager {
       end: number;
       total: number;
       inRange: number;
+      frameCycles?: number; // CPU-clock cycles in the profiled frame (for time units)
+      isPAL?: boolean;      // true = PAL (50 Hz), false = NTSC (60 Hz)
     }>("getProfileData");
     const bytes = res.data instanceof Uint8Array ? res.data : new Uint8Array(res.data);
     const words = new Uint32Array(bytes.buffer, bytes.byteOffset, bytes.byteLength >>> 2);
 
     const samples = decodeProfileStream(words);
+    this.lastSamples = samples;
     console.log(
       `[profiler] captured: total=${res.total} instr, inRange=${res.inRange}, ` +
         `samples=${samples.length}, range=[0x${(res.start >>> 0).toString(16)},0x${(res.end >>> 0).toString(16)})`,
@@ -154,10 +280,19 @@ export class ProfilerManager {
       throw new Error(`No profile samples captured. ${hint}`);
     }
 
-    const result = buildCallTree(samples, sourceMap);
+    // Derive the CPU clock from the emulator's measured frame cycles and PAL/NTSC flag.
+    // PAL = 50 Hz (20000 µs/frame), NTSC = 60 Hz (16666.67 µs/frame). Falls back to
+    // the standard PAL 68000 constant if the emulator doesn't report a frame length.
+    const isPAL = res.isPAL ?? true;
+    const frameUs = isPAL ? 20000 : 1_000_000 / 60;
+    const cyclesPerMicroSecond = res.frameCycles ? res.frameCycles / frameUs : 7.09379;
+
+    const model = buildProfileModel(samples, sourceMap, cyclesPerMicroSecond);
     console.log(
-      `[profiler] call tree: ${result.uniqueFrames.length} functions, ${result.totalCycles} cycles`,
+      `[profiler] model: ${model.locations.length} locations, ${model.nodes.length} nodes, ` +
+        `${model.samples.length - 1} samples, ${model.duration} captured cycles` +
+        (res.frameCycles ? ` (frame=${res.frameCycles} cy, ${cyclesPerMicroSecond.toFixed(4)} cy/µs, ${isPAL ? "PAL" : "NTSC"})` : ""),
     );
-    return result;
+    return model;
   }
 }

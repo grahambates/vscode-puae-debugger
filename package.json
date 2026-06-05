@@ -96,14 +96,14 @@
           "group": "navigation@53"
         },
         {
-          "command": "vamiga-debugger.openProfiler",
+          "command": "vamiga-debugger.openStateViewer",
           "when": "debugType == 'vamiga'",
           "group": "navigation@54"
         },
         {
-          "command": "vamiga-debugger.openStateViewer",
+          "command": "vamiga-debugger.openProfiler",
           "when": "debugType == 'vamiga'",
-          "group": "navigation@55"
+          "group": "navigation@54.5"
         }
       ],
       "debug/variables/context": [

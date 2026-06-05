@@ -1,4 +1,5 @@
 import * as vscode from "vscode";
+import * as path from "path";
 import { VAmiga } from "./vAmiga";
 import { VamigaDebugAdapter } from "./vAmigaDebugAdapter";
 import { ProfilerManager } from "./profilerManager";
@@ -57,6 +58,8 @@ export class ProfilerViewerProvider {
       // one frame immediately. Subsequent captures are user-triggered ("capture").
       if (message.command === "ready" || message.command === "capture") {
         await this.capture();
+      } else if (message.command === "openDocument") {
+        await this.openSource(message.file, message.line, message.toSide);
       }
     });
   }
@@ -68,14 +71,60 @@ export class ProfilerViewerProvider {
   private async capture(): Promise<void> {
     this.post({ command: "capturing" });
     try {
-      const result = await this.manager.capture(1);
-      this.post({ command: "captureResult", result });
+      const model = await this.manager.capture(1);
+      this.post({ command: "captureResult", model });
     } catch (error) {
       this.post({
         command: "showError",
         error: error instanceof Error ? error.message : String(error),
       });
     }
+  }
+
+  // Ctrl/Cmd+click in the flame graph: open the function's source at `line` (1-based,
+  // as carried in the model). Absolute paths open directly; relative paths resolve
+  // against the first workspace folder.
+  private async openSource(file: string, line: number, toSide?: boolean): Promise<void> {
+    try {
+      let uri: vscode.Uri | undefined;
+      if (path.isAbsolute(file)) {
+        uri = vscode.Uri.file(file);
+      } else {
+        const folder = vscode.workspace.workspaceFolders?.[0];
+        if (folder) uri = vscode.Uri.joinPath(folder.uri, file);
+      }
+      if (!uri) return;
+      const doc = await vscode.workspace.openTextDocument(uri);
+      const l = Math.max(0, line - 1);
+      // Reveal an editor that already has this file open rather than opening a new
+      // one; only fall back to a fresh editor (beside when Alt-clicked) otherwise.
+      const existing = this.findOpenColumn(uri);
+      await vscode.window.showTextDocument(doc, {
+        // As in the old extension: select the whole line, and keep focus on the
+        // profiler so you can keep clicking through functions.
+        selection: new vscode.Range(l, 0, l + 1, 0),
+        viewColumn: existing ?? (toSide ? vscode.ViewColumn.Beside : undefined),
+        preserveFocus: true,
+      });
+    } catch (error) {
+      vscode.window.showWarningMessage(
+        `Profiler: couldn't open ${file}: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+  }
+
+  // View column of a tab already showing `uri` (across all groups, incl. background
+  // tabs), or undefined if it isn't open anywhere.
+  private findOpenColumn(uri: vscode.Uri): vscode.ViewColumn | undefined {
+    const target = uri.toString();
+    for (const group of vscode.window.tabGroups.all) {
+      for (const tab of group.tabs) {
+        if (tab.input instanceof vscode.TabInputText && tab.input.uri.toString() === target) {
+          return group.viewColumn;
+        }
+      }
+    }
+    return undefined;
   }
 
   private getHtmlContent(webview: vscode.Webview): string {

@@ -1,16 +1,22 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo, useCallback } from "react";
 import "./App.css";
-import { ProfileResult, ProfilerOutboundMessage } from "../../shared/profilerTypes";
+import { IProfileModel, ProfilerOutboundMessage } from "../../shared/profilerTypes";
 import { FlameGraph } from "./FlameGraph";
+import { DisplayUnit, unitOptions } from "./display";
+import { IRichFilter } from "./filter";
 
 const vscode = acquireVsCodeApi();
 
 export function App() {
-  const [result, setResult] = useState<ProfileResult | null>(null);
+  const [model, setModel] = useState<IProfileModel | null>(null);
   const [error, setError] = useState<string | null>(null);
   // Starts busy: the extension auto-captures one frame as soon as we signal "ready",
   // so we show "Capturing…" immediately rather than the click-to-capture hint.
   const [busy, setBusy] = useState(true);
+  const [unit, setUnit] = useState<DisplayUnit>(DisplayUnit.Cycles);
+  const [filterText, setFilterText] = useState("");
+  const [caseSensitive, setCaseSensitive] = useState(false);
+  const [useRegex, setUseRegex] = useState(false);
 
   useEffect(() => {
     vscode.postMessage({ command: "ready" });
@@ -20,7 +26,7 @@ export function App() {
     const handle = (event: MessageEvent) => {
       const m = event.data as ProfilerOutboundMessage;
       if (m.command === "captureResult") {
-        setResult(m.result);
+        setModel(m.model);
         setError(null);
         setBusy(false);
       } else if (m.command === "showError") {
@@ -40,22 +46,65 @@ export function App() {
     vscode.postMessage({ command: "capture" });
   };
 
+  const openSource = useCallback(
+    (file: string, line: number, toSide: boolean) =>
+      vscode.postMessage({ command: "openDocument", file, line, toSide }),
+    [],
+  );
+
+  const filter = useMemo<IRichFilter>(
+    () => ({ text: filterText, caseSensitive, regex: useRegex }),
+    [filterText, caseSensitive, useRegex],
+  );
+
   return (
     <div className="profiler">
       <div className="toolbar">
         <button onClick={capture} disabled={busy}>
           {busy ? "Capturing…" : "Capture frame"}
         </button>
-        {result && (
-          <span className="summary">
-            {result.sampleCount.toLocaleString()} samples · {result.totalCycles.toLocaleString()} cycles ·{" "}
-            {result.uniqueFrames.length} functions
-          </span>
+        {model && (
+          <>
+            <div className="filter-box">
+              <input
+                className="filter"
+                type="text"
+                placeholder="Filter functions or files"
+                value={filterText}
+                onChange={(e) => setFilterText(e.target.value)}
+              />
+              <button
+                className={"toggle" + (caseSensitive ? " active" : "")}
+                title="Match Case"
+                onClick={() => setCaseSensitive((v) => !v)}
+              >
+                Aa
+              </button>
+              <button
+                className={"toggle" + (useRegex ? " active" : "")}
+                title="Use Regular Expression"
+                onClick={() => setUseRegex((v) => !v)}
+              >
+                .*
+              </button>
+            </div>
+            <select
+              className="unit"
+              value={unit}
+              onChange={(e) => setUnit(Number(e.target.value) as DisplayUnit)}
+            >
+              {unitOptions.map((o) => (
+                <option key={o.unit} value={o.unit}>
+                  {o.label}
+                </option>
+              ))}
+            </select>
+          </>
         )}
       </div>
       {error && <div className="error">{error}</div>}
-      {result ? (
-        <FlameGraph result={result} />
+      {model ? (
+        <FlameGraph model={model} displayUnit={unit} filter={filter} onOpenSource={openSource} />
       ) : (
         !error && <div className="hint">Click “Capture frame” to profile one frame of CPU execution.</div>
       )}
