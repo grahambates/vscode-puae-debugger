@@ -403,7 +403,8 @@ function parseArgsUntil(
   const args: TypeNode[] = [];
   while (remaining.length > 0 && remaining[0] !== endChar) {
     const { typeNode, remaining: after } = parseArgFn(remaining);
-    if (!typeNode) break;
+    // Stop on no type or a non-consuming parse — both would otherwise loop forever.
+    if (!typeNode || after.length >= remaining.length) break;
     args.push(typeNode);
     remaining = after;
   }
@@ -429,7 +430,8 @@ function parseTemplatePlaceholders(str: string): { templateParams: TypeNode[]; s
   while (remaining.length > 0 && remaining[0] !== 'E') {
     const { typeNode, remaining: newRemaining } = parseSingleType(remaining, [], []);
     if (typeNode) templateParams.push(typeNode);
-    remaining = newRemaining;
+    // Force progress on a non-consuming parse to guarantee termination.
+    remaining = newRemaining.length < remaining.length ? newRemaining : remaining.slice(1);
   }
   return { templateParams, str: remaining[0] === 'E' ? remaining.slice(1) : remaining };
 }
@@ -442,7 +444,9 @@ function parseTypeList(encoding: string, substitutions: TypeNode[] = [], templat
     if (typeNode) {
       types.push(typeNode);
       substitutions.push(typeNode);
-      remaining = newRemaining;
+      // Guard against a non-consuming parse: a sub-parser that returns a node
+      // without advancing would loop forever and exhaust memory. Force progress.
+      remaining = newRemaining.length < remaining.length ? newRemaining : remaining.slice(1);
     } else {
       remaining = remaining.slice(1);
     }
@@ -660,7 +664,12 @@ export function isMangled(name: string): boolean {
 export function demangle(fname: string): string {
   if (!isMangled(fname)) return fname;
 
-  const { remaining: afterVendorPostfix } = parseVendorPostfix(fname.slice(2));
+  let afterVendorPostfix = parseVendorPostfix(fname.slice(2)).remaining;
+
+  // GCC marks internal-linkage (static) symbols with a leading 'L' after _Z. Strip
+  // it so the normal name parse runs, e.g. `_ZL6Wait10v` -> `Wait10(...)`. Without
+  // this the name desyncs and, for names ending in digits, used to loop forever.
+  if (afterVendorPostfix[0] === 'L') afterVendorPostfix = afterVendorPostfix.slice(1);
 
   if (afterVendorPostfix[0] === 'T' || afterVendorPostfix[0] === 'G') {
     const specialResult = parseSpecialName(afterVendorPostfix);
