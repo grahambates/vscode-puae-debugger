@@ -23,6 +23,7 @@ export const SUPPORTED_REGISTERS = [
   "INTENA",
   "INTREQ",
   "INTREQR",
+  "ADKCON",
   "BPLCON0",
   "BPLCON1",
   "BPLCON2",
@@ -51,7 +52,13 @@ export const SUPPORTED_REGISTERS = [
   "SPR5POS",
   "SPR6POS",
   "SPR7POS",
-  "ADKCON",
+  "COPCON",
+  "BEAMCON0",
+  "DIWHIGH",
+  "DIWSTRT",
+  "DIWSTOP",
+  "DDFSTRT",
+  "DDFSTOP",
 ] as const;
 
 /**
@@ -77,6 +84,8 @@ export function parseRegister(
     return parseIntenaRegister(value);
   } else if (upperName === "INTREQ") {
     return parseIntreqRegister(value);
+  } else if (upperName === "ADKCON") {
+    return parseAdkconRegister(value);
   } else if (upperName === "BPLCON0") {
     return parseBplcon0Register(value);
   } else if (upperName === "BPLCON1") {
@@ -105,8 +114,20 @@ export function parseRegister(
     return parseSpriteCtlRegister(value);
   } else if (upperName.match(/^SPR[0-7]POS$/)) {
     return parseSpritePosRegister(value);
-  } else if (upperName === "ADKCON") {
-    return parseAdkconRegister(value);
+  } else if (upperName === "COPCON") {
+    return parseCopconRegister(value);
+  } else if (upperName === "BEAMCON0") {
+    return parseBeamcon0Register(value);
+  } else if (upperName === "DIWHIGH") {
+    return parseDiwhighRegister(value);
+  } else if (upperName === "DIWSTRT") {
+    return parseDiwstrtRegister(value);
+  } else if (upperName === "DIWSTOP") {
+    return parseDiwstopRegister(value);
+  } else if (upperName === "DDFSTRT") {
+    return parseDdfstrtRegister(value);
+  } else if (upperName === "DDFSTOP") {
+    return parseDdfstopRegister(value);
   }
 
   return [];
@@ -415,6 +436,93 @@ export function parseSpritePosRegister(sprpos: number): RegisterBitField[] {
 }
 
 // ===== AUDIO/DISK CONTROL REGISTERS =====
+
+// ===== COPROCESSOR REGISTERS =====
+
+/**
+ * Parses COPCON register bits (Coprocessor Control)
+ */
+export function parseCopconRegister(copcon: number): RegisterBitField[] {
+  return [
+    { name: "01: CDANG", value: (copcon & 0x0002) !== 0 },
+  ];
+}
+
+// ===== BEAM CONTROL REGISTERS =====
+
+/**
+ * Parses BEAMCON0 register bits (ECS Beam Counter Control)
+ */
+export function parseBeamcon0Register(beamcon0: number): RegisterBitField[] {
+  return [
+    { name: "15: HARDDIS", value: (beamcon0 & 0x8000) !== 0 },
+    { name: "14: LPENDIS", value: (beamcon0 & 0x4000) !== 0 },
+    { name: "13: VARCSYEN", value: (beamcon0 & 0x2000) !== 0 },
+    { name: "12: BLANKEN", value: (beamcon0 & 0x1000) !== 0 },
+    { name: "11: CSCBLANKEN", value: (beamcon0 & 0x0800) !== 0 },
+    { name: "10: PAL", value: (beamcon0 & 0x0400) !== 0 },
+    { name: "09: DUAL", value: (beamcon0 & 0x0200) !== 0 },
+    { name: "08: VARVSYEN", value: (beamcon0 & 0x0100) !== 0 },
+    { name: "07: VARHSYEN", value: (beamcon0 & 0x0080) !== 0 },
+    { name: "06: VARBEAMEN", value: (beamcon0 & 0x0040) !== 0 },
+    { name: "01: HSYTRUE", value: (beamcon0 & 0x0002) !== 0 },
+    { name: "00: VSYTRUE", value: (beamcon0 & 0x0001) !== 0 },
+  ];
+}
+
+// ===== DISPLAY WINDOW / FETCH REGISTERS =====
+
+/**
+ * Parses DIWHIGH register bits (ECS Display Window High Bits)
+ */
+export function parseDiwhighRegister(diwhigh: number): RegisterBitField[] {
+  const vstop = (diwhigh >> 8) & 0x7f; // bits 14-8
+  const vstart = diwhigh & 0x7f; // bits 6-0
+  return [
+    { name: "15: HSTOP_EN", value: (diwhigh & 0x8000) !== 0 },
+    { name: "14-08: VSTOP[14..8]", value: vstop },
+    { name: "07: HSTART_EN", value: (diwhigh & 0x0080) !== 0 },
+    { name: "06-00: VSTART[14..8]", value: vstart },
+  ];
+}
+
+/**
+ * Parses DIWSTRT register bits (Display Window Start)
+ */
+export function parseDiwstrtRegister(diwstrt: number): RegisterBitField[] {
+  return [
+    { name: "15-08: V_START", value: (diwstrt >> 8) & 0xff },
+    { name: "07-00: H_START", value: diwstrt & 0xff },
+  ];
+}
+
+/**
+ * Parses DIWSTOP register bits (Display Window Stop)
+ */
+export function parseDiwstopRegister(diwstop: number): RegisterBitField[] {
+  return [
+    { name: "15-08: V_STOP", value: (diwstop >> 8) & 0xff },
+    { name: "07-00: H_STOP", value: diwstop & 0xff },
+  ];
+}
+
+/**
+ * Parses DDFSTRT register bits (Display Data Fetch Start)
+ */
+export function parseDdfstrtRegister(ddfstrt: number): RegisterBitField[] {
+  return [
+    { name: "07-00: H_START", value: ddfstrt & 0xff },
+  ];
+}
+
+/**
+ * Parses DDFSTOP register bits (Display Data Fetch Stop)
+ */
+export function parseDdfstopRegister(ddfstop: number): RegisterBitField[] {
+  return [
+    { name: "07-00: H_STOP", value: ddfstop & 0xff },
+  ];
+}
 
 /**
  * Parses ADKCON/ADKCONR register bits (Audio/Disk Control)
