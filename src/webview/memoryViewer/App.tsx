@@ -208,6 +208,21 @@ export function App() {
   const handleInputKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === "Enter") {
       e.preventDefault();
+      // If no dropdown item is highlighted, check for a case-insensitive exact match and fix the casing
+      if (highlightedIndex === -1) {
+        const exactMatch = suggestions.find(
+          (s) => s.label.toLowerCase() === addressInput.toLowerCase(),
+        );
+        if (exactMatch) {
+          setAddressInput(exactMatch.label);
+          vscode.postMessage({
+            command: "changeAddress",
+            addressInput: exactMatch.label,
+            dereferencePointer,
+          });
+          return;
+        }
+      }
       goToAddress();
     }
   };
