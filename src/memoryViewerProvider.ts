@@ -91,8 +91,11 @@ export class MemoryViewerProvider {
             message.state === "paused" ||
             message.state === "stopped"
           ) {
-            // update now
-            this.refreshChunks(panel);
+            // Re-evaluate address (handles dynamic expressions / newly-valid symbols),
+            // then push fresh data for any already-fetched chunks.
+            this.updateContent(panel, false).then(() =>
+              this.refreshChunks(panel),
+            );
           }
         }
       },
@@ -342,14 +345,21 @@ export class MemoryViewerProvider {
 
   /**
    * Updates the memory viewer content state
+   * @param sendUnchanged When false, skips sending the target to the webview if the address hasn't changed,
+   *   avoiding unwanted scroll resets during pause/step refreshes.
    */
-  private async updateContent(panel: MemoryViewerPanel): Promise<void> {
+  private async updateContent(
+    panel: MemoryViewerPanel,
+    sendUnchanged = true,
+  ): Promise<void> {
     try {
       // Evaluate address input
       const target = await this.evaluateAddressInput(panel);
       if (target?.address !== undefined) {
-        // Send target if we have one
-        this.sendStateToWebview(panel.webviewPanel, { target });
+        const addressChanged = target.address !== panel.target?.address;
+        if (sendUnchanged || addressChanged) {
+          this.sendStateToWebview(panel.webviewPanel, { target });
+        }
         panel.webviewPanel.title = `Memory: ${panel.addressInput}`;
       } else {
         panel.webviewPanel.title = "Memory Viewer";
