@@ -250,7 +250,7 @@ export class MemoryViewerProvider {
       }
       if (
         mnemonic.value.match(/incbin/i) &&
-        operands?.[0].value.match(/(image|img|sprite|spr|\.bpl)/)
+        operands?.[0].value.match(/(image|img|sprite|\.spr|\.bpl)/i)
       ) {
         // INCBIN something image-like
         return "visual";
