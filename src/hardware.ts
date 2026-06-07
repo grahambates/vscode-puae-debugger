@@ -87,6 +87,11 @@ export interface CustomAddress {
 
 /**
  * Address and length for custom register writes
+ *
+ * Read/write register pairs are merged, and R/W suffixes removed.
+ * The write address is used, and read versions are deliberately commented out.
+ *
+ * Strobe registers, and others where we can't display a value are also commented out.
  */
 export const customAddresses: Record<string, CustomAddress> = {
   BLTDDAT: { address: 0xdff000, long: false }, // Blitter dest. early read (dummy address)
@@ -98,25 +103,25 @@ export const customAddresses: Record<string, CustomAddress> = {
   POT0DAT: { address: 0xdff012, long: false }, // Pot counter data left pair (vert, horiz)
   POT1DAT: { address: 0xdff014, long: false }, // Pot counter data right pair (vert, horiz)
   POTINP: { address: 0xdff016, long: false }, // Pot pin data read
-  SERDATR: { address: 0xdff018, long: false }, // Serial port data and status read
-  DSKBYTR: { address: 0xdff01a, long: false }, // Disk data byte and status read
+  // SERDATR: { address: 0xdff018, long: false }, // Serial port data and status read
+  DSKBYT: { address: 0xdff01a, long: false }, // Disk data byte and status read
   // INTENAR: { address: 0xdff01c, long: false }, // Interrupt enable bits read
   // INTREQR: { address: 0xdff01e, long: false }, // Interrupt request bits read
   DSKPT: { address: 0xdff020, long: true }, // Disk pointer
   DSKLEN: { address: 0xdff024, long: false }, // Disk length
   DSKDAT: { address: 0xdff026, long: false }, // Disk DMA data write
-  REFPTR: { address: 0xdff028, long: true }, // Refresh pointer
+  // REFPTR: { address: 0xdff028, long: true }, // Internal hardware refresh pointer, no stored value
   VPOS: { address: 0xdff02a, long: false }, // Write vert most sig. bits (and frame flop)
   VHPOS: { address: 0xdff02c, long: false }, // Write vert and horiz pos of beam
   COPCON: { address: 0xdff02e, long: false }, // Coprocessor control
   SERDAT: { address: 0xdff030, long: false }, // Serial port data and stop bits write
   SERPER: { address: 0xdff032, long: false }, // Serial port period and control
   POTGO: { address: 0xdff034, long: false }, // Pot count start,pot pin drive enable data
-  JOYTEST: { address: 0xdff036, long: false }, // Write to all 4 joystick-mouse counters at once
-  STREQU: { address: 0xdff038, long: false }, // Strobe for horiz sync with VB and EQU
-  STRVBL: { address: 0xdff03a, long: false }, // Strobe for horiz sync with VB (vert blank)
-  STRHOR: { address: 0xdff03c, long: false }, // Strobe for horiz sync
-  STRLONG: { address: 0xdff03e, long: false }, // Strobe for identification of long horiz line
+  // JOYTEST: { address: 0xdff036, long: false }, // Write-only
+  // STREQU: { address: 0xdff038, long: false }, // Strobe for horiz sync with VB and EQU
+  // STRVBL: { address: 0xdff03a, long: false }, // Strobe for horiz sync with VB (vert blank)
+  // STRHOR: { address: 0xdff03c, long: false }, // Strobe for horiz sync
+  // STRLONG: { address: 0xdff03e, long: false }, // Strobe for identification of long horiz line
   BLTCON0: { address: 0xdff040, long: false }, // Blitter control register 0
   BLTCON1: { address: 0xdff042, long: false }, // Blitter control register 1
   BLTAFWM: { address: 0xdff044, long: false }, // Blitter first word mask for source A
@@ -125,10 +130,10 @@ export const customAddresses: Record<string, CustomAddress> = {
   BLTBPT: { address: 0xdff04c, long: true }, // Blitter pointer to source B
   BLTAPT: { address: 0xdff050, long: true }, // Blitter pointer to source A
   BLTDPT: { address: 0xdff054, long: true }, // Blitter pointer to dest D
-  BLTSIZE: { address: 0xdff058, long: false }, // Blitter start and size (win/width,height)
-  BLTCON0L: { address: 0xdff05a, long: false }, // control 0, lower 8 bits (minterms)
-  BLTSIZV: { address: 0xdff05c, long: false }, // V size (for 15 bit vertical size)
-  BLTSIZH: { address: 0xdff05e, long: false }, // H size and start (for 11 bit H size)
+  // BLTSIZE: { address: 0xdff058, long: false }, // Blitter start and size (win/width,height)
+  // BLTCON0L: { address: 0xdff05a, long: false }, // control 0, lower 8 bits (minterms)
+  // BLTSIZV: { address: 0xdff05c, long: false }, // V size (for 15 bit vertical size)
+  // BLTSIZH: { address: 0xdff05e, long: false }, // H size and start (for 11 bit H size)
   BLTCMOD: { address: 0xdff060, long: false }, // Blitter modulo for source C
   BLTBMOD: { address: 0xdff062, long: false }, // Blitter modulo for source B
   BLTAMOD: { address: 0xdff064, long: false }, // Blitter modulo for source A
@@ -136,15 +141,15 @@ export const customAddresses: Record<string, CustomAddress> = {
   BLTCDAT: { address: 0xdff070, long: false }, // Blitter source C data register
   BLTBDAT: { address: 0xdff072, long: false }, // Blitter source B data register
   BLTADAT: { address: 0xdff074, long: false }, // Blitter source A data register
-  SPRHDAT: { address: 0xdff078, long: true }, // . logic UHRES sprite pointer and data identifier
-  BPLHDAT: { address: 0xdff07a, long: false }, // . logic UHRES bit plane identifier
+  // SPRHDAT: { address: 0xdff078, long: true }, // UHRES: not implemented in vAmiga
+  // BPLHDAT: { address: 0xdff07a, long: false }, // UHRES: not implemented in vAmiga
   DENISEID: { address: 0xdff07c, long: false }, // revision level for Denise/Lisa (video out chip)
   DSKSYNC: { address: 0xdff07e, long: false }, // Disk sync pattern reg for disk read
   COP1LC: { address: 0xdff080, long: true }, // Coprocessor 1st location
   COP2LC: { address: 0xdff084, long: true }, // Coprocessor 2nd locatio
-  COPJMP1: { address: 0xdff088, long: false }, // Coprocessor restart at 1st location
-  COPJMP2: { address: 0xdff08a, long: false }, // Coprocessor restart at 2nd location
-  COPINS: { address: 0xdff08c, long: false }, // Coprocessor inst fetch identify
+  // COPJMP1: { address: 0xdff088, long: false }, // Coprocessor restart at 1st location
+  // COPJMP2: { address: 0xdff08a, long: false }, // Coprocessor restart at 2nd location
+  // COPINS: { address: 0xdff08c, long: false }, // Write-only
   DIWSTRT: { address: 0xdff08e, long: false }, // Display window start (upper left vert,horiz pos)
   DIWSTOP: { address: 0xdff090, long: false }, // Display window stop (lower right vert,horiz pos)
   DDFSTRT: { address: 0xdff092, long: false }, // Display bit plane data fetch start,horiz pos
@@ -155,8 +160,6 @@ export const customAddresses: Record<string, CustomAddress> = {
   INTREQ: { address: 0xdff09c, long: false }, // Interrupt request bits (clear or set bits)
   ADKCON: { address: 0xdff09e, long: false }, // Audio,disk,UART control
   AUD0LC: { address: 0xdff0a0, long: true }, // Audio channel 0 location
-  AUD0LCH: { address: 0xdff0a0, long: false }, // Audio channel 0 location (high 5 bits was 3 bits)
-  AUD0LCL: { address: 0xdff0a2, long: false }, // Audio channel 0 location (low 15 bits)
   AUD0LEN: { address: 0xdff0a4, long: false }, // Audio channel 0 length
   AUD0PER: { address: 0xdff0a6, long: false }, // Audio channel 0 period
   AUD0VOL: { address: 0xdff0a8, long: false }, // Audio channel 0 volume
@@ -172,8 +175,6 @@ export const customAddresses: Record<string, CustomAddress> = {
   AUD2VOL: { address: 0xdff0c8, long: false }, // Audio channel 2 volume
   AUD2DAT: { address: 0xdff0ca, long: false }, // Audio channel 2 data
   AUD3LC: { address: 0xdff0d0, long: true }, // Audio channel 3 location
-  AUD3LCH: { address: 0xdff0d0, long: false }, // Audio channel 3 location (high 5 bits was 3 bits)
-  AUD3LCL: { address: 0xdff0d2, long: false }, // Audio channel 3 location (low 15 bits)
   AUD3LEN: { address: 0xdff0d4, long: false }, // Audio channel 3 length
   AUD3PER: { address: 0xdff0d6, long: false }, // Audio channel 3 period
   AUD3VOL: { address: 0xdff0d8, long: false }, // Audio channel 3 volume
@@ -184,24 +185,24 @@ export const customAddresses: Record<string, CustomAddress> = {
   BPL4PT: { address: 0xdff0ec, long: true }, // Bitplane pointer 4
   BPL5PT: { address: 0xdff0f0, long: true }, // Bitplane pointer 5
   BPL6PT: { address: 0xdff0f4, long: true }, // Bitplane pointer 6
-  BPL7PT: { address: 0xdff0f8, long: true }, // 7
-  BPL8PT: { address: 0xdff0fc, long: true }, // 8
+  // BPL7PT: { address: 0xdff0f8, long: true }, // AGA only (vAmiga supports max 6 bitplanes)
+  // BPL8PT: { address: 0xdff0fc, long: true }, // AGA only
   BPLCON0: { address: 0xdff100, long: false }, // Bitplane control (miscellaneous control bits)
   BPLCON1: { address: 0xdff102, long: false }, // Bitplane control (scroll value)
   BPLCON2: { address: 0xdff104, long: false }, // Bitplane control (video priority control)
   BPLCON3: { address: 0xdff106, long: false }, // Bitplane control (enhanced features)
   BPL1MOD: { address: 0xdff108, long: false }, // Bitplane modulo (odd planes)
   BPL2MOD: { address: 0xdff10a, long: false }, // Bitplane modulo (even planes)
-  BPLCON4: { address: 0xdff10c, long: false }, // (bitplane and sprite-masks)
-  CLXCON2: { address: 0xdff10e, long: false }, // control
+  // BPLCON4: { address: 0xdff10c, long: false }, // AGA only
+  // CLXCON2: { address: 0xdff10e, long: false }, // ECS: marked unused in vAmiga (no handler)
   BPL1DAT: { address: 0xdff110, long: false }, // Bitplane 1 data (parallel to serial convert)
   BPL2DAT: { address: 0xdff112, long: false }, // Bitplane 2 data (parallel to serial convert)
   BPL3DAT: { address: 0xdff114, long: false }, // Bitplane 3 data (parallel to serial convert)
   BPL4DAT: { address: 0xdff116, long: false }, // Bitplane 4 data (parallel to serial convert)
   BPL5DAT: { address: 0xdff118, long: false }, // Bitplane 5 data (parallel to serial convert)
   BPL6DAT: { address: 0xdff11a, long: false }, // Bitplane 6 data (parallel to serial convert)
-  BPL7DAT: { address: 0xdff11c, long: false }, // data (parallel to serial convert)
-  BPL8DAT: { address: 0xdff11e, long: false }, // data (parallel to serial convert)
+  // BPL7DAT: { address: 0xdff11c, long: false }, // AGA only
+  // BPL8DAT: { address: 0xdff11e, long: false }, // AGA only
   SPR0PT: { address: 0xdff120, long: true }, // Sprite 0 pointer
   SPR1PT: { address: 0xdff124, long: true }, // Sprite 1 pointer
   SPR2PT: { address: 0xdff128, long: true }, // Sprite 2 pointer
@@ -274,27 +275,27 @@ export const customAddresses: Record<string, CustomAddress> = {
   COLOR29: { address: 0xdff1ba, long: false }, // Color table 29
   COLOR30: { address: 0xdff1bc, long: false }, // Color table 30
   COLOR31: { address: 0xdff1be, long: false }, // Color table 31
-  HTOTAL: { address: 0xdff1c0, long: false }, // number count, horiz line (VARBEAMEN=1)
-  HSSTOP: { address: 0xdff1c2, long: false }, // line position for HSYNC stop
-  HBSTRT: { address: 0xdff1c4, long: false }, // line position for HBLANK start
-  HBSTOP: { address: 0xdff1c6, long: false }, // line position for HBLANK stop
-  VTOTAL: { address: 0xdff1c8, long: false }, // numbered vertical line (VARBEAMEN=1)
-  VSSTOP: { address: 0xdff1ca, long: false }, // line position for VSYNC stop
-  VBSTRT: { address: 0xdff1cc, long: false }, // line for VBLANK start
-  VBSTOP: { address: 0xdff1ce, long: false }, // line for VBLANK stop
-  SPRHSTRT: { address: 0xdff1d0, long: false }, // sprite vertical start
-  SPRHSTOP: { address: 0xdff1d2, long: false }, // sprite vertical stop
-  BPLHSTRT: { address: 0xdff1d4, long: false }, // bit plane vertical start
-  BPLHSTOP: { address: 0xdff1d6, long: false }, // bit plane vertical stop
-  HHPOSW: { address: 0xdff1d8, long: false }, // mode hires H beam counter write
-  HHPOSR: { address: 0xdff1da, long: false }, // mode hires H beam counter read
-  BEAMCON0: { address: 0xdff1dc, long: false }, // Beam counter control register (SHRES,UHRES,PAL)
-  HSSTRT: { address: 0xdff1de, long: false }, // sync start (VARHSY)
-  VSSTRT: { address: 0xdff1e0, long: false }, // sync start (VARVSY)
-  HCENTER: { address: 0xdff1e2, long: false }, // position for Vsync on interlace
+  // HTOTAL: { address: 0xdff1c0, long: false }, // ECS: no handler in vAmiga
+  // HSSTOP: { address: 0xdff1c2, long: false }, // ECS: no handler in vAmiga
+  // HBSTRT: { address: 0xdff1c4, long: false }, // ECS: no handler in vAmiga
+  // HBSTOP: { address: 0xdff1c6, long: false }, // ECS: no handler in vAmiga
+  // VTOTAL: { address: 0xdff1c8, long: false }, // ECS: no handler in vAmiga
+  // VSSTOP: { address: 0xdff1ca, long: false }, // ECS: no handler in vAmiga
+  // VBSTRT: { address: 0xdff1cc, long: false }, // ECS: no handler in vAmiga
+  // VBSTOP: { address: 0xdff1ce, long: false }, // ECS: no handler in vAmiga
+  // SPRHSTRT: { address: 0xdff1d0, long: false }, // UHRES: not implemented in vAmiga
+  // SPRHSTOP: { address: 0xdff1d2, long: false }, // UHRES: not implemented in vAmiga
+  // BPLHSTRT: { address: 0xdff1d4, long: false }, // UHRES: not implemented in vAmiga
+  // BPLHSTOP: { address: 0xdff1d6, long: false }, // UHRES: not implemented in vAmiga
+  // HHPOS: { address: 0xdff1d8, long: false }, // ECS: no handler in vAmiga
+  // HHPOSR: { address: 0xdff1da, long: false }, // ECS: read side of HHPOS
+  // BEAMCON0: { address: 0xdff1dc, long: false }, // ECS: handler doesn't store raw value
+  // HSSTRT: { address: 0xdff1de, long: false }, // ECS: no handler in vAmiga
+  // VSSTRT: { address: 0xdff1e0, long: false }, // ECS: no handler in vAmiga
+  // HCENTER: { address: 0xdff1e2, long: false }, // ECS: no handler in vAmiga
   DIWHIGH: { address: 0xdff1e4, long: false }, // window - upper bits for start/stop
-  BPLHMOD: { address: 0xdff1e6, long: false }, // bit plane modulo
-  SPRHPT: { address: 0xdff1e8, long: true }, // sprite pointer
-  BPLHPT: { address: 0xdff1ec, long: true }, //
-  FMODE: { address: 0xdff1fc, long: false }, // register
+  // BPLHMOD: { address: 0xdff1e6, long: false }, // UHRES: not implemented in vAmiga
+  // SPRHPT: { address: 0xdff1e8, long: true }, // UHRES: not implemented in vAmiga
+  // BPLHPT: { address: 0xdff1ec, long: true }, // UHRES: not implemented in vAmiga
+  // FMODE: { address: 0xdff1fc, long: false }, // AGA only
 };
