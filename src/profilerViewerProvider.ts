@@ -3,7 +3,7 @@ import * as path from "path";
 import { VAmiga } from "./vAmiga";
 import { VamigaDebugAdapter } from "./vAmigaDebugAdapter";
 import { ProfilerManager } from "./profilerManager";
-import { ProfilerInboundMessage, ProfilerOutboundMessage } from "./shared/profilerTypes";
+import { ProfilerInboundMessage, ProfilerOutboundMessage, IProfileModel } from "./shared/profilerTypes";
 
 /**
  * Webview panel for the CPU profiler: captures one frame of CPU execution, builds
@@ -15,6 +15,10 @@ export class ProfilerViewerProvider {
 
   private panel?: vscode.WebviewPanel;
   private readonly manager: ProfilerManager;
+  // Last successful capture, kept extension-side so a webview reload ("Developer: Reload
+  // Webviews", which resets the webview's React state but not the extension host) re-shows
+  // it instead of auto-capturing a fresh frame (which would advance the emulator).
+  private lastModel?: IProfileModel;
 
   constructor(
     private readonly extensionUri: vscode.Uri,
@@ -53,10 +57,14 @@ export class ProfilerViewerProvider {
     });
 
     this.panel.webview.onDidReceiveMessage(async (message: ProfilerInboundMessage) => {
-      // Auto-capture on first open: "ready" fires once when the webview mounts (the
-      // panel is retained across hide/reveal), so there's no profile yet — capture
-      // one frame immediately. Subsequent captures are user-triggered ("capture").
-      if (message.command === "ready" || message.command === "capture") {
+      // "ready" fires whenever the webview mounts — first open AND after a webview reload.
+      // On the first open there's no capture yet, so grab one frame; on a reload, re-show
+      // the cached capture so it survives (and we don't advance the emulator). "capture"
+      // (the button) always grabs a fresh frame.
+      if (message.command === "ready") {
+        if (this.lastModel) this.post({ command: "captureResult", model: this.lastModel });
+        else await this.capture();
+      } else if (message.command === "capture") {
         await this.capture();
       } else if (message.command === "openDocument") {
         await this.openSource(message.file, message.line, message.toSide);
@@ -72,6 +80,7 @@ export class ProfilerViewerProvider {
     this.post({ command: "capturing" });
     try {
       const model = await this.manager.capture(1);
+      this.lastModel = model;
       this.post({ command: "captureResult", model });
     } catch (error) {
       this.post({

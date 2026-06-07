@@ -15,7 +15,7 @@ export function App() {
   // Starts busy: the extension auto-captures one frame as soon as we signal "ready",
   // so we show "Capturing…" immediately rather than the click-to-capture hint.
   const [busy, setBusy] = useState(true);
-  const [unit, setUnit] = useState<DisplayUnit>(DisplayUnit.Cycles);
+  const [unit, setUnit] = useState<DisplayUnit>(DisplayUnit.PercentFrame);
   const [filterText, setFilterText] = useState("");
   const [caseSensitive, setCaseSensitive] = useState(false);
   const [useRegex, setUseRegex] = useState(false);

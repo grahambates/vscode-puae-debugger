@@ -7,10 +7,26 @@ import {
   IProfileModel,
   IComputedNode,
   ILocation,
+  ISymbol,
+  DmaSnapshot,
   Category,
 } from "./shared/profilerTypes";
+import { decodeDmaGrid } from "./dma";
 
 export type { ProfileFrame, CallTreeNode, ProfileResult, IProfileModel };
+
+// Flatten the source map's symbols into the address-sorted {address,name,size} list the
+// webview symbolizer consumes. Sizes come from getSymbolLengths (clamped to segment end).
+function buildSymbolList(sourceMap: SourceMap): ISymbol[] {
+  const addrs = sourceMap.getSymbols(); // name -> address
+  const sizes = sourceMap.getSymbolLengths() ?? {}; // name -> size
+  const out: ISymbol[] = [];
+  for (const name in addrs) {
+    out.push({ address: addrs[name], name, size: sizes[name] ?? 0 });
+  }
+  out.sort((a, b) => a.address - b.address);
+  return out;
+}
 
 // Minimal RPC surface (VAmiga.sendRpcCommand) — kept as an interface so the manager
 // is unit-testable with a mock and doesn't pull in the whole VAmiga/webview module.
@@ -58,6 +74,41 @@ function symbolicate(pc: number, sourceMap: SourceMap): ProfileFrame {
     line: loc?.line,
     address: pc,
   };
+}
+
+// Expand a PC into its logical call frames, outermost-first: the physical (concrete)
+// function that contains the code, followed by one frame per inlined function (DWARF
+// DW_TAG_inlined_subroutine). Inlined functions have no runtime stack frame, so the
+// unwinder never sees them — they only exist in the line/inline tables and must be
+// reconstructed here, or the flame graph/time view shows the caller and silently
+// skips every inlined callee.
+//
+// Line attribution follows addr2line --inlines (and the old vscode-amiga-debug): each
+// frame is shown at the *call site* of the next-inner frame (the line where the inline
+// call appears in the caller), and only the innermost frame gets the instruction's own
+// source line. `getInlineFramesForPc` returns frames innermost-first.
+function expandPc(pc: number, sourceMap: SourceMap): ProfileFrame[] {
+  const sym = sourceMap.findSymbolOffset(pc);
+  const loc = sourceMap.lookupAddress(pc);
+  const funcName = sym ? sym.symbol : `0x${pc.toString(16)}`;
+  const inlines = sourceMap.getInlineFramesForPc?.(pc) ?? []; // innermost-first
+  if (inlines.length === 0) {
+    return [{ func: funcName, file: loc?.path, line: loc?.line, address: pc }];
+  }
+  const n = inlines.length;
+  // Inlined frames are suffixed " (inlined)" (matching the old vscode-amiga-debug) so the
+  // flame graph / time view distinguish them from the physical function they live in.
+  const frames: ProfileFrame[] = [
+    // Physical function: rendered at the line where the outermost inline was called.
+    { func: funcName, file: inlines[n - 1].callPath || undefined, line: inlines[n - 1].callLine || undefined, address: pc },
+  ];
+  // Each inline (outer→inner) is shown at the call site of the next-inner inline...
+  for (let k = n - 1; k >= 1; k--) {
+    frames.push({ func: inlines[k].name + " (inlined)", file: inlines[k - 1].callPath || undefined, line: inlines[k - 1].callLine || undefined, address: pc });
+  }
+  // ...and the innermost inline gets the instruction's own source location.
+  frames.push({ func: inlines[0].name + " (inlined)", file: loc?.path, line: loc?.line, address: pc });
+  return frames;
 }
 
 // Aggregate per-instruction samples into a call tree. Each distinct PC is
@@ -118,7 +169,6 @@ export function buildCallTree(samples: InstructionSample[], sourceMap: SourceMap
 //   - timeDeltas[] the per-instruction cycle cost; duration = total cycles.
 export function buildProfileModel(samples: InstructionSample[], sourceMap: SourceMap, cyclesPerMicroSecond = 7.09379): IProfileModel {
   const locations: ILocation[] = [];
-  const locByPc = new Map<number, number>();
   // Key: "functionName:url" — all instructions within the same function share one location.
   // This matches the V8/CDP convention where callFrame.lineNumber = function declaration line,
   // not the current instruction's source line.
@@ -135,35 +185,42 @@ export function buildProfileModel(samples: InstructionSample[], sourceMap: Sourc
     address: 0,
   });
 
-  const internLocation = (pc: number): number => {
-    let idx = locByPc.get(pc);
+  const internLocation = (f: ProfileFrame): number => {
+    const funcKey = `${f.func}:${f.file ?? ""}`;
+    let idx = locByFunc.get(funcKey);
     if (idx === undefined) {
-      const f = symbolicate(pc, sourceMap);
-      const funcKey = `${f.func}:${f.file ?? ""}`;
-      idx = locByFunc.get(funcKey);
-      if (idx === undefined) {
-        idx = locations.length;
-        locations.push({
-          id: idx,
-          selfTime: 0,
-          aggregateTime: 0,
-          ticks: 0,
-          // No source file ⇒ treat as system/OS (renders gray); program code is User.
-          category: f.file ? Category.User : Category.System,
-          callFrame: {
-            functionName: f.func,
-            url: f.file ?? "",
-            scriptId: "0",
-            lineNumber: f.line !== undefined ? f.line : -1,
-            columnNumber: 0,
-          },
-          address: pc,
-        });
-        locByFunc.set(funcKey, idx);
-      }
-      locByPc.set(pc, idx);
+      idx = locations.length;
+      locations.push({
+        id: idx,
+        selfTime: 0,
+        aggregateTime: 0,
+        ticks: 0,
+        // No source file ⇒ treat as system/OS (renders gray); program code is User.
+        category: f.file ? Category.User : Category.System,
+        callFrame: {
+          functionName: f.func,
+          url: f.file ?? "",
+          scriptId: "0",
+          lineNumber: f.line !== undefined ? f.line : -1,
+          columnNumber: 0,
+        },
+        address: f.address,
+      });
+      locByFunc.set(funcKey, idx);
     }
     return idx;
+  };
+
+  // Expand each PC into its logical frames (physical + inlines) once, caching the
+  // resulting location-id chain (outermost→innermost) so hot PCs aren't re-symbolicated.
+  const locIdsByPc = new Map<number, number[]>();
+  const locIdsFor = (pc: number): number[] => {
+    let ids = locIdsByPc.get(pc);
+    if (!ids) {
+      ids = expandPc(pc, sourceMap).map(internLocation);
+      locIdsByPc.set(pc, ids);
+    }
+    return ids;
   };
 
   // Call tree: synthetic root node 0, then a child per distinct (parent, location).
@@ -189,11 +246,15 @@ export function buildProfileModel(samples: InstructionSample[], sourceMap: Sourc
   let duration = 0;
   for (const s of samples) {
     // Stacks are leaf-first; descend outermost→leaf so the path hangs off the root.
+    // Each physical PC expands to physical + inlined frames (outermost→innermost), so
+    // inlined callees appear as their own boxes stacked above the caller.
     let nodeId = 0;
     for (let i = s.stack.length - 1; i >= 0; i--) {
-      nodeId = childNode(nodeId, internLocation(s.stack[i]));
+      for (const locId of locIdsFor(s.stack[i])) {
+        nodeId = childNode(nodeId, locId);
+      }
     }
-    nodes[nodeId].selfTime += s.cycles;
+    nodes[nodeId].selfTime += s.cycles; // innermost (inlined) frame accrues self time
     sampleIds.push(nodeId);
     timeDeltas.push(s.cycles);
     duration += s.cycles;
@@ -296,6 +357,35 @@ export class ProfilerManager {
     const cyclesPerMicroSecond = res.frameCycles ? res.frameCycles / frameUs : 7.09379;
 
     const model = buildProfileModel(samples, sourceMap, cyclesPerMicroSecond);
+    // Ship the symbol table so the webview can symbolize arbitrary addresses (DMA tooltip
+    // now; disassembly/copper/memory later) — the reusable symbolization primitive.
+    model.symbols = buildSymbolList(sourceMap);
+
+    // Fetch the DMA grid (captured in the same frame) + the reconstruction snapshot, and
+    // ship both on the model so the webview can render the DMA line and (future) reconstruct
+    // memory/registers. Failure here must not break the CPU profile, so it's best-effort.
+    try {
+      const dmaRes = await this.rpc.sendRpcCommand<{ data: Uint8Array }>("getDmaData");
+      const dmaBytes = dmaRes.data instanceof Uint8Array ? dmaRes.data : new Uint8Array(dmaRes.data);
+      const dma = decodeDmaGrid(dmaBytes);
+      if (dma) {
+        model.dma = dma;
+        const snap = await this.rpc.sendRpcCommand<{ chip: Uint8Array; slow: Uint8Array }>("getDmaSnapshot");
+        const snapshot: DmaSnapshot = {
+          chip: snap.chip instanceof Uint8Array ? snap.chip : new Uint8Array(snap.chip ?? 0),
+          slow: snap.slow instanceof Uint8Array ? snap.slow : new Uint8Array(snap.slow ?? 0),
+        };
+        model.dmaSnapshot = snapshot;
+        const writes = dma.flags.reduce((n, f) => n + (f & 1), 0);
+        console.log(
+          `[profiler] dma: ${dma.owner.length} slots, ${writes} writes, ` +
+            `snapshot chip=${snapshot.chip.length}B slow=${snapshot.slow.length}B`,
+        );
+      }
+    } catch (e) {
+      console.warn("[profiler] DMA capture failed (CPU profile unaffected):", e);
+    }
+
     console.log(
       `[profiler] model: ${model.locations.length} locations, ${model.nodes.length} nodes, ` +
         `${model.samples.length - 1} samples, ${model.duration} captured cycles` +

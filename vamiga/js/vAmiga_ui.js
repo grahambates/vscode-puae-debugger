@@ -2332,6 +2332,21 @@ postMessage({ type: 'ready' });
         const view = new Uint8Array(Module.HEAPU8.buffer, obj.address, obj.size);
         return { data: new Uint8Array(view), start: obj.start, end: obj.end, total: obj.total, inRange: obj.inRange, frameCycles: obj.frameCycles, isPAL: obj.isPAL };
     }
+    // DMA profiler readout (captured in the same frame as the CPU profile). The
+    // enriched grid is Cell[8] (owner,flags,data,addr); copy it off the heap before the
+    // next capture invalidates the view.
+    wasm_dma_get_data = function () {
+        const obj = JSON.parse(Module.ccall('wasm_dma_get_data', 'string', [], []));
+        const view = new Uint8Array(Module.HEAPU8.buffer, obj.address, obj.size);
+        return { data: new Uint8Array(view) };
+    }
+    // Reconstruction baseline snapshot (chip + slow RAM) taken at capture start.
+    wasm_dma_get_snapshot = function () {
+        const obj = JSON.parse(Module.ccall('wasm_dma_get_snapshot', 'string', [], []));
+        const chip = obj.chipLen ? new Uint8Array(new Uint8Array(Module.HEAPU8.buffer, obj.chipAddr, obj.chipLen)) : new Uint8Array(0);
+        const slow = obj.slowLen ? new Uint8Array(new Uint8Array(Module.HEAPU8.buffer, obj.slowAddr, obj.slowLen)) : new Uint8Array(0);
+        return { chip, slow };
+    }
 
     // Initialize worker after all WASM functions are available - failure is fatal
     initEmulationWorker();
@@ -2774,6 +2789,14 @@ postMessage({ type: 'ready' });
                     // Returns the raw u32 profile stream as a Uint8Array (binary transfer,
                     // no JSON/base64 — the extension decodes + symbolicates) plus diagnostics.
                     rpcRequest(() => wasm_profile_get_data());
+                    break;
+                case 'getDmaData':
+                    // Returns the enriched DMA grid (Cell[8]) as a Uint8Array (binary).
+                    rpcRequest(() => wasm_dma_get_data());
+                    break;
+                case 'getDmaSnapshot':
+                    // Returns the chip/slow RAM reconstruction baseline as Uint8Arrays.
+                    rpcRequest(() => wasm_dma_get_snapshot());
                     break;
                 case 'stepBack':
                     rpcRequest(() => {

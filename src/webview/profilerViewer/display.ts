@@ -34,10 +34,10 @@ const integerFormat = new Intl.NumberFormat(undefined, { maximumFractionDigits: 
 // Time units shown in the profiler dropdown. Bytes/BytesHex are Size units reserved
 // for the future DMA/memory views and are intentionally not offered here.
 export const unitOptions: { unit: DisplayUnit; label: string }[] = [
-  { unit: DisplayUnit.Cycles, label: "Cycles" },
   { unit: DisplayUnit.Microseconds, label: "Microseconds" },
+  { unit: DisplayUnit.Cycles, label: "Cycles" },
   { unit: DisplayUnit.Lines, label: "Rasterlines" },
-  { unit: DisplayUnit.PercentFrame, label: "% of frame" },
+  { unit: DisplayUnit.PercentFrame, label: "% of Frame" },
 ];
 
 export const dataName = (unit: DisplayUnit): "Time" | "Size" | "???" => {

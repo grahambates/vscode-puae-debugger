@@ -1,10 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { PointerEvent as ReactPointerEvent } from "react";
-import { Category, ILocation, IProfileModel } from "../../shared/profilerTypes";
+import { Category, ILocation, IProfileModel, DMA_WRITE, DMA_BYTE, DMA_HPOS, dmaIsCustomReg } from "../../shared/profilerTypes";
 import { buildColumns, IColumn, IColumnLocation } from "./columns";
 import { binarySearch } from "./array";
 import { dataName, DisplayUnit, formatValue, scaleValue, Timing } from "./display";
 import { compileFilter, IRichFilter } from "./filter";
+import { channelStyle } from "./dma";
+import { createSymbolizer } from "./symbols";
+import { customRegisterName } from "../shared/customRegisters";
 import { MiddleOut } from "./MiddleOut";
 
 // Time-ordered flame chart on a 2D canvas. x = cycles in execution order (the old
@@ -16,6 +19,7 @@ import { MiddleOut } from "./MiddleOut";
 
 const ROW_H = 18;
 const TIMELINE_H = 18;
+const DMA_BAND_H = 18; // height of the DMA channel line above the CPU rows
 const Y_BUFFER = 8;
 const MIN_LABEL_W = 28; // px; narrower boxes get no text
 const MIN_DRAW_W = 0.4; // px; narrower boxes are skipped entirely
@@ -83,7 +87,7 @@ const getBoxInRowColumn = (
   return candidate !== undefined ? boxById.get((candidate as IColumnLocation).graphId) : undefined;
 };
 
-const buildBoxes = (columns: readonly IColumn[]) => {
+const buildBoxes = (columns: readonly IColumn[], yOffset: number) => {
   const boxById = new Map<number, IBox>();
   let maxY = 0;
   for (let x = 0; x < columns.length; x++) {
@@ -94,7 +98,7 @@ const buildBoxes = (columns: readonly IColumn[]) => {
         const existing = getBoxInRowColumn(columns, boxById, x, y);
         if (existing) existing.x2 = col.x2; // extend the merged run
       } else {
-        const y1 = ROW_H * y + TIMELINE_H;
+        const y1 = ROW_H * y + yOffset;
         const { fill, textDark } = colorFor(cell);
         boxById.set(cell.graphId, {
           column: x,
@@ -143,12 +147,20 @@ export function FlameGraph({
   const [width, setWidth] = useState(800);
   const [bounds, setBounds] = useState<IBounds>({ minX: 0, maxX: 1 });
   const [hovered, setHovered] = useState<{ box: IBox; x: number; y: number } | undefined>(undefined);
+  const [dmaHover, setDmaHover] = useState<{ slot: number; x: number; y: number } | undefined>(undefined);
   const [focused, setFocused] = useState<IBox | undefined>(undefined);
   const [drag, setDrag] = useState<IDrag | undefined>(undefined);
 
+  // DMA channel line (captured in the same frame). A band of DMA_BAND_H sits between
+  // the timeline ruler and the CPU rows, which are shifted down by the band height.
+  const dma = model.dma;
+  const dmaSlots = dma ? dma.owner.length : 0;
+  const bandH = dma ? DMA_BAND_H : 0;
+  const yOffset = TIMELINE_H + bandH;
+
   const columns = useMemo(() => buildColumns(model), [model]);
-  const { boxById, boxes, maxY } = useMemo(() => buildBoxes(columns), [columns]);
-  const height = maxY + Y_BUFFER;
+  const { boxById, boxes, maxY } = useMemo(() => buildBoxes(columns, yOffset), [columns, yOffset]);
+  const height = Math.max(maxY, yOffset) + Y_BUFFER;
   const duration = model.duration || 1;
   const timing: Timing = useMemo(
     () => ({ cyclesPerMicroSecond: model.cyclesPerMicroSecond, duration: model.duration }),
@@ -161,6 +173,9 @@ export function FlameGraph({
     const pred = compileFilter(filter);
     return (b: IBox) => pred(b.text) || (!!b.loc.callFrame.url && pred(b.loc.callFrame.url));
   }, [filter]);
+
+  // Address symbolizer from the shipped symbol table (for the DMA tooltip; reusable).
+  const symbolize = useMemo(() => createSymbolizer(model.symbols), [model.symbols]);
 
   // Reset the view when a fresh capture (new model) arrives. Done during render via
   // the previous-value pattern rather than in an effect, so it doesn't cascade an
@@ -285,6 +300,51 @@ export function FlameGraph({
     ctx.stroke();
     ctx.globalAlpha = 1;
 
+    // DMA channel line: one row per dma-cycle, colored by bus owner (CPU Code/Data,
+    // Copper MOVE/WAIT/SKIP, etc.). Drawn directly off the typed arrays, coalescing
+    // adjacent same-color slots into one fillRect at draw time (the box MODEL stays
+    // per-cycle for tooltips). Only the visible slot range is touched.
+    if (dma && dmaSlots > 0) {
+      const N = dmaSlots;
+      const bandY = TIMELINE_H;
+      const sLo = Math.max(0, Math.floor(bounds.minX * N));
+      const sHi = Math.min(N, Math.ceil(bounds.maxX * N) + 1);
+      let runStart = -1;
+      let runColor = "";
+      const flushRun = (end: number) => {
+        if (runStart < 0) return;
+        const x1 = Math.max(0, toX(runStart / N));
+        const x2 = Math.min(width, toX(end / N));
+        if (x2 > x1) ctx.fillRect(x1, bandY, Math.max(x2 - x1, MIN_DRAW_W), DMA_BAND_H - 1);
+        runStart = -1;
+      };
+      for (let i = sLo; i < sHi; i++) {
+        const st = channelStyle(dma.owner[i], dma.flags[i]);
+        const c = st ? st.color : "";
+        if (c !== runColor) {
+          flushRun(i);
+          runColor = c;
+          if (c) { runStart = i; ctx.fillStyle = c; }
+        }
+      }
+      flushRun(sHi);
+      // Highlight the hovered slot.
+      if (dmaHover) {
+        const hx = toX(dmaHover.slot / N);
+        const hw = Math.max(toX((dmaHover.slot + 1) / N) - hx, 1.5);
+        ctx.strokeStyle = "#fff";
+        ctx.lineWidth = 1;
+        ctx.strokeRect(hx + 0.5, bandY + 0.5, hw, DMA_BAND_H - 2);
+      }
+      // Separator under the band.
+      ctx.strokeStyle = cs.getPropertyValue("--vscode-panel-border").trim() || "#444";
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(0, bandY + DMA_BAND_H - 0.5);
+      ctx.lineTo(width, bandY + DMA_BAND_H - 0.5);
+      ctx.stroke();
+    }
+
     // Boxes. Labels use the UI font (no glyph cache / monospace requirement anymore).
     ctx.font = `11px ${cs.fontFamily || "sans-serif"}`;
     for (const b of boxes) {
@@ -321,7 +381,7 @@ export function FlameGraph({
         ctx.restore();
       }
     }
-  }, [boxes, width, height, bounds, hovered, focused, duration, displayUnit, timing, matches]);
+  }, [boxes, width, height, bounds, hovered, focused, duration, displayUnit, timing, matches, dma, dmaSlots, dmaHover]);
 
   // --- horizontal pan scrollbar (synced to `bounds`) ----------------------------
   // The scroll child's width is canvasWidth/range, so when zoomed in it overflows
@@ -353,19 +413,55 @@ export function FlameGraph({
     }
   }, [bounds, width]);
 
-  // Hit-test the cursor → column (binary search by x) then row.
+  // Hit-test the cursor → column (binary search by x) then row. CPU rows start below
+  // the timeline + DMA band.
   const boxAt = useCallback(
     (mx: number, my: number): IBox | undefined => {
-      if (my < TIMELINE_H) return undefined;
+      if (my < yOffset) return undefined;
       const range = bounds.maxX - bounds.minX || 1;
       const x = bounds.minX + (mx / width) * range;
-      const row = Math.floor((my - TIMELINE_H) / ROW_H);
+      const row = Math.floor((my - yOffset) / ROW_H);
       let col = binarySearch(columns, (c) => c.x2 - x);
       if (col < 0) col = -col - 1; // insertion point = first column whose x2 >= x
       if (col >= columns.length) return undefined;
       return getBoxInRowColumn(columns, boxById, col, row);
     },
-    [columns, boxById, bounds, width],
+    [columns, boxById, bounds, width, yOffset],
+  );
+
+  // The CPU call stack at a normalized x (0..1), read from the flame columns: the column
+  // covering x, its rows outer→leaf as function names. This is what the CPU was executing
+  // at that instant — used for the DMA tooltip's call-stack line.
+  const stackAtX = useCallback(
+    (x: number): string[] => {
+      let col = binarySearch(columns, (c) => c.x2 - x);
+      if (col < 0) col = -col - 1;
+      const column = columns[col];
+      if (!column) return [];
+      const names: string[] = [];
+      for (let y = 0; y < column.rows.length; y++) {
+        let cell = column.rows[y];
+        if (typeof cell === "number") cell = columns[cell].rows[y];
+        if (cell !== undefined && typeof cell !== "number") {
+          names.push((cell as IColumnLocation).callFrame.functionName);
+        }
+      }
+      return names;
+    },
+    [columns],
+  );
+
+  // Hit-test the cursor in the DMA band → slot index (or -1 if outside / idle slot).
+  const slotAt = useCallback(
+    (mx: number, my: number): number => {
+      if (!dma || my < TIMELINE_H || my >= TIMELINE_H + bandH) return -1;
+      const range = bounds.maxX - bounds.minX || 1;
+      const x = bounds.minX + (mx / width) * range;
+      const slot = Math.floor(x * dmaSlots);
+      if (slot < 0 || slot >= dmaSlots) return -1;
+      return channelStyle(dma.owner[slot], dma.flags[slot]) ? slot : -1;
+    },
+    [dma, dmaSlots, bandH, bounds, width],
   );
 
   // --- drag to pan with pointer capture, with click-vs-drag detection -----------
@@ -391,7 +487,16 @@ export function FlameGraph({
       return;
     }
     const rect = canvasRef.current!.getBoundingClientRect();
-    const box = boxAt(e.clientX - rect.left, e.clientY - rect.top);
+    const mx = e.clientX - rect.left;
+    const my = e.clientY - rect.top;
+    const slot = slotAt(mx, my);
+    if (slot >= 0) {
+      setDmaHover({ slot, x: e.clientX, y: e.clientY });
+      setHovered(undefined);
+      return;
+    }
+    setDmaHover(undefined);
+    const box = boxAt(mx, my);
     setHovered(box ? { box, x: e.clientX, y: e.clientY } : undefined);
   };
 
@@ -467,6 +572,42 @@ export function FlameGraph({
   const tipLeft = hovered ? Math.max(8, Math.min(hovered.x + 12, window.innerWidth - TIP_W - 8)) : 0;
   const tipTop = hovered ? Math.max(8, Math.min(hovered.y + 12, window.innerHeight - TIP_H - 8)) : 0;
 
+  // DMA band hover info — mirrors the old extension's DMA tooltip: channel, symbolized
+  // Address (call-stack for code) or custom Register name, sized Data, R/W + size, and the
+  // raster Line / Color Clock decoded from the slot index.
+  const dmaInfo = (() => {
+    if (!dmaHover || !dma) return undefined;
+    const slot = dmaHover.slot;
+    const owner = dma.owner[slot];
+    const flags = dma.flags[slot];
+    const addr = dma.addr[slot] >>> 0;
+    const isWrite = !!(flags & DMA_WRITE);
+    const isByte = !!(flags & DMA_BYTE);
+    const isCustom = dmaIsCustomReg(owner, flags, addr);
+    const off = addr & 0x1fe;
+    // Custom register → name ($offset); otherwise symbolize the bus address.
+    const symbol = isCustom
+      ? `${customRegisterName(off) ?? "custom"} ($${off.toString(16).padStart(3, "0")})`
+      : symbolize(addr);
+    const data = isByte
+      ? `$${(dma.value[slot] & 0xff).toString(16).padStart(2, "0")}`
+      : `$${dma.value[slot].toString(16).padStart(4, "0")}`;
+    return {
+      style: channelStyle(owner, flags),
+      isCustom,
+      symbol,
+      addrHex: `$${addr.toString(16).padStart(6, "0")}`,
+      data,
+      access: `${isWrite ? "Write" : "Read"}${isByte ? ".B" : ".W"}`,
+      line: Math.floor(slot / DMA_HPOS),
+      colorClock: slot % DMA_HPOS,
+      // CPU call stack at this instant (outer→leaf), from the flame columns at this x.
+      callStack: stackAtX((slot + 0.5) / dmaSlots),
+    };
+  })();
+  const dmaTipLeft = dmaHover ? Math.max(8, Math.min(dmaHover.x + 12, window.innerWidth - 360 - 8)) : 0;
+  const dmaTipTop = dmaHover ? Math.max(8, Math.min(dmaHover.y + 12, window.innerHeight - 170 - 8)) : 0;
+
   return (
     <div className="flame">
       <div className="canvas-wrap" ref={canvasWrapRef}>
@@ -480,7 +621,7 @@ export function FlameGraph({
           onPointerCancel={() => setDrag(undefined)}
           onDoubleClick={onDoubleClick}
           onMouseLeave={() => {
-            if (!drag) setHovered(undefined);
+            if (!drag) { setHovered(undefined); setDmaHover(undefined); }
           }}
         />
       </div>
@@ -508,6 +649,47 @@ export function FlameGraph({
             </div>
           )}
           {hoverLoc.callFrame.url && <div className="tt-hint">Ctrl+Click to open source</div>}
+        </div>
+      )}
+      {dmaHover && dmaInfo?.style && (
+        <div className="tooltip" style={{ left: dmaTipLeft, top: dmaTipTop, width: 360 }}>
+          <div className="tt-func">
+            <span className="dma-dot" style={{ background: dmaInfo.style.color }} />
+            {dmaInfo.style.label}
+          </div>
+          {dmaInfo.isCustom ? (
+            <div className="tt-row">
+              <span>Register</span>
+              <span>{dmaInfo.symbol ?? dmaInfo.addrHex}</span>
+            </div>
+          ) : (
+            <div className="tt-row">
+              <span>Address</span>
+              <span className="tt-addr">{dmaInfo.symbol ?? dmaInfo.addrHex}</span>
+            </div>
+          )}
+          <div className="tt-row">
+            <span>Data</span>
+            <span>{dmaInfo.data}</span>
+          </div>
+          <div className="tt-row">
+            <span>Access</span>
+            <span>{dmaInfo.access}</span>
+          </div>
+          <div className="tt-row">
+            <span>Line</span>
+            <span>{dmaInfo.line}</span>
+          </div>
+          <div className="tt-row">
+            <span>Color Clock</span>
+            <span>{dmaInfo.colorClock}</span>
+          </div>
+          {dmaInfo.callStack.length > 0 && (
+            <>
+              <div className="tt-loc" style={{ marginTop: 4 }}>CPU call stack</div>
+              <div className="tt-addr">{dmaInfo.callStack.join(" › ")}</div>
+            </>
+          )}
         </div>
       )}
     </div>

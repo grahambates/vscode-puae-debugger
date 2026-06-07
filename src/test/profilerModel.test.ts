@@ -67,6 +67,50 @@ describe("buildProfileModel", () => {
   });
 });
 
+// SourceMap stub with DWARF inline info: PC 0x400 sits in physical function "F", with
+// "A" inlined into F (call site f.c:5) and "B" inlined into A (call site a.c:20); the
+// instruction's own line is f.c:30. getInlineFramesForPc returns innermost-first.
+function inlineStubSourceMap(): SourceMap {
+  return {
+    findSymbolOffset: (pc: number) => (pc === 0x400 ? { symbol: "F", offset: 0 } : undefined),
+    lookupAddress: (pc: number) => (pc === 0x400 ? { path: "f.c", line: 30 } : undefined),
+    getInlineFramesForPc: (pc: number) =>
+      pc === 0x400
+        ? [
+            { name: "B", callPath: "a.c", callLine: 20 }, // innermost: B's call site (in A)
+            { name: "A", callPath: "f.c", callLine: 5 }, //  outer: A's call site (in F)
+          ]
+        : [],
+  } as unknown as SourceMap;
+}
+
+describe("buildProfileModel inline expansion", () => {
+  const model = buildProfileModel([{ stack: [0x400], cycles: 7 }], inlineStubSourceMap());
+
+  it("expands a PC into physical + inlined frames (outermost→innermost)", () => {
+    // root + F + A + B
+    expect(model.nodes.length).toBe(4);
+    const names = model.nodes.map((n) => model.locations[n.locationId].callFrame.functionName);
+    expect(names).toEqual(["(all)", "F", "A (inlined)", "B (inlined)"]);
+    // parent chain root→F→A→B
+    expect(model.nodes[1].parent).toBe(0);
+    expect(model.nodes[2].parent).toBe(1);
+    expect(model.nodes[3].parent).toBe(2);
+  });
+
+  it("attributes each frame's line to the next-inner call site (addr2line --inlines)", () => {
+    const lineOf = (id: number) => model.locations[model.nodes[id].locationId].callFrame.lineNumber;
+    expect(lineOf(1)).toBe(5); // F shown where A is called (f.c:5)
+    expect(lineOf(2)).toBe(20); // A shown where B is called (a.c:20)
+    expect(lineOf(3)).toBe(30); // B (innermost) shown at the instruction's own line
+  });
+
+  it("attributes self time to the innermost inlined frame", () => {
+    expect(model.nodes[3].selfTime).toBe(7); // B is the leaf
+    expect(model.nodes[1].selfTime).toBe(0);
+  });
+});
+
 describe("buildColumns", () => {
   const model = buildProfileModel(samples, stubSourceMap());
   const columns = buildColumns(model);

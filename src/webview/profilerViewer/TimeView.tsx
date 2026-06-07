@@ -318,6 +318,7 @@ function TimeViewRow({
             ? <span className={`codicon codicon-chevron-${expanded.has(node) ? "down" : "right"}`} />
             : null}
         </span>
+        {node.dmaColor && <span className="dma-dot" style={{ background: node.dmaColor }} />}
         <span className="tv-fn">{node.callFrame.functionName}</span>
         {location && (
           <span className="tv-file">

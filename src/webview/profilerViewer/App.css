@@ -195,6 +195,12 @@ body {
   font-variant-numeric: tabular-nums;
 }
 
+/* DMA address / call-stack value: allow it to wrap and break instead of overflowing. */
+.tooltip .tt-addr {
+  text-align: right;
+  word-break: break-word;
+}
+
 .tooltip .tt-row span:first-child {
   color: var(--vscode-descriptionForeground);
 }
@@ -215,14 +221,16 @@ body {
   flex-direction: column;
   min-height: 0;
   overflow: hidden;
-  font-family: var(--vscode-editor-font-family);
   font-size: 12px;
 }
 
+/* Data rows use the monospace editor font; the header keeps the default UI font
+   (matches the old extension, where editor-font is scoped to the rows only). */
 .tv-rows {
   flex: 1;
   min-height: 0;
   overflow: hidden; /* react-window List v2 manages its own scroll */
+  font-family: var(--vscode-editor-font-family);
 }
 
 .tv-row {
@@ -241,7 +249,6 @@ body {
 
 .tv-header {
   flex-shrink: 0;
-  border-bottom: 1px solid var(--vscode-panel-border);
   background: var(--vscode-editor-background);
 }
 
@@ -261,7 +268,6 @@ body {
 
 .tv-heading {
   color: var(--vscode-foreground);
-  font-size: 11px;
   user-select: none;
 }
 
@@ -294,7 +300,6 @@ body {
 .tv-location.tv-heading {
   padding-left: 10px;
   color: var(--vscode-foreground);
-  font-size: 11px;
 }
 
 .tv-expander {
@@ -317,6 +322,17 @@ body {
   white-space: nowrap;
   text-overflow: ellipsis;
   max-width: 80%;
+}
+
+/* DMA channel color swatch (TimeView rows + flame DMA tooltip). A square-cornered
+   rectangle (~2 chars wide), matching the old extension's inline "&nbsp;&nbsp;" swatch. */
+.dma-dot {
+  display: inline-block;
+  width: 1.2em;
+  height: 1em;
+  margin-right: 0.4em;
+  flex-shrink: 0;
+  vertical-align: middle;
 }
 
 .tv-file {
