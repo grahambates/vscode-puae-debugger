@@ -11,6 +11,7 @@ import {
 import { SourceMap, ScopeEntry, Variable, LocalLocation, Location, Segment, InlineFrame, InlineEntry, TypeDescriptor, FieldDescriptor } from "./sourceMap";
 import { DebugFrame } from "./dwarfParser";
 import { MemoryType } from "./amigaHunkParser";
+import { demangle } from "./demangle";
 
 /**
  * Creates a source map from DWARF debug information.
@@ -295,6 +296,25 @@ function isNumber(value: unknown): value is number {
   return typeof value === 'number' && !Number.isNaN(value);
 }
 
+// Resolve a DIE's source-level name, following the indirections GCC uses for inlined
+// and out-of-line C/C++ functions: DW_AT_name on the DIE, else its DW_AT_specification
+// (declaration) or DW_AT_abstract_origin (abstract instance), else the (demangled)
+// DW_AT_linkage_name. Returns undefined only when nothing names it.
+function resolveDieName(die: DebugInfoEntry | undefined, depth = 0): string | undefined {
+  if (!die || depth > 8) return undefined;
+  const direct = findAttribute(die, DW_AT.name)?.value;
+  if (typeof direct === 'string') return direct;
+  const spec = findAttribute(die, DW_AT.specification)?.value?.die as DebugInfoEntry | undefined;
+  const fromSpec = resolveDieName(spec, depth + 1);
+  if (fromSpec) return fromSpec;
+  const origin = findAttribute(die, DW_AT.abstract_origin)?.value?.die as DebugInfoEntry | undefined;
+  const fromOrigin = resolveDieName(origin, depth + 1);
+  if (fromOrigin) return fromOrigin;
+  const linkage = findAttribute(die, DW_AT.linkage_name)?.value;
+  if (typeof linkage === 'string') return demangle(linkage);
+  return undefined;
+}
+
 function getDieRange(die: DebugInfoEntry): { low: number; high: number } | undefined {
   const lowAttr = findAttribute(die, DW_AT.low_pc);
   const highAttr = findAttribute(die, DW_AT.high_pc);
@@ -308,9 +328,86 @@ function getDieRange(die: DebugInfoEntry): { low: number; high: number } | undef
 
 interface CuCtx {
   debugRanges: Uint8Array | undefined;
+  debugRnglists: Uint8Array | undefined; // DWARF5
+  version: number;
   addressSize: number;
   cuBasePc: number;
   isLittleEndian: boolean;
+}
+
+function readULEB128At(view: DataView, off: number): { value: number; size: number } {
+  let result = 0, shift = 0, size = 0, byte: number;
+  do {
+    byte = view.getUint8(off + size);
+    result |= (byte & 0x7f) << shift;
+    shift += 7;
+    size++;
+  } while (byte & 0x80);
+  return { value: result >>> 0, size };
+}
+
+// DWARF5 .debug_rnglists range-list entry kinds (DWARF5 §7.28). The *x variants index
+// .debug_addr, which this toolchain doesn't emit, so they're intentionally unhandled.
+const DW_RLE = {
+  end_of_list: 0x00,
+  base_addressx: 0x01,
+  startx_endx: 0x02,
+  startx_length: 0x03,
+  offset_pair: 0x04,
+  base_address: 0x05,
+  start_end: 0x06,
+  start_length: 0x07,
+} as const;
+
+// DWARF5 .debug_rnglists range list (DW_RLE_* entries) at byte offset `listOffset`
+// (a DW_FORM_sec_offset into the section). Yields absolute [low, high) intervals.
+// Only the non-indexed forms are handled — this toolchain emits no .debug_addr, so the
+// addrx variants (base_addressx/startx_*) never appear; an unknown code stops the list.
+function* iterDebugRnglists(
+  rnglists: Uint8Array,
+  listOffset: number,
+  cuBasePc: number,
+  addressSize: number,
+  isLittleEndian: boolean,
+): Generator<{ low: number; high: number }> {
+  const view = new DataView(rnglists.buffer, rnglists.byteOffset, rnglists.byteLength);
+  const readAddr = (off: number): number => view.getUint32(off, isLittleEndian);
+  let base = cuBasePc;
+  let off = listOffset;
+  while (off < rnglists.byteLength) {
+    const code = view.getUint8(off); off += 1;
+    switch (code) {
+      case DW_RLE.end_of_list:
+        return;
+      case DW_RLE.base_address: { // addr (sets the base for following offset_pairs)
+        base = readAddr(off); off += addressSize;
+        break;
+      }
+      case DW_RLE.offset_pair: { // ULEB start, ULEB end (relative to base)
+        const s = readULEB128At(view, off); off += s.size;
+        const e = readULEB128At(view, off); off += e.size;
+        yield { low: base + s.value, high: base + e.value };
+        break;
+      }
+      case DW_RLE.start_end: { // addr start, addr end
+        const lo = readAddr(off); off += addressSize;
+        const hi = readAddr(off); off += addressSize;
+        yield { low: lo, high: hi };
+        break;
+      }
+      case DW_RLE.start_length: { // addr start, ULEB length
+        const lo = readAddr(off); off += addressSize;
+        const len = readULEB128At(view, off); off += len.size;
+        yield { low: lo, high: lo + len.value };
+        break;
+      }
+      default:
+        // base_addressx / startx_* need .debug_addr (not parsed by this toolchain's
+        // output); any other code is corrupt input. Either way we can't trust the rest
+        // of the list, so fail loud instead of silently truncating it.
+        throw new Error("DWARF parsing error: unimplemented DW_RLE 0x" + code.toString(16) + " in .debug_rnglists");
+    }
+  }
 }
 
 function* iterDebugRanges(
@@ -346,7 +443,16 @@ function* getDieIntervals(die: DebugInfoEntry, ctx: CuCtx): Generator<{ low: num
   const range = getDieRange(die);
   if (range) { yield range; return; }
   const rangesAttr = findAttribute(die, DW_AT.ranges);
-  if (rangesAttr && isNumber(rangesAttr.value) && ctx.debugRanges) {
+  if (!rangesAttr || !isNumber(rangesAttr.value)) return;
+  // DWARF5: DW_AT_ranges is a sec_offset into .debug_rnglists (DW_RLE_* encoding);
+  // DWARF<5: an offset into .debug_ranges (begin/end address pairs). A DIE carrying
+  // DW_AT_ranges without the matching section is a parser gap, not valid-but-empty —
+  // fail loud rather than silently dropping the DIE's address ranges.
+  if (ctx.version >= 5) {
+    if (!ctx.debugRnglists) throw new Error("DWARF parsing error: DW_AT_ranges present but .debug_rnglists is missing (DWARF5)");
+    yield* iterDebugRnglists(ctx.debugRnglists, rangesAttr.value, ctx.cuBasePc, ctx.addressSize, ctx.isLittleEndian);
+  } else {
+    if (!ctx.debugRanges) throw new Error("DWARF parsing error: DW_AT_ranges present but .debug_ranges is missing");
     yield* iterDebugRanges(ctx.debugRanges, rangesAttr.value, ctx.cuBasePc, ctx.addressSize, ctx.isLittleEndian);
   }
 }
@@ -507,6 +613,8 @@ function buildScopeTable(
   for (const cu of dwarfData.compilationUnits) {
     const ctx: CuCtx = {
       debugRanges: dwarfData.debugRanges,
+      debugRnglists: dwarfData.debugRnglists,
+      version: cu.version,
       addressSize: cu.addressSize,
       cuBasePc: getCuBasePc(cu),
       isLittleEndian: dwarfData.isLittleEndian,
@@ -588,6 +696,8 @@ function buildInlineTable(
 
     const ctx: CuCtx = {
       debugRanges: dwarfData.debugRanges,
+      debugRnglists: dwarfData.debugRnglists,
+      version: cu.version,
       addressSize: cu.addressSize,
       cuBasePc: getCuBasePc(cu),
       isLittleEndian: dwarfData.isLittleEndian,
@@ -611,8 +721,10 @@ function buildInlineTable(
 
     function visit(die: DebugInfoEntry, depth: number) {
       if (die.tag === DW_TAG.inlined_subroutine) {
-        const originDie = findAttribute(die, DW_AT.abstract_origin)?.value?.die as DebugInfoEntry | undefined;
-        const name = (originDie ? findAttribute(originDie, DW_AT.name)?.value as string | undefined : undefined) ?? '???';
+        // The inlined function's name lives on the abstract instance the inlined_subroutine
+        // points to (DW_AT_abstract_origin), which may itself only carry the name via a
+        // specification/linkage_name — resolveDieName chases the whole chain.
+        const name = resolveDieName(die) ?? '???';
         const callFile = findAttribute(die, DW_AT.call_file)?.value as number | undefined ?? 0;
         const callLine = findAttribute(die, DW_AT.call_line)?.value as number | undefined ?? 0;
         const callPath = resolveCallPath(callFile);
