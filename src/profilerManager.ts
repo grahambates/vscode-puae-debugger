@@ -366,13 +366,30 @@ export class ProfilerManager {
 
     const rows = sourceMap.getUnwindRows();
     const table = buildUnwindTable(rows);
-    if (!table) throw new Error("Profiler: no DWARF .debug_frame unwind info for this program");
-
-    await this.rpc.sendRpcCommand("profileSetUnwind", {
-      data: table.buffer,
-      startAddr: table.startAddr,
-      endAddr: table.endAddr,
-    });
+    if (table) {
+      // C/C++ with DWARF .debug_frame: the emulator unwinds A5/A7 with this table.
+      await this.rpc.sendRpcCommand("profileSetUnwind", {
+        data: table.buffer,
+        startAddr: table.startAddr,
+        endAddr: table.endAddr,
+      });
+    } else {
+      // Assembly / hunk with no DWARF: upload an EMPTY table (which makes the emulator
+      // fall back to runtime branch-stack unwinding — JSR/BSR/RTS/RTE tracking) plus the
+      // code range, derived from the loaded CODE segment(s), for the in-range sample gate
+      // and the branch-stack seeding scan. Segment names are like "0: CODE CHIP".
+      const segs = sourceMap.getSegmentsInfo();
+      const code = segs.filter((s) => /code/i.test(s.name));
+      const ranges = code.length ? code : segs.slice(0, 1);
+      if (ranges.length === 0) throw new Error("Profiler: no loaded code segment");
+      const startAddr = Math.min(...ranges.map((s) => s.address));
+      const endAddr = Math.max(...ranges.map((s) => s.address + s.size));
+      await this.rpc.sendRpcCommand("profileSetUnwind", {
+        data: new Uint8Array(0),
+        startAddr,
+        endAddr,
+      });
+    }
 
     // Capture runs N frames synchronously in the emulator; allow generous time.
     await this.rpc.sendRpcCommand("startProfiling", { numFrames }, 30000);
