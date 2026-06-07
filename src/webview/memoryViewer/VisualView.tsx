@@ -278,7 +278,7 @@ export function VisualView({
     const y = Math.floor((e.clientY - rect.top) / scale);
 
     // Calculate absolute line and byte address
-    const absoluteLine = visibleRange.firstLine + Math.floor(y / scale);
+    const absoluteLine = visibleRange.firstLine + y;
     const lineAddress = alignedRangeStart + absoluteLine * bytesPerRow;
     const pixelXInLine = x % pixelWidth;
     const byteOffset = Math.floor(pixelXInLine / 8);
