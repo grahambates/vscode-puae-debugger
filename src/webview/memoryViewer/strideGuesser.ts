@@ -102,32 +102,44 @@ function combinedScore(img: number[][]): number {
   );
 }
 
+export interface WidthGuess {
+  widthBytes: number;
+  widthBits: number;
+  sampleRows: number;
+  score: number;
+}
+
+/** Keep whichever guess scores higher */
+function betterGuess(
+  a: WidthGuess | undefined,
+  b: WidthGuess,
+): WidthGuess {
+  return !a || b.score > a.score ? b : a;
+}
+
 /**
- * Guess plausible byte-widths when image length is unknown.
+ * Guess the most plausible byte-width when image length is unknown.
+ *
+ * Amiga bitplane rows are stored as whole 16-bit words, so only even byte
+ * widths (i.e. pixel widths that are multiples of 16) are considered.
  *
  * @param data           Raw buffer
- * @param minWidthBytes  Minimum width to test (≥1)
+ * @param minWidthBytes  Minimum width to test (≥2, rounded up to an even value)
  * @param maxWidthBytes  Maximum width to test
  * @param sampleRows     Number of rows from top of buffer to analyse
- * @param topK           How many top results to return
  */
 export function guessWidthsUnknownLength(
   data: Uint8Array,
-  minWidthBytes = 2,
+  minWidthBytes = 30,
   maxWidthBytes: number = Math.min(1024, data.length),
   sampleRows = 32,
-  topK = 5,
-) {
+): WidthGuess | undefined {
   const bits = bytesToBits(data);
 
-  const results: {
-    widthBytes: number;
-    widthBits: number;
-    sampleRows: number;
-    score: number;
-  }[] = [];
+  let best: WidthGuess | undefined;
 
-  for (let wb = minWidthBytes; wb <= maxWidthBytes; wb++) {
+  const start = minWidthBytes + (minWidthBytes % 2);
+  for (let wb = start; wb <= maxWidthBytes; wb += 2) {
     const widthBits = wb * 8;
     const img = reshapeSample(bits, widthBits, sampleRows);
     if (!img) {
@@ -135,9 +147,55 @@ export function guessWidthsUnknownLength(
     }
 
     const score = combinedScore(img);
-    results.push({ widthBytes: wb, widthBits, sampleRows, score });
+    best = betterGuess(best, { widthBytes: wb, widthBits, sampleRows, score });
   }
 
-  results.sort((a, b) => b.score - a.score);
-  return results.slice(0, topK);
+  return best;
+}
+
+/**
+ * Guess the most plausible byte-width when the total image length is known.
+ *
+ * Unlike the unknown-length case, a bitmap's pixel data should exactly fill
+ * its declared length, so only widths that evenly divide that length (giving
+ * a whole number of rows) are considered. This narrows the search space
+ * dramatically and scores each candidate over the entire image rather than a
+ * small sample from the top, giving far more reliable results.
+ *
+ * Amiga bitplane rows are stored as whole 16-bit words, so only even byte
+ * widths (i.e. pixel widths that are multiples of 16) are considered.
+ *
+ * @param data           Raw buffer covering the full known length
+ * @param minWidthBytes  Minimum width to test (≥2, rounded up to an even value)
+ * @param maxWidthBytes  Maximum width to test
+ */
+export function guessWidthsKnownLength(
+  data: Uint8Array,
+  minWidthBytes = 4,
+  maxWidthBytes: number = data.length,
+): WidthGuess | undefined {
+  const bits = bytesToBits(data);
+
+  let best: WidthGuess | undefined;
+
+  const start = minWidthBytes + (minWidthBytes % 2);
+  for (let wb = start; wb <= maxWidthBytes; wb += 2) {
+    if (data.length % wb !== 0) {
+      continue;
+    }
+    const rows = data.length / wb;
+    if (rows < 2) {
+      continue;
+    }
+    const widthBits = wb * 8;
+    const img = reshapeSample(bits, widthBits, rows);
+    if (!img) {
+      continue;
+    }
+
+    const score = combinedScore(img);
+    best = betterGuess(best, { widthBytes: wb, widthBits, sampleRows: rows, score });
+  }
+
+  return best;
 }

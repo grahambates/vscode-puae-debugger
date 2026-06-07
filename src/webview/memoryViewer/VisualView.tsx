@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect, useCallback } from "react";
-import { guessWidthsUnknownLength } from "./strideGuesser";
+import { guessWidthsKnownLength, guessWidthsUnknownLength } from "./strideGuesser";
 import "./VisualView.css";
 import { MemoryRange } from "../../shared/memoryViewerTypes";
 import { Tooltip, TooltipProps } from "./Tooltip";
@@ -366,16 +366,20 @@ export function VisualView({
 
         <vscode-button
           onClick={() => {
+            // If the target is a known symbol, its length is known - sample exactly
+            // that much data so widths can be matched against the full image rather
+            // than guessed from an arbitrary prefix.
+            const knownLength = target.size > 0 ? target.size : undefined;
+            const MAX_KNOWN_LENGTH_SAMPLE = 65536;
+            const sampleSize = knownLength
+              ? Math.min(knownLength, MAX_KNOWN_LENGTH_SAMPLE)
+              : 1024; // Need enough data for accurate prediction when length is unknown
+
             // Collect enough data starting from target address, potentially spanning chunks
-            const GUESS_SAMPLE_SIZE = 1024; // Need enough data for accurate prediction
-            const sampleData = new Uint8Array(GUESS_SAMPLE_SIZE);
+            const sampleData = new Uint8Array(sampleSize);
             let bytesCollected = 0;
 
-            for (
-              let offset = 0;
-              offset < GUESS_SAMPLE_SIZE && bytesCollected < GUESS_SAMPLE_SIZE;
-              offset++
-            ) {
+            for (let offset = 0; offset < sampleSize; offset++) {
               const byte = getByte(target.address + offset);
               if (byte !== undefined) {
                 sampleData[bytesCollected++] = byte;
@@ -386,10 +390,16 @@ export function VisualView({
             }
 
             const sample = sampleData.slice(0, bytesCollected);
-            const guesses = guessWidthsUnknownLength(sample);
-            if (guesses.length > 0) {
-              console.log("Width guesses:", guesses);
-              setBytesPerRow(guesses[0].widthBytes);
+            // Only use the known-length guesser if we actually managed to collect
+            // the whole image - otherwise widths can't be matched against the full
+            // length and we fall back to scanning a sample from the top.
+            const guess =
+              knownLength !== undefined && bytesCollected === sampleSize
+                ? guessWidthsKnownLength(sample)
+                : guessWidthsUnknownLength(sample);
+            if (guess) {
+              console.log("Width guess:", guess);
+              setBytesPerRow(guess.widthBytes);
             }
           }}
         >
