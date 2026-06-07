@@ -8,7 +8,6 @@ import {
   IComputedNode,
   ILocation,
   ISymbol,
-  DmaSnapshot,
   Category,
 } from "./shared/profilerTypes";
 import { decodeDmaGrid } from "./dma";
@@ -285,6 +284,57 @@ export function buildProfileModel(samples: InstructionSample[], sourceMap: Sourc
   };
 }
 
+// The raw, serializable result of one capture — everything the post-emulator pipeline
+// consumes, before any decoding or symbolication. This is the seam shared by live capture
+// and a loaded .vamigaprofile: both produce a RawCapture, then buildModelFromCapture turns
+// it into the IProfileModel. Kept to plain typed arrays + scalars so it serializes directly.
+export interface RawCapture {
+  profile: {
+    data: Uint8Array; // the raw [depth,…pcs,cycles] stream from wasm_profile_get_data
+    start: number;
+    end: number;
+    total: number;
+    inRange: number;
+    frameCycles: number; // CPU-clock cycles in the profiled frame (0 = emulator didn't report)
+    isPAL: boolean; // normalized at the RPC boundary (defaults true)
+  };
+  dma?: Uint8Array; // raw enriched DMA grid bytes (absent if DMA capture produced nothing)
+  snapshot?: { chip: Uint8Array; slow: Uint8Array }; // reconstruction baseline
+}
+
+// Pure transform: RawCapture + SourceMap → IProfileModel (+ the decoded samples, retained
+// as a first-class artifact). No I/O, no emulator — the single model-building path for both
+// live captures and loaded .vamigaprofile files, and the unit-test entry point. An empty
+// capture yields an empty model here; the live "nothing captured" diagnostic lives in
+// ProfilerManager.capture() where the emulator-state hint makes sense.
+export function buildModelFromCapture(
+  raw: RawCapture,
+  sourceMap: SourceMap,
+): { model: IProfileModel; samples: InstructionSample[] } {
+  const pb = raw.profile;
+  const words = new Uint32Array(pb.data.buffer, pb.data.byteOffset, pb.data.byteLength >>> 2);
+  const samples = decodeProfileStream(words);
+
+  // Derive the CPU clock from the measured frame cycles + PAL/NTSC (PAL = 50 Hz/20000 µs,
+  // NTSC = 60 Hz). frameCycles == 0 means the emulator didn't report one → standard PAL constant.
+  const frameUs = pb.isPAL ? 20000 : 1_000_000 / 60;
+  const cyclesPerMicroSecond = pb.frameCycles > 0 ? pb.frameCycles / frameUs : 7.09379;
+
+  const model = buildProfileModel(samples, sourceMap, cyclesPerMicroSecond);
+  model.symbols = buildSymbolList(sourceMap);
+
+  if (raw.dma) {
+    const dma = decodeDmaGrid(raw.dma);
+    if (dma) {
+      model.dma = dma;
+      if (raw.snapshot) {
+        model.dmaSnapshot = { chip: raw.snapshot.chip, slow: raw.snapshot.slow };
+      }
+    }
+  }
+  return { model, samples };
+}
+
 // Orchestrates a capture: upload the unwind table, run the profiled frame(s),
 // read back the binary stream, decode + aggregate into a call tree. All heavy
 // work (symbolication, aggregation) happens here, once, so the webview only ever
@@ -301,6 +351,13 @@ export class ProfilerManager {
   private lastSamples: InstructionSample[] = [];
   public getSamples(): readonly InstructionSample[] {
     return this.lastSamples;
+  }
+
+  // Raw bytes of the last capture, retained so the webview "Save" button can serialize it
+  // to a .vamigaprofile without re-running the emulator.
+  private lastRaw?: RawCapture;
+  public getLastRaw(): RawCapture | undefined {
+    return this.lastRaw;
   }
 
   public async capture(numFrames = 1): Promise<IProfileModel> {
@@ -320,20 +377,46 @@ export class ProfilerManager {
     // Capture runs N frames synchronously in the emulator; allow generous time.
     await this.rpc.sendRpcCommand("startProfiling", { numFrames }, 30000);
 
+    const u8 = (d: unknown): Uint8Array => (d instanceof Uint8Array ? d : new Uint8Array((d as ArrayLike<number>) ?? 0));
+
     const res = await this.rpc.sendRpcCommand<{
       data: Uint8Array;
       start: number;
       end: number;
       total: number;
       inRange: number;
-      frameCycles?: number; // CPU-clock cycles in the profiled frame (for time units)
-      isPAL?: boolean;      // true = PAL (50 Hz), false = NTSC (60 Hz)
+      frameCycles?: number;
+      isPAL?: boolean;
     }>("getProfileData");
-    const bytes = res.data instanceof Uint8Array ? res.data : new Uint8Array(res.data);
-    const words = new Uint32Array(bytes.buffer, bytes.byteOffset, bytes.byteLength >>> 2);
 
-    const samples = decodeProfileStream(words);
-    this.lastSamples = samples;
+    const raw: RawCapture = {
+      profile: {
+        data: u8(res.data),
+        start: res.start,
+        end: res.end,
+        total: res.total,
+        inRange: res.inRange,
+        frameCycles: res.frameCycles ?? 0, // normalize the optional RPC fields here, once
+        isPAL: res.isPAL ?? true,
+      },
+    };
+
+    // Fetch the DMA grid (captured in the same frame) + the reconstruction snapshot into the
+    // RawCapture. Failure here must not break the CPU profile, so it's best-effort.
+    try {
+      const dmaRes = await this.rpc.sendRpcCommand<{ data: Uint8Array }>("getDmaData");
+      const dmaBytes = u8(dmaRes.data);
+      if (dmaBytes.length) {
+        raw.dma = dmaBytes;
+        const snap = await this.rpc.sendRpcCommand<{ chip: Uint8Array; slow: Uint8Array }>("getDmaSnapshot");
+        raw.snapshot = { chip: u8(snap.chip), slow: u8(snap.slow) };
+      }
+    } catch (e) {
+      console.warn("[profiler] DMA capture failed (CPU profile unaffected):", e);
+    }
+
+    const { model, samples } = buildModelFromCapture(raw, sourceMap);
+
     console.log(
       `[profiler] captured: total=${res.total} instr, inRange=${res.inRange}, ` +
         `samples=${samples.length}, range=[0x${(res.start >>> 0).toString(16)},0x${(res.end >>> 0).toString(16)})`,
@@ -349,47 +432,20 @@ export class ProfilerManager {
       throw new Error(`No profile samples captured. ${hint}`);
     }
 
-    // Derive the CPU clock from the emulator's measured frame cycles and PAL/NTSC flag.
-    // PAL = 50 Hz (20000 µs/frame), NTSC = 60 Hz (16666.67 µs/frame). Falls back to
-    // the standard PAL 68000 constant if the emulator doesn't report a frame length.
-    const isPAL = res.isPAL ?? true;
-    const frameUs = isPAL ? 20000 : 1_000_000 / 60;
-    const cyclesPerMicroSecond = res.frameCycles ? res.frameCycles / frameUs : 7.09379;
+    this.lastSamples = samples;
+    this.lastRaw = raw;
 
-    const model = buildProfileModel(samples, sourceMap, cyclesPerMicroSecond);
-    // Ship the symbol table so the webview can symbolize arbitrary addresses (DMA tooltip
-    // now; disassembly/copper/memory later) — the reusable symbolization primitive.
-    model.symbols = buildSymbolList(sourceMap);
-
-    // Fetch the DMA grid (captured in the same frame) + the reconstruction snapshot, and
-    // ship both on the model so the webview can render the DMA line and (future) reconstruct
-    // memory/registers. Failure here must not break the CPU profile, so it's best-effort.
-    try {
-      const dmaRes = await this.rpc.sendRpcCommand<{ data: Uint8Array }>("getDmaData");
-      const dmaBytes = dmaRes.data instanceof Uint8Array ? dmaRes.data : new Uint8Array(dmaRes.data);
-      const dma = decodeDmaGrid(dmaBytes);
-      if (dma) {
-        model.dma = dma;
-        const snap = await this.rpc.sendRpcCommand<{ chip: Uint8Array; slow: Uint8Array }>("getDmaSnapshot");
-        const snapshot: DmaSnapshot = {
-          chip: snap.chip instanceof Uint8Array ? snap.chip : new Uint8Array(snap.chip ?? 0),
-          slow: snap.slow instanceof Uint8Array ? snap.slow : new Uint8Array(snap.slow ?? 0),
-        };
-        model.dmaSnapshot = snapshot;
-        const writes = dma.flags.reduce((n, f) => n + (f & 1), 0);
-        console.log(
-          `[profiler] dma: ${dma.owner.length} slots, ${writes} writes, ` +
-            `snapshot chip=${snapshot.chip.length}B slow=${snapshot.slow.length}B`,
-        );
-      }
-    } catch (e) {
-      console.warn("[profiler] DMA capture failed (CPU profile unaffected):", e);
+    if (model.dma) {
+      const writes = model.dma.flags.reduce((n, f) => n + (f & 1), 0);
+      console.log(
+        `[profiler] dma: ${model.dma.owner.length} slots, ${writes} writes, ` +
+          `snapshot chip=${model.dmaSnapshot?.chip.length ?? 0}B slow=${model.dmaSnapshot?.slow.length ?? 0}B`,
+      );
     }
-
     console.log(
       `[profiler] model: ${model.locations.length} locations, ${model.nodes.length} nodes, ` +
         `${model.samples.length - 1} samples, ${model.duration} captured cycles` +
-        (res.frameCycles ? ` (frame=${res.frameCycles} cy, ${cyclesPerMicroSecond.toFixed(4)} cy/µs, ${isPAL ? "PAL" : "NTSC"})` : ""),
+        (raw.profile.frameCycles ? ` (frame=${raw.profile.frameCycles} cy, ${model.cyclesPerMicroSecond.toFixed(4)} cy/µs, ${raw.profile.isPAL ? "PAL" : "NTSC"})` : ""),
     );
     return model;
   }

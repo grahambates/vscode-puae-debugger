@@ -3,6 +3,8 @@ import * as path from "path";
 import { VAmiga } from "./vAmiga";
 import { VamigaDebugAdapter } from "./vAmigaDebugAdapter";
 import { ProfilerManager } from "./profilerManager";
+import { encodeCapture } from "./vamigaProfile";
+import { ProfileEditorProvider } from "./profileEditorProvider";
 import { ProfilerInboundMessage, ProfilerOutboundMessage, IProfileModel } from "./shared/profilerTypes";
 
 /**
@@ -19,6 +21,11 @@ export class ProfilerViewerProvider {
   // Webviews", which resets the webview's React state but not the extension host) re-shows
   // it instead of auto-capturing a fresh frame (which would advance the emulator).
   private lastModel?: IProfileModel;
+  // Everything Save needs, grabbed at capture time while the debug session is live, so saving
+  // still works after the emulator webview / session is closed (which clears the adapter).
+  private lastSaveData?: { elf: Uint8Array; programName: string; segmentOffsets: number[]; baseDir: string };
+  private lastSaveAdapter?: VamigaDebugAdapter; // which session lastSaveData came from (read ELF once per session)
+  private symbolsSent = false; // symbols are session-constant — send them only once per webview mount
 
   constructor(
     private readonly extensionUri: vscode.Uri,
@@ -51,7 +58,7 @@ export class ProfilerViewerProvider {
       { enableScripts: true, retainContextWhenHidden: true },
     );
 
-    this.panel.webview.html = this.getHtmlContent(this.panel.webview);
+    this.panel.webview.html = getProfilerHtml(this.panel.webview, this.extensionUri, "live");
     this.panel.onDidDispose(() => {
       this.panel = undefined;
     });
@@ -62,12 +69,15 @@ export class ProfilerViewerProvider {
       // the cached capture so it survives (and we don't advance the emulator). "capture"
       // (the button) always grabs a fresh frame.
       if (message.command === "ready") {
-        if (this.lastModel) this.post({ command: "captureResult", model: this.lastModel });
+        this.symbolsSent = false; // fresh webview (first mount or reload) — it needs symbols again
+        if (this.lastModel) this.postResult(this.lastModel);
         else await this.capture();
       } else if (message.command === "capture") {
         await this.capture();
+      } else if (message.command === "saveProfile") {
+        await this.saveProfile();
       } else if (message.command === "openDocument") {
-        await this.openSource(message.file, message.line, message.toSide);
+        await openProfilerSource(message.file, message.line, message.toSide);
       }
     });
   }
@@ -76,12 +86,25 @@ export class ProfilerViewerProvider {
     this.panel?.webview.postMessage(message);
   }
 
+  // Post a capture result, including the (session-constant) symbol table only on the first
+  // post to this webview; later captures omit it and the webview reuses what it cached.
+  private postResult(model: IProfileModel): void {
+    if (model.symbols && !this.symbolsSent) {
+      this.symbolsSent = true;
+      this.post({ command: "captureResult", model });
+    } else {
+      const { symbols: _symbols, ...rest } = model;
+      this.post({ command: "captureResult", model: rest });
+    }
+  }
+
   private async capture(): Promise<void> {
     this.post({ command: "capturing" });
     try {
       const model = await this.manager.capture(1);
       this.lastModel = model;
-      this.post({ command: "captureResult", model });
+      await this.cacheSaveData();
+      this.postResult(model);
     } catch (error) {
       this.post({
         command: "showError",
@@ -90,64 +113,137 @@ export class ProfilerViewerProvider {
     }
   }
 
-  // Ctrl/Cmd+click in the flame graph: open the function's source at `line` (1-based,
-  // as carried in the model). Absolute paths open directly; relative paths resolve
-  // against the first workspace folder.
-  private async openSource(file: string, line: number, toSide?: boolean): Promise<void> {
+  // Capture the program ELF + relocation now, while the session is live, so Save doesn't
+  // depend on the adapter still being around (closing the emulator webview ends the session).
+  private async cacheSaveData(): Promise<void> {
+    const adapter = VamigaDebugAdapter.getActiveAdapter();
+    const elfPath = adapter?.getDebugProgramPath();
+    if (!adapter || !elfPath) return;
+    // ELF + relocation are constant within a session, so read them once per session (keyed by
+    // the adapter instance); a relaunch yields a new adapter and re-reads.
+    if (adapter === this.lastSaveAdapter && this.lastSaveData) return;
     try {
-      let uri: vscode.Uri | undefined;
-      if (path.isAbsolute(file)) {
-        uri = vscode.Uri.file(file);
-      } else {
-        const folder = vscode.workspace.workspaceFolders?.[0];
-        if (folder) uri = vscode.Uri.joinPath(folder.uri, file);
-      }
-      if (!uri) return;
-      const doc = await vscode.workspace.openTextDocument(uri);
-      const l = Math.max(0, line - 1);
-      // Reveal an editor that already has this file open rather than opening a new
-      // one; only fall back to a fresh editor (beside when Alt-clicked) otherwise.
-      const existing = this.findOpenColumn(uri);
-      await vscode.window.showTextDocument(doc, {
-        // As in the old extension: select the whole line, and keep focus on the
-        // profiler so you can keep clicking through functions.
-        selection: new vscode.Range(l, 0, l + 1, 0),
-        viewColumn: existing ?? (toSide ? vscode.ViewColumn.Beside : undefined),
-        preserveFocus: true,
-      });
+      const elf = await vscode.workspace.fs.readFile(vscode.Uri.file(elfPath));
+      const reloc = adapter.getRelocation();
+      this.lastSaveData = {
+        elf,
+        programName: path.basename(elfPath),
+        segmentOffsets: reloc.segmentOffsets,
+        baseDir: reloc.baseDir,
+      };
+      this.lastSaveAdapter = adapter;
     } catch (error) {
-      vscode.window.showWarningMessage(
-        `Profiler: couldn't open ${file}: ${error instanceof Error ? error.message : String(error)}`,
+      console.warn("[profiler] couldn't read program ELF for save:", error);
+    }
+  }
+
+  // Save the last capture to a .vamigaprofile. The ELF the source map was built from is
+  // embedded so the document is self-contained and re-symbolicates on load — embedding is
+  // required (loading by path isn't supported yet), so a failure to read it aborts the save
+  // loudly rather than writing an unloadable file.
+  private async saveProfile(): Promise<void> {
+    const raw = this.manager.getLastRaw();
+    if (!raw) {
+      vscode.window.showWarningMessage("Profiler: nothing to save yet — capture a frame first.");
+      return;
+    }
+    const save = this.lastSaveData;
+    if (!save) {
+      vscode.window.showErrorMessage(
+        "Profiler: can't save — the program couldn't be read when this frame was captured. Re-capture with the debug session active.",
+      );
+      return;
+    }
+
+    const folder = vscode.workspace.workspaceFolders?.[0];
+    const base = save.programName.replace(/\.[^.]+$/, "") + ".vamigaprofile";
+    const target = await vscode.window.showSaveDialog({
+      defaultUri: folder ? vscode.Uri.joinPath(folder.uri, base) : undefined,
+      filters: { "vAmiga Profile": ["vamigaprofile"] },
+      saveLabel: "Save Profile",
+    });
+    if (!target) return;
+
+    try {
+      const buf = encodeCapture(raw, {
+        elf: save.elf,
+        programName: save.programName,
+        capturedAt: Date.now(),
+        segmentOffsets: save.segmentOffsets,
+        baseDir: save.baseDir,
+      });
+      await vscode.workspace.fs.writeFile(target, buf);
+      // Open the saved profile in its (read-only) editor, then close the live capture panel —
+      // the saved file becomes the thing you're looking at.
+      await vscode.commands.executeCommand("vscode.openWith", target, ProfileEditorProvider.viewType);
+      this.dispose();
+    } catch (error) {
+      vscode.window.showErrorMessage(
+        `Profiler: couldn't save profile: ${error instanceof Error ? error.message : String(error)}`,
       );
     }
   }
 
-  // View column of a tab already showing `uri` (across all groups, incl. background
-  // tabs), or undefined if it isn't open anywhere.
-  private findOpenColumn(uri: vscode.Uri): vscode.ViewColumn | undefined {
-    const target = uri.toString();
-    for (const group of vscode.window.tabGroups.all) {
-      for (const tab of group.tabs) {
-        if (tab.input instanceof vscode.TabInputText && tab.input.uri.toString() === target) {
-          return group.viewColumn;
-        }
+}
+
+// Ctrl/Cmd+click in the flame graph: open the function's source at `line` (1-based, as
+// carried in the model). Absolute paths open directly; relative paths resolve against the
+// first workspace folder. Shared by the live panel and the .vamigaprofile editor.
+export async function openProfilerSource(file: string, line: number, toSide?: boolean): Promise<void> {
+  try {
+    let uri: vscode.Uri | undefined;
+    if (path.isAbsolute(file)) {
+      uri = vscode.Uri.file(file);
+    } else {
+      const folder = vscode.workspace.workspaceFolders?.[0];
+      if (folder) uri = vscode.Uri.joinPath(folder.uri, file);
+    }
+    if (!uri) return;
+    const doc = await vscode.workspace.openTextDocument(uri);
+    const l = Math.max(0, line - 1);
+    // Reveal an editor that already has this file open rather than opening a new one; only
+    // fall back to a fresh editor (beside when Alt-clicked) otherwise.
+    const existing = findOpenColumn(uri);
+    await vscode.window.showTextDocument(doc, {
+      // As in the old extension: select the whole line, and keep focus on the profiler so
+      // you can keep clicking through functions.
+      selection: new vscode.Range(l, 0, l + 1, 0),
+      viewColumn: existing ?? (toSide ? vscode.ViewColumn.Beside : undefined),
+      preserveFocus: true,
+    });
+  } catch (error) {
+    vscode.window.showWarningMessage(
+      `Profiler: couldn't open ${file}: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+}
+
+// View column of a tab already showing `uri` (across all groups, incl. background tabs),
+// or undefined if it isn't open anywhere.
+function findOpenColumn(uri: vscode.Uri): vscode.ViewColumn | undefined {
+  const target = uri.toString();
+  for (const group of vscode.window.tabGroups.all) {
+    for (const tab of group.tabs) {
+      if (tab.input instanceof vscode.TabInputText && tab.input.uri.toString() === target) {
+        return group.viewColumn;
       }
     }
-    return undefined;
   }
+  return undefined;
+}
 
-  private getHtmlContent(webview: vscode.Webview): string {
-    const scriptUri = webview.asWebviewUri(
-      vscode.Uri.joinPath(this.extensionUri, "out", "profilerViewer.js"),
-    );
-    const styleUri = webview.asWebviewUri(
-      vscode.Uri.joinPath(this.extensionUri, "out", "profilerViewer.css"),
-    );
-    const codiconsUri = webview.asWebviewUri(
-      vscode.Uri.joinPath(this.extensionUri, "node_modules", "@vscode/codicons", "dist", "codicon.css"),
-    );
+// The profiler webview's HTML, shared by the live panel and the .vamigaprofile editor.
+// `mode` is a property of which host created the webview, so it's baked into the markup
+// (read by the webview at init) rather than carried per-message — that way it holds even
+// if the model never arrives (e.g. a file that fails to load still hides Capture/Save).
+export function getProfilerHtml(webview: vscode.Webview, extensionUri: vscode.Uri, mode: "live" | "file"): string {
+  const scriptUri = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, "out", "profilerViewer.js"));
+  const styleUri = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, "out", "profilerViewer.css"));
+  const codiconsUri = webview.asWebviewUri(
+    vscode.Uri.joinPath(extensionUri, "node_modules", "@vscode/codicons", "dist", "codicon.css"),
+  );
 
-    return `<!DOCTYPE html>
+  return `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
@@ -158,9 +254,8 @@ export class ProfilerViewerProvider {
   <title>CPU Profiler</title>
 </head>
 <body>
-  <div id="root"></div>
+  <div id="root" data-mode="${mode}"></div>
   <script src="${scriptUri}"></script>
 </body>
 </html>`;
-  }
 }

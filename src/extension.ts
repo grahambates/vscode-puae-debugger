@@ -4,6 +4,7 @@ import { VAmiga } from "./vAmiga";
 import { MemoryViewerProvider } from "./memoryViewerProvider";
 import { StateViewerProvider } from "./stateViewerProvider";
 import { ProfilerViewerProvider } from "./profilerViewerProvider";
+import { ProfileEditorProvider } from "./profileEditorProvider";
 import { expressionRangeAt } from "./cExpressionEvaluator";
 
 /**
@@ -135,6 +136,15 @@ export function activate(context: vscode.ExtensionContext) {
           );
         }
       },
+    ),
+  );
+
+  // Register the read-only editor for .vamigaprofile files (opens the profiler webview).
+  context.subscriptions.push(
+    vscode.window.registerCustomEditorProvider(
+      ProfileEditorProvider.viewType,
+      new ProfileEditorProvider(context.extensionUri),
+      { webviewOptions: { retainContextWhenHidden: true }, supportsMultipleEditorsPerDocument: false },
     ),
   );
 

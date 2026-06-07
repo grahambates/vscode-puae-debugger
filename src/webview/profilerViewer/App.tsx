@@ -1,6 +1,6 @@
-import { useState, useEffect, useMemo, useCallback } from "react";
+import { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import "./App.css";
-import { IProfileModel, ProfilerOutboundMessage } from "../../shared/profilerTypes";
+import { IProfileModel, ProfilerOutboundMessage, ISymbol } from "../../shared/profilerTypes";
 import { FlameGraph } from "./FlameGraph";
 import { TimeView } from "./TimeView";
 import { createTopDownGraph } from "./topDownGraph";
@@ -19,6 +19,14 @@ export function App() {
   const [filterText, setFilterText] = useState("");
   const [caseSensitive, setCaseSensitive] = useState(false);
   const [useRegex, setUseRegex] = useState(false);
+  // "file" = a loaded .vamigaprofile (read-only): no live Capture/Save. The host bakes the
+  // mode into #root so it's known at init and holds even if no model ever arrives.
+  const [mode] = useState<"live" | "file">(() =>
+    document.getElementById("root")?.dataset.mode === "file" ? "file" : "live",
+  );
+  // Symbols are session-constant, so the host sends them only on the first capture; cache
+  // them here and merge into every model so the rest of the webview always sees model.symbols.
+  const symbolsRef = useRef<ISymbol[] | undefined>(undefined);
 
   useEffect(() => {
     vscode.postMessage({ command: "ready" });
@@ -28,7 +36,8 @@ export function App() {
     const handle = (event: MessageEvent) => {
       const m = event.data as ProfilerOutboundMessage;
       if (m.command === "captureResult") {
-        setModel(m.model);
+        if (m.model.symbols) symbolsRef.current = m.model.symbols;
+        setModel(symbolsRef.current ? { ...m.model, symbols: symbolsRef.current } : m.model);
         setError(null);
         setBusy(false);
       } else if (m.command === "showError") {
@@ -47,6 +56,8 @@ export function App() {
     setBusy(true);
     vscode.postMessage({ command: "capture" });
   };
+
+  const save = () => vscode.postMessage({ command: "saveProfile" });
 
   const openSource = useCallback(
     (file: string, line: number, toSide: boolean) =>
@@ -72,9 +83,16 @@ export function App() {
   return (
     <div className="profiler">
       <div className="toolbar">
-        <button onClick={capture} disabled={busy}>
-          {busy ? "Capturing…" : "Capture frame"}
-        </button>
+        {mode === "live" && (
+          <>
+            <button onClick={capture} disabled={busy}>
+              {busy ? "Capturing…" : "Capture frame"}
+            </button>
+            <button onClick={save} disabled={busy || !model} title="Save this capture to a .vamigaprofile file">
+              Save
+            </button>
+          </>
+        )}
         {model && (
           <>
             <div className="filter-box">

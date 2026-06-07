@@ -27,6 +27,18 @@
   ],
   "main": "./out/extension.js",
   "contributes": {
+    "customEditors": [
+      {
+        "viewType": "vamiga-debugger.profileEditor",
+        "displayName": "vAmiga Profile",
+        "selector": [
+          {
+            "filenamePattern": "*.vamigaprofile"
+          }
+        ],
+        "priority": "default"
+      }
+    ],
     "commands": [
       {
         "command": "vamiga-debugger.eof",

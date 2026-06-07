@@ -195,4 +195,12 @@ export interface OpenDocumentMessage {
   line: number;
   toSide?: boolean;
 }
-export type ProfilerInboundMessage = ReadyMessage | CaptureMessage | OpenDocumentMessage;
+// Save the current capture to a .vamigaprofile (the extension owns the dialog + write).
+export interface SaveProfileMessage {
+  command: "saveProfile";
+}
+export type ProfilerInboundMessage =
+  | ReadyMessage
+  | CaptureMessage
+  | OpenDocumentMessage
+  | SaveProfileMessage;
