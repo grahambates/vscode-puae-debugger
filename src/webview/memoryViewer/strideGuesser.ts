@@ -91,14 +91,51 @@ function verticalEdgeContinuity(img: number[][]): number {
   return total ? cont / total : 0;
 }
 
+/**
+ * Fraction of interior pixels whose four immediate neighbours (up/down/left/
+ * right) all share the same value. Real images tend to be dominated by large
+ * solid blocks of black or white; misalignment chops these blocks up into
+ * fragments and replaces them with diagonal noise, so this score drops
+ * sharply once the guessed width is wrong.
+ */
+function solidBlockScore(img: number[][]): number {
+  const h = img.length;
+  const w = img[0].length;
+  if (h < 3 || w < 3) {
+    return 0;
+  }
+
+  let solid = 0;
+  let total = 0;
+  for (let y = 1; y < h - 1; y++) {
+    for (let x = 1; x < w - 1; x++) {
+      const v = img[y][x];
+      if (
+        img[y - 1][x] === v &&
+        img[y + 1][x] === v &&
+        img[y][x - 1] === v &&
+        img[y][x + 1] === v
+      ) {
+        solid++;
+      }
+      total++;
+    }
+  }
+  return total ? solid / total : 0;
+}
+
 /** Weighted combination of all scores */
 function combinedScore(img: number[][]): number {
   const verticalCorrelationScore = verticalCorrelation(img);
   const columnVarianceScore = columnVariance(img);
   const verticalEdgeContinuityScore = verticalEdgeContinuity(img);
+  const solidBlockScoreValue = solidBlockScore(img);
   // Adjust weights if desired
   return (
-    verticalCorrelationScore + columnVarianceScore + verticalEdgeContinuityScore
+    verticalCorrelationScore +
+    columnVarianceScore +
+    verticalEdgeContinuityScore +
+    solidBlockScoreValue
   );
 }
 
