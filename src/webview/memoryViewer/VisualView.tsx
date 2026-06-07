@@ -25,6 +25,7 @@ export function VisualView({
   scrollResetTrigger,
 }: VisualViewProps) {
   const [bytesPerRow, setBytesPerRow] = useState<number>(40); // Default 40 bytes = 320 pixels
+  const [bytesPerRowInput, setBytesPerRowInput] = useState<string>("40"); // Raw text for the width input, may be incomplete while typing
   const [scale, setScale] = useState<number>(2);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -151,6 +152,11 @@ export function VisualView({
   useEffect(() => {
     requestedChunksRef.current.clear();
   }, [target.address]);
+
+  // Keep the width input text in sync when bytesPerRow changes from elsewhere (e.g. the Guess button)
+  useEffect(() => {
+    setBytesPerRowInput(String(bytesPerRow));
+  }, [bytesPerRow]);
 
   // Scroll handling: preserve byte address when bytesPerRow/scale changes, reset when target changes
   const prevBytesPerRowRef = useRef(bytesPerRow);
@@ -337,10 +343,23 @@ export function VisualView({
             type="number"
             min="1"
             max="256"
-            value={bytesPerRow}
-            onChange={(e) =>
-              setBytesPerRow(Math.max(1, parseInt(e.target.value) || 40))
-            }
+            value={bytesPerRowInput}
+            onChange={(e) => {
+              const text = e.target.value;
+              setBytesPerRowInput(text);
+
+              const parsed = parseInt(text, 10);
+              if (!isNaN(parsed) && parsed >= 1 && parsed <= 256) {
+                setBytesPerRow(parsed);
+              }
+            }}
+            onBlur={() => {
+              // If left empty or invalid, restore the text to the last valid value
+              const parsed = parseInt(bytesPerRowInput, 10);
+              if (isNaN(parsed) || parsed < 1 || parsed > 256) {
+                setBytesPerRowInput(String(bytesPerRow));
+              }
+            }}
           />
           <span className="visual-info-text">({bytesPerRow * 8} pixels)</span>
         </label>
