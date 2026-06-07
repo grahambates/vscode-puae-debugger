@@ -167,6 +167,10 @@ export interface IProfileModel {
 export interface CaptureResultMessage {
   command: "captureResult";
   model: IProfileModel;
+  // Webview-fetchable URI of the bulk binary blob (DMA grid + chip/slow snapshot), packed by
+  // packBulk. The big arrays go via the resource loader (fast) instead of postMessage (slow for
+  // binary); the webview fetches + decodes them and attaches dma/dmaSnapshot to the model.
+  bulkUri?: string;
 }
 export interface ProfilerErrorMessage {
   command: "showError";

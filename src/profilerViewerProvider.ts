@@ -4,6 +4,7 @@ import { VAmiga } from "./vAmiga";
 import { VamigaDebugAdapter } from "./vAmigaDebugAdapter";
 import { ProfilerManager } from "./profilerManager";
 import { encodeCapture } from "./vamigaProfile";
+import { packBulk } from "./profilerBulk";
 import { ProfileEditorProvider } from "./profileEditorProvider";
 import { ProfilerInboundMessage, ProfilerOutboundMessage, IProfileModel } from "./shared/profilerTypes";
 
@@ -26,9 +27,11 @@ export class ProfilerViewerProvider {
   private lastSaveData?: { elf: Uint8Array; programName: string; segmentOffsets: number[]; baseDir: string };
   private lastSaveAdapter?: VamigaDebugAdapter; // which session lastSaveData came from (read ELF once per session)
   private symbolsSent = false; // symbols are session-constant — send them only once per webview mount
+  private lastBulkUri?: string; // webview URI of the last capture's bulk blob (reused on webview reload)
 
   constructor(
     private readonly extensionUri: vscode.Uri,
+    private readonly storageUri: vscode.Uri, // writable dir (in localResourceRoots) for the bulk blob
     private readonly vAmiga: VAmiga,
   ) {
     this.manager = new ProfilerManager(this.vAmiga, () => {
@@ -43,6 +46,25 @@ export class ProfilerViewerProvider {
   public dispose(): void {
     this.panel?.dispose();
     this.panel = undefined;
+    void vscode.workspace.fs.delete(this.bulkFileUri()).then(undefined, () => undefined); // best-effort
+  }
+
+  private bulkFileUri(): vscode.Uri {
+    return vscode.Uri.joinPath(this.storageUri, "profiler-live-bulk.bin");
+  }
+
+  // Write the last capture's bulk binary (DMA grid + snapshot) to a temp file the webview can
+  // fetch (the fast resource path), returning its webview URI — or undefined if there's no DMA.
+  private async writeBulk(): Promise<string | undefined> {
+    const raw = this.manager.getLastRaw();
+    if (!raw || !this.panel) return undefined;
+    const bytes = packBulk(raw);
+    if (!bytes) return undefined;
+    await vscode.workspace.fs.createDirectory(this.storageUri);
+    const fileUri = this.bulkFileUri();
+    await vscode.workspace.fs.writeFile(fileUri, bytes);
+    // Cache-bust (same filename is overwritten each capture) so the fetch isn't served stale.
+    return `${this.panel.webview.asWebviewUri(fileUri)}?v=${Date.now()}`;
   }
 
   public async show(): Promise<void> {
@@ -55,7 +77,7 @@ export class ProfilerViewerProvider {
       ProfilerViewerProvider.viewType,
       "CPU Profiler",
       vscode.ViewColumn.Beside,
-      { enableScripts: true, retainContextWhenHidden: true },
+      { enableScripts: true, retainContextWhenHidden: true, localResourceRoots: [this.extensionUri, this.storageUri] },
     );
 
     this.panel.webview.html = getProfilerHtml(this.panel.webview, this.extensionUri, "live");
@@ -70,7 +92,7 @@ export class ProfilerViewerProvider {
       // (the button) always grabs a fresh frame.
       if (message.command === "ready") {
         this.symbolsSent = false; // fresh webview (first mount or reload) — it needs symbols again
-        if (this.lastModel) this.postResult(this.lastModel);
+        if (this.lastModel) this.postResult(this.lastModel, this.lastBulkUri);
         else await this.capture();
       } else if (message.command === "capture") {
         await this.capture();
@@ -88,14 +110,13 @@ export class ProfilerViewerProvider {
 
   // Post a capture result, including the (session-constant) symbol table only on the first
   // post to this webview; later captures omit it and the webview reuses what it cached.
-  private postResult(model: IProfileModel): void {
-    if (model.symbols && !this.symbolsSent) {
-      this.symbolsSent = true;
-      this.post({ command: "captureResult", model });
-    } else {
-      const { symbols: _symbols, ...rest } = model;
-      this.post({ command: "captureResult", model: rest });
-    }
+  private postResult(model: IProfileModel, bulkUri?: string): void {
+    // Strip the big arrays (the webview fetches them via bulkUri instead — postMessage is slow
+    // for binary) and the session-constant symbol table (after the first send).
+    const stripped: IProfileModel = { ...model, dma: undefined, dmaSnapshot: undefined };
+    if (this.symbolsSent) stripped.symbols = undefined;
+    else if (model.symbols) this.symbolsSent = true;
+    this.post({ command: "captureResult", model: stripped, bulkUri });
   }
 
   private async capture(): Promise<void> {
@@ -104,7 +125,8 @@ export class ProfilerViewerProvider {
       const model = await this.manager.capture(1);
       this.lastModel = model;
       await this.cacheSaveData();
-      this.postResult(model);
+      this.lastBulkUri = await this.writeBulk();
+      this.postResult(model, this.lastBulkUri);
     } catch (error) {
       this.post({
         command: "showError",
@@ -248,7 +270,7 @@ export function getProfilerHtml(webview: vscode.Webview, extensionUri: vscode.Ur
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${webview.cspSource} 'unsafe-inline'; font-src ${webview.cspSource}; script-src ${webview.cspSource};">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${webview.cspSource} 'unsafe-inline'; font-src ${webview.cspSource}; script-src ${webview.cspSource}; connect-src ${webview.cspSource};">
   <link href="${codiconsUri}" rel="stylesheet" id="vscode-codicon-stylesheet" />
   <link href="${styleUri}" rel="stylesheet" />
   <title>CPU Profiler</title>

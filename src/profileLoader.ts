@@ -10,7 +10,7 @@ import { sourceMapFromDwarf } from "./dwarfSourceMap";
 import { sourceMapFromHunks } from "./amigaHunkSourceMap";
 import { SourceMap } from "./sourceMap";
 import { decodeCapture, ProfileManifest } from "./vamigaProfile";
-import { buildModelFromCapture } from "./profilerManager";
+import { buildModelFromCapture, RawCapture } from "./profilerManager";
 import { IProfileModel } from "./shared/profilerTypes";
 
 const ELF_MAGIC = [0x7f, 0x45, 0x4c, 0x46]; // \x7fELF
@@ -29,7 +29,7 @@ export function buildSourceMapFromBundle(program: Uint8Array, manifest: ProfileM
   return sourceMapFromHunks(parseHunks(buf), segmentOffsets);
 }
 
-export function loadProfile(file: Uint8Array): { model: IProfileModel; manifest: ProfileManifest } {
+export function loadProfile(file: Uint8Array): { model: IProfileModel; raw: RawCapture; manifest: ProfileManifest } {
   const { raw, elf, manifest } = decodeCapture(file);
   if (!elf) {
     // The path+sha1 fallback (load the ELF from disk) is a future addition for the UI.
@@ -37,5 +37,5 @@ export function loadProfile(file: Uint8Array): { model: IProfileModel; manifest:
   }
   const sourceMap = buildSourceMapFromBundle(elf, manifest);
   const { model } = buildModelFromCapture(raw, sourceMap);
-  return { model, manifest };
+  return { model, raw, manifest };
 }

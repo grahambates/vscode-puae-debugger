@@ -1,6 +1,8 @@
 import { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import "./App.css";
-import { IProfileModel, ProfilerOutboundMessage, ISymbol } from "../../shared/profilerTypes";
+import { ProfilerOutboundMessage, ISymbol } from "../../shared/profilerTypes";
+import { unpackBulk } from "../../profilerBulk";
+import { setProfileModel, getProfileModel, useModelVersion } from "./modelStore";
 import { FlameGraph } from "./FlameGraph";
 import { TimeView } from "./TimeView";
 import { createTopDownGraph } from "./topDownGraph";
@@ -10,7 +12,9 @@ import { IRichFilter } from "./filter";
 const vscode = acquireVsCodeApi();
 
 export function App() {
-  const [model, setModel] = useState<IProfileModel | null>(null);
+  useModelVersion(); // re-render when the model changes (the model lives in modelStore, not state)
+  // eslint-disable-next-line react-hooks/purity -- model is read from an external store (modelStore)
+  const model = getProfileModel();
   const [error, setError] = useState<string | null>(null);
   // Starts busy: the extension auto-captures one frame as soon as we signal "ready",
   // so we show "Capturing…" immediately rather than the click-to-capture hint.
@@ -37,9 +41,29 @@ export function App() {
       const m = event.data as ProfilerOutboundMessage;
       if (m.command === "captureResult") {
         if (m.model.symbols) symbolsRef.current = m.model.symbols;
-        setModel(symbolsRef.current ? { ...m.model, symbols: symbolsRef.current } : m.model);
-        setError(null);
-        setBusy(false);
+        const base = symbolsRef.current ? { ...m.model, symbols: symbolsRef.current } : m.model;
+        const bulkUri = m.bulkUri;
+        if (!bulkUri) {
+          setProfileModel(base);
+          setError(null);
+          setBusy(false);
+          return;
+        }
+        // The big arrays (DMA grid + snapshot) arrive via a fast resource fetch, not postMessage.
+        void fetch(bulkUri)
+          .then((r) => r.arrayBuffer())
+          .then((buf) => {
+            const { dma, dmaSnapshot } = unpackBulk(buf);
+            setProfileModel({ ...base, dma, dmaSnapshot });
+          })
+          .catch((e) => {
+            console.warn("[profiler] bulk fetch failed:", e);
+            setProfileModel(base); // render without DMA rather than nothing
+          })
+          .finally(() => {
+            setError(null);
+            setBusy(false);
+          });
       } else if (m.command === "showError") {
         setError(m.error);
         setBusy(false);
@@ -135,7 +159,7 @@ export function App() {
       {error && <div className="error">{error}</div>}
       {model ? (
         <div className="split-pane">
-          <FlameGraph model={model} displayUnit={unit} filter={filter} onOpenSource={openSource} />
+          <FlameGraph displayUnit={unit} filter={filter} onOpenSource={openSource} />
           <div className="split-divider" />
           <TimeView data={dataTable} filter={filter} displayUnit={unit} timing={timing} onOpenSource={openSource} />
         </div>

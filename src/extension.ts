@@ -20,7 +20,9 @@ export function activate(context: vscode.ExtensionContext) {
   const vAmiga = new VAmiga(context.extensionUri);
   const memoryViewer = new MemoryViewerProvider(context.extensionUri, vAmiga);
   const stateViewer = new StateViewerProvider(context.extensionUri, vAmiga);
-  const profilerViewer = new ProfilerViewerProvider(context.extensionUri, vAmiga);
+  // Writable, webview-fetchable scratch dir for the profiler's bulk capture blobs.
+  const profilerStorage = context.globalStorageUri;
+  const profilerViewer = new ProfilerViewerProvider(context.extensionUri, profilerStorage, vAmiga);
 
   // Register the debug adapter
   context.subscriptions.push(
@@ -143,7 +145,7 @@ export function activate(context: vscode.ExtensionContext) {
   context.subscriptions.push(
     vscode.window.registerCustomEditorProvider(
       ProfileEditorProvider.viewType,
-      new ProfileEditorProvider(context.extensionUri),
+      new ProfileEditorProvider(context.extensionUri, profilerStorage),
       { webviewOptions: { retainContextWhenHidden: true }, supportsMultipleEditorsPerDocument: false },
     ),
   );

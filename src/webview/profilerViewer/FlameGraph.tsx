@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { PointerEvent as ReactPointerEvent } from "react";
-import { Category, ILocation, IProfileModel, DMA_WRITE, DMA_BYTE, DMA_HPOS, dmaIsCustomReg } from "../../shared/profilerTypes";
+import { Category, ILocation, DMA_WRITE, DMA_BYTE, DMA_HPOS, dmaIsCustomReg } from "../../shared/profilerTypes";
+import { getProfileModel } from "./modelStore";
 import { buildColumns, IColumn, IColumnLocation } from "./columns";
 import { binarySearch } from "./array";
 import { dataName, DisplayUnit, formatValue, scaleValue, Timing } from "./display";
@@ -127,16 +128,19 @@ const locText = (loc: ILocation): string | undefined =>
     : undefined;
 
 export function FlameGraph({
-  model,
   displayUnit,
   filter,
   onOpenSource,
 }: {
-  model: IProfileModel;
   displayUnit: DisplayUnit;
   filter: IRichFilter;
   onOpenSource: (file: string, line: number, toSide: boolean) => void;
 }) {
+  // The model is read from the external store (not a prop) so its large arrays never go through
+  // React's serializer. FlameGraph is only rendered when a model exists (App guards it), and it
+  // re-renders with its parent, so this read is non-null and current.
+  // eslint-disable-next-line react-hooks/purity -- model is read from an external store (modelStore)
+  const model = getProfileModel()!;
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const canvasWrapRef = useRef<HTMLDivElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
