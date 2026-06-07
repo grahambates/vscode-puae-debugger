@@ -218,12 +218,13 @@ export class MemoryViewerProvider {
     panel: MemoryViewerPanel,
   ): Promise<ViewMode | undefined> {
     // Check custom register names
-    if (panel.addressInput.match(/^COP[1-2]LC/)) {
+    if (panel.addressInput.match(/^COP[1-2]LC/i)) {
       return "copper";
     }
     if (
-      panel.addressInput.match(/^BPL[1-8]PT/) ||
-      panel.addressInput.match(/^SPR[1-8]PT/)
+      panel.addressInput.match(/^BPL[1-8]PT/i) ||
+      panel.addressInput.match(/^SPR[1-8]PT/i) ||
+      panel.addressInput.match(/screen/i)
     ) {
       return "visual";
     }
