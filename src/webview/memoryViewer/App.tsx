@@ -256,6 +256,14 @@ export function App() {
     });
   }, []);
 
+  const exportMemory = useCallback(({ address, size }: MemoryRange) => {
+    vscode.postMessage({
+      command: "exportMemory",
+      address,
+      size,
+    });
+  }, []);
+
   const handleRegionChange: React.FormEventHandler<HTMLSelectElement> = (e) => {
     const addressValue = Number((e.target as HTMLSelectElement).value);
     if (isNaN(addressValue)) {
@@ -316,6 +324,12 @@ export function App() {
           </ul>
         </div>
         <vscode-button onClick={goToAddress}>Go</vscode-button>
+        <vscode-button
+          onClick={() => target && exportMemory(target)}
+          disabled={!target}
+        >
+          Save to Disk...
+        </vscode-button>
       </div>
 
       {error ? <div className="error">{error}</div> : ""}

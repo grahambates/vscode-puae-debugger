@@ -5,6 +5,7 @@ import { formatHex } from "./numbers";
 import { EvaluateResultType } from "./evaluateManager";
 import {
   ChangeAddressMessage,
+  ExportMemoryMessage,
   GetSuggestionsMessage,
   GoToSourceMessage,
   MemoryDataMessage,
@@ -243,6 +244,14 @@ export class MemoryViewerProvider {
           }
           break;
         }
+        case "exportMemory": {
+          const exportMemoryMsg = message as ExportMemoryMessage;
+          await this.exportMemory(
+            exportMemoryMsg.address,
+            exportMemoryMsg.size,
+          );
+          break;
+        }
         case "getSuggestions": {
           const getSuggestionsMsg = message as GetSuggestionsMessage;
           const adapter = VamigaDebugAdapter.getActiveAdapter();
@@ -452,6 +461,44 @@ export class MemoryViewerProvider {
       console.error(
         `Failed to fetch memory chunk at ${address.toString(16)}:`,
         err,
+      );
+    }
+  }
+
+  private async exportMemory(address: number, size: number): Promise<void> {
+    const sizeInput = await vscode.window.showInputBox({
+      title: "Save Memory to Disk",
+      prompt: "Number of bytes to export",
+      value: String(size > 0 ? size : 256),
+      validateInput: (value) => {
+        const parsed = Number(value);
+        return Number.isInteger(parsed) && parsed > 0
+          ? undefined
+          : "Enter a positive integer";
+      },
+    });
+    if (sizeInput === undefined) {
+      return;
+    }
+    const byteCount = Number(sizeInput);
+
+    const uri = await vscode.window.showSaveDialog({
+      defaultUri: vscode.Uri.file(`memory_${formatHex(address)}.bin`),
+      filters: { "Binary files": ["bin"], "All files": ["*"] },
+    });
+    if (!uri) {
+      return;
+    }
+
+    try {
+      const data = await this.vAmiga.readMemory(address, byteCount);
+      await vscode.workspace.fs.writeFile(uri, data);
+      vscode.window.showInformationMessage(
+        `Saved ${byteCount} bytes from ${formatHex(address)} to ${uri.fsPath}`,
+      );
+    } catch (err) {
+      vscode.window.showErrorMessage(
+        `Failed to save memory: ${err instanceof Error ? err.message : err}`,
       );
     }
   }

@@ -64,6 +64,12 @@ export interface GoToSourceMessage {
   address: number;
 }
 
+export interface ExportMemoryMessage {
+  command: "exportMemory";
+  address: number;
+  size: number; // 0 means "unknown length — prompt the user"
+}
+
 export interface ToggleLiveUpdateMessage {
   command: "toggleLiveUpdate";
   enabled: boolean;
