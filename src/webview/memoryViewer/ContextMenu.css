@@ -1,0 +1,39 @@
+.context-menu {
+  position: fixed;
+  z-index: 1000;
+  min-width: 160px;
+  background-color: var(--vscode-menu-background, #1f1f1f);
+  color: var(--vscode-menu-foreground, #cccccc);
+  border: 1px solid var(--vscode-menu-border, #454545);
+  border-radius: 5px;
+  padding: 4px;
+  box-shadow: 0 2px 8px var(--vscode-widget-shadow, rgba(0, 0, 0, 0.36));
+  font-family: var(--vscode-font-family);
+  font-size: var(--vscode-font-size);
+}
+
+.context-menu-item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: none;
+  border: none;
+  color: inherit;
+  font: inherit;
+  padding: 4px 8px;
+  border-radius: 3px;
+  cursor: pointer;
+}
+
+.context-menu-item:hover,
+.context-menu-item:focus-visible {
+  background-color: var(--vscode-menu-selectionBackground, #0078d4);
+  color: var(--vscode-menu-selectionForeground, #ffffff);
+  outline: none;
+}
+
+.context-menu-separator {
+  height: 1px;
+  margin: 4px 6px;
+  background-color: var(--vscode-menu-separatorBackground, #454545);
+}

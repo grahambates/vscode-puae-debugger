@@ -2,6 +2,7 @@ import React, { useState, useRef, useEffect, useCallback } from "react";
 import "./HexDump.css";
 import { MemoryRange } from "../../shared/memoryViewerTypes";
 import { Tooltip, TooltipProps } from "./Tooltip";
+import { ContextMenu, ContextMenuItem } from "./ContextMenu";
 import { convertToSigned, formatAddress } from "./lib";
 
 export interface HexDumpProps {
@@ -16,8 +17,6 @@ export interface HexDumpProps {
   colorCodeBytes: boolean;
 }
 
-type DisplayFormat = "byte" | "word" | "longword";
-
 /**
  * Reference to Hex or ASCII value drawn on canvas
  * used for tooltips and context menus
@@ -25,9 +24,7 @@ type DisplayFormat = "byte" | "word" | "longword";
 interface RenderedValue {
   value: number;
   address: number;
-  hex: string;
   isAscii: boolean;
-  byteLength: 1 | 2 | 4;
   // Canvas location
   x: number;
   y: number;
@@ -70,8 +67,12 @@ export function HexDump({
   scrollResetTrigger,
   colorCodeBytes,
 }: HexDumpProps) {
-  const [format, setFormat] = useState<DisplayFormat>("word");
   const [tooltip, setTooltip] = useState<TooltipProps | null>(null);
+  const [contextMenu, setContextMenu] = useState<{
+    x: number;
+    y: number;
+    address: number;
+  } | null>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const [visibleRange, setVisibleRange] = useState({
@@ -91,6 +92,61 @@ export function HexDump({
   const viewableRangeTotal = alignedRangeEnd - alignedRangeStart;
 
   const totalLines = Math.ceil(viewableRangeTotal / BYTES_PER_LINE);
+
+  // Get byte from loaded chunks - shared by canvas rendering and tooltips
+  const getByte = useCallback(
+    (address: number): number | undefined => {
+      const chunkOffset = Math.floor(address / CHUNK_SIZE) * CHUNK_SIZE;
+      const chunk = memoryChunks.get(chunkOffset);
+      if (!chunk) {
+        return undefined;
+      }
+      // Calculate byte index within chunk (handle negative offsets)
+      const byteIndex = address - chunkOffset;
+      return byteIndex >= 0 && byteIndex < chunk.length
+        ? chunk[byteIndex]
+        : undefined;
+    },
+    [memoryChunks],
+  );
+
+  // Byte/word/longword interpretations of the value(s) starting at an
+  // address - shared by the tooltip and the "Copy ..." context menu items.
+  // Word/longword reads must start at an even address on the 68000, so an
+  // odd address can only ever be interpreted as a byte; sizes are also only
+  // included when their underlying bytes are loaded.
+  const getValueInterpretations = useCallback(
+    (address: number): { label: string; value: number; size: 1 | 2 | 4 }[] => {
+      const interpretations: { label: string; value: number; size: 1 | 2 | 4 }[] =
+        [];
+
+      const byte0 = getByte(address);
+      if (byte0 === undefined) return interpretations;
+      interpretations.push({ label: "Byte", value: byte0, size: 1 });
+
+      if (address % 2 !== 0) return interpretations;
+
+      const byte1 = getByte(address + 1);
+      if (byte1 === undefined) return interpretations;
+      interpretations.push({
+        label: "Word",
+        value: (byte0 << 8) | byte1,
+        size: 2,
+      });
+
+      const byte2 = getByte(address + 2);
+      const byte3 = getByte(address + 3);
+      if (byte2 === undefined || byte3 === undefined) return interpretations;
+      interpretations.push({
+        label: "Longword",
+        value: ((byte0 << 24) | (byte1 << 16) | (byte2 << 8) | byte3) >>> 0,
+        size: 4,
+      });
+
+      return interpretations;
+    },
+    [getByte],
+  );
 
   // Render canvas
   const renderCanvas = useCallback(() => {
@@ -112,37 +168,20 @@ export function HexDump({
       styles.getPropertyValue("--vscode-editor-selectionBackground").trim() ||
       "rgba(0, 120, 215, 0.3)";
 
-    // Helper to get byte from chunks
-    const getByte = (address: number): number | undefined => {
-      const chunkOffset = Math.floor(address / CHUNK_SIZE) * CHUNK_SIZE;
-      const chunk = memoryChunks.get(chunkOffset);
-      if (!chunk) {
-        return undefined;
-      }
-      // Calculate byte index within chunk (handle negative offsets)
-      const byteIndex = address - chunkOffset;
-      return byteIndex >= 0 && byteIndex < chunk.length
-        ? chunk[byteIndex]
-        : undefined;
-    };
-
     // Don't render if no visible range
     if (visibleRange.firstLine >= visibleRange.lastLine) return;
 
     const canvasHeight =
       (visibleRange.lastLine - visibleRange.firstLine) * LINE_HEIGHT;
 
-    // Calculate minimum width based on actual rendering positions
-    const bytesPerValue = format === "byte" ? 1 : format === "word" ? 2 : 4;
-    const hexCharsPerValue = bytesPerValue * 2;
-    const valuesPerLine = BYTES_PER_LINE / bytesPerValue;
-
-    // Calculate hex section width (same logic as rendering loop)
+    // Calculate hex section width (same logic as rendering loop) - always
+    // grouped by individual bytes, since longwords/words can start at any
+    // even address and a fixed grouping would misrepresent the data
     let hexWidth = 0;
-    for (let j = 0; j < valuesPerLine; j++) {
-      hexWidth += hexCharsPerValue * CHAR_WIDTH + CHAR_WIDTH; // value + space
-      if (format === "byte" && (j === 3 || j === 7 || j === 11)) {
-        hexWidth += CHAR_WIDTH; // extra spacing for byte groups
+    for (let j = 0; j < BYTES_PER_LINE; j++) {
+      hexWidth += 2 * CHAR_WIDTH + CHAR_WIDTH; // value + space
+      if (j === 3 || j === 7 || j === 11) {
+        hexWidth += CHAR_WIDTH; // extra spacing every 4 bytes (longword groups)
       }
     }
 
@@ -163,6 +202,12 @@ export function HexDump({
 
     const renderedValues: RenderedValue[] = [];
 
+    // Range of addresses covered by the target symbol/address, used to dim
+    // values outside it. Default to at least one byte if size is 0/undefined.
+    const targetEndAddress = target.address + (target.size || 1);
+    const isInTarget = (byteAddress: number) =>
+      byteAddress >= target.address && byteAddress < targetEndAddress;
+
     for (let i = visibleRange.firstLine; i < visibleRange.lastLine; i++) {
       // Calculate line address (aligned to 16-byte boundaries)
       const lineAddress = alignedRangeStart + i * BYTES_PER_LINE;
@@ -174,125 +219,75 @@ export function HexDump({
       const addrStr = lineAddress.toString(16).toUpperCase().padStart(6, "0");
       ctx.fillText(addrStr, ADDRESS_OFFSET, y + 2);
 
-      // Draw hex values
+      // Draw hex values - always grouped by individual bytes, since
+      // words/longwords can start at any even address and a fixed grouping
+      // would misrepresent the data
       let x = HEX_OFFSET;
-      for (let j = 0; j < valuesPerLine; j++) {
-        const byteAddress = lineAddress + j * bytesPerValue;
+      for (let j = 0; j < BYTES_PER_LINE; j++) {
+        const byteAddress = lineAddress + j;
         const inRange =
           byteAddress >= range.address &&
           byteAddress < range.address + range.size;
-        const hexLength = format === "byte" ? 2 : format === "word" ? 4 : 8;
 
-        let xInc = hexLength * CHAR_WIDTH + CHAR_WIDTH;
-        // Extra spacing for byte groups
-        if (format === "byte" && (j === 3 || j === 7 || j === 11)) {
+        let xInc = 2 * CHAR_WIDTH + CHAR_WIDTH;
+        // Extra spacing every 4 bytes (longword groups)
+        if (j === 3 || j === 7 || j === 11) {
           xInc += CHAR_WIDTH;
         }
 
-        const byte0 = getByte(byteAddress);
-        if (byte0 === undefined || !inRange) {
+        const value = getByte(byteAddress);
+        if (value === undefined || !inRange) {
           // Show placeholder for missing data
           ctx.fillStyle = commentColor;
-          ctx.fillText(".".repeat(hexLength), x, y + 2);
+          ctx.fillText("..", x, y + 2);
           x += xInc;
           continue;
         }
 
-        if (byte0 !== undefined) {
-          let value: number;
+        const hex = value.toString(16).toUpperCase().padStart(2, "0");
 
-          switch (format) {
-            case "byte":
-              value = byte0;
-              break;
-            case "word": {
-              const byte1 = getByte(byteAddress + 1);
-              value = byte1 !== undefined ? (byte0 << 8) | byte1 : byte0;
-              break;
-            }
-            case "longword": {
-              const byte1l = getByte(byteAddress + 1);
-              const byte2 = getByte(byteAddress + 2);
-              const byte3 = getByte(byteAddress + 3);
-              if (
-                byte1l !== undefined &&
-                byte2 !== undefined &&
-                byte3 !== undefined
-              ) {
-                value = (byte0 << 24) | (byte1l << 16) | (byte2 << 8) | byte3;
-                value = value >>> 0;
-              } else {
-                value = byte0;
-              }
-              break;
-            }
-          }
-
-          const hex = value.toString(16).toUpperCase().padStart(hexLength, "0");
-
-          // Check if this value overlaps with the symbol range
-          // Default to at least one value if symbolLength is 0 or undefined
-          const targetEndAddress =
-            target.address + (target.size || bytesPerValue);
-          const valueEndAddress = byteAddress + bytesPerValue;
-
-          // Values outside the target symbol/address are dimmed instead of
-          // highlighting the target with a background, which makes the text
-          // (and any nibble color-coding) harder to read
-          const isTargetAddress =
-            byteAddress < targetEndAddress && valueEndAddress > target.address;
-
-          // Highlight changed bytes - check if ANY byte in this value changed within 1 second
-          let mostRecentChange = 0;
-          for (let b = 0; b < bytesPerValue; b++) {
-            const changeTime = changedBytesRef.current.get(byteAddress + b);
-            if (changeTime) {
-              mostRecentChange = Math.max(mostRecentChange, changeTime);
-            }
-          }
-          const isChanged =
-            mostRecentChange > 0 && Date.now() - mostRecentChange < 1000;
-          if (isChanged) {
-            // Fade from yellow to transparent
-            const elapsed = Date.now() - mostRecentChange;
-            const changeFactor = 1 - elapsed / 1000; // 1.0 at start, 0.0 at end
-            const opacity = 0.5 * changeFactor;
-            ctx.fillStyle = `rgba(255, 200, 0, ${opacity})`;
-            ctx.fillRect(x, y, hex.length * CHAR_WIDTH, LINE_HEIGHT);
-          }
-
-          if (colorCodeBytes) {
-            if (value === 0) {
-              // Zero values are common "filler" - call them out distinctly rather
-              // than lumping them in with the 0x0-led nibble color
-              ctx.fillStyle = commentColor;
-            } else {
-              const nibble = (value >>> ((hexLength - 1) * 4)) & 0xf;
-              ctx.fillStyle = NIBBLE_COLORS[nibble];
-            }
-          } else {
-            ctx.fillStyle = foregroundColor;
-          }
-          // Dim values outside the target symbol/address rather than
-          // highlighting the target, so the text (and color-coding) stays legible
-          ctx.globalAlpha = isTargetAddress ? 1 : 0.5;
-          ctx.fillText(hex, x, y + 2);
-          ctx.globalAlpha = 1;
-
-          // Store hex value
-          renderedValues.push({
-            value,
-            address: byteAddress,
-            hex,
-            x,
-            y,
-            width: hex.length * CHAR_WIDTH,
-            isAscii: false,
-            byteLength: bytesPerValue,
-          });
-
-          x += xInc;
+        // Highlight changed bytes within the last second
+        const mostRecentChange = changedBytesRef.current.get(byteAddress) ?? 0;
+        const isChanged =
+          mostRecentChange > 0 && Date.now() - mostRecentChange < 1000;
+        if (isChanged) {
+          // Fade from yellow to transparent
+          const elapsed = Date.now() - mostRecentChange;
+          const changeFactor = 1 - elapsed / 1000; // 1.0 at start, 0.0 at end
+          const opacity = 0.5 * changeFactor;
+          ctx.fillStyle = `rgba(255, 200, 0, ${opacity})`;
+          ctx.fillRect(x, y, hex.length * CHAR_WIDTH, LINE_HEIGHT);
         }
+
+        if (colorCodeBytes) {
+          if (value === 0) {
+            // Zero values are common "filler" - call them out distinctly rather
+            // than lumping them in with the 0x0-led nibble color
+            ctx.fillStyle = commentColor;
+          } else {
+            const nibble = (value >>> 4) & 0xf;
+            ctx.fillStyle = NIBBLE_COLORS[nibble];
+          }
+        } else {
+          ctx.fillStyle = foregroundColor;
+        }
+        // Dim values outside the target symbol/address rather than
+        // highlighting the target, so the text (and color-coding) stays legible
+        ctx.globalAlpha = isInTarget(byteAddress) ? 1 : 0.5;
+        ctx.fillText(hex, x, y + 2);
+        ctx.globalAlpha = 1;
+
+        // Store hex value
+        renderedValues.push({
+          value,
+          address: byteAddress,
+          x,
+          y,
+          width: hex.length * CHAR_WIDTH,
+          isAscii: false,
+        });
+
+        x += xInc;
       }
 
       // Draw ASCII - calculate offset based on actual hex width
@@ -320,12 +315,7 @@ export function HexDump({
           byte >= 32 && byte <= 126 ? String.fromCharCode(byte) : ".";
 
         // Highlight symbol range in ASCII section
-        const targetEndAddress = target.address + (target.size || 1);
-        const valueEndAddress = byteAddress + 1;
-        const isTargetAddress =
-          byteAddress < targetEndAddress && valueEndAddress > target.address;
-
-        if (isTargetAddress) {
+        if (isInTarget(byteAddress)) {
           ctx.fillStyle = selectionBackground;
           ctx.fillRect(asciiX, y, CHAR_WIDTH, LINE_HEIGHT);
         }
@@ -337,12 +327,10 @@ export function HexDump({
         renderedValues.push({
           value: byte,
           address: lineAddress + j,
-          hex: byte.toString(16).toUpperCase().padStart(2, "0"),
           x: asciiX,
           y,
           width: CHAR_WIDTH,
           isAscii: true,
-          byteLength: 1,
         });
 
         asciiX += CHAR_WIDTH;
@@ -353,7 +341,7 @@ export function HexDump({
     }
 
     renderedValuesRef.current = renderedValues;
-  }, [alignedRangeStart, format, colorCodeBytes, target, memoryChunks, visibleRange, range]);
+  }, [alignedRangeStart, colorCodeBytes, target, getByte, visibleRange, range]);
 
   // Clear requested on address
   useEffect(() => {
@@ -502,30 +490,49 @@ export function HexDump({
     renderCanvas();
   }, [renderCanvas]);
 
-  // Handle mouse move for tooltips
-  const handleMouseMove = (e: React.MouseEvent<HTMLCanvasElement>) => {
+  // Locate the rendered hex/ASCII value under a given page coordinate, used
+  // by the tooltip, click-to-source and context menu handlers
+  const findRenderedValueAt = (
+    clientX: number,
+    clientY: number,
+  ): RenderedValue | undefined => {
     const canvas = canvasRef.current;
-    if (!canvas) return;
+    if (!canvas) return undefined;
 
     const rect = canvas.getBoundingClientRect();
-    const x = e.clientX - rect.left;
-    const y = e.clientY - rect.top;
+    const x = clientX - rect.left;
+    const y = clientY - rect.top;
 
-    // Find byte under cursor
-    const byteInfo = renderedValuesRef.current.find(
+    return renderedValuesRef.current.find(
       (info) =>
         x >= info.x &&
         x <= info.x + info.width &&
         y >= info.y &&
         y <= info.y + LINE_HEIGHT,
     );
+  };
+
+  // Handle mouse move for tooltips
+  const handleMouseMove = (e: React.MouseEvent<HTMLCanvasElement>) => {
+    const byteInfo = findRenderedValueAt(e.clientX, e.clientY);
 
     if (byteInfo) {
-      const signedValue = convertToSigned(byteInfo.value, byteInfo.byteLength);
-      const text =
-        signedValue === byteInfo.value
-          ? byteInfo.value.toString()
-          : `${byteInfo.value.toString()}, ${signedValue.toString()}`;
+      const interpretations = getValueInterpretations(byteInfo.address);
+
+      const text = (
+        <>
+          {interpretations.map(({ label, value, size }) => {
+            const signedValue = convertToSigned(value, size);
+            return (
+              <div key={label}>
+                {label}: {value}
+                {signedValue !== value ? `, ${signedValue}` : ""}
+              </div>
+            );
+          })}
+        </>
+      );
+
       setTooltip({
         x: e.clientX,
         y: e.clientY,
@@ -541,62 +548,54 @@ export function HexDump({
     setTooltip(null);
   };
 
-  const handleContextMenu = (e: React.MouseEvent<HTMLCanvasElement>) => {
-    e.preventDefault();
-
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-
-    const rect = canvas.getBoundingClientRect();
-    const x = e.clientX - rect.left;
-    const y = e.clientY - rect.top;
-
-    // Find byte under cursor
-    const byteInfo = renderedValuesRef.current.find(
-      (info) =>
-        x >= info.x &&
-        x <= info.x + info.width &&
-        y >= info.y &&
-        y <= info.y + LINE_HEIGHT,
-    );
-
-    if (byteInfo) {
-      // Copy hex value to clipboard
-      const hexValue = "0x" + byteInfo.hex;
-      navigator.clipboard
-        .writeText(hexValue)
-        .then(() => {
-          // Show brief feedback
+  const copyToClipboard = (value: number, byteLength: 1 | 2 | 4) => {
+    const hexValue =
+      "0x" + value.toString(16).toUpperCase().padStart(byteLength * 2, "0");
+    navigator.clipboard
+      .writeText(hexValue)
+      .then(() => {
+        if (contextMenu) {
           setTooltip({
-            x: e.clientX,
-            y: e.clientY,
+            x: contextMenu.x,
+            y: contextMenu.y,
             text: `Copied: ${hexValue}`,
           });
           setTimeout(() => setTooltip(null), 1000);
-        })
-        .catch((err) => {
-          console.error("Failed to copy to clipboard:", err);
-        });
+        }
+      })
+      .catch((err) => {
+        console.error("Failed to copy to clipboard:", err);
+      });
+  };
+
+  const buildContextMenuItems = (address: number): ContextMenuItem[] => {
+    const items: ContextMenuItem[] = getValueInterpretations(address).map(
+      ({ label, value, size }) => ({
+        label: `Copy ${label}`,
+        onSelect: () => copyToClipboard(value, size),
+      }),
+    );
+
+    items.push({ separator: true });
+    items.push({
+      label: "Go to Source",
+      onSelect: () => onGoToSource(address),
+    });
+
+    return items;
+  };
+
+  const handleContextMenu = (e: React.MouseEvent<HTMLCanvasElement>) => {
+    e.preventDefault();
+
+    const byteInfo = findRenderedValueAt(e.clientX, e.clientY);
+    if (byteInfo) {
+      setContextMenu({ x: e.clientX, y: e.clientY, address: byteInfo.address });
     }
   };
 
   const handleClick = (e: React.MouseEvent<HTMLCanvasElement>) => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-
-    const rect = canvas.getBoundingClientRect();
-    const x = e.clientX - rect.left;
-    const y = e.clientY - rect.top;
-
-    // Find byte under cursor
-    const byteInfo = renderedValuesRef.current.find(
-      (info) =>
-        x >= info.x &&
-        x <= info.x + info.width &&
-        y >= info.y &&
-        y <= info.y + LINE_HEIGHT,
-    );
-
+    const byteInfo = findRenderedValueAt(e.clientX, e.clientY);
     if (byteInfo) {
       onGoToSource(byteInfo.address);
     }
@@ -604,19 +603,6 @@ export function HexDump({
 
   return (
     <div className="hexDump">
-      <div className="hex-controls">
-        <label>
-          Format:
-          <select
-            value={format}
-            onChange={(e) => setFormat(e.target.value as DisplayFormat)}
-          >
-            <option value="byte">Byte (8-bit)</option>
-            <option value="word">Word (16-bit)</option>
-            <option value="longword">Longword (32-bit)</option>
-          </select>
-        </label>
-      </div>
       <div className="hex-scroll-container" ref={containerRef}>
         <div
           style={{
@@ -638,6 +624,14 @@ export function HexDump({
         </div>
       </div>
       {tooltip && <Tooltip {...tooltip} />}
+      {contextMenu && (
+        <ContextMenu
+          x={contextMenu.x}
+          y={contextMenu.y}
+          items={buildContextMenuItems(contextMenu.address)}
+          onClose={() => setContextMenu(null)}
+        />
+      )}
     </div>
   );
 }
