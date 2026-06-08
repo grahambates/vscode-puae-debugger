@@ -26,6 +26,7 @@ export interface UpdateStateMessageProps {
   availableRegions?: MemoryRegion[];
   liveUpdate?: boolean;
   colorCodeHexBytes?: boolean;
+  watchedAddress?: number | null;
   error?: string | null;
 }
 
@@ -68,6 +69,11 @@ export interface ExportMemoryMessage {
   command: "exportMemory";
   address: number;
   size: number; // 0 means "unknown length — prompt the user"
+}
+
+export interface ToggleWatchpointMessage {
+  command: "toggleWatchpoint";
+  address: number;
 }
 
 export interface ToggleLiveUpdateMessage {

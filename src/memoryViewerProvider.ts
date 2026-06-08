@@ -15,6 +15,7 @@ import {
   Suggestion,
   SuggestionsDataMessage,
   ToggleLiveUpdateMessage,
+  ToggleWatchpointMessage,
   UpdateStateMessage,
   UpdateStateMessageProps,
   ViewMode,
@@ -29,6 +30,7 @@ interface MemoryViewerPanel {
   dereferencePointer: boolean;
   liveUpdateInterval?: NodeJS.Timeout;
   fetchedChunks: Set<number>;
+  watchedAddress?: number;
 }
 
 const LIVE_UPDATE_RATE_MS = 1000 / 25;
@@ -136,6 +138,7 @@ export class MemoryViewerProvider {
   public dispose(): void {
     for (const panel of this.panels.values()) {
       this.stopLiveUpdate(panel);
+      this.removeWatchpoint(panel);
       panel.webviewPanel.dispose();
     }
     this.panels.clear();
@@ -173,6 +176,7 @@ export class MemoryViewerProvider {
 
     webviewPanel.onDidDispose(() => {
       this.stopLiveUpdate(panel);
+      this.removeWatchpoint(panel);
       this.panels.delete(panelId);
     });
 
@@ -242,6 +246,11 @@ export class MemoryViewerProvider {
               vscode.TextEditorRevealType.InCenter,
             );
           }
+          break;
+        }
+        case "toggleWatchpoint": {
+          const toggleWatchpointMsg = message as ToggleWatchpointMessage;
+          await this.toggleWatchpoint(panel, toggleWatchpointMsg.address);
           break;
         }
         case "exportMemory": {
@@ -432,6 +441,14 @@ export class MemoryViewerProvider {
         if (viewMode) {
           this.sendStateToWebview(panel.webviewPanel, { viewMode });
         }
+
+        // A memory-viewer watchpoint only lives as long as the current view -
+        // navigating elsewhere removes it so nothing is left behind to find.
+        if (panel.watchedAddress !== undefined) {
+          this.vAmiga.removeWatchpoint(panel.watchedAddress);
+          panel.watchedAddress = undefined;
+          this.sendStateToWebview(panel.webviewPanel, { watchedAddress: null });
+        }
       }
       panel.target = target;
     } catch (err) {
@@ -500,6 +517,49 @@ export class MemoryViewerProvider {
       vscode.window.showErrorMessage(
         `Failed to save memory: ${err instanceof Error ? err.message : err}`,
       );
+    }
+  }
+
+  /**
+   * Sets or clears the panel's watchpoint at the given address.
+   *
+   * A memory-viewer watchpoint only lives as long as the current view: there's
+   * at most one per panel, and it's automatically removed when the user
+   * navigates to a different address or closes the panel (see `updateContent`
+   * and the panel dispose handlers). This keeps the feature self-cleaning -
+   * nothing can be left behind for the user to hunt down.
+   */
+  private async toggleWatchpoint(
+    panel: MemoryViewerPanel,
+    address: number,
+  ): Promise<void> {
+    try {
+      if (panel.watchedAddress === address) {
+        this.vAmiga.removeWatchpoint(address);
+        panel.watchedAddress = undefined;
+        this.sendStateToWebview(panel.webviewPanel, { watchedAddress: null });
+      } else {
+        if (panel.watchedAddress !== undefined) {
+          this.vAmiga.removeWatchpoint(panel.watchedAddress);
+        }
+        this.vAmiga.setWatchpoint(address);
+        panel.watchedAddress = address;
+        this.sendStateToWebview(panel.webviewPanel, { watchedAddress: address });
+      }
+    } catch (err) {
+      vscode.window.showErrorMessage(
+        `Failed to set watchpoint: ${err instanceof Error ? err.message : err}`,
+      );
+    }
+  }
+
+  /**
+   * Removes the panel's watchpoint, if any (used when the panel is closed).
+   */
+  private removeWatchpoint(panel: MemoryViewerPanel): void {
+    if (panel.watchedAddress !== undefined) {
+      this.vAmiga.removeWatchpoint(panel.watchedAddress);
+      panel.watchedAddress = undefined;
     }
   }
 

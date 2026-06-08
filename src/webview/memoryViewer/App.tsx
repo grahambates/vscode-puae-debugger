@@ -41,6 +41,9 @@ export function App() {
   const [viewMode, setViewMode] = useState<ViewMode>("hex");
   const [liveUpdate, setLiveUpdate] = useState<boolean>(false);
   const [colorCodeHexBytes, setColorCodeHexBytes] = useState<boolean>(true);
+  const [watchedAddress, setWatchedAddress] = useState<number | undefined>(
+    undefined,
+  );
   const [selectedRegion, setSelectedRegion] = useState<
     MemoryRegion | undefined
   >();
@@ -82,6 +85,9 @@ export function App() {
         setLiveUpdate(pendingUpdate.liveUpdate);
       if (pendingUpdate.colorCodeHexBytes !== undefined) {
         setColorCodeHexBytes(pendingUpdate.colorCodeHexBytes);
+      }
+      if (pendingUpdate.watchedAddress !== undefined) {
+        setWatchedAddress(pendingUpdate.watchedAddress ?? undefined);
       }
       if (pendingUpdate.error !== undefined) {
         setError(pendingUpdate.error);
@@ -264,6 +270,13 @@ export function App() {
     });
   }, []);
 
+  const toggleWatchpoint = useCallback((address: number) => {
+    vscode.postMessage({
+      command: "toggleWatchpoint",
+      address,
+    });
+  }, []);
+
   const handleRegionChange: React.FormEventHandler<HTMLSelectElement> = (e) => {
     const addressValue = Number((e.target as HTMLSelectElement).value);
     if (isNaN(addressValue)) {
@@ -401,6 +414,8 @@ export function App() {
                 onGoToSource={goToSource}
                 scrollResetTrigger={scrollResetTrigger}
                 colorCodeBytes={colorCodeHexBytes}
+                watchedAddress={watchedAddress}
+                onToggleWatchpoint={toggleWatchpoint}
               />
             )}
           </vscode-tab-panel>

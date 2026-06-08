@@ -15,6 +15,8 @@ export interface HexDumpProps {
   onGoToSource: (address: number) => void;
   scrollResetTrigger?: number;
   colorCodeBytes: boolean;
+  watchedAddress?: number;
+  onToggleWatchpoint: (address: number) => void;
 }
 
 /**
@@ -66,6 +68,8 @@ export function HexDump({
   onGoToSource,
   scrollResetTrigger,
   colorCodeBytes,
+  watchedAddress,
+  onToggleWatchpoint,
 }: HexDumpProps) {
   const [tooltip, setTooltip] = useState<TooltipProps | null>(null);
   const [contextMenu, setContextMenu] = useState<{
@@ -167,6 +171,11 @@ export function HexDump({
     const selectionBackground =
       styles.getPropertyValue("--vscode-editor-selectionBackground").trim() ||
       "rgba(0, 120, 215, 0.3)";
+    // Same red used for breakpoint dots in the editor gutter, so a watched
+    // byte reads as "this is a breakpoint-like marker"
+    const watchpointColor =
+      styles.getPropertyValue("--vscode-debugIcon-breakpointForeground").trim() ||
+      "#e51400";
 
     // Don't render if no visible range
     if (visibleRange.firstLine >= visibleRange.lastLine) return;
@@ -277,6 +286,13 @@ export function HexDump({
         ctx.fillText(hex, x, y + 2);
         ctx.globalAlpha = 1;
 
+        // Outline the watched byte so the user can find it again to remove it
+        if (byteAddress === watchedAddress) {
+          ctx.strokeStyle = watchpointColor;
+          ctx.lineWidth = 1;
+          ctx.strokeRect(x + 0.5, y + 0.5, hex.length * CHAR_WIDTH, LINE_HEIGHT - 1);
+        }
+
         // Store hex value
         renderedValues.push({
           value,
@@ -323,6 +339,13 @@ export function HexDump({
         ctx.fillStyle = commentColor;
         ctx.fillText(char, asciiX, y + 2);
 
+        // Outline the watched byte so the user can find it again to remove it
+        if (byteAddress === watchedAddress) {
+          ctx.strokeStyle = watchpointColor;
+          ctx.lineWidth = 1;
+          ctx.strokeRect(asciiX + 0.5, y + 0.5, CHAR_WIDTH, LINE_HEIGHT - 1);
+        }
+
         // Store ASCII value
         renderedValues.push({
           value: byte,
@@ -341,7 +364,7 @@ export function HexDump({
     }
 
     renderedValuesRef.current = renderedValues;
-  }, [alignedRangeStart, colorCodeBytes, target, getByte, visibleRange, range]);
+  }, [alignedRangeStart, colorCodeBytes, target, getByte, visibleRange, range, watchedAddress]);
 
   // Clear requested on address
   useEffect(() => {
@@ -580,6 +603,12 @@ export function HexDump({
     items.push({
       label: "Go to Source",
       onSelect: () => onGoToSource(address),
+    });
+
+    items.push({ separator: true });
+    items.push({
+      label: address === watchedAddress ? "Remove Watchpoint" : "Set Watchpoint",
+      onSelect: () => onToggleWatchpoint(address),
     });
 
     return items;
