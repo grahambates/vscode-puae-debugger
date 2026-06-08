@@ -6,6 +6,7 @@ import {
 } from "./cpuDisassembler";
 import "./DisassemblyView.css";
 import { MemoryRange } from "../../shared/memoryViewerTypes";
+import { drawMnemonic, drawOperands } from "./lib";
 
 export interface DisassemblyViewProps {
   target: MemoryRange;
@@ -213,12 +214,22 @@ export function DisassemblyView({
       "#858585";
     const backgroundColor =
       styles.getPropertyValue("--vscode-editor-background").trim() || "#1e1e1e";
-    const keywordColor =
-      styles.getPropertyValue("--vscode-symbolIcon-keywordForeground").trim() ||
-      "#569cd6";
+    // Color mnemonics and operand tokens using the same theme colors VS Code
+    // uses for typed expressions in the Debug Variables/Watch/Hover views -
+    // these carry the right semantics ("this is a number", "this is a name")
+    // and are tuned by theme authors to read clearly against the editor text.
+    const mnemonicColor =
+      styles.getPropertyValue("--vscode-debugTokenExpression-type").trim() ||
+      "#4ec9b0";
     const numberColor =
-      styles.getPropertyValue("--vscode-symbolIcon-numberForeground").trim() ||
+      styles.getPropertyValue("--vscode-debugTokenExpression-number").trim() ||
       "#b5cea8";
+    const registerColor =
+      styles.getPropertyValue("--vscode-debugTokenExpression-name").trim() ||
+      "#c586c0";
+    const foregroundColor =
+      styles.getPropertyValue("--vscode-editor-foreground").trim() ||
+      "#d4d4d4";
 
     const canvasHeight = (visibleRange.lastLine - visibleRange.firstLine) * LINE_HEIGHT;
     const canvasWidth = containerRef.current?.clientWidth || 800;
@@ -268,13 +279,18 @@ export function DisassemblyView({
       x += 220;
 
       // Mnemonic
-      ctx.fillStyle = keywordColor;
-      ctx.fillText(instr.mnemonic.padEnd(8), x, y + 2);
+      drawMnemonic(ctx, instr.mnemonic, x, y + 2, {
+        mnemonic: mnemonicColor,
+        qualifier: mnemonicColor,
+      });
       x += 80;
 
       // Operands
-      ctx.fillStyle = numberColor;
-      ctx.fillText(instr.operands, x, y + 2);
+      drawOperands(ctx, instr.operands, x, y + 2, {
+        register: registerColor,
+        number: numberColor,
+        text: foregroundColor,
+      });
       x += 200;
 
       // Comment (symbol information)
