@@ -214,11 +214,47 @@ export class AmigaHunkLoader {
    * Sets up registers and jumps to program start
    */
   async setupProgramEntry(program: LoadedProgram): Promise<void> {
+    await this.setupReturnTrampoline();
     // Jump pc to entrypoint
     await this.vAmiga.jump(program.entryPoint);
-    // TODO: set initial register state, stack etc?
     console.log(
       `Program entry point set to $${program.entryPoint.toString(16)}`,
+    );
+  }
+
+  /**
+   * fastLoad injects the program directly with no DOS process to return to,
+   * so an `rts` at the end of the program would pop a garbage return address
+   * and crash the emulator. Instead, build a synthetic call frame at the top
+   * of the user stack: a return address pointing at a small landing-pad
+   * routine that shuts down DMA and interrupts and then spins forever -
+   * mimicking what a real `jsr` into the program would have left behind, so
+   * `rts` lands somewhere harmless when the program exits.
+   *
+   * This only touches USP, not the active/supervisor stack - interrupts and
+   * other supervisor-mode code keep using their own stack untouched.
+   */
+  private async setupReturnTrampoline(): Promise<void> {
+    // move.w #$7FFF, $DFF096   ; DMACON - disable all DMA channels
+    // move.w #$7FFF, $DFF09A   ; INTENA - disable all interrupts
+    // bra.s  *                 ; spin forever
+    const TRAMPOLINE_CODE = Buffer.from([
+      0x33, 0xfc, 0x7f, 0xff, 0x00, 0xdf, 0xf0, 0x96, 0x33, 0xfc, 0x7f, 0xff,
+      0x00, 0xdf, 0xf0, 0x9a, 0x60, 0xfe,
+    ]);
+
+    const cpuInfo = await this.vAmiga.getCpuInfo();
+    const usp = Number(cpuInfo.usp);
+
+    const trampolineAddress = usp - TRAMPOLINE_CODE.length; // landing pad, ending at the original usp
+    const returnAddress = trampolineAddress - 4; // synthetic return address, popped by rts
+
+    await this.vAmiga.writeMemory(trampolineAddress, TRAMPOLINE_CODE);
+    await this.vAmiga.poke32(returnAddress, trampolineAddress);
+    await this.vAmiga.setRegister("usp", returnAddress);
+
+    console.log(
+      `Set up return trampoline at $${trampolineAddress.toString(16)}, usp=$${returnAddress.toString(16)}`,
     );
   }
 }
