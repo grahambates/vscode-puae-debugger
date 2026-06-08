@@ -249,6 +249,13 @@ export function App() {
     });
   }, []);
 
+  const goToSource = useCallback((address: number) => {
+    vscode.postMessage({
+      command: "goToSource",
+      address,
+    });
+  }, []);
+
   const handleRegionChange: React.FormEventHandler<HTMLSelectElement> = (e) => {
     const addressValue = Number((e.target as HTMLSelectElement).value);
     if (isNaN(addressValue)) {
@@ -377,6 +384,7 @@ export function App() {
                 symbolLengths={symbolLengths}
                 memoryChunks={memoryChunks}
                 onRequestMemory={requestMemory}
+                onGoToSource={goToSource}
                 scrollResetTrigger={scrollResetTrigger}
                 colorCodeBytes={colorCodeHexBytes}
               />

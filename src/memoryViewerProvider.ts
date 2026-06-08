@@ -6,6 +6,7 @@ import { EvaluateResultType } from "./evaluateManager";
 import {
   ChangeAddressMessage,
   GetSuggestionsMessage,
+  GoToSourceMessage,
   MemoryDataMessage,
   MemoryRange,
   MemoryRegion,
@@ -222,6 +223,26 @@ export class MemoryViewerProvider {
             this.stopLiveUpdate(panel);
           }
           break;
+        case "goToSource": {
+          const goToSourceMsg = message as GoToSourceMessage;
+          const sourceMap = VamigaDebugAdapter.getActiveAdapter()?.getSourceMap();
+          const location = sourceMap?.lookupAddress(goToSourceMsg.address);
+          if (location) {
+            const document = await vscode.workspace.openTextDocument(
+              location.path,
+            );
+            const editor = await vscode.window.showTextDocument(document, {
+              preview: false,
+            });
+            const position = new vscode.Position(location.line - 1, 0);
+            editor.selection = new vscode.Selection(position, position);
+            editor.revealRange(
+              new vscode.Range(position, position),
+              vscode.TextEditorRevealType.InCenter,
+            );
+          }
+          break;
+        }
         case "getSuggestions": {
           const getSuggestionsMsg = message as GetSuggestionsMessage;
           const adapter = VamigaDebugAdapter.getActiveAdapter();

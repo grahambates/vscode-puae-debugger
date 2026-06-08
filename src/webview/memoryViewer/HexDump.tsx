@@ -11,6 +11,7 @@ export interface HexDumpProps {
   symbolLengths: Record<string, number>;
   memoryChunks: Map<number, Uint8Array>;
   onRequestMemory: (range: MemoryRange) => void;
+  onGoToSource: (address: number) => void;
   scrollResetTrigger?: number;
   colorCodeBytes: boolean;
 }
@@ -65,6 +66,7 @@ export function HexDump({
   symbolLengths,
   memoryChunks,
   onRequestMemory,
+  onGoToSource,
   scrollResetTrigger,
   colorCodeBytes,
 }: HexDumpProps) {
@@ -578,6 +580,28 @@ export function HexDump({
     }
   };
 
+  const handleClick = (e: React.MouseEvent<HTMLCanvasElement>) => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+
+    const rect = canvas.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const y = e.clientY - rect.top;
+
+    // Find byte under cursor
+    const byteInfo = renderedValuesRef.current.find(
+      (info) =>
+        x >= info.x &&
+        x <= info.x + info.width &&
+        y >= info.y &&
+        y <= info.y + LINE_HEIGHT,
+    );
+
+    if (byteInfo) {
+      onGoToSource(byteInfo.address);
+    }
+  };
+
   return (
     <div className="hexDump">
       <div className="hex-controls">
@@ -605,6 +629,7 @@ export function HexDump({
             ref={canvasRef}
             onMouseMove={handleMouseMove}
             onMouseLeave={handleMouseLeave}
+            onClick={handleClick}
             onContextMenu={handleContextMenu}
             style={{
               top: `${visibleRange.firstLine * LINE_HEIGHT}px`,

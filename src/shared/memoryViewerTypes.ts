@@ -59,6 +59,11 @@ export interface RequeestMemoryMessage {
   size: number;
 }
 
+export interface GoToSourceMessage {
+  command: "goToSource";
+  address: number;
+}
+
 export interface ToggleLiveUpdateMessage {
   command: "toggleLiveUpdate";
   enabled: boolean;
