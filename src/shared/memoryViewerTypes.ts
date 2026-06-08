@@ -25,6 +25,7 @@ export interface UpdateStateMessageProps {
   symbolLengths?: Record<string, number>;
   availableRegions?: MemoryRegion[];
   liveUpdate?: boolean;
+  colorCodeHexBytes?: boolean;
   error?: string | null;
 }
 

@@ -62,6 +62,7 @@ export class MemoryViewerProvider {
 
   private panels = new Map<string, MemoryViewerPanel>();
   private emulatorMessageListener?: vscode.Disposable;
+  private configurationListener?: vscode.Disposable;
   private isEmulatorRunning = false;
   private panelCounter = 0;
 
@@ -100,6 +101,31 @@ export class MemoryViewerProvider {
         }
       },
     );
+
+    // Push the new value to all open panels when the user changes the setting
+    this.configurationListener = vscode.workspace.onDidChangeConfiguration(
+      (e) => {
+        if (
+          e.affectsConfiguration(
+            "vamiga-debugger.memoryViewer.colorCodeHexBytes",
+          )
+        ) {
+          const colorCodeHexBytes = this.getColorCodeHexBytes();
+          for (const panel of this.panels.values()) {
+            this.sendStateToWebview(panel.webviewPanel, { colorCodeHexBytes });
+          }
+        }
+      },
+    );
+  }
+
+  /**
+   * Reads the configured "color-code hex bytes" preference for the memory viewer
+   */
+  private getColorCodeHexBytes(): boolean {
+    return vscode.workspace
+      .getConfiguration("vamiga-debugger")
+      .get<boolean>("memoryViewer.colorCodeHexBytes", true);
   }
 
   /**
@@ -112,6 +138,7 @@ export class MemoryViewerProvider {
     }
     this.panels.clear();
     this.emulatorMessageListener?.dispose();
+    this.configurationListener?.dispose();
   }
 
   /**
@@ -160,6 +187,7 @@ export class MemoryViewerProvider {
             availableRegions: this.getAvailableRegions(adapter),
             symbols: adapter.getSourceMap().getSymbols(),
             symbolLengths: adapter.getSourceMap().getSymbolLengths(),
+            colorCodeHexBytes: this.getColorCodeHexBytes(),
           };
           // Send initial state once
           panel.webviewPanel.webview.postMessage(msg);

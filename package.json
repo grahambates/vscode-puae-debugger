@@ -127,6 +127,11 @@
           ],
           "default": "beside",
           "description": "Default position for the Vamiga emulator window"
+        },
+        "vamiga-debugger.memoryViewer.colorCodeHexBytes": {
+          "type": "boolean",
+          "default": true,
+          "description": "Color-code byte/word/longword values in the memory viewer's Hex view by their leading hex digit, making patterns in the data easier to spot at a glance"
         }
       }
     },

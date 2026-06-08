@@ -12,6 +12,7 @@ export interface HexDumpProps {
   memoryChunks: Map<number, Uint8Array>;
   onRequestMemory: (range: MemoryRange) => void;
   scrollResetTrigger?: number;
+  colorCodeBytes: boolean;
 }
 
 type DisplayFormat = "byte" | "word" | "longword";
@@ -51,6 +52,12 @@ const ASCII_WIDTH =
 
 const dpr = window.devicePixelRatio || 1;
 
+// One distinct hue per nibble value (0-F), evenly spread for maximum differentiation
+const NIBBLE_COLORS = Array.from(
+  { length: 16 },
+  (_, n) => `hsl(${(n * 360) / 16}, 70%, 65%)`,
+);
+
 export function HexDump({
   target,
   range,
@@ -59,6 +66,7 @@ export function HexDump({
   memoryChunks,
   onRequestMemory,
   scrollResetTrigger,
+  colorCodeBytes,
 }: HexDumpProps) {
   const [format, setFormat] = useState<DisplayFormat>("word");
   const [tooltip, setTooltip] = useState<TooltipProps | null>(null);
@@ -226,13 +234,11 @@ export function HexDump({
             target.address + (target.size || bytesPerValue);
           const valueEndAddress = byteAddress + bytesPerValue;
 
-          // Selection background for target symbol/address
+          // Values outside the target symbol/address are dimmed instead of
+          // highlighting the target with a background, which makes the text
+          // (and any nibble color-coding) harder to read
           const isTargetAddress =
             byteAddress < targetEndAddress && valueEndAddress > target.address;
-          if (isTargetAddress) {
-            ctx.fillStyle = selectionBackground;
-            ctx.fillRect(x, y, hex.length * CHAR_WIDTH, LINE_HEIGHT);
-          }
 
           // Highlight changed bytes - check if ANY byte in this value changed within 1 second
           let mostRecentChange = 0;
@@ -253,8 +259,23 @@ export function HexDump({
             ctx.fillRect(x, y, hex.length * CHAR_WIDTH, LINE_HEIGHT);
           }
 
-          ctx.fillStyle = foregroundColor;
+          if (colorCodeBytes) {
+            if (value === 0) {
+              // Zero values are common "filler" - call them out distinctly rather
+              // than lumping them in with the 0x0-led nibble color
+              ctx.fillStyle = commentColor;
+            } else {
+              const nibble = (value >>> ((hexLength - 1) * 4)) & 0xf;
+              ctx.fillStyle = NIBBLE_COLORS[nibble];
+            }
+          } else {
+            ctx.fillStyle = foregroundColor;
+          }
+          // Dim values outside the target symbol/address rather than
+          // highlighting the target, so the text (and color-coding) stays legible
+          ctx.globalAlpha = isTargetAddress ? 1 : 0.5;
           ctx.fillText(hex, x, y + 2);
+          ctx.globalAlpha = 1;
 
           // Store hex value
           renderedValues.push({
@@ -330,7 +351,7 @@ export function HexDump({
     }
 
     renderedValuesRef.current = renderedValues;
-  }, [alignedRangeStart, format, target, memoryChunks, visibleRange, range]);
+  }, [alignedRangeStart, format, colorCodeBytes, target, memoryChunks, visibleRange, range]);
 
   // Clear requested on address
   useEffect(() => {

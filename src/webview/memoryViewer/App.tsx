@@ -40,6 +40,7 @@ export function App() {
   const [dereferencePointer, setDereferencePointer] = useState(false);
   const [viewMode, setViewMode] = useState<ViewMode>("hex");
   const [liveUpdate, setLiveUpdate] = useState<boolean>(false);
+  const [colorCodeHexBytes, setColorCodeHexBytes] = useState<boolean>(true);
   const [selectedRegion, setSelectedRegion] = useState<
     MemoryRegion | undefined
   >();
@@ -79,6 +80,9 @@ export function App() {
       }
       if (pendingUpdate.liveUpdate !== undefined)
         setLiveUpdate(pendingUpdate.liveUpdate);
+      if (pendingUpdate.colorCodeHexBytes !== undefined) {
+        setColorCodeHexBytes(pendingUpdate.colorCodeHexBytes);
+      }
       if (pendingUpdate.error !== undefined) {
         setError(pendingUpdate.error);
       }
@@ -374,6 +378,7 @@ export function App() {
                 memoryChunks={memoryChunks}
                 onRequestMemory={requestMemory}
                 scrollResetTrigger={scrollResetTrigger}
+                colorCodeBytes={colorCodeHexBytes}
               />
             )}
           </vscode-tab-panel>
