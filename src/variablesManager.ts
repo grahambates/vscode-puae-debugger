@@ -1,5 +1,6 @@
 import { DebugProtocol } from "@vscode/debugprotocol";
-import { CpuInfo, VAmiga } from "./vAmiga";
+import { CpuInfo } from "./vAmiga";
+import { Emulator } from "./emulator";
 import { SourceMap, Location, LocalLocation, TypeDescriptor, FieldDescriptor } from "./sourceMap";
 import { Handles, Scope } from "@vscode/debugadapter";
 import { vectors, customAddresses } from "./hardware";
@@ -51,7 +52,7 @@ export class VariablesManager {
    * @param sourceMap Source map for symbol resolution and address formatting
    */
   constructor(
-    private vAmiga: VAmiga,
+    private vAmiga: Emulator,
     private sourceMap: SourceMap,
   ) {}
 

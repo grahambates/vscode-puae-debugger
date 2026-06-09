@@ -3,7 +3,7 @@
  * Loads Amiga executables directly into memory bypassing floppy emulation
  */
 
-import { VAmiga } from "./vAmiga";
+import { Emulator } from "./emulator";
 import { Hunk, HunkType, RelocInfo32 } from "./amigaHunkParser";
 import {
   AmigaMemoryMapper,
@@ -14,7 +14,7 @@ import {
 export class AmigaHunkLoader {
   private memoryMapper: AmigaMemoryMapper;
 
-  constructor(private vAmiga: VAmiga) {
+  constructor(private vAmiga: Emulator) {
     this.memoryMapper = new AmigaMemoryMapper(vAmiga);
   }
 
@@ -202,7 +202,7 @@ export class AmigaHunkLoader {
    * Load and relocate hunks from binary data
    */
   static async loadFromHunks(
-    vAmiga: VAmiga,
+    vAmiga: Emulator,
     hunks: Hunk[],
   ): Promise<LoadedProgram> {
     const loader = new AmigaHunkLoader(vAmiga);
@@ -215,6 +215,7 @@ export class AmigaHunkLoader {
    */
   async setupProgramEntry(program: LoadedProgram): Promise<void> {
     await this.setupReturnTrampoline();
+    await this.clearInterruptMask();
     // Jump pc to entrypoint
     await this.vAmiga.jump(program.entryPoint);
     console.log(
@@ -223,16 +224,35 @@ export class AmigaHunkLoader {
   }
 
   /**
+   * fastLoad injects the program at whatever point Kickstart's boot sequence
+   * happened to be paused, inheriting its SR - including the CPU interrupt
+   * priority mask (SR bits 8-10). If that mask is non-zero, the 68000 itself
+   * blocks any interrupt at or below that level (VERTB/Copper/Blitter are
+   * level 3, CIA-A PORTS is level 2) regardless of INTENA/INTREQ, so programs
+   * relying on those interrupts for their main loop never wake up. Clear the
+   * mask so the program starts with all interrupt levels enabled, matching a
+   * normal AmigaDOS program launch.
+   */
+  private async clearInterruptMask(): Promise<void> {
+    const cpuInfo = await this.vAmiga.getCpuInfo();
+    const sr = Number(cpuInfo.sr) & ~0x0700;
+    await this.vAmiga.setRegister("sr", sr);
+  }
+
+  /**
    * fastLoad injects the program directly with no DOS process to return to,
    * so an `rts` at the end of the program would pop a garbage return address
    * and crash the emulator. Instead, build a synthetic call frame at the top
-   * of the user stack: a return address pointing at a small landing-pad
-   * routine that shuts down DMA and interrupts and then spins forever -
-   * mimicking what a real `jsr` into the program would have left behind, so
-   * `rts` lands somewhere harmless when the program exits.
+   * of the *currently active* stack: a return address pointing at a small
+   * landing-pad routine that shuts down DMA and interrupts and then spins
+   * forever - mimicking what a real `jsr` into the program would have left
+   * behind, so `rts` lands somewhere harmless when the program exits.
    *
-   * This only touches USP, not the active/supervisor stack - interrupts and
-   * other supervisor-mode code keep using their own stack untouched.
+   * "Currently active stack" means A7 as reported by getCpuInfo(), which is
+   * the live stack pointer regardless of CPU mode - USP while in user mode,
+   * SSP while in supervisor mode. `rts` always pops from A7, so building the
+   * frame there (rather than the dormant USP shadow register when the CPU is
+   * in supervisor mode) is what actually makes the landing pad reachable.
    */
   private async setupReturnTrampoline(): Promise<void> {
     // move.w #$7FFF, $DFF096   ; DMACON - disable all DMA channels
@@ -244,17 +264,17 @@ export class AmigaHunkLoader {
     ]);
 
     const cpuInfo = await this.vAmiga.getCpuInfo();
-    const usp = Number(cpuInfo.usp);
+    const sp = Number(cpuInfo.a7);
 
-    const trampolineAddress = usp - TRAMPOLINE_CODE.length; // landing pad, ending at the original usp
+    const trampolineAddress = sp - TRAMPOLINE_CODE.length; // landing pad, ending at the original a7
     const returnAddress = trampolineAddress - 4; // synthetic return address, popped by rts
 
     await this.vAmiga.writeMemory(trampolineAddress, TRAMPOLINE_CODE);
     await this.vAmiga.poke32(returnAddress, trampolineAddress);
-    await this.vAmiga.setRegister("usp", returnAddress);
+    await this.vAmiga.setRegister("a7", returnAddress);
 
     console.log(
-      `Set up return trampoline at $${trampolineAddress.toString(16)}, usp=$${returnAddress.toString(16)}`,
+      `Set up return trampoline at $${trampolineAddress.toString(16)}, a7=$${returnAddress.toString(16)}`,
     );
   }
 }
@@ -263,7 +283,7 @@ export class AmigaHunkLoader {
  * Utility function to load a program with full setup
  */
 export async function loadAmigaProgram(
-  vAmiga: VAmiga,
+  vAmiga: Emulator,
   hunks: Hunk[],
 ): Promise<LoadedProgram> {
   console.log(`Loading Amiga program with ${hunks.length} hunks`);

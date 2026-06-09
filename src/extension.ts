@@ -3,6 +3,7 @@ import { VamigaDebugAdapter } from "./vAmigaDebugAdapter";
 import { VAmiga } from "./vAmiga";
 import { MemoryViewerProvider } from "./memoryViewerProvider";
 import { StateViewerProvider } from "./stateViewerProvider";
+import { PuaeEmulator } from "./puaeEmulator";
 
 /**
  * Activates the VAmiga debugger VS Code extension.
@@ -15,8 +16,17 @@ import { StateViewerProvider } from "./stateViewerProvider";
  */
 export function activate(context: vscode.ExtensionContext) {
   const vAmiga = new VAmiga(context.extensionUri);
-  const memoryViewer = new MemoryViewerProvider(context.extensionUri, vAmiga);
-  const stateViewer = new StateViewerProvider(context.extensionUri, vAmiga);
+  const puaeEmulator = new PuaeEmulator(context.extensionUri);
+  const memoryViewer = new MemoryViewerProvider(
+    context.extensionUri,
+    vAmiga,
+    puaeEmulator,
+  );
+  const stateViewer = new StateViewerProvider(
+    context.extensionUri,
+    vAmiga,
+    puaeEmulator,
+  );
 
   // Register the debug adapter
   context.subscriptions.push(
@@ -24,8 +34,12 @@ export function activate(context: vscode.ExtensionContext) {
       createDebugAdapterDescriptor(
         _session: vscode.DebugSession,
       ): vscode.ProviderResult<vscode.DebugAdapterDescriptor> {
+        const backend =
+          _session.configuration.emulatorBackend === "puae"
+            ? puaeEmulator
+            : vAmiga;
         return new vscode.DebugAdapterInlineImplementation(
-          new VamigaDebugAdapter(vAmiga),
+          new VamigaDebugAdapter(backend),
         );
       },
     }),
@@ -119,11 +133,19 @@ export function activate(context: vscode.ExtensionContext) {
     ),
   );
 
+  // Register PUAE/ami9000 emulator webview command
+  context.subscriptions.push(
+    vscode.commands.registerCommand("vamiga-debugger.openPuae", () => {
+      puaeEmulator.open();
+    }),
+  );
+
   // Clean up viewers on deactivation
   context.subscriptions.push({
     dispose: () => {
       memoryViewer.dispose();
       stateViewer.dispose();
+      puaeEmulator.dispose();
     },
   });
 }

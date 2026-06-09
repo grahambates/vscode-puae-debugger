@@ -3,6 +3,7 @@ import * as vscode from "vscode";
 import { existsSync, readFileSync } from "fs";
 import { dirname, join } from "path";
 import { u32, u16, u8 } from "./numbers";
+import { Emulator } from "./emulator";
 
 export interface CpuInfo {
   pc: string;
@@ -70,6 +71,64 @@ export interface MemoryInfo {
   chipMask: string;
   cpuMemSrc: MemSrc[];
   agnusMemSrc: MemSrc[];
+}
+
+/**
+ * Returns true if the given address is backed by memory, based on a
+ * (possibly absent) cached memory map. Shared by VAmiga and PuaeEmulator.
+ */
+export function isValidMemoryAddress(
+  memoryInfo: MemoryInfo | undefined,
+  address: number,
+): boolean {
+  if (memoryInfo) {
+    // Check mem type of bank
+    const bank = address >>> 16;
+    const type = memoryInfo.cpuMemSrc[bank];
+    return type !== MemSrc.NONE;
+  } else {
+    // Any 24 bit address
+    return address >= 0 && address < 0x1000_0000;
+  }
+}
+
+/**
+ * Get the contiguous memory region bounds for a given address, based on a
+ * (possibly absent) cached memory map. Shared by VAmiga and PuaeEmulator.
+ * Returns the start and end addresses of the continuous block of the same memory type.
+ */
+export function getMemoryRegionForAddress(
+  memoryInfo: MemoryInfo | undefined,
+  address: number,
+): { start: number; end: number } | null {
+  if (!memoryInfo) {
+    // Default to 16MB address space
+    return { start: 0, end: 0x1000_0000 };
+  }
+
+  const bank = address >>> 16;
+  const type = memoryInfo.cpuMemSrc[bank];
+
+  if (type === MemSrc.NONE) {
+    return null; // Invalid address
+  }
+
+  // Find the start of this memory region (scan backwards)
+  let startBank = bank;
+  while (startBank > 0 && memoryInfo.cpuMemSrc[startBank - 1] === type) {
+    startBank--;
+  }
+
+  // Find the end of this memory region (scan forwards)
+  let endBank = bank;
+  while (endBank < 255 && memoryInfo.cpuMemSrc[endBank + 1] === type) {
+    endBank++;
+  }
+
+  return {
+    start: startBank << 16,
+    end: ((endBank + 1) << 16) - 1,
+  };
 }
 
 export interface CpuTraceItem {
@@ -315,7 +374,7 @@ const defaultOptions: OpenOptions = {
   enableMouse: true,
 };
 
-export class VAmiga {
+export class VAmiga implements Emulator {
   public static readonly viewType = "vamiga-debugger.webview";
   private panel?: vscode.WebviewPanel;
   private pendingRpcs = new Map<
@@ -788,15 +847,7 @@ export class VAmiga {
   }
 
   public isValidAddress(address: number): boolean {
-    if (this.memoryInfo) {
-      // Check mem type of bank
-      const bank = address >>> 16;
-      const type = this.memoryInfo.cpuMemSrc[bank];
-      return type !== MemSrc.NONE;
-    } else {
-      // Any 24 bit address
-      return address >= 0 && address < 0x1000_0000;
-    }
+    return isValidMemoryAddress(this.memoryInfo, address);
   }
 
   /**
@@ -806,34 +857,7 @@ export class VAmiga {
   public getMemoryRegion(
     address: number,
   ): { start: number; end: number } | null {
-    if (!this.memoryInfo) {
-      // Default to 16MB address space
-      return { start: 0, end: 0x1000_0000 };
-    }
-
-    const bank = address >>> 16;
-    const type = this.memoryInfo.cpuMemSrc[bank];
-
-    if (type === MemSrc.NONE) {
-      return null; // Invalid address
-    }
-
-    // Find the start of this memory region (scan backwards)
-    let startBank = bank;
-    while (startBank > 0 && this.memoryInfo.cpuMemSrc[startBank - 1] === type) {
-      startBank--;
-    }
-
-    // Find the end of this memory region (scan forwards)
-    let endBank = bank;
-    while (endBank < 255 && this.memoryInfo.cpuMemSrc[endBank + 1] === type) {
-      endBank++;
-    }
-
-    return {
-      start: startBank << 16,
-      end: ((endBank + 1) << 16) - 1,
-    };
+    return getMemoryRegionForAddress(this.memoryInfo, address);
   }
 
   // Helper methods:

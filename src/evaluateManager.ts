@@ -14,7 +14,7 @@ import {
   u32,
   u8,
 } from "./numbers";
-import { VAmiga } from "./vAmiga";
+import { Emulator } from "./emulator";
 import { SourceMap } from "./sourceMap";
 import { VariablesManager } from "./variablesManager";
 import { DisassemblyManager } from "./disassemblyManager";
@@ -139,7 +139,7 @@ export class EvaluateManager {
    * @param disassemblyManager Disassembly manager for code inspection
    */
   constructor(
-    private vAmiga: VAmiga,
+    private vAmiga: Emulator,
     private sourceMap: SourceMap,
     private variablesManager: VariablesManager,
     private disassemblyManager: DisassemblyManager,

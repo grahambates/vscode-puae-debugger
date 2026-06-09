@@ -31,7 +31,6 @@ import * as path from "path";
 import { readFile } from "fs/promises";
 
 import {
-  VAmiga,
   EmulatorMessage,
   isAttachedMessage,
   isEmulatorStateMessage,
@@ -41,6 +40,7 @@ import {
   isExecReadyMessage,
   OpenOptions,
 } from "./vAmiga";
+import { Emulator } from "./emulator";
 import { Hunk, parseHunks } from "./amigaHunkParser";
 import { DWARFData, parseDwarf } from "./dwarfParser";
 import { loadAmigaProgram } from "./amigaHunkLoader";
@@ -81,6 +81,12 @@ interface LaunchRequestArguments extends DebugProtocol.LaunchRequestArguments {
   fastLoad?: boolean;
   /** Options to pass when opening vAmiga */
   emulatorOptions?: Exclude<OpenOptions, "programPath">;
+  /**
+   * Emulator backend to debug against. Defaults to "vamiga". The "puae"
+   * (PUAE/ami9000 wasm) backend currently requires `fastLoad: true` —
+   * non-fastLoad floppy-based loading isn't implemented for it yet.
+   */
+  emulatorBackend?: "vamiga" | "puae";
 }
 
 /**
@@ -95,6 +101,8 @@ export enum ErrorCode {
   DEBUG_SYMBOLS_READ_ERROR = 2002,
   /** Failed to start the VAmiga emulator */
   EMULATOR_START_ERROR = 2003,
+  /** Launch configuration is invalid for the selected emulator backend */
+  INVALID_LAUNCH_CONFIG = 2004,
 
   // Runtime/execution errors (3000-3099)
   /** RPC call to emulator timed out */
@@ -194,6 +202,15 @@ export class VamigaDebugAdapter extends LoggingDebugSession {
   }
 
   /**
+   * Returns the emulator backend (VAmiga or PuaeEmulator) this session is
+   * debugging against, so other views (memory/state viewers) can target the
+   * same backend instead of always defaulting to VAmiga.
+   */
+  public getEmulator(): Emulator {
+    return this.vAmiga;
+  }
+
+  /**
    * Creates a new VamigaDebugAdapter instance.
    *
    * Initializes the debug adapter with:
@@ -203,7 +220,7 @@ export class VamigaDebugAdapter extends LoggingDebugSession {
    *
    * @param vAmiga VAmiga instance for dependency injection (primarily for testing)
    */
-  public constructor(private vAmiga: VAmiga) {
+  public constructor(private vAmiga: Emulator) {
     super();
     this.setDebuggerLinesStartAt1(false);
     this.setDebuggerColumnsStartAt1(false);
@@ -282,6 +299,16 @@ export class VamigaDebugAdapter extends LoggingDebugSession {
 
     this.trace = args.trace ?? false;
     this.fastLoad = args.fastLoad ?? false;
+
+    if (args.emulatorBackend === "puae" && !this.fastLoad) {
+      this.sendError(
+        response,
+        ErrorCode.INVALID_LAUNCH_CONFIG,
+        'The "puae" emulator backend requires "fastLoad": true (floppy-based loading is not yet supported for it)',
+      );
+      this.sendEvent(new TerminatedEvent());
+      return;
+    }
 
     const debugProgram = args.debugProgram || this.programPath;
     logger.log(`Reading debug symbols from ${debugProgram}`);
@@ -1056,6 +1083,11 @@ export class VamigaDebugAdapter extends LoggingDebugSession {
   private async injectProgram() {
     logger.log("Injecting program into memory");
     try {
+      // Ensure the CPU is halted before poking memory/registers — required
+      // for the PUAE backend (still running freely after exec-ready), and a
+      // harmless no-op for VAmiga (already halted by its fastLoad snapshot
+      // load).
+      this.vAmiga.pause();
       this.loadedProgram = await loadAmigaProgram(this.vAmiga, this.hunks);
       logger.log(
         `Program loaded at ${formatHex(this.loadedProgram.entryPoint)}`,

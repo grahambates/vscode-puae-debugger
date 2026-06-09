@@ -2,3 +2,7 @@
 	path = vamigaweb_fork
 	url = git@github.com:grahambates/vAmigaWeb.git
 	branch = vscode_vamiga_debugger
+[submodule "puae-wasm/libretro-uae"]
+	path = puae-wasm/libretro-uae
+	url = git@github.com:grahambates/libretro-uae.git
+	branch = vscode_vamiga_debugger

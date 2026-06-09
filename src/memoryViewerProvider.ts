@@ -1,5 +1,6 @@
 import * as vscode from "vscode";
-import { VAmiga, isEmulatorStateMessage, MemSrc } from "./vAmiga";
+import { EmulatorMessage, isEmulatorStateMessage, MemSrc } from "./vAmiga";
+import { Emulator } from "./emulator";
 import { VamigaDebugAdapter } from "./vAmigaDebugAdapter";
 import { formatHex } from "./numbers";
 import { EvaluateResultType } from "./evaluateManager";
@@ -65,46 +66,52 @@ export class MemoryViewerProvider {
   public static readonly viewType = "vamiga-debugger.memoryViewer";
 
   private panels = new Map<string, MemoryViewerPanel>();
-  private emulatorMessageListener?: vscode.Disposable;
+  private emulatorMessageListeners: vscode.Disposable[] = [];
   private configurationListener?: vscode.Disposable;
   private isEmulatorRunning = false;
   private panelCounter = 0;
 
   constructor(
     private readonly extensionUri: vscode.Uri,
-    private readonly vAmiga: VAmiga,
+    private readonly vAmiga: Emulator,
+    private readonly puaeEmulator: Emulator,
   ) {
-    // Listen for emulator state changes to auto-refresh all panels
-    this.emulatorMessageListener = this.vAmiga.onDidReceiveMessage(
-      (message) => {
-        if (!isEmulatorStateMessage(message)) {
-          return;
-        }
-        const wasRunning = this.isEmulatorRunning;
-        this.isEmulatorRunning = message.state === "running";
+    // Listen for emulator state changes to auto-refresh all panels. Both
+    // backends are wired up since the active one depends on the debug
+    // session's `emulatorBackend` (see `emulator` getter below) and may not
+    // be known yet when this provider is constructed.
+    const onMessage = (message: EmulatorMessage) => {
+      if (!isEmulatorStateMessage(message)) {
+        return;
+      }
+      const wasRunning = this.isEmulatorRunning;
+      this.isEmulatorRunning = message.state === "running";
 
-        // Update all panels
-        for (const panel of this.panels.values()) {
-          if (panel.liveUpdate) {
-            // Stop/start live update mode
-            if (this.isEmulatorRunning && !wasRunning) {
-              this.startLiveUpdate(panel);
-            } else if (!this.isEmulatorRunning && wasRunning) {
-              this.stopLiveUpdate(panel);
-            }
-          } else if (
-            message.state === "paused" ||
-            message.state === "stopped"
-          ) {
-            // Re-evaluate address (handles dynamic expressions / newly-valid symbols),
-            // then push fresh data for any already-fetched chunks.
-            this.updateContent(panel, false).then(() =>
-              this.refreshChunks(panel),
-            );
+      // Update all panels
+      for (const panel of this.panels.values()) {
+        if (panel.liveUpdate) {
+          // Stop/start live update mode
+          if (this.isEmulatorRunning && !wasRunning) {
+            this.startLiveUpdate(panel);
+          } else if (!this.isEmulatorRunning && wasRunning) {
+            this.stopLiveUpdate(panel);
           }
+        } else if (
+          message.state === "paused" ||
+          message.state === "stopped"
+        ) {
+          // Re-evaluate address (handles dynamic expressions / newly-valid symbols),
+          // then push fresh data for any already-fetched chunks.
+          this.updateContent(panel, false).then(() =>
+            this.refreshChunks(panel),
+          );
         }
-      },
-    );
+      }
+    };
+    this.emulatorMessageListeners = [
+      this.vAmiga.onDidReceiveMessage(onMessage),
+      this.puaeEmulator.onDidReceiveMessage(onMessage),
+    ];
 
     // Push the new value to all open panels when the user changes the setting
     this.configurationListener = vscode.workspace.onDidChangeConfiguration(
@@ -121,6 +128,15 @@ export class MemoryViewerProvider {
         }
       },
     );
+  }
+
+  /**
+   * The emulator backend to target: whichever backend the active debug
+   * session is using (VAmiga or PuaeEmulator), falling back to VAmiga if no
+   * debug session is active.
+   */
+  private get emulator(): Emulator {
+    return VamigaDebugAdapter.getActiveAdapter()?.getEmulator() ?? this.vAmiga;
   }
 
   /**
@@ -142,7 +158,9 @@ export class MemoryViewerProvider {
       panel.webviewPanel.dispose();
     }
     this.panels.clear();
-    this.emulatorMessageListener?.dispose();
+    for (const listener of this.emulatorMessageListeners) {
+      listener.dispose();
+    }
     this.configurationListener?.dispose();
   }
 
@@ -380,7 +398,7 @@ export class MemoryViewerProvider {
     if (typeof address !== "number") {
       throw new Error("Does not evaluate to a numeric value");
     }
-    if (!this.vAmiga.isValidAddress(address)) {
+    if (!this.emulator.isValidAddress(address)) {
       throw new Error(`Not a valid address: ${formatHex(address)}`);
     }
 
@@ -399,8 +417,8 @@ export class MemoryViewerProvider {
 
     // If dereferencePointer is enabled, read 32-bit value at this address
     if (panel.dereferencePointer) {
-      const targetAddress = await this.vAmiga.peek32(address);
-      if (!this.vAmiga.isValidAddress(targetAddress)) {
+      const targetAddress = await this.emulator.peek32(address);
+      if (!this.emulator.isValidAddress(targetAddress)) {
         throw new Error(
           `Pointer at ${formatHex(address)} points to invalid address: ${formatHex(targetAddress)}`,
         );
@@ -445,7 +463,7 @@ export class MemoryViewerProvider {
         // A memory-viewer watchpoint only lives as long as the current view -
         // navigating elsewhere removes it so nothing is left behind to find.
         if (panel.watchedAddress !== undefined) {
-          this.vAmiga.removeWatchpoint(panel.watchedAddress);
+          this.emulator.removeWatchpoint(panel.watchedAddress);
           panel.watchedAddress = undefined;
           this.sendStateToWebview(panel.webviewPanel, { watchedAddress: null });
         }
@@ -462,7 +480,7 @@ export class MemoryViewerProvider {
     size: number,
   ): Promise<void> {
     try {
-      const result = await this.vAmiga.readMemory(address, size);
+      const result = await this.emulator.readMemory(address, size);
       const data = new Uint8Array(result);
 
       // Track fetched chunk
@@ -508,7 +526,7 @@ export class MemoryViewerProvider {
     }
 
     try {
-      const data = await this.vAmiga.readMemory(address, byteCount);
+      const data = await this.emulator.readMemory(address, byteCount);
       await vscode.workspace.fs.writeFile(uri, data);
       vscode.window.showInformationMessage(
         `Saved ${byteCount} bytes from ${formatHex(address)} to ${uri.fsPath}`,
@@ -535,14 +553,14 @@ export class MemoryViewerProvider {
   ): Promise<void> {
     try {
       if (panel.watchedAddress === address) {
-        this.vAmiga.removeWatchpoint(address);
+        this.emulator.removeWatchpoint(address);
         panel.watchedAddress = undefined;
         this.sendStateToWebview(panel.webviewPanel, { watchedAddress: null });
       } else {
         if (panel.watchedAddress !== undefined) {
-          this.vAmiga.removeWatchpoint(panel.watchedAddress);
+          this.emulator.removeWatchpoint(panel.watchedAddress);
         }
-        this.vAmiga.setWatchpoint(address);
+        this.emulator.setWatchpoint(address);
         panel.watchedAddress = address;
         this.sendStateToWebview(panel.webviewPanel, { watchedAddress: address });
       }
@@ -558,7 +576,7 @@ export class MemoryViewerProvider {
    */
   private removeWatchpoint(panel: MemoryViewerPanel): void {
     if (panel.watchedAddress !== undefined) {
-      this.vAmiga.removeWatchpoint(panel.watchedAddress);
+      this.emulator.removeWatchpoint(panel.watchedAddress);
       panel.watchedAddress = undefined;
     }
   }
@@ -593,7 +611,7 @@ export class MemoryViewerProvider {
   private async refreshChunks(panel: MemoryViewerPanel) {
     for (const address of panel.fetchedChunks.values()) {
       try {
-        const result = await this.vAmiga.readMemory(address, CHUNK_SIZE);
+        const result = await this.emulator.readMemory(address, CHUNK_SIZE);
 
         // Send updated chunk to webview
         panel.webviewPanel.webview.postMessage({
@@ -672,7 +690,7 @@ export class MemoryViewerProvider {
       }));
 
     // Add memory regions
-    const memInfo = this.vAmiga.getCachedMemoryInfo();
+    const memInfo = this.emulator.getCachedMemoryInfo();
     if (memInfo) {
       let currentType: MemSrc | null = null;
       let currentStart = 0;

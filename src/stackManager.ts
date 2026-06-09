@@ -1,5 +1,6 @@
 import { Source, StackFrame } from "@vscode/debugadapter";
-import { VAmiga, CpuInfo } from "./vAmiga";
+import { CpuInfo } from "./vAmiga";
+import { Emulator } from "./emulator";
 import { formatAddress, formatHex } from "./numbers";
 import { basename } from "path";
 import { SourceMap } from "./sourceMap";
@@ -23,7 +24,7 @@ export class StackManager {
    * @param sourceMap Source map for resolving addresses to source locations
    */
   constructor(
-    private vAmiga: VAmiga,
+    private vAmiga: Emulator,
     private sourceMap: SourceMap,
   ) {}
 

@@ -1,6 +1,7 @@
 import { DebugProtocol } from "@vscode/debugprotocol";
 import { logger } from "@vscode/debugadapter";
-import { VAmiga, CpuInfo, StopMessage } from "./vAmiga";
+import { CpuInfo, StopMessage } from "./vAmiga";
+import { Emulator } from "./emulator";
 import { SourceMap } from "./sourceMap";
 import { formatHex } from "./numbers";
 import { exceptionBreakpointFilters } from "./hardware";
@@ -62,7 +63,7 @@ export class BreakpointManager {
    * @param sourceMap Source map for resolving source locations to addresses
    */
   constructor(
-    private vAmiga: VAmiga,
+    private vAmiga: Emulator,
     private sourceMap: SourceMap,
   ) {}
 

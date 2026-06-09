@@ -6,3 +6,8 @@ node_modules
 *.local.json
 coverage
 tsconfig.tsbuildinfo
+.claude
+
+# PUAE wasm build artifacts
+puae-wasm/*.a
+puae-wasm/*.o

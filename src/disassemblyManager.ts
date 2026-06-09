@@ -2,7 +2,7 @@
 import { DebugProtocol } from "@vscode/debugprotocol";
 import { basename } from "path";
 import { SourceMap } from "./sourceMap";
-import { VAmiga } from "./vAmiga";
+import { Emulator } from "./emulator";
 import { Source } from "@vscode/debugadapter";
 
 /**
@@ -22,7 +22,7 @@ export class DisassemblyManager {
    * @param sourceMap Source map for adding symbol information to instructions
    */
   constructor(
-    private vAmiga: VAmiga,
+    private vAmiga: Emulator,
     private sourceMap: SourceMap,
   ) {}
 

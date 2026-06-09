@@ -3,7 +3,7 @@
  * Interfaces with exec.library memory management structures
  */
 
-import { VAmiga } from "./vAmiga";
+import { Emulator } from "./emulator";
 import { Hunk, MemoryType } from "./amigaHunkParser";
 
 export interface SegmentInfo {
@@ -87,7 +87,7 @@ export function classifyMemory(attributes: number, lower: number): MemoryClass {
 }
 
 export class AmigaMemoryMapper {
-  constructor(private vAmiga: VAmiga) {}
+  constructor(private vAmiga: Emulator) {}
 
   /**
    * Get exec.library base pointer from absolute address 0x4

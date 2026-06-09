@@ -53,6 +53,10 @@
         "command": "vamiga-debugger.openStateViewer",
         "title": "VAmiga: Open State Viewer",
         "icon": "$(symbol-misc)"
+      },
+      {
+        "command": "vamiga-debugger.openPuae",
+        "title": "vAmiga (PUAE): Open Webview"
       }
     ],
     "menus": {
@@ -177,6 +181,19 @@
                 "type": "boolean",
                 "description": "Inject program directly into memory",
                 "default": false
+              },
+              "emulatorBackend": {
+                "type": "string",
+                "enum": [
+                  "vamiga",
+                  "puae"
+                ],
+                "enumDescriptions": [
+                  "WinUAE-based vAmiga emulator (default)",
+                  "PUAE/ami9000 wasm emulator. Currently requires \"fastLoad\": true"
+                ],
+                "default": "vamiga",
+                "description": "Emulator backend to debug against"
               },
               "emulatorOptions": {
                 "type": "object",
@@ -401,6 +418,22 @@
                 "blitterAccuracy": 2,
                 "cpuRevision": "68000",
                 "cpuSpeed": "7MHz"
+              }
+            }
+          },
+          {
+            "label": "vAmiga (PUAE): fastLoad",
+            "description": "PUAE/ami9000 wasm backend (fastLoad only; hardware options other than kickstartRomPath are not yet supported)",
+            "body": {
+              "type": "vamiga",
+              "request": "launch",
+              "name": "vAmiga (PUAE): fastLoad",
+              "program": "^\"\\${workspaceFolder\\}/${1:out/a.exe}\"",
+              "fastLoad": true,
+              "stopOnEntry": true,
+              "emulatorBackend": "puae",
+              "emulatorOptions": {
+                "kickstartRomPath": "^\"\\${workspaceFolder\\}/${2:roms/kick13.rom}\""
               }
             }
           }

@@ -1,5 +1,6 @@
 import * as vscode from "vscode";
-import { VAmiga, CustomRegisters, isEmulatorStateMessage } from "./vAmiga";
+import { CustomRegisters, EmulatorMessage, isEmulatorStateMessage } from "./vAmiga";
+import { Emulator } from "./emulator";
 import { VamigaDebugAdapter } from "./vAmigaDebugAdapter";
 import {
   DisplayState,
@@ -25,34 +26,47 @@ export class StateViewerProvider {
   public static readonly viewType = "vamiga-debugger.stateViewer";
 
   private panel?: vscode.WebviewPanel;
-  private emulatorMessageListener?: vscode.Disposable;
+  private emulatorMessageListeners: vscode.Disposable[] = [];
   private isEmulatorRunning = false;
-  private memoryMapper: AmigaMemoryMapper;
 
   constructor(
     private readonly extensionUri: vscode.Uri,
-    private readonly vAmiga: VAmiga,
+    private readonly vAmiga: Emulator,
+    private readonly puaeEmulator: Emulator,
   ) {
-    this.memoryMapper = new AmigaMemoryMapper(vAmiga);
-    // Listen for emulator state changes to auto-refresh panel
-    this.emulatorMessageListener = this.vAmiga.onDidReceiveMessage(
-      (message) => {
-        if (!isEmulatorStateMessage(message)) {
-          return;
-        }
-        // const wasRunning = this.isEmulatorRunning;
-        this.isEmulatorRunning = message.state === "running";
+    // Listen for emulator state changes to auto-refresh panel. Both
+    // backends are wired up since the active one depends on the debug
+    // session's `emulatorBackend` (see `emulator` getter below) and may not
+    // be known yet when this provider is constructed.
+    const onMessage = (message: EmulatorMessage) => {
+      if (!isEmulatorStateMessage(message)) {
+        return;
+      }
+      // const wasRunning = this.isEmulatorRunning;
+      this.isEmulatorRunning = message.state === "running";
 
-        // Update panel when emulator stops/pauses
-        if (
-          this.panel &&
-          (message.state === "paused" || message.state === "stopped")
-        ) {
-          this.refreshDisplayState();
-          this.refreshMemoryInfo();
-        }
-      },
-    );
+      // Update panel when emulator stops/pauses
+      if (
+        this.panel &&
+        (message.state === "paused" || message.state === "stopped")
+      ) {
+        this.refreshDisplayState();
+        this.refreshMemoryInfo();
+      }
+    };
+    this.emulatorMessageListeners = [
+      this.vAmiga.onDidReceiveMessage(onMessage),
+      this.puaeEmulator.onDidReceiveMessage(onMessage),
+    ];
+  }
+
+  /**
+   * The emulator backend to target: whichever backend the active debug
+   * session is using (VAmiga or PuaeEmulator), falling back to VAmiga if no
+   * debug session is active.
+   */
+  private get emulator(): Emulator {
+    return VamigaDebugAdapter.getActiveAdapter()?.getEmulator() ?? this.vAmiga;
   }
 
   /**
@@ -61,7 +75,9 @@ export class StateViewerProvider {
   public dispose(): void {
     this.panel?.dispose();
     this.panel = undefined;
-    this.emulatorMessageListener?.dispose();
+    for (const listener of this.emulatorMessageListeners) {
+      listener.dispose();
+    }
   }
 
   /**
@@ -234,7 +250,7 @@ export class StateViewerProvider {
       throw new Error("Debugger is not running");
     }
 
-    const registers = await this.vAmiga.getAllCustomRegisters();
+    const registers = await this.emulator.getAllCustomRegisters();
     const displayState = this.parseDisplayState(registers);
 
     const message: UpdateDisplayStateMessage = {
@@ -258,7 +274,7 @@ export class StateViewerProvider {
       throw new Error("Debugger is not running");
     }
 
-    const memoryInfo = await this.memoryMapper.getMemoryInfo();
+    const memoryInfo = await new AmigaMemoryMapper(this.emulator).getMemoryInfo();
 
     // Try to map allocated blocks to program segments
     // Match blocks to segments by address overlap

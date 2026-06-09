@@ -1,0 +1,602 @@
+// Minimal libretro frontend shim for the PUAE wasm debugger backend.
+// Registers the libretro callbacks, calls retro_init(), queries
+// retro_get_system_av_info(), and drives retro_run() from JS.
+// Stashes the most recent framebuffer pointer/geometry and audio sample
+// count in globals exported to JS, mirroring vamigaweb_fork's
+// wasm_pixel_buffer()/wasm_get_sound_buffer_address() shape.
+// Stage B: converts XRGB8888 → RGBA8888 in shim_video_refresh so JS
+// can create an ImageData directly from wasm_get_fb_rgba()'s pointer.
+
+#include <stdio.h>
+#include <stdarg.h>
+#include <stdint.h>
+#include <string.h>
+#include <stdbool.h>
+#include <emscripten.h>
+#include "libretro.h"
+#include "e9k_debug.h"
+#include "e9k_watchpoint.h"
+#include "e9k_protect.h"
+
+// Defined in ami9000's libretro-core.c; set to true by e9k_debug_requestBreak()
+// when a breakpoint fires, causing retro_run() to return early.
+extern bool libretro_frame_end;
+
+// Max PUAE PAL framebuffer: 720×574 × 4 bytes per pixel
+#define MAX_FB_PIXELS (720 * 574)
+
+static const void *g_fb_data;
+static unsigned g_fb_width, g_fb_height;
+static size_t g_fb_pitch;
+static unsigned g_frame_count;
+static unsigned g_audio_frames_total;
+static enum retro_pixel_format g_pixel_format = RETRO_PIXEL_FORMAT_0RGB1555;
+// Updated by RETRO_ENVIRONMENT_SET_GEOMETRY when PUAE auto-crops the display.
+static unsigned g_geom_base_width = 360, g_geom_base_height = 287;
+
+// --- Audio ---
+// Sound buffer: 16 slots × 2048 floats (left[1024] then right[1024] per slot).
+// Matches the layout vAmiga_audioprocessor.js expects: slot 0 at base address,
+// each slot offset = slot_index * 2048 * sizeof(float) bytes.
+#define AUDIO_SLOT_COUNT  16
+#define AUDIO_SLOT_FRAMES 1024
+static float g_sound_buffer[AUDIO_SLOT_COUNT * AUDIO_SLOT_FRAMES * 2]; // 128 KB
+
+// Accumulation buffer — holds samples from shim_audio_sample_batch between ticks.
+#define AUDIO_ACCUM_CAP (AUDIO_SLOT_COUNT * AUDIO_SLOT_FRAMES) // 16384 frames
+static float g_audio_accum_L[AUDIO_ACCUM_CAP];
+static float g_audio_accum_R[AUDIO_ACCUM_CAP];
+static int   g_audio_accum_n = 0; // frames accumulated, not yet packed into slots
+
+// Pre-converted RGBA8888 buffer — filled by shim_video_refresh.
+// JS reads this via wasm_get_fb_rgba() and feeds it straight into putImageData.
+static uint8_t g_rgba_buf[MAX_FB_PIXELS * 4];
+
+static void shim_video_refresh(const void *data, unsigned width, unsigned height, size_t pitch) {
+    g_fb_data = data;
+    g_fb_width = width;
+    g_fb_height = height;
+    g_fb_pitch = pitch;
+    g_frame_count++;
+
+    // Convert whatever pixel format the core chose → RGBA8888 for putImageData().
+    if (data) {
+        const uint8_t *src_row = (const uint8_t *)data;
+        uint8_t *dst = g_rgba_buf;
+        unsigned safe_w = width  < 720 ? width  : 720;
+        unsigned safe_h = height < 574 ? height : 574;
+
+        if (g_pixel_format == RETRO_PIXEL_FORMAT_XRGB8888) {
+            // 32 bpp: 0x00RRGGBB (X byte ignored)
+            for (unsigned y = 0; y < safe_h; y++) {
+                const uint32_t *row32 = (const uint32_t *)src_row;
+                for (unsigned x = 0; x < safe_w; x++) {
+                    uint32_t px = row32[x];
+                    *dst++ = (px >> 16) & 0xFF; // R
+                    *dst++ = (px >>  8) & 0xFF; // G
+                    *dst++ =  px        & 0xFF; // B
+                    *dst++ = 255;
+                }
+                src_row += pitch;
+            }
+        } else if (g_pixel_format == RETRO_PIXEL_FORMAT_RGB565) {
+            // 16 bpp: RRRRR GGGGGG BBBBB
+            for (unsigned y = 0; y < safe_h; y++) {
+                const uint16_t *row16 = (const uint16_t *)src_row;
+                for (unsigned x = 0; x < safe_w; x++) {
+                    uint16_t px = row16[x];
+                    uint8_t r5 = (px >> 11) & 0x1F;
+                    uint8_t g6 = (px >>  5) & 0x3F;
+                    uint8_t b5 =  px        & 0x1F;
+                    *dst++ = (r5 << 3) | (r5 >> 2); // 5→8 bit
+                    *dst++ = (g6 << 2) | (g6 >> 4); // 6→8 bit
+                    *dst++ = (b5 << 3) | (b5 >> 2); // 5→8 bit
+                    *dst++ = 255;
+                }
+                src_row += pitch;
+            }
+        } else {
+            // 0RGB1555 fallback: shouldn't be used but handle it
+            for (unsigned y = 0; y < safe_h; y++) {
+                const uint16_t *row16 = (const uint16_t *)src_row;
+                for (unsigned x = 0; x < safe_w; x++) {
+                    uint16_t px = row16[x];
+                    uint8_t r5 = (px >> 10) & 0x1F;
+                    uint8_t g5 = (px >>  5) & 0x1F;
+                    uint8_t b5 =  px        & 0x1F;
+                    *dst++ = (r5 << 3) | (r5 >> 2);
+                    *dst++ = (g5 << 3) | (g5 >> 2);
+                    *dst++ = (b5 << 3) | (b5 >> 2);
+                    *dst++ = 255;
+                }
+                src_row += pitch;
+            }
+        }
+    }
+
+    // Drives e9k_debug's per-frame hooks (memhook re-arming, profiler
+    // sampling, and the one-shot wasm_eof() callback below).
+    e9k_vblank_notify();
+}
+
+static size_t shim_audio_sample_batch(const int16_t *data, size_t frames) {
+    // Convert int16 interleaved stereo → float32 planar into the accumulation buffer.
+    size_t to_copy = frames;
+    if (g_audio_accum_n + (int)to_copy > AUDIO_ACCUM_CAP)
+        to_copy = (size_t)(AUDIO_ACCUM_CAP - g_audio_accum_n);
+    for (size_t i = 0; i < to_copy; i++) {
+        g_audio_accum_L[g_audio_accum_n + (int)i] = data[i * 2    ] * (1.0f / 32768.0f);
+        g_audio_accum_R[g_audio_accum_n + (int)i] = data[i * 2 + 1] * (1.0f / 32768.0f);
+    }
+    g_audio_accum_n    += (int)to_copy;
+    g_audio_frames_total += (unsigned)frames;
+    return frames;
+}
+
+static void shim_audio_sample(int16_t left, int16_t right) {
+    if (g_audio_accum_n < AUDIO_ACCUM_CAP) {
+        g_audio_accum_L[g_audio_accum_n] = left  * (1.0f / 32768.0f);
+        g_audio_accum_R[g_audio_accum_n] = right * (1.0f / 32768.0f);
+        g_audio_accum_n++;
+    }
+    g_audio_frames_total++;
+}
+
+static void shim_input_poll(void) {}
+
+static int16_t shim_input_state(unsigned port, unsigned device, unsigned index, unsigned id) {
+    return 0;
+}
+
+static void shim_log(enum retro_log_level level, const char *fmt, ...) {
+    va_list ap;
+    va_start(ap, fmt);
+    char buf[512];
+    vsnprintf(buf, sizeof(buf), fmt, ap);
+    va_end(ap);
+    EM_ASM_({ console.log('[puae]', UTF8ToString($0)); }, buf);
+}
+
+static bool shim_environment(unsigned cmd, void *data) {
+    switch (cmd) {
+        case RETRO_ENVIRONMENT_GET_CAN_DUPE: {
+            bool *out = (bool *)data;
+            *out = true;
+            return true;
+        }
+        case RETRO_ENVIRONMENT_SET_PIXEL_FORMAT: {
+            g_pixel_format = *(const enum retro_pixel_format *)data;
+            EM_ASM_({ console.log('[shim] core requested pixel format', $0); }, (int)g_pixel_format);
+            return true;
+        }
+        case RETRO_ENVIRONMENT_GET_LOG_INTERFACE: {
+            struct retro_log_callback *cb = (struct retro_log_callback *)data;
+            cb->log = shim_log;
+            return true;
+        }
+        case RETRO_ENVIRONMENT_GET_SYSTEM_DIRECTORY:
+        case RETRO_ENVIRONMENT_GET_SAVE_DIRECTORY: {
+            static const char *dir = "/uae_system";
+            *(const char **)data = dir;
+            return true;
+        }
+        case RETRO_ENVIRONMENT_SET_GEOMETRY: {
+            // PUAE fires this when auto-crop changes the effective display area.
+            const struct retro_game_geometry *geo = (const struct retro_game_geometry *)data;
+            g_geom_base_width  = geo->base_width;
+            g_geom_base_height = geo->base_height;
+            EM_ASM_({ console.log('[shim] SET_GEOMETRY base=' + $0 + 'x' + $1); },
+                    geo->base_width, geo->base_height);
+            return true;
+        }
+        case RETRO_ENVIRONMENT_SET_VARIABLES:
+            return true;
+        case RETRO_ENVIRONMENT_GET_VARIABLE_UPDATE:
+            // No pending variable changes from the frontend.
+            *(bool *)data = false;
+            return true;
+        case RETRO_ENVIRONMENT_GET_VARIABLE: {
+            struct retro_variable *var = (struct retro_variable *)data;
+            if (var->key) {
+                if (strcmp(var->key, "puae_kickstart")     == 0) { var->value = "kick34005.A500"; return true; }
+                if (strcmp(var->key, "puae_model")         == 0) { var->value = "A500";           return true; }
+                if (strcmp(var->key, "puae_model_fd")      == 0) { var->value = "A500";           return true; }
+                if (strcmp(var->key, "puae_crop")          == 0) { var->value = "disabled";       return true; }
+                if (strcmp(var->key, "puae_horizontal_pos")== 0) { var->value = "0";              return true; }
+                if (strcmp(var->key, "puae_vertical_pos")  == 0) { var->value = "0";              return true; }
+            }
+            var->value = NULL;
+            return false;
+        }
+        default:
+            return false;
+    }
+}
+
+// adf_path: path to an ADF in the Emscripten virtual filesystem,
+// e.g. "/uae_system/game.adf", or NULL/empty string for no disk.
+EMSCRIPTEN_KEEPALIVE
+int wasm_boot(const char *adf_path) {
+    EM_ASM({ console.log('[shim] registering libretro callbacks'); });
+
+    retro_set_environment(shim_environment);
+    retro_set_video_refresh(shim_video_refresh);
+    retro_set_audio_sample(shim_audio_sample);
+    retro_set_audio_sample_batch(shim_audio_sample_batch);
+    retro_set_input_poll(shim_input_poll);
+    retro_set_input_state(shim_input_state);
+
+    EM_ASM({ console.log('[shim] calling retro_init()'); });
+    retro_init();
+
+    struct retro_system_info sysinfo;
+    memset(&sysinfo, 0, sizeof(sysinfo));
+    retro_get_system_info(&sysinfo);
+    EM_ASM_({
+        console.log('[shim] retro_get_system_info: library_name=' + UTF8ToString($0) +
+                    ' library_version=' + UTF8ToString($1) +
+                    ' valid_extensions=' + (($2) ? UTF8ToString($2) : '(null)'));
+    }, sysinfo.library_name, sysinfo.library_version, sysinfo.valid_extensions);
+
+    struct retro_system_av_info avinfo;
+    memset(&avinfo, 0, sizeof(avinfo));
+    retro_get_system_av_info(&avinfo);
+    EM_ASM_({
+        console.log('[shim] av_info geometry=' + $0 + 'x' + $1 +
+                    ' max=' + $2 + 'x' + $3 +
+                    ' aspect=' + $4 + ' fps=' + $5 + ' sample_rate=' + $6);
+    }, avinfo.geometry.base_width, avinfo.geometry.base_height,
+       avinfo.geometry.max_width, avinfo.geometry.max_height,
+       avinfo.geometry.aspect_ratio, avinfo.timing.fps, avinfo.timing.sample_rate);
+
+    int load_ok;
+    if (adf_path && adf_path[0]) {
+        EM_ASM_({ console.log('[shim] calling retro_load_game with path', UTF8ToString($0)); }, adf_path);
+        struct retro_game_info game;
+        memset(&game, 0, sizeof(game));
+        game.path = adf_path;
+        load_ok = retro_load_game(&game);
+    } else {
+        EM_ASM({ console.log('[shim] calling retro_load_game(NULL) — no disk'); });
+        load_ok = retro_load_game(NULL);
+    }
+    EM_ASM_({ console.log('[shim] retro_load_game returned', $0); }, load_ok);
+
+    return load_ok;
+}
+
+EMSCRIPTEN_KEEPALIVE
+int wasm_tick(void) {
+    libretro_frame_end = false;
+    retro_run();
+    return (int)g_frame_count;
+}
+
+EMSCRIPTEN_KEEPALIVE
+int wasm_get_frame_count(void) { return (int)g_frame_count; }
+
+EMSCRIPTEN_KEEPALIVE
+int wasm_get_audio_frames_total(void) { return (int)g_audio_frames_total; }
+
+EMSCRIPTEN_KEEPALIVE
+int wasm_get_fb_width(void) { return (int)g_fb_width; }
+
+EMSCRIPTEN_KEEPALIVE
+int wasm_get_fb_height(void) { return (int)g_fb_height; }
+
+EMSCRIPTEN_KEEPALIVE
+const void *wasm_get_fb_data(void) { return g_fb_data; }
+
+// Pre-converted RGBA8888 buffer, ready for putImageData().
+EMSCRIPTEN_KEEPALIVE
+const void *wasm_get_fb_rgba(void) { return g_rgba_buf; }
+
+EMSCRIPTEN_KEEPALIVE
+int wasm_get_fb_pitch(void) { return (int)g_fb_pitch; }
+
+// Geometry reported via SET_GEOMETRY (updated by PUAE's auto-crop).
+EMSCRIPTEN_KEEPALIVE
+int wasm_get_base_width(void)  { return (int)g_geom_base_width; }
+
+EMSCRIPTEN_KEEPALIVE
+int wasm_get_base_height(void) { return (int)g_geom_base_height; }
+
+// --- Audio exports (matching vAmiga_audioprocessor.js contract) ---
+
+EMSCRIPTEN_KEEPALIVE
+float *wasm_get_sound_buffer_address(void) { return g_sound_buffer; }
+
+// Pack completed 1024-frame slots from the accumulation buffer into g_sound_buffer
+// (left[1024] then right[1024] per slot). Returns frames-per-channel packed
+// (1024 per slot) — mirrors vAmiga's wasm_copy_into_sound_buffer return convention.
+EMSCRIPTEN_KEEPALIVE
+int wasm_copy_into_sound_buffer(void) {
+    int complete = g_audio_accum_n / AUDIO_SLOT_FRAMES;
+    if (complete > AUDIO_SLOT_COUNT) complete = AUDIO_SLOT_COUNT;
+
+    for (int s = 0; s < complete; s++) {
+        float *slot = &g_sound_buffer[s * AUDIO_SLOT_FRAMES * 2];
+        memcpy(slot,                     &g_audio_accum_L[s * AUDIO_SLOT_FRAMES],
+               AUDIO_SLOT_FRAMES * sizeof(float));
+        memcpy(slot + AUDIO_SLOT_FRAMES, &g_audio_accum_R[s * AUDIO_SLOT_FRAMES],
+               AUDIO_SLOT_FRAMES * sizeof(float));
+    }
+
+    int remaining = g_audio_accum_n - complete * AUDIO_SLOT_FRAMES;
+    if (remaining > 0 && complete > 0) {
+        memmove(g_audio_accum_L, &g_audio_accum_L[complete * AUDIO_SLOT_FRAMES],
+                remaining * sizeof(float));
+        memmove(g_audio_accum_R, &g_audio_accum_R[complete * AUDIO_SLOT_FRAMES],
+                remaining * sizeof(float));
+    }
+    g_audio_accum_n = remaining;
+    return complete * AUDIO_SLOT_FRAMES;
+}
+
+// PUAE generates at 44100 Hz regardless; store the AudioContext rate for reference.
+EMSCRIPTEN_KEEPALIVE
+void wasm_set_sample_rate(unsigned rate) { (void)rate; }
+
+// Raw accumulator access — lets JS push arbitrary-sized chunks to a ring-buffer
+// worklet each tick rather than waiting for complete 1024-sample slots.
+EMSCRIPTEN_KEEPALIVE
+float *wasm_get_audio_accum_L(void) { return g_audio_accum_L; }
+
+EMSCRIPTEN_KEEPALIVE
+float *wasm_get_audio_accum_R(void) { return g_audio_accum_R; }
+
+EMSCRIPTEN_KEEPALIVE
+int wasm_get_audio_accum_count(void) { return g_audio_accum_n; }
+
+EMSCRIPTEN_KEEPALIVE
+void wasm_reset_audio_accum(void) { g_audio_accum_n = 0; }
+
+// --- Debug exports (Stage D) ---
+// wasm_tick() returns early (libretro_frame_end=true) when a breakpoint fires.
+// The JS loop checks wasm_is_paused() after each tick to detect the halt.
+
+EMSCRIPTEN_KEEPALIVE
+int wasm_is_paused(void) { return e9k_debug_is_paused(); }
+
+// Register layout (19 × uint32_t): D0-D7 (regs[0..7]), A0-A7 (regs[8..15]), SR, PC, USP.
+#define WASM_REG_COUNT 19
+static uint32_t g_reg_buf[WASM_REG_COUNT];
+
+// Populate g_reg_buf from live CPU state; returns the number of registers written.
+EMSCRIPTEN_KEEPALIVE
+int wasm_read_regs(void) {
+    return (int)e9k_debug_read_regs(g_reg_buf, WASM_REG_COUNT);
+}
+
+EMSCRIPTEN_KEEPALIVE
+uint32_t *wasm_get_reg_buf(void) { return g_reg_buf; }
+
+EMSCRIPTEN_KEEPALIVE
+void wasm_add_breakpoint(uint32_t addr) { e9k_debug_add_breakpoint(addr); }
+
+EMSCRIPTEN_KEEPALIVE
+void wasm_remove_breakpoint(uint32_t addr) { e9k_debug_remove_breakpoint(addr); }
+
+EMSCRIPTEN_KEEPALIVE
+void wasm_resume(void) { e9k_debug_resume(); }
+
+EMSCRIPTEN_KEEPALIVE
+void wasm_pause(void) { e9k_debug_pause(); }
+
+EMSCRIPTEN_KEEPALIVE
+int wasm_set_reg(uint32_t regnum, uint32_t value) { return e9k_debug_write_reg(regnum, value); }
+
+// One-shot vblank callback for wasm_eof(): pauses on the next completed
+// frame, then de-registers itself.
+static void wasm_eof_vblank_cb(void *user) {
+    (void)user;
+    e9k_debug_pause();
+    e9k_debug_set_vblank_callback(NULL, NULL);
+}
+
+// Resumes execution and arranges for it to pause again once the current
+// frame finishes rendering (i.e. "run to end of frame").
+EMSCRIPTEN_KEEPALIVE
+void wasm_eof(void) {
+    e9k_debug_set_vblank_callback(wasm_eof_vblank_cb, NULL);
+    e9k_debug_resume();
+}
+
+EMSCRIPTEN_KEEPALIVE
+void wasm_add_temp_breakpoint(uint32_t addr) { e9k_debug_add_temp_breakpoint(addr); }
+
+EMSCRIPTEN_KEEPALIVE
+void wasm_remove_temp_breakpoint(uint32_t addr) { e9k_debug_remove_temp_breakpoint(addr); }
+
+// --- Debug exports (Stage G1) ---
+
+// --- Memory ---
+#define MEM_BUF_CAP 4096
+static uint8_t g_mem_buf[MEM_BUF_CAP];
+
+EMSCRIPTEN_KEEPALIVE
+int wasm_read_memory(uint32_t addr, uint32_t len) {
+    if (len > MEM_BUF_CAP) len = MEM_BUF_CAP;
+    return (int)e9k_debug_read_memory(addr, g_mem_buf, len);
+}
+
+EMSCRIPTEN_KEEPALIVE
+uint8_t *wasm_get_mem_buf(void) { return g_mem_buf; }
+
+EMSCRIPTEN_KEEPALIVE
+int wasm_write_memory(uint32_t addr, uint32_t value, uint32_t size) {
+    return e9k_debug_write_memory(addr, value, size);
+}
+
+// Bulk write of an arbitrary-length buffer (e.g. program segments). Caller
+// mallocs `data` in the wasm heap, HEAPU8.set()s the bytes, then frees it.
+EMSCRIPTEN_KEEPALIVE
+int wasm_write_memory_buf(uint32_t addr, const uint8_t *data, uint32_t len) {
+    return (int)e9k_debug_write_memory_buf(addr, data, len);
+}
+
+// Like wasm_read_memory/wasm_write_memory, but don't suspend
+// watchpoint/protect checks — used to exercise the Stage G2 memhooks
+// deterministically (e.g. from test_g2.mjs).
+EMSCRIPTEN_KEEPALIVE
+int wasm_poke_memory(uint32_t addr, uint32_t value, uint32_t size) {
+    return e9k_debug_poke_memory(addr, value, size);
+}
+
+EMSCRIPTEN_KEEPALIVE
+int wasm_peek_memory(uint32_t addr, uint32_t len) {
+    if (len > MEM_BUF_CAP) len = MEM_BUF_CAP;
+    return (int)e9k_debug_peek_memory(addr, g_mem_buf, len);
+}
+
+// --- Memory bank map (Stage G3) ---
+#define MEMORY_MAP_BUF_CAP 256
+static uint8_t g_memory_map_buf[MEMORY_MAP_BUF_CAP];
+
+EMSCRIPTEN_KEEPALIVE
+int wasm_read_memory_map(void) {
+    return (int)e9k_debug_read_memory_map(g_memory_map_buf, MEMORY_MAP_BUF_CAP);
+}
+
+EMSCRIPTEN_KEEPALIVE
+uint8_t *wasm_get_memory_map_buf(void) { return g_memory_map_buf; }
+
+// --- Disassembly ---
+#define DISASM_BUF_CAP 256
+static char g_disasm_buf[DISASM_BUF_CAP];
+
+EMSCRIPTEN_KEEPALIVE
+int wasm_disassemble(uint32_t pc) {
+    return (int)e9k_debug_disassemble_quick(pc, g_disasm_buf, sizeof(g_disasm_buf));
+}
+
+EMSCRIPTEN_KEEPALIVE
+const char *wasm_get_disasm_buf(void) { return g_disasm_buf; }
+
+// --- Step variants ---
+// Each clears e9k_debug_is_paused(); caller must loop wasm_tick() until it
+// reports paused again, mirroring the breakpoint flow.
+
+EMSCRIPTEN_KEEPALIVE
+void wasm_step_instr(void) { e9k_debug_step_instr(); }
+
+EMSCRIPTEN_KEEPALIVE
+void wasm_step_line(void) { e9k_debug_step_line(); }
+
+EMSCRIPTEN_KEEPALIVE
+void wasm_step_next(void) { e9k_debug_step_next(); }
+
+EMSCRIPTEN_KEEPALIVE
+void wasm_step_out(void) { e9k_debug_step_out(); }
+
+// --- Callstack ---
+#define CALLSTACK_BUF_CAP 256
+static uint32_t g_callstack_buf[CALLSTACK_BUF_CAP];
+
+EMSCRIPTEN_KEEPALIVE
+int wasm_read_callstack(void) {
+    return (int)e9k_debug_read_callstack(g_callstack_buf, CALLSTACK_BUF_CAP);
+}
+
+EMSCRIPTEN_KEEPALIVE
+uint32_t *wasm_get_callstack_buf(void) { return g_callstack_buf; }
+
+// --- Cycle count (uint64_t split into lo/hi for cwrap, which can't return
+// 64-bit values without -sWASM_BIGINT) ---
+static uint64_t g_cycle_count;
+
+EMSCRIPTEN_KEEPALIVE
+void wasm_read_cycle_count(void) { g_cycle_count = e9k_debug_read_cycle_count(); }
+
+EMSCRIPTEN_KEEPALIVE
+uint32_t wasm_get_cycle_count_lo(void) { return (uint32_t)(g_cycle_count & 0xFFFFFFFFu); }
+
+EMSCRIPTEN_KEEPALIVE
+uint32_t wasm_get_cycle_count_hi(void) { return (uint32_t)(g_cycle_count >> 32); }
+
+// --- Watchpoints (Stage G2) ---
+// e9k_debug_watchpoint_t is 7 x uint32 (addr, op_mask, diff_operand,
+// value_operand, old_value_operand, size_operand, addr_mask_operand).
+static e9k_debug_watchpoint_t g_watchpoint_buf[E9K_WATCHPOINT_COUNT];
+static e9k_debug_watchbreak_t g_watchbreak_buf;
+static uint64_t g_watchpoint_enabled_mask;
+
+EMSCRIPTEN_KEEPALIVE
+int wasm_add_watchpoint(uint32_t addr, uint32_t op_mask, uint32_t diff_operand, uint32_t value_operand,
+                         uint32_t old_value_operand, uint32_t size_operand, uint32_t addr_mask_operand) {
+    return e9k_debug_add_watchpoint(addr, op_mask, diff_operand, value_operand,
+                                     old_value_operand, size_operand, addr_mask_operand);
+}
+
+EMSCRIPTEN_KEEPALIVE
+void wasm_remove_watchpoint(uint32_t index) { e9k_debug_remove_watchpoint(index); }
+
+EMSCRIPTEN_KEEPALIVE
+int wasm_read_watchpoints(void) {
+    return (int)e9k_debug_read_watchpoints(g_watchpoint_buf, E9K_WATCHPOINT_COUNT);
+}
+
+EMSCRIPTEN_KEEPALIVE
+uint32_t *wasm_get_watchpoint_buf(void) { return (uint32_t *)g_watchpoint_buf; }
+
+EMSCRIPTEN_KEEPALIVE
+void wasm_read_watchpoint_enabled_mask(void) { g_watchpoint_enabled_mask = e9k_debug_get_watchpoint_enabled_mask(); }
+
+EMSCRIPTEN_KEEPALIVE
+uint32_t wasm_get_watchpoint_enabled_mask_lo(void) { return (uint32_t)(g_watchpoint_enabled_mask & 0xFFFFFFFFu); }
+
+EMSCRIPTEN_KEEPALIVE
+uint32_t wasm_get_watchpoint_enabled_mask_hi(void) { return (uint32_t)(g_watchpoint_enabled_mask >> 32); }
+
+EMSCRIPTEN_KEEPALIVE
+void wasm_set_watchpoint_enabled_mask(uint32_t lo, uint32_t hi) {
+    e9k_debug_set_watchpoint_enabled_mask(((uint64_t)hi << 32) | (uint64_t)lo);
+}
+
+EMSCRIPTEN_KEEPALIVE
+int wasm_consume_watchbreak(void) {
+    return e9k_debug_consume_watchbreak(&g_watchbreak_buf);
+}
+
+EMSCRIPTEN_KEEPALIVE
+uint32_t *wasm_get_watchbreak_buf(void) { return (uint32_t *)&g_watchbreak_buf; }
+
+// --- Memory protects (Stage G2) ---
+// e9k_debug_protect_t is 5 x uint32 (addr, addrMask, sizeBits, mode, value).
+static e9k_debug_protect_t g_protect_buf[E9K_PROTECT_COUNT];
+static uint64_t g_protect_enabled_mask;
+
+EMSCRIPTEN_KEEPALIVE
+int wasm_add_protect(uint32_t addr, uint32_t size_bits, uint32_t mode, uint32_t value) {
+    return e9k_debug_add_protect(addr, size_bits, mode, value);
+}
+
+EMSCRIPTEN_KEEPALIVE
+void wasm_remove_protect(uint32_t index) { e9k_debug_remove_protect(index); }
+
+EMSCRIPTEN_KEEPALIVE
+int wasm_read_protects(void) {
+    return (int)e9k_debug_read_protects(g_protect_buf, E9K_PROTECT_COUNT);
+}
+
+EMSCRIPTEN_KEEPALIVE
+uint32_t *wasm_get_protect_buf(void) { return (uint32_t *)g_protect_buf; }
+
+EMSCRIPTEN_KEEPALIVE
+void wasm_read_protect_enabled_mask(void) { g_protect_enabled_mask = e9k_debug_get_protect_enabled_mask(); }
+
+EMSCRIPTEN_KEEPALIVE
+uint32_t wasm_get_protect_enabled_mask_lo(void) { return (uint32_t)(g_protect_enabled_mask & 0xFFFFFFFFu); }
+
+EMSCRIPTEN_KEEPALIVE
+uint32_t wasm_get_protect_enabled_mask_hi(void) { return (uint32_t)(g_protect_enabled_mask >> 32); }
+
+EMSCRIPTEN_KEEPALIVE
+void wasm_set_protect_enabled_mask(uint32_t lo, uint32_t hi) {
+    e9k_debug_set_protect_enabled_mask(((uint64_t)hi << 32) | (uint64_t)lo);
+}
+
+int main(void) {
+    EM_ASM({ console.log('[shim] module loaded, call _wasm_boot() to start'); });
+    return 0;
+}
