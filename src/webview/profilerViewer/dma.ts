@@ -13,11 +13,13 @@ import {
   COP_SUB_WAIT,
   COP_SUB_SKIP,
 } from "../../shared/profilerTypes";
+import { BlitMode } from "./blits";
 
 export interface ChannelStyle {
   key: string; // stable identity for merging/aggregation (CPU split, Copper split)
   label: string; // tooltip / time-view row name
   color: string; // CSS rgb()
+  textDark?: boolean; // draw an on-color label in dark text (blit band only; default light)
 }
 
 const rgb = (abgr: number): string =>
@@ -53,6 +55,19 @@ const CPU_DATA: ChannelStyle = { key: "cpu-data", label: "CPU Data", color: rgb(
 const COP_MOVE: ChannelStyle = { key: "cop-move", label: "Copper", color: rgb(0xff00eeee) };
 const COP_WAIT: ChannelStyle = { key: "cop-wait", label: "Copper Wait", color: rgb(0xff22aaaa) };
 const COP_SKIP: ChannelStyle = { key: "cop-skip", label: "Copper Skip", color: rgb(0xff446666) };
+
+// Blit-line band colors by mode (the flame's second band). ABGR values copied verbatim from
+// the old vscode-amiga-debug dmaTypes BLITTER subtypes; Copy matches the BLITTER owner color
+// above so a copy blit's box tones with its DMA-band cells.
+const BLIT_STYLE: Record<BlitMode, ChannelStyle> = {
+  [BlitMode.Copy]: { key: "blit-copy", label: "Blit", color: rgb(0xff888800) },
+  [BlitMode.Fill]: { key: "blit-fill", label: "Fill", color: rgb(0xeeff8800) },
+  [BlitMode.Line]: { key: "blit-line", label: "Line", color: rgb(0xdd00ff00), textDark: true }, // bright green
+};
+
+export function blitStyle(mode: BlitMode): ChannelStyle {
+  return BLIT_STYLE[mode];
+}
 
 // Returns the style for a DMA cycle, or null for idle/blocked cycles (not drawn).
 export function channelStyle(owner: number, flags: number): ChannelStyle | null {

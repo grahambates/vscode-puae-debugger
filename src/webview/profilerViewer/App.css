@@ -211,6 +211,66 @@ body {
   font-size: 11px;
 }
 
+/* Blitter tooltip: a 2-column definition grid (bold label left, value right), one entry per
+   row, mirroring the old extension. Chips, Shift/Modulo, and FWM/LWM all flow inline in the
+   value column. */
+.blit-tip {
+  max-width: 600px;
+  white-space: normal;
+}
+
+.blit-grid {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 2px 14px;
+  align-items: baseline;
+  margin-top: 3px;
+  font-variant-numeric: tabular-nums;
+}
+
+.blit-grid > .bt-label {
+  font-weight: bold;
+  white-space: nowrap;
+  color: var(--vscode-foreground);
+}
+
+.blit-grid > .bt-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px;
+  align-items: baseline;
+}
+
+.bt-mt {
+  margin-right: 4px;
+}
+
+/* Inline emphasis label inside a value cell (Shift / Modulo / FWM / LWM / Start / Texture). */
+.bt-eh {
+  font-weight: bold;
+  color: var(--vscode-descriptionForeground);
+  margin: 0 4px 0 10px;
+}
+
+.bt-val > .bt-eh:first-child {
+  margin-left: 0;
+}
+
+/* Flag / minterm chip (used in the value column). */
+.tooltip .tt-bit {
+  font: 600 11px var(--vscode-editor-font-family, monospace);
+  padding: 0 3px;
+  background: var(--vscode-toolbar-hoverBackground, rgba(255, 255, 255, 0.08));
+  color: var(--vscode-descriptionForeground);
+  opacity: 0.5;
+}
+
+.tooltip .tt-bit.on {
+  background: var(--vscode-inputOption-activeBackground);
+  color: var(--vscode-inputOption-activeForeground, var(--vscode-foreground));
+  opacity: 1;
+}
+
 /* ── TimeView (top-down function table) ─────────────────────────────────────
    Ported from vscode-amiga-debug table/time-view.module.css
    ──────────────────────────────────────────────────────────────────────── */

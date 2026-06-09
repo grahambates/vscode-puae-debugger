@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { PointerEvent as ReactPointerEvent } from "react";
 import { Category, ILocation, DMA_WRITE, DMA_BYTE, DMA_HPOS, dmaIsCustomReg } from "../../shared/profilerTypes";
 import { getProfileModel } from "./modelStore";
@@ -6,7 +6,8 @@ import { buildColumns, IColumn, IColumnLocation } from "./columns";
 import { binarySearch } from "./array";
 import { dataName, DisplayUnit, formatValue, scaleValue, Timing } from "./display";
 import { compileFilter, IRichFilter } from "./filter";
-import { channelStyle } from "./dma";
+import { channelStyle, blitStyle } from "./dma";
+import { getBlits, blitLabel, blitTooltip, Blit } from "./blits";
 import { createSymbolizer } from "./symbols";
 import { customRegisterName } from "../shared/customRegisters";
 import { MiddleOut } from "./MiddleOut";
@@ -21,6 +22,7 @@ import { MiddleOut } from "./MiddleOut";
 const ROW_H = 18;
 const TIMELINE_H = 18;
 const DMA_BAND_H = 18; // height of the DMA channel line above the CPU rows
+const BLIT_BAND_H = 18; // height of the blitter line (one box per blit), below the DMA line
 const Y_BUFFER = 8;
 const MIN_LABEL_W = 28; // px; narrower boxes get no text
 const MIN_DRAW_W = 0.4; // px; narrower boxes are skipped entirely
@@ -152,15 +154,20 @@ export function FlameGraph({
   const [bounds, setBounds] = useState<IBounds>({ minX: 0, maxX: 1 });
   const [hovered, setHovered] = useState<{ box: IBox; x: number; y: number } | undefined>(undefined);
   const [dmaHover, setDmaHover] = useState<{ slot: number; x: number; y: number } | undefined>(undefined);
+  const [blitHover, setBlitHover] = useState<{ blit: Blit; x: number; y: number } | undefined>(undefined);
   const [focused, setFocused] = useState<IBox | undefined>(undefined);
   const [drag, setDrag] = useState<IDrag | undefined>(undefined);
 
   // DMA channel line (captured in the same frame). A band of DMA_BAND_H sits between
-  // the timeline ruler and the CPU rows, which are shifted down by the band height.
+  // the timeline ruler and the CPU rows, which are shifted down by the band height. The
+  // blitter line (one box per blit, reconstructed from the same grid) sits below it.
   const dma = model.dma;
   const dmaSlots = dma ? dma.owner.length : 0;
   const bandH = dma ? DMA_BAND_H : 0;
-  const yOffset = TIMELINE_H + bandH;
+  const blitResult = useMemo(() => (dma ? getBlits(dma) : { blits: [], fastBlitter: false }), [dma]);
+  const blits = blitResult.blits;
+  const blitH = blits.length ? BLIT_BAND_H : 0;
+  const yOffset = TIMELINE_H + bandH + blitH;
 
   const columns = useMemo(() => buildColumns(model), [model]);
   const { boxById, boxes, maxY } = useMemo(() => buildBoxes(columns, yOffset), [columns, yOffset]);
@@ -190,6 +197,8 @@ export function FlameGraph({
     setBounds({ minX: 0, maxX: 1 });
     setFocused(undefined);
     setHovered(undefined);
+    setDmaHover(undefined);
+    setBlitHover(undefined);
   }
 
   // Track the visible canvas width (also reacts to the vertical scrollbar appearing).
@@ -349,6 +358,64 @@ export function FlameGraph({
       ctx.stroke();
     }
 
+    // Blitter line: one box per reconstructed blit, spanning BLTSIZE-write → final D write,
+    // colored by mode (Copy/Fill/Line). Same slot→x mapping as the DMA band, so they align.
+    if (dma && blitH > 0) {
+      const N = dmaSlots;
+      const blitBandY = TIMELINE_H + bandH;
+      const spanX = (b: Blit) => [b.startSlot / N, (b.finished ? b.endSlot + 1 : b.startSlot + 1) / N] as const;
+      ctx.font = `11px ${cs.fontFamily || "sans-serif"}`;
+      for (const blit of blits) {
+        const [s1, s2] = spanX(blit);
+        const x1 = toX(s1);
+        const x2 = toX(s2);
+        if (x2 < 0 || x1 > width) continue;
+        const cx = Math.max(0, x1);
+        const cw = Math.min(width, x2) - cx;
+        if (cw < MIN_DRAW_W) continue;
+        const style = blitStyle(blit.mode);
+        ctx.fillStyle = style.color;
+        ctx.fillRect(cx, blitBandY, Math.max(cw, MIN_DRAW_W), BLIT_BAND_H - 1);
+        if (cw > MIN_LABEL_W) {
+          const maxW = cw - 6;
+          let label = blitLabel(blit);
+          if (ctx.measureText(label).width > maxW) {
+            while (label.length > 0 && ctx.measureText(label + "…").width > maxW) label = label.slice(0, -1);
+            label += "…";
+          }
+          ctx.save();
+          ctx.beginPath();
+          ctx.rect(cx, blitBandY, cw, BLIT_BAND_H);
+          ctx.clip();
+          ctx.fillStyle = style.textDark ? "#000" : "#fff";
+          ctx.fillText(label, cx + 3, blitBandY + BLIT_BAND_H / 2);
+          ctx.restore();
+        }
+      }
+      // Highlight the hovered blit.
+      if (blitHover) {
+        const [s1, s2] = spanX(blitHover.blit);
+        const hx = Math.max(0, toX(s1));
+        const hw = Math.min(width, toX(s2)) - hx;
+        ctx.strokeStyle = "#fff";
+        ctx.lineWidth = 1;
+        ctx.strokeRect(hx + 0.5, blitBandY + 0.5, Math.max(hw - 1, 0), BLIT_BAND_H - 2);
+      }
+      // Fast-blitter capture (accuracy < 2): blitter cells absent, spans estimated.
+      if (blitResult.fastBlitter) {
+        ctx.font = `10px ${cs.fontFamily || "sans-serif"}`;
+        ctx.fillStyle = cs.getPropertyValue("--vscode-descriptionForeground").trim() || "#999";
+        ctx.fillText("blitter accuracy < 2 — spans estimated", 4, blitBandY + BLIT_BAND_H / 2);
+      }
+      // Separator under the band.
+      ctx.strokeStyle = cs.getPropertyValue("--vscode-panel-border").trim() || "#444";
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(0, blitBandY + BLIT_BAND_H - 0.5);
+      ctx.lineTo(width, blitBandY + BLIT_BAND_H - 0.5);
+      ctx.stroke();
+    }
+
     // Boxes. Labels use the UI font (no glyph cache / monospace requirement anymore).
     ctx.font = `11px ${cs.fontFamily || "sans-serif"}`;
     for (const b of boxes) {
@@ -385,7 +452,7 @@ export function FlameGraph({
         ctx.restore();
       }
     }
-  }, [boxes, width, height, bounds, hovered, focused, duration, displayUnit, timing, matches, dma, dmaSlots, dmaHover]);
+  }, [boxes, width, height, bounds, hovered, focused, duration, displayUnit, timing, matches, dma, dmaSlots, dmaHover, bandH, blits, blitH, blitHover, blitResult]);
 
   // --- horizontal pan scrollbar (synced to `bounds`) ----------------------------
   // The scroll child's width is canvasWidth/range, so when zoomed in it overflows
@@ -468,6 +535,21 @@ export function FlameGraph({
     [dma, dmaSlots, bandH, bounds, width],
   );
 
+  // Hit-test the cursor in the blitter band → the blit whose [start, end] span covers it.
+  const blitAt = useCallback(
+    (mx: number, my: number): Blit | undefined => {
+      if (!blitH || my < TIMELINE_H + bandH || my >= TIMELINE_H + bandH + blitH) return undefined;
+      const range = bounds.maxX - bounds.minX || 1;
+      const slot = (bounds.minX + (mx / width) * range) * dmaSlots;
+      for (const b of blits) {
+        const end = b.finished ? b.endSlot + 1 : b.startSlot + 1;
+        if (slot >= b.startSlot && slot < end) return b;
+      }
+      return undefined;
+    },
+    [blits, blitH, bandH, bounds, width, dmaSlots],
+  );
+
   // --- drag to pan with pointer capture, with click-vs-drag detection -----------
   // setPointerCapture routes all pointermove/up to the canvas even when the cursor
   // leaves the webview, so the drag always ends on release. Plain mouse events lose
@@ -497,9 +579,17 @@ export function FlameGraph({
     if (slot >= 0) {
       setDmaHover({ slot, x: e.clientX, y: e.clientY });
       setHovered(undefined);
+      setBlitHover(undefined);
       return;
     }
     setDmaHover(undefined);
+    const blit = blitAt(mx, my);
+    if (blit) {
+      setBlitHover({ blit, x: e.clientX, y: e.clientY });
+      setHovered(undefined);
+      return;
+    }
+    setBlitHover(undefined);
     const box = boxAt(mx, my);
     setHovered(box ? { box, x: e.clientX, y: e.clientY } : undefined);
   };
@@ -612,6 +702,21 @@ export function FlameGraph({
   const dmaTipLeft = dmaHover ? Math.max(8, Math.min(dmaHover.x + 12, window.innerWidth - 360 - 8)) : 0;
   const dmaTipTop = dmaHover ? Math.max(8, Math.min(dmaHover.y + 12, window.innerHeight - 170 - 8)) : 0;
 
+  // Blit band hover info — the old extension's blitter tooltip: size, BLTCON chips, minterm
+  // (hex + boolean expression + the 8 LF bits), per-channel source/destination (symbolized
+  // address or literal data, shift, modulo), channel-A masks, and the start/end/duration.
+  // Recomputed only when the hovered blit changes (not on every pointer move).
+  const hoveredBlit = blitHover?.blit;
+  const blitInfo = useMemo(() => (hoveredBlit ? blitTooltip(hoveredBlit) : undefined), [hoveredBlit]);
+  const blitAddr = (a: number) => {
+    const hex = `$${(a >>> 0).toString(16).padStart(6, "0")}`;
+    const sym = symbolize(a);
+    return sym ? `${sym} (${hex})` : hex;
+  };
+  const bin16 = (v: number) => `%${(v & 0xffff).toString(2).padStart(16, "0")}`;
+  const blitTipLeft = blitHover ? Math.max(8, Math.min(blitHover.x + 12, window.innerWidth - 500 - 8)) : 0;
+  const blitTipTop = blitHover ? Math.max(8, Math.min(blitHover.y + 12, window.innerHeight - 300 - 8)) : 0;
+
   return (
     <div className="flame">
       <div className="canvas-wrap" ref={canvasWrapRef}>
@@ -625,7 +730,7 @@ export function FlameGraph({
           onPointerCancel={() => setDrag(undefined)}
           onDoubleClick={onDoubleClick}
           onMouseLeave={() => {
-            if (!drag) { setHovered(undefined); setDmaHover(undefined); }
+            if (!drag) { setHovered(undefined); setDmaHover(undefined); setBlitHover(undefined); }
           }}
         />
       </div>
@@ -694,6 +799,80 @@ export function FlameGraph({
               <div className="tt-addr">{dmaInfo.callStack.join(" › ")}</div>
             </>
           )}
+        </div>
+      )}
+      {blitHover && blitInfo && (
+        <div className="tooltip blit-tip" style={{ left: blitTipLeft, top: blitTipTop }}>
+          <div className="tt-func">
+            <span className="dma-dot" style={{ background: blitStyle(blitHover.blit.mode).color }} />
+            {blitLabel(blitHover.blit)}
+          </div>
+          <div className="blit-grid">
+            <span className="bt-label">Size</span>
+            <span className="bt-val">{blitInfo.size}</span>
+
+            <span className="bt-label">Blitter Control</span>
+            <span className="bt-val bt-chips">
+              {blitInfo.control.map((c) => (
+                <span key={c.name} className={c.on ? "tt-bit on" : "tt-bit"}>{c.name}</span>
+              ))}
+            </span>
+
+            <span className="bt-label">Minterm</span>
+            <span className="bt-val bt-chips">
+              <span className="bt-mt">{blitInfo.mintermHex} {blitInfo.mintermExpr}</span>
+              {blitInfo.mintermBits.map((c, i) => (
+                <span key={i} className={c.on ? "tt-bit on" : "tt-bit"}>{c.name}</span>
+              ))}
+            </span>
+
+            {blitInfo.line && (
+              <>
+                <span className="bt-label">Line</span>
+                <span className="bt-val">
+                  <span className="bt-eh">Start</span> {blitInfo.line.start}
+                  <span className="bt-eh">Texture</span> {blitInfo.line.texture}
+                </span>
+              </>
+            )}
+
+            {blitInfo.channels.map((ch) => (
+              <Fragment key={ch.label}>
+                <span className="bt-label">{ch.label}</span>
+                <span className="bt-val">
+                  {ch.literal !== undefined ? (
+                    bin16(ch.literal)
+                  ) : (
+                    <>
+                      <span>{blitAddr(ch.ptr!)}</span>
+                      {ch.shift !== undefined && <><span className="bt-eh">Shift</span> {ch.shift}</>}
+                      <span className="bt-eh">Modulo</span> {ch.modulo}
+                    </>
+                  )}
+                </span>
+                {ch.fwm !== undefined && (
+                  <>
+                    <span className="bt-label">Masks</span>
+                    <span className="bt-val">
+                      <span className="bt-eh">FWM</span> {bin16(ch.fwm)}
+                      <span className="bt-eh">LWM</span> {bin16(ch.lwm!)}
+                    </span>
+                  </>
+                )}
+              </Fragment>
+            ))}
+
+            <span className="bt-label">Start</span>
+            <span className="bt-val">Line {blitInfo.start.line}, Color Clock {blitInfo.start.colorClock}, DMA Cycle {blitInfo.start.slot}</span>
+            {blitInfo.end && (
+              <>
+                <span className="bt-label">End</span>
+                <span className="bt-val">Line {blitInfo.end.line}, Color Clock {blitInfo.end.colorClock}, DMA Cycle {blitInfo.end.slot}</span>
+                <span className="bt-label">Duration</span>
+                <span className="bt-val">{blitInfo.end.durationSlots} DMA Cycles ({formatValue(blitInfo.end.durationSlots * 2, displayUnit, timing)})</span>
+              </>
+            )}
+          </div>
         </div>
       )}
     </div>
