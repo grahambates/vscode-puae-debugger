@@ -43,6 +43,32 @@ export interface InstructionSample {
 // Hard cap mirroring the emulator's kMaxDepth; guards against a corrupt stream.
 const MAX_DEPTH = 64;
 
+// Synthetic leaf-PC marker the emulator emits for an [IRQ] sample (the interrupt/
+// exception dispatch "gap"). MUST match IRQ_MARKER in
+// vamigaweb_fork/Core/Profiler/CpuProfiler.h.
+const IRQ_MARKER = 0xfffffffe;
+
+// Kickstart ROM address range (covers 256K and 512K ROMs), as in WinUAE.
+const KICKSTART_ROM_START = 0xf80000;
+const KICKSTART_ROM_END = 0x1000000;
+
+// Classify a leaf PC into a synthetic bucket label, or undefined for normal in-program
+// code. Precedence mirrors the old vscode-amiga-debug: [IRQ] (dispatch-gap marker) >
+// Kickstart (ROM range) > program (a loaded segment → normal) > [External] (anything else).
+// A ROM PC resolves to "[Kick] <name>" when Kickstart symbols are loaded (kickstartRomPath
+// + a known ROM, merged into the SourceMap as the .kick module) — useful since demoscene/
+// bare-metal code still calls ROM routines (WaitBlit, etc.) — or flat "[Kickstart]" otherwise.
+// The symbol NAME only (no offset) so all PCs within one ROM routine aggregate into one node.
+export function syntheticLabel(pc: number, sourceMap: SourceMap): string | undefined {
+  if (pc === IRQ_MARKER) return "[IRQ]";
+  if (pc >= KICKSTART_ROM_START && pc < KICKSTART_ROM_END) {
+    const sym = sourceMap.findSymbolOffset(pc);
+    return sym ? `[Kick] ${sym.symbol}` : "[Kickstart]";
+  }
+  if (sourceMap.findSegmentForAddress(pc)) return undefined;
+  return "[External]";
+}
+
 // Decode the flat u32 stream the emulator produces. Record layout, repeated:
 //   [depth, pc0, pc1, ... pc(depth-1), cycleDelta]
 // pc0 is the leaf. Returns one InstructionSample per record; stops cleanly on a
@@ -65,6 +91,8 @@ export function decodeProfileStream(words: Uint32Array): InstructionSample[] {
 // Symbolicate a PC into a ProfileFrame using the DWARF/symbol source map. Function
 // name comes from the nearest preceding symbol; file/line from the line table.
 function symbolicate(pc: number, sourceMap: SourceMap): ProfileFrame {
+  const synthetic = syntheticLabel(pc, sourceMap);
+  if (synthetic) return { func: synthetic, file: undefined, line: undefined, address: pc };
   const sym = sourceMap.findSymbolOffset(pc);
   const loc = sourceMap.lookupAddress(pc);
   return {
@@ -87,6 +115,8 @@ function symbolicate(pc: number, sourceMap: SourceMap): ProfileFrame {
 // call appears in the caller), and only the innermost frame gets the instruction's own
 // source line. `getInlineFramesForPc` returns frames innermost-first.
 function expandPc(pc: number, sourceMap: SourceMap): ProfileFrame[] {
+  const synthetic = syntheticLabel(pc, sourceMap);
+  if (synthetic) return [{ func: synthetic, file: undefined, line: undefined, address: pc }];
   const sym = sourceMap.findSymbolOffset(pc);
   const loc = sourceMap.lookupAddress(pc);
   const funcName = sym ? sym.symbol : `0x${pc.toString(16)}`;
@@ -108,6 +138,50 @@ function expandPc(pc: number, sourceMap: SourceMap): ProfileFrame[] {
   // ...and the innermost inline gets the instruction's own source location.
   frames.push({ func: inlines[0].name + " (inlined)", file: loc?.path, line: loc?.line, address: pc });
   return frames;
+}
+
+// Nest "context-less" leaves under the program call stack, porting the old vscode-amiga-
+// debug `lastCallstack` reuse: a depth-1 leaf the unwinder couldn't step out of inherits
+// the previous in-program sample's stack as context, so it renders below its caller and
+// its cycles roll up into the CPU total. Two kinds of context-less leaf:
+//   * out-of-program ([Kickstart]/[External]) — DWARF can't unwind from ROM/elsewhere;
+//   * a no-DWARF-CFI leaf *inside* the program — an #embed'd binary or hand-asm called via
+//     jsr (e.g. ThePlayer in template.c, in .rodata): symbolized normally but with no CFI,
+//     so the emulator emits it depth-1. `getCfaForPc` is the reliable signal — real C code
+//     always has CFI, so a no-CFI leaf is a no-debug blob (the only other no-CFI code,
+//     crt0/_start, is a genuine root and isn't sampled mid-frame).
+// [IRQ] markers stay standalone (dispatch overhead, not attributable to a function), and
+// branch-stack samples already carry real context (depth > 1) and pass through unchanged.
+// Operates on raw PCs and returns a new array, leaving the input `samples` (the raw
+// artifact returned by getSamples) untouched.
+export function applyContextReuse(samples: InstructionSample[], sourceMap: SourceMap): InstructionSample[] {
+  // The no-CFI-blob nesting only makes sense for a DWARF program: there, every real
+  // function has CFI, so a no-CFI leaf is a no-debug blob. A pure-assembly (branch-stack)
+  // capture has NO DWARF at all — getCfaForPc is always undefined and depth-1 leaves are
+  // legitimate (the shadow stack), so blob-nesting must be disabled. getUnwindRows() is the
+  // "has DWARF CFI" signal (empty for asm); compute it once.
+  const hasCfi = sourceMap.getUnwindRows().length > 0;
+  let lastProgramStack: number[] = [];
+  return samples.map((s) => {
+    const leaf = s.stack[0];
+    const synthetic = syntheticLabel(leaf, sourceMap);
+    if (synthetic === "[IRQ]") return s; // standalone, never nested or reused as context
+
+    const depth1 = s.stack.length === 1;
+    const outOfProgram = synthetic !== undefined; // [Kickstart]/[External]
+    const noCfiBlob = hasCfi && !outOfProgram && depth1 && !sourceMap.getCfaForPc(leaf);
+
+    // Nest a context-less leaf (out-of-program, or an in-program no-CFI blob) under the
+    // last real program stack so it hangs off its caller instead of floating at the root.
+    if (depth1 && (outOfProgram || noCfiBlob) && lastProgramStack.length > 0) {
+      return { stack: [leaf, ...lastProgramStack], cycles: s.cycles };
+    }
+
+    // Genuine program code (resolvable C with a caller chain, or a real root like an
+    // interrupt handler): remember it as context for subsequent context-less leaves.
+    if (!outOfProgram && !noCfiBlob) lastProgramStack = s.stack;
+    return s;
+  });
 }
 
 // Aggregate per-instruction samples into a call tree. Each distinct PC is
@@ -144,7 +218,7 @@ export function buildCallTree(samples: InstructionSample[], sourceMap: SourceMap
   };
 
   let totalCycles = 0;
-  for (const s of samples) {
+  for (const s of applyContextReuse(samples, sourceMap)) {
     totalCycles += s.cycles;
     root.total += s.cycles;
     let node = root;
@@ -243,7 +317,7 @@ export function buildProfileModel(samples: InstructionSample[], sourceMap: Sourc
   const sampleIds: number[] = [0]; // samples[0] dummy; pairs with timeDeltas[i-1]
   const timeDeltas: number[] = [];
   let duration = 0;
-  for (const s of samples) {
+  for (const s of applyContextReuse(samples, sourceMap)) {
     // Stacks are leaf-first; descend outermost→leaf so the path hangs off the root.
     // Each physical PC expands to physical + inlined frames (outermost→innermost), so
     // inlined callees appear as their own boxes stacked above the caller.

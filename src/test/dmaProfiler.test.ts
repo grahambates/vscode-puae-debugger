@@ -205,6 +205,9 @@ describe("createTopDownGraph DMA grouping", () => {
     return {
       findSymbolOffset: (pc: number) => (pc === 0x100 ? { symbol: "_start", offset: 0 } : undefined),
       lookupAddress: (pc: number) => (pc === 0x100 ? { path: "a.c", line: 1 } : undefined),
+      findSegmentForAddress: () => ({}), // all test PCs are "in program"
+      getCfaForPc: () => ({ reg: 15, offset: 0 }), // all test PCs have CFI (not no-debug blobs)
+      getUnwindRows: () => [{}], // non-empty -> a DWARF program (blob-nesting enabled)
     } as unknown as SourceMap;
   }
   const samples: InstructionSample[] = [{ stack: [0x100], cycles: 10 }];

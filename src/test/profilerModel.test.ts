@@ -10,6 +10,9 @@ function stubSourceMap(): SourceMap {
   return {
     findSymbolOffset: (pc: number) => (names[pc] ? { symbol: names[pc], offset: 0 } : undefined),
     lookupAddress: (pc: number) => (names[pc] ? { path: "a.c", line: lines[pc] } : undefined),
+    findSegmentForAddress: () => ({}), // all test PCs are "in program"
+    getCfaForPc: () => ({ reg: 15, offset: 0 }), // all test PCs have CFI (not no-debug blobs)
+    getUnwindRows: () => [{}], // non-empty -> a DWARF program (blob-nesting enabled)
   } as unknown as SourceMap;
 }
 
@@ -81,6 +84,9 @@ function inlineStubSourceMap(): SourceMap {
             { name: "A", callPath: "f.c", callLine: 5 }, //  outer: A's call site (in F)
           ]
         : [],
+    findSegmentForAddress: () => ({}), // all test PCs are "in program"
+    getCfaForPc: () => ({ reg: 15, offset: 0 }), // all test PCs have CFI (not no-debug blobs)
+    getUnwindRows: () => [{}], // non-empty -> a DWARF program (blob-nesting enabled)
   } as unknown as SourceMap;
 }
 
