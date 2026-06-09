@@ -221,7 +221,10 @@ body {
   flex-direction: column;
   min-height: 0;
   overflow: hidden;
-  font-size: 12px;
+  /* Match the old extension: the TimeView renders at the webview's default UI font size
+     (the old ext set no font-size on its rows, only the editor font-family below). A 12px
+     clamp here made the time column look smaller than the old ext. */
+  font-size: var(--vscode-font-size);
 }
 
 /* Data rows use the monospace editor font; the header keeps the default UI font
