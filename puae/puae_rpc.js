@@ -39,10 +39,22 @@ function hex(value, digits = 8) {
 
 // Builds the StopMessage-shaped payload for an `emulator-state: stopped`
 // message (see src/vAmiga.ts's StopMessage), matching vAmiga_ui.js's
-// handleStop: a pending watchbreak (consumed here) means a watchpoint was
-// hit, with payload.pc set to the *watched address*; otherwise it's a
-// breakpoint/step halt, with payload.pc set to the CPU's current PC.
+// handleStop: a pending catchbreak (consumed here) means a 68k exception
+// matching an enabled catchpoint vector was raised, with payload.vector set
+// to the exception vector number and payload.pc set to the faulting PC. A
+// pending watchbreak means a watchpoint was hit, with payload.pc set to the
+// *watched address*; otherwise it's a breakpoint/step halt, with payload.pc
+// set to the CPU's current PC.
 export function getCurrentStopMessage(M) {
+  if (M._wasm_consume_catchbreak()) {
+    const ptr = M._wasm_get_catchbreak_buf();
+    const buf = new Uint32Array(M.HEAPU32.buffer, ptr, 2);
+    return {
+      hasMessage: true,
+      name: "CATCHPOINT_REACHED",
+      payload: { pc: buf[0] >>> 0, vector: buf[1] >>> 0 },
+    };
+  }
   if (M._wasm_consume_watchbreak()) {
     const ptr = M._wasm_get_watchbreak_buf();
     const buf = new Uint32Array(M.HEAPU32.buffer, ptr, 14);
@@ -499,8 +511,13 @@ export function setupRpcDispatcher(M, postMessage) {
         removeWatchpoint(args.address >>> 0);
         break;
       case "setCatchpoint":
+        if (args.ignores) {
+          console.warn("[puae_rpc] setCatchpoint: ignore counts not supported, catchpoint will fire every time");
+        }
+        M._wasm_set_catchpoint(args.vector >>> 0);
+        break;
       case "removeCatchpoint":
-        console.warn(`[puae_rpc] ${message.command}: not implemented (exception-based stops not supported by PUAE backend)`);
+        M._wasm_remove_catchpoint(args.vector >>> 0);
         break;
       case "enableCpuLogging":
         // Not implemented; getCpuTrace always returns [].

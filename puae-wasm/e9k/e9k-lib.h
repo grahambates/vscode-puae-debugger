@@ -89,6 +89,19 @@ typedef struct e9k_debug_watchbreak
 } e9k_debug_watchbreak_t;
 
 
+// 68k exception vector numbers fit in 0..63, matching the bits of the
+// catchpoint-enabled mask (bit N = vector N, e.g. 4 = illegal instruction).
+#define E9K_CATCHPOINT_VECTOR_MAX 64
+
+typedef struct e9k_debug_catchbreak
+{
+    uint32_t pc;     // m68k_getpc() at the point the exception was raised
+    uint32_t vector; // 68k exception vector number (2=bus error, 3=address
+                      // error, 4=illegal instruction, 5=zero divide, 8=
+                      // privilege violation, etc.)
+} e9k_debug_catchbreak_t;
+
+
 #define E9K_PROTECT_COUNT 64
 #define E9K_PROTECT_MODE_BLOCK 0u
 #define E9K_PROTECT_MODE_SET   1u

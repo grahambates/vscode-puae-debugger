@@ -32,6 +32,7 @@ extern bool libretro_frame_end;
 #include "newcpu.h"
 #ifdef __LIBRETRO__
 #include "e9k_debug.h"
+#include "e9k_catchpoint.h"
 #endif
 #include "disasm.h"
 #include "cpummu.h"
@@ -3486,6 +3487,9 @@ static void ExceptionX (int nr, uaecptr address, uaecptr oldpc)
 	}
 #ifdef DEBUGGER
 	debug_exception(nr);
+#endif
+#ifdef __LIBRETRO__
+	e9k_debug_check_catchpoint((uint32_t)nr, (uint32_t)pc);
 #endif
 	m68k_resumestopped();
 

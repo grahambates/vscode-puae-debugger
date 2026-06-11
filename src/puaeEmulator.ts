@@ -49,8 +49,7 @@ interface PendingRpc {
  *    `pokeCustom16/32` work).
  *  - `getCpuTrace()` always returns `[]`, and `enableCpuLogging()` is a
  *    no-op — instruction logging isn't implemented.
- *  - `eol()` is a no-op (no hblank hook) and `setCatchpoint`/
- *    `removeCatchpoint` are no-ops — exception-based stops aren't supported.
+ *  - `eol()` is a no-op (no hblank hook).
  *  - `stepBack()`/`continueReverse()` always resolve `false` (no execution
  *    history is recorded).
  *  - Breakpoint/watchpoint `ignores` counts are not supported; a non-zero
@@ -260,17 +259,10 @@ export class PuaeEmulator implements Emulator {
     this.sendCommand("removeWatchpoint", { address });
   }
 
-  /**
-   * Not implemented — exception-based stops aren't supported by the PUAE
-   * backend yet. Forwarded to the webview dispatcher, which logs a warning.
-   */
   public setCatchpoint(vector: number, ignores = 0): void {
     this.sendCommand("setCatchpoint", { vector, ignores });
   }
 
-  /**
-   * Not implemented — see `setCatchpoint`.
-   */
   public removeCatchpoint(vector: number): void {
     this.sendCommand("removeCatchpoint", { vector });
   }

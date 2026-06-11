@@ -1,4 +1,5 @@
 #include "e9k_debug.h"
+#include "e9k_catchpoint.h"
 #include "e9k_checkpoint.h"
 #include "e9k_debug_rom.h"
 #include "e9k_debug_sprite.h"
@@ -73,6 +74,10 @@ static int e9k_debug_watchpointSuspend = 0;
 
 static e9k_debug_protect_t e9k_debug_protects[E9K_PROTECT_COUNT];
 static uint64_t e9k_debug_protectEnabledMask = 0;
+
+static uint64_t e9k_debug_catchpointEnabledMask = 0;
+static e9k_debug_catchbreak_t e9k_debug_catchbreak = {0};
+static int e9k_debug_catchbreakPending = 0;
 
 static int e9k_debug_checkpointEnabled = 0;
 static e9k_debug_checkpoint_t e9k_debug_checkpoints[E9K_CHECKPOINT_COUNT];
@@ -1850,4 +1855,52 @@ E9K_DEBUG_EXPORT int *
 e9k_debug_amiga_get_debug_dma_addr(void)
 {
 	return &debug_dma;
+}
+
+E9K_DEBUG_EXPORT void
+e9k_debug_set_catchpoint(uint32_t vector)
+{
+	if (vector < E9K_CATCHPOINT_VECTOR_MAX) {
+		e9k_debug_catchpointEnabledMask |= (1ull << vector);
+	}
+}
+
+E9K_DEBUG_EXPORT void
+e9k_debug_remove_catchpoint(uint32_t vector)
+{
+	if (vector < E9K_CATCHPOINT_VECTOR_MAX) {
+		e9k_debug_catchpointEnabledMask &= ~(1ull << vector);
+	}
+}
+
+E9K_DEBUG_EXPORT void
+e9k_debug_check_catchpoint(uint32_t vector, uint32_t pc)
+{
+	if (vector >= E9K_CATCHPOINT_VECTOR_MAX) {
+		return;
+	}
+	if ((e9k_debug_catchpointEnabledMask & (1ull << vector)) == 0ull) {
+		return;
+	}
+	if (e9k_debug_catchbreakPending) {
+		return;
+	}
+	e9k_debug_catchbreak.pc = pc;
+	e9k_debug_catchbreak.vector = vector;
+	e9k_debug_catchbreakPending = 1;
+	e9k_debug_requestBreak();
+}
+
+E9K_DEBUG_EXPORT int
+e9k_debug_consume_catchbreak(e9k_debug_catchbreak_t *out)
+{
+	if (!out) {
+		return 0;
+	}
+	if (!e9k_debug_catchbreakPending) {
+		return 0;
+	}
+	*out = e9k_debug_catchbreak;
+	e9k_debug_catchbreakPending = 0;
+	return 1;
 }

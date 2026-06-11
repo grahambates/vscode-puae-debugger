@@ -17,6 +17,7 @@
 #include "e9k_debug.h"
 #include "e9k_watchpoint.h"
 #include "e9k_protect.h"
+#include "e9k_catchpoint.h"
 
 // Defined in ami9000's libretro-core.c; set to true by e9k_debug_requestBreak()
 // when a breakpoint fires, causing retro_run() to return early.
@@ -627,6 +628,24 @@ EMSCRIPTEN_KEEPALIVE
 void wasm_set_protect_enabled_mask(uint32_t lo, uint32_t hi) {
     e9k_debug_set_protect_enabled_mask(((uint64_t)hi << 32) | (uint64_t)lo);
 }
+
+// --- Catchpoints (exception-based breakpoints) ---
+// e9k_debug_catchbreak_t is 2 x uint32 (pc, vector).
+static e9k_debug_catchbreak_t g_catchbreak_buf;
+
+EMSCRIPTEN_KEEPALIVE
+void wasm_set_catchpoint(uint32_t vector) { e9k_debug_set_catchpoint(vector); }
+
+EMSCRIPTEN_KEEPALIVE
+void wasm_remove_catchpoint(uint32_t vector) { e9k_debug_remove_catchpoint(vector); }
+
+EMSCRIPTEN_KEEPALIVE
+int wasm_consume_catchbreak(void) {
+    return e9k_debug_consume_catchbreak(&g_catchbreak_buf);
+}
+
+EMSCRIPTEN_KEEPALIVE
+uint32_t *wasm_get_catchbreak_buf(void) { return (uint32_t *)&g_catchbreak_buf; }
 
 int main(void) {
     EM_ASM({ console.log('[shim] module loaded, call _wasm_boot() to start'); });

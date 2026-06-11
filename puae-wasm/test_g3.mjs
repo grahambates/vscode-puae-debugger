@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import createPuaeModule from "../puae/puae.js";
-import { setupRpcDispatcher } from "../puae/puae_rpc.js";
+import { setupRpcDispatcher, getCurrentStopMessage } from "../puae/puae_rpc.js";
 
 const M = await createPuaeModule();
 
@@ -323,6 +323,55 @@ check("eof pauses at end of frame", eofHit);
   cpuInfoUsp = await request("getCpuInfo");
   check(`getCpuInfo.usp round-trips (S=${sBitNowSet ? 1 : 0})`,
     cpuInfoUsp.usp === hex(0x55667788), cpuInfoUsp.usp);
+}
+
+// --- 17. setCatchpoint / removeCatchpoint (illegal instruction -> CATCHPOINT_REACHED) ---
+// Run last: triggering a real 68k exception pushes a frame onto the
+// supervisor stack and redirects PC to the exception vector handler, leaving
+// CPU state in a "halted at Guru Meditation" shape not suitable for further
+// checks.
+{
+  const ILLEGAL_ADDR = 0x20200;
+  const ILLEGAL_VECTOR = 4; // Illegal instruction
+
+  // 0x4AFC = "ILLEGAL", a guaranteed-illegal opcode that raises vector 4.
+  await request("writeMemory", { address: ILLEGAL_ADDR, data: new Uint8Array([0x4a, 0xfc]) });
+
+  send("setCatchpoint", { vector: ILLEGAL_VECTOR });
+  await request("jump", { address: ILLEGAL_ADDR });
+  send("run");
+
+  let caught = false;
+  for (let i = 0; i < 4; i++) {
+    M._wasm_tick();
+    if (M._wasm_is_paused()) { caught = true; break; }
+  }
+  check("setCatchpoint(4) pauses on illegal instruction", caught);
+
+  const stopMessage = getCurrentStopMessage(M);
+  check("getCurrentStopMessage reports CATCHPOINT_REACHED", stopMessage.name === "CATCHPOINT_REACHED",
+    JSON.stringify(stopMessage));
+  check("CATCHPOINT_REACHED.payload.pc is the faulting instruction address",
+    stopMessage.payload.pc === ILLEGAL_ADDR, hex(stopMessage.payload.pc));
+  check("CATCHPOINT_REACHED.payload.vector is 4",
+    stopMessage.payload.vector === ILLEGAL_VECTOR, String(stopMessage.payload.vector));
+
+  // Consuming the catchbreak clears it: a second call falls through to BREAKPOINT_REACHED.
+  const stopMessage2 = getCurrentStopMessage(M);
+  check("catchbreak is consumed (one-shot)", stopMessage2.name !== "CATCHPOINT_REACHED",
+    JSON.stringify(stopMessage2));
+
+  // removeCatchpoint disables the catch: re-trigger at a different address, run un-paused.
+  send("removeCatchpoint", { vector: ILLEGAL_VECTOR });
+  await request("writeMemory", { address: ILLEGAL_ADDR + 4, data: new Uint8Array([0x4a, 0xfc]) });
+  await request("jump", { address: ILLEGAL_ADDR + 4 });
+  send("run");
+  let caughtAfterRemove = false;
+  for (let i = 0; i < 4; i++) {
+    M._wasm_tick();
+    if (M._wasm_is_paused()) { caughtAfterRemove = true; break; }
+  }
+  check("removeCatchpoint(4) no longer pauses on illegal instruction", !caughtAfterRemove);
 }
 
 console.log("");
