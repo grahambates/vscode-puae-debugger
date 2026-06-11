@@ -148,12 +148,12 @@ export function setupRpcDispatcher(M, postMessage) {
   // amigaRegisterParsers.ts's bit-breakdown views (INTENA, INTREQ, DMACON,
   // ADKCON) work for this backend too.
   //
-  // Write-only registers (BPLCONx, DIWSTRT/STOP, DDFSTRT/STOP, DMACON's
-  // write-side bits, sprite/bitplane/audio pointers, etc.) are NOT exposed
-  // here: reading their addresses via custom_wget doesn't return the live
-  // shadow register (real hardware returns the floating data bus too), and
-  // PUAE's internal globals (dmacon/bplcon0/etc in custom.c) aren't wired to
-  // a wasm export yet.
+  // Other write-only registers (DMACON's write-side bits, sprite/bitplane/
+  // audio pointers, COP1LC/COP2LC, etc.) are NOT exposed here: reading their
+  // addresses via custom_wget doesn't return the live shadow register (real
+  // hardware returns the floating data bus too), and PUAE's internal globals
+  // for those aren't wired to a wasm export yet. BPLCON0-3/DIWSTRT-STOP/
+  // DDFSTRT-STOP/COLOR00-31 ARE exposed, via getDisplayRegs() below.
   const READABLE_CUSTOM_REGS = {
     DMACON: 0xdff002, // DMACONR
     VPOS: 0xdff004, // VPOSR
@@ -170,11 +170,184 @@ export function setupRpcDispatcher(M, postMessage) {
     INTREQ: 0xdff01e, // INTREQR
   };
 
+  // Display-control registers that are write-only on the 68k bus
+  // (BPLCON0-3, DIWSTRT/STOP, DDFSTRT/STOP, COLOR00-31 read back the floating
+  // data bus on real hardware) but are needed by StateViewerProvider's
+  // "Amiga State" panel. Exposed via e9k_get_display_regs() (custom.c) ->
+  // wasm_read_display_regs/wasm_get_display_regs_buf. Order matches
+  // E9K_DISPLAY_REG_COUNT in e9k_debug.h.
+  const DISPLAY_REGS_ORDER = [
+    "BPLCON0",
+    "BPLCON1",
+    "BPLCON2",
+    "BPLCON3",
+    "DIWSTRT",
+    "DIWSTOP",
+    "DDFSTRT",
+    "DDFSTOP",
+    ...Array.from({ length: 32 }, (_, i) => `COLOR${String(i).padStart(2, "0")}`),
+  ];
+
+  function getDisplayRegs() {
+    const count = M._wasm_read_display_regs();
+    const ptr = M._wasm_get_display_regs_buf();
+    const values = new Uint16Array(M.HEAPU8.buffer, ptr, count);
+    const result = {};
+    for (let i = 0; i < DISPLAY_REGS_ORDER.length; i++) {
+      result[DISPLAY_REGS_ORDER[i]] = { value: hex(values[i], 4) };
+    }
+    return result;
+  }
+
+  // Reads getCustomRegsRaw()'s table-driven entries from a big-endian
+  // DataView, sized 2 or 4 bytes per entry.
+  function readRegTable(table, view) {
+    const result = {};
+    for (const [name, offset, size] of table) {
+      const value = size === 4 ? view.getUint32(offset, false) : view.getUint16(offset, false);
+      result[name] = { value: hex(value, size * 2) };
+    }
+    return result;
+  }
+
+  // Additional custom registers that are write-only on the 68k bus, exposed
+  // via e9k_debug_read_custom_regs_raw() -> save_custom()'s savestate-format
+  // dump of $DFF000-$DFF1FE: blitter/copper/disk pointers and control,
+  // bitplane/sprite pointers and data, and display-timing registers not
+  // already covered by READABLE_CUSTOM_REGS/DISPLAY_REGS_ORDER above.
+  //
+  // `addr` is the $DFFxxx register offset; the raw buffer holds a 4-byte
+  // chipset_mask header followed by big-endian words/longs at byte offset
+  // 4+addr, so the table below is converted to [name, 4 + addr, size]
+  // entries for readRegTable(). 32-bit (size 4) entries are PUAE's combined
+  // H/L pointer pairs, named without the H/L suffix to match vAmiga's
+  // convention (e.g. BLTCPT, COP1LC, BPL1PT, SPR0PT).
+  //
+  // NOT included: $DFF0A0-$DFF0DE (where AUD0-3's registers would be) is
+  // zero filler in this buffer, not live audio state - see
+  // AUDIO_REGS_TABLE/getAudioRegs() instead.
+  const CUSTOM_REGS_RAW_TABLE = (() => {
+    const table = [
+      ["BLTDDAT", 0x000, 2],
+      ["DSKPT", 0x020, 4],
+      ["DSKLEN", 0x024, 2],
+      ["COPCON", 0x02e, 2],
+      ["SERDAT", 0x030, 2],
+      ["SERPER", 0x032, 2],
+      ["POTGO", 0x034, 2],
+      ["BLTCON0", 0x040, 2],
+      ["BLTCON1", 0x042, 2],
+      ["BLTAFWM", 0x044, 2],
+      ["BLTALWM", 0x046, 2],
+      ["BLTCPT", 0x048, 4],
+      ["BLTBPT", 0x04c, 4],
+      ["BLTAPT", 0x050, 4],
+      ["BLTDPT", 0x054, 4],
+      ["BLTSIZE", 0x058, 2],
+      ["BLTSIZV", 0x05c, 2],
+      ["BLTSIZH", 0x05e, 2],
+      ["BLTCMOD", 0x060, 2],
+      ["BLTBMOD", 0x062, 2],
+      ["BLTAMOD", 0x064, 2],
+      ["BLTDMOD", 0x066, 2],
+      ["BLTCDAT", 0x070, 2],
+      ["BLTBDAT", 0x072, 2],
+      ["BLTADAT", 0x074, 2],
+      ["DENISEID", 0x07c, 2],
+      ["DSKSYNC", 0x07e, 2],
+      ["COP1LC", 0x080, 4],
+      ["COP2LC", 0x084, 4],
+      ["CLXCON", 0x098, 2],
+      ["BPL1PT", 0x0e0, 4],
+      ["BPL2PT", 0x0e4, 4],
+      ["BPL3PT", 0x0e8, 4],
+      ["BPL4PT", 0x0ec, 4],
+      ["BPL5PT", 0x0f0, 4],
+      ["BPL6PT", 0x0f4, 4],
+      ["BPL1MOD", 0x108, 2],
+      ["BPL2MOD", 0x10a, 2],
+      ["BPLCON4", 0x10c, 2],
+      ["CLXCON2", 0x10e, 2],
+      ["BPL1DAT", 0x110, 2],
+      ["BPL2DAT", 0x112, 2],
+      ["BPL3DAT", 0x114, 2],
+      ["BPL4DAT", 0x116, 2],
+      ["BPL5DAT", 0x118, 2],
+      ["BPL6DAT", 0x11a, 2],
+      ["HTOTAL", 0x1c0, 2],
+      ["HSSTOP", 0x1c2, 2],
+      ["HBSTRT", 0x1c4, 2],
+      ["HBSTOP", 0x1c6, 2],
+      ["VTOTAL", 0x1c8, 2],
+      ["VSSTOP", 0x1ca, 2],
+      ["VBSTRT", 0x1cc, 2],
+      ["VBSTOP", 0x1ce, 2],
+      ["SPRHSTRT", 0x1d0, 2],
+      ["SPRHSTOP", 0x1d2, 2],
+      ["BPLHSTRT", 0x1d4, 2],
+      ["BPLHSTOP", 0x1d6, 2],
+      ["HHPOSW", 0x1d8, 2],
+      ["HHPOSR", 0x1da, 2],
+      ["BEAMCON0", 0x1dc, 2],
+      ["HSSTRT", 0x1de, 2],
+      ["VSSTRT", 0x1e0, 2],
+      ["HCENTER", 0x1e2, 2],
+      ["DIWHIGH", 0x1e4, 2],
+      ["FMODE", 0x1fc, 2],
+    ];
+    for (let i = 0; i < 8; i++) {
+      table.push([`SPR${i}PT`, 0x120 + i * 4, 4]);
+    }
+    for (let i = 0; i < 8; i++) {
+      const base = 0x140 + i * 8;
+      table.push([`SPR${i}POS`, base, 2]);
+      table.push([`SPR${i}CTL`, base + 2, 2]);
+      table.push([`SPR${i}DATA`, base + 4, 2]);
+      table.push([`SPR${i}DATB`, base + 6, 2]);
+    }
+    return table.map(([name, addr, size]) => [name, 4 + addr, size]);
+  })();
+
+  function getCustomRegsRaw() {
+    const cap = M._wasm_read_custom_regs_raw();
+    const ptr = M._wasm_get_custom_regs_raw_buf();
+    const view = new DataView(M.HEAPU8.buffer, ptr, cap);
+    return readRegTable(CUSTOM_REGS_RAW_TABLE, view);
+  }
+
+  // AUD0-3 LC/LEN/PER/VOL/DAT, exposed via e9k_debug_read_audio_regs() since
+  // these are write-only on the 68k bus and not part of save_custom()'s
+  // output (see CUSTOM_REGS_RAW_TABLE above). Packed big-endian per channel
+  // as LC(4) LEN(2) PER(2) VOL(2) DAT(2) = 12 bytes, matching
+  // E9K_AUDIO_REGS_SIZE in e9k_debug.h.
+  const AUDIO_REGS_TABLE = (() => {
+    const table = [];
+    for (let i = 0; i < 4; i++) {
+      const base = i * 12;
+      table.push([`AUD${i}LC`, base, 4]);
+      table.push([`AUD${i}LEN`, base + 4, 2]);
+      table.push([`AUD${i}PER`, base + 6, 2]);
+      table.push([`AUD${i}VOL`, base + 8, 2]);
+      table.push([`AUD${i}DAT`, base + 10, 2]);
+    }
+    return table;
+  })();
+
+  function getAudioRegs() {
+    const cap = M._wasm_read_audio_regs();
+    const ptr = M._wasm_get_audio_regs_buf();
+    const view = new DataView(M.HEAPU8.buffer, ptr, cap);
+    return readRegTable(AUDIO_REGS_TABLE, view);
+  }
+
   function getAllCustomRegisters() {
     const result = {};
     for (const [name, address] of Object.entries(READABLE_CUSTOM_REGS)) {
       result[name] = { value: hex(peek(address, 2), 4) };
     }
+    Object.assign(result, getDisplayRegs());
+    Object.assign(result, getCustomRegsRaw());
+    Object.assign(result, getAudioRegs());
     return result;
   }
 

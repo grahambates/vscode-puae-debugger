@@ -41,8 +41,12 @@ interface PendingRpc {
  *    "0x00000000" — `e9k_debug_read_regs` doesn't expose them (usp is real).
  *  - `setRegister()`/`jump()` only support d0-d7/a0-a7/sr/pc/usp; other
  *    names reject with an error.
- *  - `getAllCustomRegisters()` always returns `{}` — chip-register
- *    introspection isn't catalogued yet (writes via `pokeCustom16/32` work).
+ *  - `getAllCustomRegisters()` covers the genuinely-readable "...R" registers
+ *    (DMACON, INTENA, etc.) plus BPLCON0-3/DIWSTRT-STOP/DDFSTRT-STOP/
+ *    COLOR00-31 (write-only on real hardware, exposed via a dedicated wasm
+ *    export). Other write-only registers (sprite/bitplane/audio pointers,
+ *    COP1LC/COP2LC, etc.) aren't catalogued yet (writes via
+ *    `pokeCustom16/32` work).
  *  - `getCpuTrace()` always returns `[]`, and `enableCpuLogging()` is a
  *    no-op — instruction logging isn't implemented.
  *  - `eol()` is a no-op (no hblank hook) and `setCatchpoint`/

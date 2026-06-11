@@ -461,6 +461,38 @@ int wasm_read_memory_map(void) {
 EMSCRIPTEN_KEEPALIVE
 uint8_t *wasm_get_memory_map_buf(void) { return g_memory_map_buf; }
 
+// --- Display-control registers (write-only on the 68k bus) ---
+static uint16_t g_display_regs_buf[E9K_DISPLAY_REG_COUNT];
+
+EMSCRIPTEN_KEEPALIVE
+int wasm_read_display_regs(void) {
+    return (int)e9k_debug_read_display_regs(g_display_regs_buf, E9K_DISPLAY_REG_COUNT);
+}
+
+EMSCRIPTEN_KEEPALIVE
+uint16_t *wasm_get_display_regs_buf(void) { return g_display_regs_buf; }
+
+// --- Raw custom-register image + audio registers (write-only on the 68k bus) ---
+static uint8_t g_custom_regs_raw_buf[E9K_CUSTOM_REGS_RAW_SIZE];
+
+EMSCRIPTEN_KEEPALIVE
+int wasm_read_custom_regs_raw(void) {
+    return (int)e9k_debug_read_custom_regs_raw(g_custom_regs_raw_buf, E9K_CUSTOM_REGS_RAW_SIZE);
+}
+
+EMSCRIPTEN_KEEPALIVE
+uint8_t *wasm_get_custom_regs_raw_buf(void) { return g_custom_regs_raw_buf; }
+
+static uint8_t g_audio_regs_buf[E9K_AUDIO_REGS_SIZE];
+
+EMSCRIPTEN_KEEPALIVE
+int wasm_read_audio_regs(void) {
+    return (int)e9k_debug_read_audio_regs(g_audio_regs_buf, E9K_AUDIO_REGS_SIZE);
+}
+
+EMSCRIPTEN_KEEPALIVE
+uint8_t *wasm_get_audio_regs_buf(void) { return g_audio_regs_buf; }
+
 // --- Disassembly ---
 #define DISASM_BUF_CAP 256
 static char g_disasm_buf[DISASM_BUF_CAP];

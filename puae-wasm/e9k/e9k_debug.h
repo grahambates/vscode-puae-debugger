@@ -83,6 +83,46 @@ e9k_debug_poke_memory(uint32_t addr, uint32_t value, size_t size);
 size_t
 e9k_debug_peek_memory(uint32_t addr, uint8_t *out, size_t cap);
 
+// Display-control register state that is write-only on the 68k bus
+// (BPLCON0-3, DIWSTRT/STOP, DDFSTRT/STOP, COLOR00-31 all read back the
+// floating data bus on real hardware) but is needed for the debugger's
+// Amiga State view. Order: BPLCON0, BPLCON1, BPLCON2, BPLCON3, DIWSTRT,
+// DIWSTOP, DDFSTRT, DDFSTOP, COLOR00..COLOR31 (raw 12-bit 0x0RGB values).
+// Returns E9K_DISPLAY_REG_COUNT on success, 0 if cap is too small.
+#define E9K_DISPLAY_REG_COUNT 40
+size_t
+e9k_debug_read_display_regs(uint16_t *out, size_t cap);
+
+// Raw $DFF000-$DFF1FE custom-register image, for write-only registers not
+// covered by e9k_debug_read_display_regs above (blitter/copper/disk
+// pointers, bitplane/sprite pointers & data, display timing, etc). This is
+// PUAE's savestate-format dump (save_custom(), full=1): a 4-byte
+// chipset_mask header, then 256 big-endian uae_u16 words at byte offset
+// 4+(addr & 0x1fe) for each custom register addr in $DFF000..$DFF1FE
+// (32-bit registers like BLTCPT/COP1LC/BPLnPT/SPRnPT are written as a
+// single big-endian uae_u32 at the offset of their high/first word), then a
+// trailing 4-byte refptr (not a real register, ignore).
+//
+// CAVEAT: bytes at offset 4+0xA0 .. 4+0xDE (64 bytes, where AUD0-3's
+// LC/LEN/PER/VOL/DAT would be) are zero filler written by save_custom's
+// full-mode padding loop, NOT live audio state. Use
+// e9k_debug_read_audio_regs for AUD0-3.
+//
+// Returns E9K_CUSTOM_REGS_RAW_SIZE on success, 0 if cap is too small.
+#define E9K_CUSTOM_REGS_RAW_SIZE (8 + 256 * 2)
+size_t
+e9k_debug_read_custom_regs_raw(uint8_t *out, size_t cap);
+
+// AUD0-3 LC/LEN/PER/VOL/DAT "live register" values (write-only on the 68k
+// bus, not part of save_custom()'s output - see caveat above). Packed
+// big-endian per channel as LC(4) LEN(2) PER(2) VOL(2) DAT(2) = 12 bytes,
+// for 4 channels = E9K_AUDIO_REGS_SIZE bytes total.
+//
+// Returns E9K_AUDIO_REGS_SIZE on success, 0 if cap is too small.
+#define E9K_AUDIO_REGS_SIZE (4 * 12)
+size_t
+e9k_debug_read_audio_regs(uint8_t *out, size_t cap);
+
 size_t
 e9k_debug_disassemble_quick(uint32_t pc, char *out, size_t cap);
 

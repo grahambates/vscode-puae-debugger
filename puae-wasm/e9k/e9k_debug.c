@@ -14,6 +14,7 @@
 #include "uae.h"
 #include "memory.h"
 #include "custom.h"
+#include "audio.h"
 #include "newcpu.h"
 #include "blitter.h"
 #include "drawing.h"
@@ -922,6 +923,36 @@ e9k_debug_read_cycle_count(void)
 		return (uint64_t)(c / (evt_t)CYCLE_UNIT);
 	}
 	return (uint64_t)c;
+}
+
+E9K_DEBUG_EXPORT size_t
+e9k_debug_read_display_regs(uint16_t *out, size_t cap)
+{
+	if (!out || cap < E9K_DISPLAY_REG_COUNT) {
+		return 0;
+	}
+	e9k_get_display_regs(out);
+	return E9K_DISPLAY_REG_COUNT;
+}
+
+E9K_DEBUG_EXPORT size_t
+e9k_debug_read_custom_regs_raw(uint8_t *out, size_t cap)
+{
+	if (!out || cap < E9K_CUSTOM_REGS_RAW_SIZE) {
+		return 0;
+	}
+	e9k_get_custom_regs_raw(out);
+	return E9K_CUSTOM_REGS_RAW_SIZE;
+}
+
+E9K_DEBUG_EXPORT size_t
+e9k_debug_read_audio_regs(uint8_t *out, size_t cap)
+{
+	if (!out || cap < E9K_AUDIO_REGS_SIZE) {
+		return 0;
+	}
+	e9k_get_audio_regs_raw(out);
+	return E9K_AUDIO_REGS_SIZE;
 }
 
 E9K_DEBUG_EXPORT void

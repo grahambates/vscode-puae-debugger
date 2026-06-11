@@ -210,6 +210,59 @@ check("getAllCustomRegisters returns the readable custom registers",
   typeof customRegs.INTENA?.value === "string" && /^0x[0-9a-f]{4}$/.test(customRegs.INTENA.value),
   JSON.stringify(customRegs));
 
+const HEX16 = /^0x[0-9a-f]{4}$/;
+const DISPLAY_REGS = [
+  "BPLCON0", "BPLCON1", "BPLCON2", "BPLCON3",
+  "DIWSTRT", "DIWSTOP", "DDFSTRT", "DDFSTOP",
+  ...Array.from({ length: 32 }, (_, i) => `COLOR${String(i).padStart(2, "0")}`),
+];
+check("getAllCustomRegisters returns the write-only display/colour registers",
+  DISPLAY_REGS.every((name) => HEX16.test(customRegs[name]?.value)),
+  JSON.stringify(DISPLAY_REGS.filter((name) => !HEX16.test(customRegs[name]?.value))));
+check("getAllCustomRegisters BPLCON0 has HOMOD/hires bits set after Kickstart boot screen",
+  parseInt(customRegs.BPLCON0.value, 16) !== 0, customRegs.BPLCON0.value);
+
+// --- 13b. raw custom-register image + audio registers (e9k_get_custom_regs_raw / e9k_get_audio_regs_raw) ---
+const HEX32 = /^0x[0-9a-f]{8}$/;
+const RAW_CUSTOM_REGS_16 = [
+  "BLTDDAT", "DSKLEN", "COPCON", "SERDAT", "SERPER",
+  "BLTCON0", "BLTCON1", "BLTAFWM", "BLTALWM", "BLTSIZE", "BLTSIZV", "BLTSIZH",
+  "BLTCMOD", "BLTBMOD", "BLTAMOD", "BLTDMOD", "BLTCDAT", "BLTBDAT", "BLTADAT",
+  "DENISEID", "DSKSYNC", "CLXCON",
+  "BPL1MOD", "BPL2MOD", "BPLCON4", "CLXCON2",
+  ...Array.from({ length: 6 }, (_, i) => `BPL${i + 1}DAT`),
+  "HTOTAL", "HSSTOP", "HBSTRT", "HBSTOP", "VTOTAL", "VSSTOP", "VBSTRT", "VBSTOP",
+  "SPRHSTRT", "SPRHSTOP", "BPLHSTRT", "BPLHSTOP", "HHPOSW", "HHPOSR", "BEAMCON0",
+  "HSSTRT", "VSSTRT", "HCENTER", "DIWHIGH", "FMODE",
+  ...Array.from({ length: 8 }, (_, i) => `SPR${i}POS`),
+  ...Array.from({ length: 8 }, (_, i) => `SPR${i}CTL`),
+  ...Array.from({ length: 8 }, (_, i) => `SPR${i}DATA`),
+  ...Array.from({ length: 8 }, (_, i) => `SPR${i}DATB`),
+];
+const RAW_CUSTOM_REGS_32 = [
+  "DSKPT", "BLTCPT", "BLTBPT", "BLTAPT", "BLTDPT", "COP1LC", "COP2LC",
+  ...Array.from({ length: 6 }, (_, i) => `BPL${i + 1}PT`),
+  ...Array.from({ length: 8 }, (_, i) => `SPR${i}PT`),
+];
+check("getAllCustomRegisters returns raw 16-bit custom registers",
+  RAW_CUSTOM_REGS_16.every((name) => HEX16.test(customRegs[name]?.value)),
+  JSON.stringify(RAW_CUSTOM_REGS_16.filter((name) => !HEX16.test(customRegs[name]?.value))));
+check("getAllCustomRegisters returns raw 32-bit pointer registers",
+  RAW_CUSTOM_REGS_32.every((name) => HEX32.test(customRegs[name]?.value)),
+  JSON.stringify(RAW_CUSTOM_REGS_32.filter((name) => !HEX32.test(customRegs[name]?.value))));
+check("getAllCustomRegisters COP1LC is a non-zero chip-RAM address after Kickstart boot",
+  parseInt(customRegs.COP1LC.value, 16) !== 0, customRegs.COP1LC.value);
+
+const AUDIO_REGS_16 = ["LEN", "PER", "VOL", "DAT"].flatMap((suffix) =>
+  Array.from({ length: 4 }, (_, i) => `AUD${i}${suffix}`));
+const AUDIO_REGS_32 = Array.from({ length: 4 }, (_, i) => `AUD${i}LC`);
+check("getAllCustomRegisters returns AUD0-3 LEN/PER/VOL/DAT",
+  AUDIO_REGS_16.every((name) => HEX16.test(customRegs[name]?.value)),
+  JSON.stringify(AUDIO_REGS_16.filter((name) => !HEX16.test(customRegs[name]?.value))));
+check("getAllCustomRegisters returns AUD0-3 LC as 32-bit pointers",
+  AUDIO_REGS_32.every((name) => HEX32.test(customRegs[name]?.value)),
+  JSON.stringify(AUDIO_REGS_32.filter((name) => !HEX32.test(customRegs[name]?.value))));
+
 const copperDisasm = await request("disassembleCopper", { address: 0, count: 1 });
 check("disassembleCopper reports documented gap as error",
   typeof copperDisasm.error === "string" && copperDisasm.error.includes("Copper"), JSON.stringify(copperDisasm));
