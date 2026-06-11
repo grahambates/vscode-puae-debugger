@@ -267,12 +267,4 @@ export interface Emulator {
    * @returns Promise resolving to disassembly result
    */
   disassemble(address: number, count: number): Promise<Disassembly>;
-
-  /**
-   * Disassembles copper instructions starting at the specified address
-   * @param address Starting memory address
-   * @param count Number of instructions to disassemble
-   * @returns Promise resolving to disassembly result
-   */
-  disassembleCopper(address: number, count: number): Promise<Disassembly>;
 }

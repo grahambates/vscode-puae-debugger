@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, useCallback } from "react";
-import { disassembleCopperInstruction, CopperInstruction } from "./copperDisassembler";
+import { disassembleCopperInstruction, CopperInstruction } from "../../shared/copperDisassembler";
 import "./CopperView.css";
 import { MemoryRange } from "../../shared/memoryViewerTypes";
 import { drawMnemonic, drawOperands } from "./lib";

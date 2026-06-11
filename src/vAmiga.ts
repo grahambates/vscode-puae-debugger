@@ -829,19 +829,6 @@ export class VAmiga implements Emulator {
     return this.sendRpcCommand("disassemble", { address, count });
   }
 
-  /**
-   * Disassembles copper instructions starting at the specified address
-   * @param address Starting memory address
-   * @param count Number of instructions to disassemble
-   * @returns Promise resolving to disassembly result
-   */
-  public async disassembleCopper(
-    address: number,
-    count: number,
-  ): Promise<Disassembly> {
-    return this.sendRpcCommand("disassembleCopper", { address, count });
-  }
-
   public getCachedMemoryInfo(): MemoryInfo | undefined {
     return this.memoryInfo;
   }

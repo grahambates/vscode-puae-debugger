@@ -43,8 +43,6 @@ interface PendingRpc {
  *    names reject with an error.
  *  - `getAllCustomRegisters()` always returns `{}` — chip-register
  *    introspection isn't catalogued yet (writes via `pokeCustom16/32` work).
- *  - `disassembleCopper()` always rejects — copper disassembly isn't
- *    implemented.
  *  - `getCpuTrace()` always returns `[]`, and `enableCpuLogging()` is a
  *    no-op — instruction logging isn't implemented.
  *  - `eol()` is a no-op (no hblank hook) and `setCatchpoint`/
@@ -406,17 +404,6 @@ export class PuaeEmulator implements Emulator {
     count: number,
   ): Promise<Disassembly> {
     return this.sendRpcCommand("disassemble", { address, count });
-  }
-
-  /**
-   * Always rejects — copper disassembly isn't implemented by the PUAE
-   * backend yet.
-   */
-  public async disassembleCopper(
-    address: number,
-    count: number,
-  ): Promise<Disassembly> {
-    return this.sendRpcCommand("disassembleCopper", { address, count });
   }
 
   // --- Helper methods ---

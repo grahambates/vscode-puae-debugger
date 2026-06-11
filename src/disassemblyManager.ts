@@ -4,6 +4,7 @@ import { basename } from "path";
 import { SourceMap } from "./sourceMap";
 import { Emulator } from "./emulator";
 import { Source } from "@vscode/debugadapter";
+import { disassembleCopperInstruction } from "./shared/copperDisassembler";
 
 /**
  * Manages instruction disassembly for the debug adapter.
@@ -135,21 +136,49 @@ export class DisassemblyManager {
     });
   }
 
-  public async disassembleCopper(address: number, instructionCount: number) {
-    const result = await this.vAmiga.disassembleCopper(
-      address,
-      instructionCount,
-    );
-    return result.instructions.map((instr: any) => {
+  /**
+   * Disassembles Copper instructions starting at the specified address.
+   *
+   * Reads raw memory and decodes it locally with `copperDisassembler`
+   * (shared with the Memory Viewer's Copper view) rather than relying on
+   * an emulator-side disassembler RPC, so this works identically across
+   * backends. Each Copper instruction is exactly 2 words (4 bytes).
+   */
+  public async disassembleCopper(
+    address: number,
+    instructionCount: number,
+  ): Promise<DebugProtocol.DisassembledInstruction[]> {
+    const data = await this.vAmiga.readMemory(address, instructionCount * 4);
+
+    const result: DebugProtocol.DisassembledInstruction[] = [];
+    for (let i = 0; i < instructionCount; i++) {
+      const addr = address + i * 4;
+      const word1 = data.readUInt16BE(i * 4);
+      const word2 = data.readUInt16BE(i * 4 + 2);
+      const { mnemonic, operands, comment } = disassembleCopperInstruction(
+        addr,
+        word1,
+        word2,
+      );
+
+      const hex =
+        word1.toString(16).toUpperCase().padStart(4, "0") +
+        " " +
+        word2.toString(16).toUpperCase().padStart(4, "0");
+
+      let instruction = `${mnemonic} ${operands}`.trim();
+      if (comment) {
+        instruction += `  ; ${comment}`;
+      }
+
       const disasm: DebugProtocol.DisassembledInstruction = {
-        address: "0x" + instr.addr,
-        instruction: instr.instruction,
-        instructionBytes: instr.hex,
+        address: "0x" + addr.toString(16).toUpperCase().padStart(6, "0"),
+        instruction,
+        instructionBytes: hex,
       };
 
       // Add symbol lookup if we have source map
       if (this.sourceMap) {
-        const addr = parseInt(instr.addr, 16);
         const loc = this.sourceMap.lookupAddress(addr);
         if (loc) {
           disasm.symbol = basename(loc.path) + ":" + loc.line;
@@ -157,7 +186,8 @@ export class DisassemblyManager {
           disasm.line = loc.line;
         }
       }
-      return disasm;
-    });
+      result.push(disasm);
+    }
+    return result;
   }
 }
