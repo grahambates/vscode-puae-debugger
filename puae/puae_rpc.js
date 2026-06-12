@@ -33,6 +33,14 @@ const MEM_SRC_CHIP = 1;
 const MEM_SRC_CHIP_MIRROR = 2;
 const MEM_SRC_NONE = 0;
 
+// Post-(re)boot warm-up tick count: enough frames for Kickstart to clear the
+// CIA-A OVL bit and for exec.library to finish initialising its memory-list
+// allocator (needed by AmigaMemoryMapper for fastLoad program injection) —
+// see index.html's initial boot for the original derivation. Re-used by the
+// "load" command below to bring a hard-reset machine back to the same
+// "exec ready" state without re-instantiating the wasm module or webview.
+export const WARM_UP_TICKS = 200;
+
 function hex(value, digits = 8) {
   return "0x" + (value >>> 0).toString(16).padStart(digits, "0");
 }
@@ -529,6 +537,22 @@ export function setupRpcDispatcher(M, postMessage) {
         break;
       case "enableCpuLogging":
         // Not implemented; getCpuTrace always returns [].
+        break;
+      case "load":
+        // Reuse the already-booted wasm module + webview for a new debug
+        // session: hard-reset the machine (uae_reset(1,0) — reboots
+        // Kickstart, clears RAM) and re-run the boot warm-up to reach
+        // "exec ready" again, then re-signal exec-ready so the extension
+        // re-runs fastLoad injection for the new program. Mirrors
+        // vAmiga_ui.js's snapshot-restore "load" handler.
+        M._wasm_reset();
+        // Process the hard reset: quit_program flips from negative ->
+        // UAE_RESET_HARD on the first tick (after run_func), then is
+        // actioned (custom_reset, m68k_reset2, memory_clear) on the second —
+        // a couple of extra ticks give margin (see test_reset.mjs).
+        for (let i = 0; i < 4; i++) M._wasm_tick();
+        for (let i = 0; i < WARM_UP_TICKS; i++) M._wasm_tick();
+        postMessage({ type: "exec-ready" });
         break;
 
       // --- RPC commands ---

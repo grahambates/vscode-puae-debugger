@@ -72,6 +72,18 @@ interface PendingRpc {
  *    history is recorded).
  *  - Breakpoint/watchpoint `ignores` counts are not supported; a non-zero
  *    count is logged as a warning and otherwise ignored.
+ *
+ * Session restart / panel reuse: if `open()` is called while a panel from a
+ * previous debug session is still open, it is reused as-is — `open()` sends
+ * a "load" command (puae_rpc.js) which hard-resets the emulated machine
+ * (`wasm_reset()`/`uae_reset(1,0)`, reboots Kickstart with RAM cleared) and
+ * re-runs the boot warm-up, then re-signals exec-ready so the debug adapter
+ * re-runs fastLoad injection for the new program. This is much cheaper than
+ * re-instantiating the wasm module/webview, but it means ROM/config-affecting
+ * `OpenOptions` (`kickstartRomPath`, `configFilePath`, `chipRam`/`slowRam`/
+ * `fastRam`/`cpuRevision`, `emulatorOptions.puae`) from the FIRST session
+ * remain in effect for reused panels — changing them requires closing the
+ * panel first.
  */
 export class PuaeEmulator implements Emulator {
   public static readonly viewType = "vamiga-debugger.puaeWebview";
@@ -96,6 +108,14 @@ export class PuaeEmulator implements Emulator {
     this.openOptions = options;
     if (this.panel) {
       this.panel.reveal();
+      // Reuse the already-booted webview for the new session: hard-reset the
+      // emulated machine and re-run the boot warm-up (puae_rpc.js's "load"
+      // command), which re-signals exec-ready so the debug adapter re-runs
+      // fastLoad injection for the new program — avoids re-instantiating the
+      // wasm module/webview, which is what made restart slow/broken before.
+      this.invalidateCache();
+      this.memoryInfo = undefined;
+      this.sendCommand("load");
       return;
     }
     this.initPanel();

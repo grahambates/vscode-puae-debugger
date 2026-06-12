@@ -387,6 +387,18 @@ void wasm_pause(void) { e9k_debug_pause(); }
 EMSCRIPTEN_KEEPALIVE
 int wasm_set_reg(uint32_t regnum, uint32_t value) { return e9k_debug_write_reg(regnum, value); }
 
+// Defined in main.c. Requests a hard reset (reboot from Kickstart, RAM
+// cleared) — processed by m68k_go() over the next couple of wasm_tick()
+// calls, not synchronously. Used to reuse an already-booted wasm module +
+// webview for a new debug session without re-instantiating either.
+extern void uae_reset(int hardreset, int keyboardreset);
+
+EMSCRIPTEN_KEEPALIVE
+void wasm_reset(void) {
+    e9k_debug_resume(); // clear any debugger-halt state so ticks actually run
+    uae_reset(1, 0);
+}
+
 // One-shot vblank callback for wasm_eof(): pauses on the next completed
 // frame, then de-registers itself.
 static void wasm_eof_vblank_cb(void *user) {

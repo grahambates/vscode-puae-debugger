@@ -32,12 +32,15 @@ function hex(value, digits = 8) {
 // --- RPC harness: drives setupRpcDispatcher with a mock postMessage ---
 const pending = new Map();
 let nextRpcId = 1;
+const broadcasts = [];
 
 function postMessage(msg) {
   if (msg.type === "rpcResponse" && pending.has(msg.id)) {
     const resolve = pending.get(msg.id);
     pending.delete(msg.id);
     resolve(msg.result);
+  } else if (msg.type) {
+    broadcasts.push(msg);
   }
 }
 
@@ -399,6 +402,30 @@ check("eof pauses at end of frame", eofHit);
     if (M._wasm_is_paused()) { caughtAfterRemove = true; break; }
   }
   check("removeCatchpoint(4) no longer pauses on illegal instruction", !caughtAfterRemove);
+}
+
+// --- 18. "load" (panel-reuse restart: hard reset + re-warm-up + exec-ready) ---
+// Run last: the previous section leaves the CPU halted mid-exception with a
+// corrupted supervisor stack — "load" should recover from this completely,
+// since it's also what reuses an already-booted webview for a new debug
+// session (PuaeEmulator.open()).
+{
+  broadcasts.length = 0;
+  send("load");
+
+  check("load: posts exec-ready", broadcasts.some((m) => m.type === "exec-ready"),
+    JSON.stringify(broadcasts));
+  check("load: machine is running again (not paused)", M._wasm_is_paused() === 0);
+
+  const cpuInfoAfterLoad = await request("getCpuInfo");
+  check("load: getCpuInfo.pc is a hex32 string after reset", HEX32_RE.test(cpuInfoAfterLoad.pc),
+    cpuInfoAfterLoad.pc);
+  check("load: getCpuInfo.sr is a hex32 string after reset", HEX32_RE.test(cpuInfoAfterLoad.sr),
+    cpuInfoAfterLoad.sr);
+
+  const memInfoAfterLoad = await request("getMemoryInfo");
+  check("load: getMemoryInfo still resolves after reset", typeof memInfoAfterLoad.chipMask === "string",
+    JSON.stringify(memInfoAfterLoad));
 }
 
 console.log("");

@@ -117,7 +117,7 @@
 
 <script src="puae.js"></script>
 <script type="module">
-import { setupRpcDispatcher, getCurrentStopMessage } from './puae_rpc.js';
+import { setupRpcDispatcher, getCurrentStopMessage, WARM_UP_TICKS } from './puae_rpc.js';
 
 // ---------- helpers ----------
 const status = document.getElementById('status');
@@ -175,13 +175,15 @@ async function main() {
   // (chip-RAM writes via e9k_debug_write_memory don't persist before this —
   // proven to need ~150 ticks, see puae-wasm/test_g1.mjs) and for
   // exec.library to finish initialising its memory-list allocator (needed
-  // by AmigaMemoryMapper for fastLoad program injection). 200 gives margin
-  // over the 150-tick threshold. This redefines `exec-ready` for PUAE from
-  // "wasm module + RPC bridge ready" to "AmigaOS booted enough for fastLoad
-  // memory injection" — the PUAE equivalent of VAmiga's pre-booted-snapshot
-  // fastLoad path.
-  log('Warming up (200 frames)…');
-  for (let i = 0; i < 200; i++) M._wasm_tick();
+  // by AmigaMemoryMapper for fastLoad program injection). WARM_UP_TICKS
+  // (200) gives margin over the 150-tick threshold. This redefines
+  // `exec-ready` for PUAE from "wasm module + RPC bridge ready" to "AmigaOS
+  // booted enough for fastLoad memory injection" — the PUAE equivalent of
+  // VAmiga's pre-booted-snapshot fastLoad path. puae_rpc.js's "load" command
+  // re-runs this same warm-up after a wasm_reset() to reuse this module +
+  // webview for a new debug session.
+  log(`Warming up (${WARM_UP_TICKS} frames)…`);
+  for (let i = 0; i < WARM_UP_TICKS; i++) M._wasm_tick();
 
   // -------- audio setup (requires user gesture) --------
   let workletNode = null;
