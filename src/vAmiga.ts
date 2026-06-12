@@ -309,6 +309,21 @@ export interface OpenOptions {
   blitterAccuracy?: 0 | 1 | 2;
   floppyDriveCount?: 1 | 2 | 3 | 4;
   driveSpeed?: -1 | 1 | 2 | 4 | 8;
+  /**
+   * PUAE only: path to a WinUAE-format `.uae` config file, loaded as the
+   * base configuration. The mapped hardware options above (`chipRam`,
+   * `slowRam`, `fastRam`, `cpuRevision`) and `emulatorOptions.puae` take
+   * precedence over settings in this file.
+   */
+  configFilePath?: string;
+  emulatorOptions?: {
+    /**
+     * PUAE only: raw `.uae` `key=value` overrides, applied with the highest
+     * precedence (after `configFilePath` and the mapped hardware options
+     * above).
+     */
+    puae?: Record<string, string | number | boolean>;
+  };
 }
 
 // Option enums to call param values:

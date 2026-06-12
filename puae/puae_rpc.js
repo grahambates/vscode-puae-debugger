@@ -375,11 +375,18 @@ export function setupRpcDispatcher(M, postMessage) {
       v === MEM_SRC_CHIP || v === MEM_SRC_CHIP_MIRROR ? v : MEM_SRC_NONE,
     );
 
+    // Chip RAM size is configurable (OpenOptions.chipRam / configFilePath /
+    // emulatorOptions.puae's chipmem_size). The chip address space as seen in
+    // cpuMemSrc (CHIP + CHIP_MIRROR banks) reflects the Agnus revision's
+    // addressable range, not the installed RAM size — e.g. it's a fixed 2MB
+    // for the default A500/OCS_OLD config even though chipmem_size is 512K
+    // (the extra range mirrors the installed RAM). So derive the mask
+    // directly from currprefs.chipmem.size via wasm_get_chip_mem_size.
+    const chipMask = hex(M._wasm_get_chip_mem_size() - 1);
+
     return {
       // This backend always boots a 512KB Kickstart 1.3 ROM directly mapped at
-      // 0xF80000-0xFFFFFF on a fixed A500/OCS/512K-chip config — no boot ROM,
-      // WOM, or extended ROM. Stage G4 (OpenOptions/hardware config) will
-      // derive these from the actual configured machine instead.
+      // 0xF80000-0xFFFFFF — no boot ROM, WOM, or extended ROM.
       hasRom: true,
       hasWom: false,
       hasExt: false,
@@ -388,7 +395,7 @@ export function setupRpcDispatcher(M, postMessage) {
       womLock: false,
       romMask: hex(0x0007ffff),
       extMask: hex(0x00000000),
-      chipMask: hex(0x0007ffff),
+      chipMask,
       cpuMemSrc,
       agnusMemSrc,
     };

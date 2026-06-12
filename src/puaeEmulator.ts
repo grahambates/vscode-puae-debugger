@@ -1,6 +1,6 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import * as vscode from "vscode";
-import { existsSync, readFileSync, realpathSync } from "fs";
+import { existsSync, readFileSync } from "fs";
 import { join } from "path";
 import { u32, u16, u8 } from "./numbers";
 import { Emulator } from "./emulator";
@@ -28,12 +28,31 @@ interface PendingRpc {
  * `VAmiga`. Backed by `puae/`'s `index.html` + `puae_rpc.js`,
  * which expose the `e9k_debug` debugging layer grafted onto libretro-uae.
  *
- * `OpenOptions` support (Stage G4): only `kickstartRomPath` is honored —
- * if set, that ROM is embedded instead of the bundled Kickstart 1.3. This
- * backend is fastLoad-only: `programPath`/`kickstartExtPath` and all
- * hardware-configuration options (`chipRam`/`agnusRevision`/`cpuRevision`/
- * etc., `useArosRom`, display/input options) are ignored, with a
- * `console.warn` listing any that were set.
+ * `OpenOptions` support: `kickstartRomPath` is REQUIRED — `getHtmlForWebview`
+ * throws if it isn't set. No Kickstart ROM is bundled with this extension
+ * (Kickstart ROMs are copyrighted by Cloanto/Amiga Inc.), and the embedded
+ * AROS replacement ROM (`kickstart_rom_file=:AROS`) isn't currently usable as
+ * a fastLoad target — `exec.library`'s memory list isn't initialized the way
+ * `AmigaMemoryMapper` expects within any reasonable warm-up window. This
+ * backend is otherwise fastLoad-only: `programPath`/`kickstartExtPath` and
+ * most hardware-configuration options (`agnusRevision`/`deniseRevision`/
+ * `cpuSpeed`/`blitterAccuracy`/etc., `useArosRom`, display/input options) are
+ * ignored, with a `console.warn` listing any that were set.
+ *
+ * `chipRam`/`slowRam`/`fastRam`/`cpuRevision`, `configFilePath` and
+ * `emulatorOptions.puae` ARE honored, via `buildExtraConfig()` writing a
+ * `.uae`-format `puae_libretro_global.uae` file into the wasm MEMFS before
+ * boot — `retro_create_config()` appends its lines to the generated config
+ * with last-line-wins precedence, so:
+ *  - `configFilePath` (if set) provides the base config (lowest precedence).
+ *  - `chipRam`/`slowRam`/`fastRam`/`cpuRevision` map to `chipmem_size`/
+ *    `bogomem_size`/`fastmem_size`/`cpu_model` and override the base config.
+ *    `fastRam: "256k"`/`"512k"` round up to 1MB (PUAE's `fastmem_size` is in
+ *    1MB units). `cpuRevision: "fake_68030"` maps to `cpu_model=68030`, a
+ *    real 68030 (with MMU) rather than vAmiga's pipeline-only "fake" 68030 —
+ *    an approximation.
+ *  - `emulatorOptions.puae` (raw `key=value` pairs) has the highest
+ *    precedence, overriding everything above.
  *
  * Documented gaps vs. `VAmiga` (see `puae_rpc.js` for the implementation of
  * each):
@@ -70,9 +89,8 @@ export class PuaeEmulator implements Emulator {
   /**
    * Opens the PUAE emulator webview panel.
    *
-   * Of `OpenOptions`, only `kickstartRomPath` is honored (see class doc
-   * comment) — everything else falls back to the bundled Kickstart 1.3 ROM
-   * and demo ADF on a fixed A500/OCS/512K-chip configuration.
+   * `OpenOptions.kickstartRomPath` is required (see class doc comment) —
+   * `getHtmlForWebview` throws if it isn't set.
    */
   public open(options?: OpenOptions): void {
     this.openOptions = options;
@@ -472,8 +490,8 @@ export class PuaeEmulator implements Emulator {
 
   /**
    * Logs a warning listing any `OpenOptions` fields that were set but are
-   * ignored by this backend (everything except `kickstartRomPath`) — see
-   * the class doc comment for the documented-gaps rationale.
+   * ignored by this backend — see the class doc comment for the
+   * documented-gaps rationale.
    */
   private warnIgnoredOpenOptions(): void {
     if (!this.openOptions) {
@@ -491,11 +509,7 @@ export class PuaeEmulator implements Emulator {
       "useGpu",
       "agnusRevision",
       "deniseRevision",
-      "cpuRevision",
       "cpuSpeed",
-      "chipRam",
-      "slowRam",
-      "fastRam",
       "blitterAccuracy",
       "floppyDriveCount",
       "driveSpeed",
@@ -506,6 +520,71 @@ export class PuaeEmulator implements Emulator {
         `PuaeEmulator: ignoring unsupported emulatorOptions: ${set.join(", ")}`,
       );
     }
+  }
+
+  // .uae `chipmem_size`/`bogomem_size`/`fastmem_size`/`cpu_model` values for
+  // the corresponding OpenOptions enums. See class doc comment for caveats.
+  private static readonly CHIP_RAM_CONFIG: Record<string, number> = {
+    "256k": 0,
+    "512k": 1,
+    "1M": 2,
+    "2M": 4,
+  };
+  private static readonly SLOW_RAM_CONFIG: Record<string, number> = {
+    "0": 0,
+    "256k": 1,
+    "512k": 2,
+  };
+  private static readonly FAST_RAM_CONFIG: Record<string, number> = {
+    "0": 0,
+    "256k": 1,
+    "512k": 1,
+    "1M": 1,
+    "2M": 2,
+    "8M": 8,
+  };
+  private static readonly CPU_MODEL_CONFIG: Record<string, number> = {
+    "68000": 68000,
+    "68010": 68010,
+    "68020": 68020,
+    fake_68030: 68030,
+  };
+
+  /**
+   * Builds the `.uae`-format config text to write to
+   * `/uae_system/puae_libretro_global.uae` before boot, layering (in
+   * increasing precedence, later lines win — see class doc comment):
+   * `configFilePath` content, then mapped `chipRam`/`slowRam`/`fastRam`/
+   * `cpuRevision`, then raw `emulatorOptions.puae` overrides. Returns ""
+   * if there's nothing to write.
+   */
+  private buildExtraConfig(): string {
+    const options = this.openOptions;
+    const lines: string[] = [];
+
+    if (options?.configFilePath) {
+      if (!existsSync(options.configFilePath)) {
+        throw new Error(`Config file not found: ${options.configFilePath}`);
+      }
+      lines.push(readFileSync(options.configFilePath, "utf-8").trimEnd());
+    }
+    if (options?.chipRam) {
+      lines.push(`chipmem_size=${PuaeEmulator.CHIP_RAM_CONFIG[options.chipRam]}`);
+    }
+    if (options?.slowRam) {
+      lines.push(`bogomem_size=${PuaeEmulator.SLOW_RAM_CONFIG[options.slowRam]}`);
+    }
+    if (options?.fastRam) {
+      lines.push(`fastmem_size=${PuaeEmulator.FAST_RAM_CONFIG[options.fastRam]}`);
+    }
+    if (options?.cpuRevision) {
+      lines.push(`cpu_model=${PuaeEmulator.CPU_MODEL_CONFIG[options.cpuRevision]}`);
+    }
+    for (const [key, value] of Object.entries(options?.emulatorOptions?.puae ?? {})) {
+      lines.push(`${key}=${value}`);
+    }
+
+    return lines.length > 0 ? lines.join("\n") + "\n" : "";
   }
 
   private getHtmlForWebview(webview: vscode.Webview, puaeDir: vscode.Uri): string {
@@ -520,20 +599,25 @@ export class PuaeEmulator implements Emulator {
 
     this.warnIgnoredOpenOptions();
 
-    let romData: Buffer;
-    if (this.openOptions?.kickstartRomPath) {
-      if (!existsSync(this.openOptions.kickstartRomPath)) {
-        throw new Error(
-          `Kickstart ROM file not found: ${this.openOptions.kickstartRomPath}`,
-        );
-      }
-      romData = readFileSync(this.openOptions.kickstartRomPath);
-    } else {
-      // ROM is a symlink — read via resolved real path so fs.readFileSync can reach it.
-      const romRealPath = realpathSync(join(puaeFsPath, "kick34005.A500"));
-      romData = readFileSync(romRealPath);
+    if (!this.openOptions?.kickstartRomPath) {
+      throw new Error(
+        "PUAE requires emulatorOptions/OpenOptions.kickstartRomPath to be set " +
+          "to a Kickstart ROM file — no ROM is bundled with this extension " +
+          "(Kickstart ROMs are copyrighted by Cloanto/Amiga Inc.).",
+      );
     }
+    if (!existsSync(this.openOptions.kickstartRomPath)) {
+      throw new Error(
+        `Kickstart ROM file not found: ${this.openOptions.kickstartRomPath}`,
+      );
+    }
+    const romData = readFileSync(this.openOptions.kickstartRomPath);
     const romDataUri = `data:application/octet-stream;base64,${romData.toString("base64")}`;
+
+    const extraConfig = this.buildExtraConfig();
+    const extraConfigB64 = extraConfig
+      ? Buffer.from(extraConfig, "utf-8").toString("base64")
+      : "";
 
     // CSP: scripts from webview resource scheme, inline JS (incl. the page's
     // inline module), wasm-unsafe-eval for wasm execution, workers for
@@ -574,6 +658,13 @@ export class PuaeEmulator implements Emulator {
     // Patch ROM fetch path to a webview-accessible URI.
     // ROM is a symlink — use the already-resolved data URI.
     html = html.replace("fetchBytes('./kick34005.A500')", `fetchBytes('${romDataUri}')`);
+
+    // Inject the .uae config blob built from configFilePath/chipRam/slowRam/
+    // fastRam/cpuRevision/emulatorOptions.puae (see buildExtraConfig).
+    html = html.replace(
+      "const extraConfigB64 = '';",
+      `const extraConfigB64 = '${extraConfigB64}';`,
+    );
 
     // Patch AudioWorklet module path.
     html = html.replace(

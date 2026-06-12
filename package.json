@@ -346,6 +346,21 @@
                       8
                     ],
                     "description": "Floppy drive speed multiplier (-1: auto)"
+                  },
+                  "configFilePath": {
+                    "type": "string",
+                    "description": "PUAE only: path to a WinUAE-format .uae config file, loaded as the base configuration (overridden by chipRam/slowRam/fastRam/cpuRevision and emulatorOptions.puae)"
+                  },
+                  "puae": {
+                    "type": "object",
+                    "description": "PUAE only: raw .uae key=value overrides, applied with the highest precedence",
+                    "additionalProperties": {
+                      "type": [
+                        "string",
+                        "number",
+                        "boolean"
+                      ]
+                    }
                   }
                 }
               }
@@ -423,7 +438,7 @@
           },
           {
             "label": "vAmiga (PUAE): fastLoad",
-            "description": "PUAE/ami9000 wasm backend (fastLoad only; hardware options other than kickstartRomPath are not yet supported)",
+            "description": "PUAE/ami9000 wasm backend (fastLoad only; chipRam/slowRam/fastRam/cpuRevision, configFilePath and emulatorOptions.puae are supported, other hardware/display options are not yet)",
             "body": {
               "type": "vamiga",
               "request": "launch",
@@ -433,7 +448,12 @@
               "stopOnEntry": true,
               "emulatorBackend": "puae",
               "emulatorOptions": {
-                "kickstartRomPath": "^\"\\${workspaceFolder\\}/${2:roms/kick13.rom}\""
+                "kickstartRomPath": "^\"\\${workspaceFolder\\}/${2:roms/kick13.rom}\"",
+                "chipRam": "1M",
+                "fastRam": "2M",
+                "puae": {
+                  "gfx_correct_aspect": "true"
+                }
               }
             }
           }

@@ -150,6 +150,17 @@ async function main() {
   M.FS.writeFile('/uae_system/kick34005.A500', romData);
   log(`ROM: ${romData.length} bytes → /uae_system/kick34005.A500`);
 
+  // Extra PUAE config (.uae key=value lines), built by
+  // PuaeEmulator.getHtmlForWebview from OpenOptions.configFilePath,
+  // chipRam/slowRam/fastRam/cpuRevision and emulatorOptions.puae. Empty by
+  // default — retro_create_config() only reads this file if it exists.
+  const extraConfigB64 = '';
+  if (extraConfigB64) {
+    const extraConfig = atob(extraConfigB64);
+    M.FS.writeFile('/uae_system/puae_libretro_global.uae', extraConfig);
+    log(`Config: ${extraConfig.length} bytes → /uae_system/puae_libretro_global.uae`);
+  }
+
   // Boot the core with no disk inserted. fastLoad injects a standalone
   // program directly into memory once Kickstart has booted far enough to
   // allocate it (see the warm-up below) — there's no DOS process to load

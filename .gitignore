@@ -11,3 +11,8 @@ tsconfig.tsbuildinfo
 # PUAE wasm build artifacts
 puae-wasm/*.a
 puae-wasm/*.o
+
+# Kickstart ROM, required locally by puae-wasm/test_g*.mjs and by
+# OpenOptions.kickstartRomPath at runtime — copyrighted by Cloanto/Amiga Inc.,
+# never committed. Provide your own (e.g. a symlink to a legally-obtained ROM).
+puae/kick34005.A500

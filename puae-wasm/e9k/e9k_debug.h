@@ -185,3 +185,9 @@ e9k_debug_set_source_location_resolver(int (*resolver)(uint32_t pc24, uint64_t *
 
 void
 e9k_debug_set_debug_option(e9k_debug_option_t option, uint32_t argument, void *user);
+
+// Returns currprefs.chipmem.size: the actual configured/booted chip RAM size
+// in bytes. Used to derive getMemoryInfo()'s chipMask, since chip RAM size
+// is now configurable (see OpenOptions.chipRam/configFilePath).
+uint32_t
+e9k_debug_get_chip_mem_size(void);

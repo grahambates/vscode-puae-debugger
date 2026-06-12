@@ -663,6 +663,9 @@ int wasm_consume_catchbreak(void) {
 EMSCRIPTEN_KEEPALIVE
 uint32_t *wasm_get_catchbreak_buf(void) { return (uint32_t *)&g_catchbreak_buf; }
 
+EMSCRIPTEN_KEEPALIVE
+uint32_t wasm_get_chip_mem_size(void) { return e9k_debug_get_chip_mem_size(); }
+
 int main(void) {
     EM_ASM({ console.log('[shim] module loaded, call _wasm_boot() to start'); });
     return 0;

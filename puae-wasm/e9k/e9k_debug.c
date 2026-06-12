@@ -1934,3 +1934,9 @@ e9k_debug_consume_catchbreak(e9k_debug_catchbreak_t *out)
 	e9k_debug_catchbreakPending = 0;
 	return 1;
 }
+
+E9K_DEBUG_EXPORT uint32_t
+e9k_debug_get_chip_mem_size(void)
+{
+	return (uint32_t)currprefs.chipmem.size;
+}
