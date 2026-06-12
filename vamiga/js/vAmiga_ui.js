@@ -2041,8 +2041,11 @@ function InitWrappers() {
 // This worker runs unthrottled even when the webview tab is not active
 
 let intervalId;
-const targetFPS = 60;
-const frameInterval = 1000 / targetFPS;
+// The Amiga's PAL frame rate — matches the rate wasm_draw_one_frame's own
+// due-frames accounting targets (see puae_app.js's PAL_FPS for the same
+// reasoning applied to the PUAE backend).
+const PAL_FPS = 50;
+const frameInterval = 1000 / PAL_FPS;
 
 // Handle messages from main thread
 self.onmessage = function(event) {

@@ -25,8 +25,11 @@ interface PendingRpc {
 
 /**
  * PUAE/ami9000 wasm backend, implementing the same `Emulator` interface as
- * `VAmiga`. Backed by `puae/`'s `index.html` + `puae_rpc.js`,
- * which expose the `e9k_debug` debugging layer grafted onto libretro-uae.
+ * `VAmiga`. Backed by `puae/`'s `index.html` (boot/render loop logic shared
+ * via `puae_app.js`) + `puae_rpc.js`, which expose the `e9k_debug` debugging
+ * layer grafted onto libretro-uae. `puae/debug.html` is a standalone variant
+ * with manual breakpoint/memory/watchpoint/disassembly test UI, for
+ * development outside the extension — not used by `getHtmlForWebview`.
  *
  * `OpenOptions` support: `kickstartRomPath` is REQUIRED — `getHtmlForWebview`
  * throws if it isn't set. No Kickstart ROM is bundled with this extension
@@ -615,7 +618,7 @@ export class PuaeEmulator implements Emulator {
     const puaeJsUri = uri("puae.js");
     const puaeWasmUri = uri("puae.wasm");
     const workletUri = uri("puae_audioprocessor.js");
-    const rpcUri = uri("puae_rpc.js");
+    const appUri = uri("puae_app.js");
 
     this.warnIgnoredOpenOptions();
 
@@ -662,34 +665,36 @@ export class PuaeEmulator implements Emulator {
     // Patch external script src to webview URI.
     html = html.replace('src="puae.js"', `src="${puaeJsUri}"`);
 
-    // Patch the RPC dispatcher's module import to a webview URI.
+    // Patch the shared app module's import to a webview URI — puae_app.js's
+    // own relative import of puae_rpc.js then resolves correctly against
+    // that URI without any further patching.
     html = html.replace(
-      "from './puae_rpc.js';",
-      `from '${rpcUri}';`,
+      "from './puae_app.js';",
+      `from '${appUri}';`,
     );
 
     // Override locateFile so emscripten finds puae.wasm via webview URI,
     // not relative to window.location (which has no meaning in the webview).
     html = html.replace(
-      "const M = await createPuaeModule();",
-      `const M = await createPuaeModule({ locateFile: (p) => p.endsWith('.wasm') ? '${puaeWasmUri}' : p });`,
+      "wasmLocateFile: undefined,",
+      `wasmLocateFile: (p) => p.endsWith('.wasm') ? '${puaeWasmUri}' : p,`,
     );
 
     // Patch ROM fetch path to a webview-accessible URI.
     // ROM is a symlink — use the already-resolved data URI.
-    html = html.replace("fetchBytes('./kick34005.A500')", `fetchBytes('${romDataUri}')`);
+    html = html.replace("romUrl: './kick34005.A500',", `romUrl: '${romDataUri}',`);
 
     // Inject the .uae config blob built from configFilePath/chipRam/slowRam/
     // fastRam/cpuRevision/emulatorOptions.puae (see buildExtraConfig).
     html = html.replace(
-      "const extraConfigB64 = '';",
-      `const extraConfigB64 = '${extraConfigB64}';`,
+      "extraConfigB64: '',",
+      `extraConfigB64: '${extraConfigB64}',`,
     );
 
     // Patch AudioWorklet module path.
     html = html.replace(
-      "addModule('./puae_audioprocessor.js')",
-      `addModule('${workletUri}')`,
+      "audioWorkletUrl: './puae_audioprocessor.js',",
+      `audioWorkletUrl: '${workletUri}',`,
     );
 
     return html;
