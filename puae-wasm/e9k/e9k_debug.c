@@ -62,6 +62,9 @@ static size_t e9k_debug_tempBreakpointCount = 0;
 static void (*e9k_debug_vblankCb)(void *) = NULL;
 static void *e9k_debug_vblankUser = NULL;
 
+static void (*e9k_debug_hblankCb)(void *) = NULL;
+static void *e9k_debug_hblankUser = NULL;
+
 int debug_enableE9kHooks(void);
 
 static int e9k_debug_memhooksEnabled = 0;
@@ -71,6 +74,14 @@ static uint64_t e9k_debug_watchpointEnabledMask = 0;
 static e9k_debug_watchbreak_t e9k_debug_watchbreak = {0};
 static int e9k_debug_watchbreakPending = 0;
 static int e9k_debug_watchpointSuspend = 0;
+
+// Set while e9k_debug_read_memory/e9k_debug_peek_memory are scanning memory
+// for debugger display purposes. custom_wget_1's write-only-register
+// readback side effect (real OCS/ECS hardware writes the last chip bus value
+// back to a write-only register when the CPU reads it) is suppressed while
+// this is set, so that inspecting memory in the debugger can't corrupt
+// chipset registers like DDFSTRT.
+int e9k_debug_inspect_active = 0;
 
 static e9k_debug_protect_t e9k_debug_protects[E9K_PROTECT_COUNT];
 static uint64_t e9k_debug_protectEnabledMask = 0;
@@ -731,10 +742,12 @@ e9k_debug_read_memory(uint32_t addr, uint8_t *out, size_t cap)
 		return 0;
 	}
 	e9k_debug_watchpointSuspend++;
+	e9k_debug_inspect_active++;
 	uaecptr base = (uaecptr)addr;
 	for (size_t i = 0; i < cap; ++i) {
 		out[i] = (uint8_t)get_byte_debug(munge24(base + (uaecptr)i));
 	}
+	e9k_debug_inspect_active--;
 	e9k_debug_watchpointSuspend--;
 	return cap;
 }
@@ -809,10 +822,12 @@ e9k_debug_peek_memory(uint32_t addr, uint8_t *out, size_t cap)
 	if (!out || cap == 0) {
 		return 0;
 	}
+	e9k_debug_inspect_active++;
 	uaecptr base = (uaecptr)addr;
 	for (size_t i = 0; i < cap; ++i) {
 		out[i] = (uint8_t)get_byte(munge24(base + (uaecptr)i));
 	}
+	e9k_debug_inspect_active--;
 	return cap;
 }
 
@@ -1019,6 +1034,13 @@ e9k_debug_set_vblank_callback(void (*cb)(void *), void *user)
 }
 
 E9K_DEBUG_EXPORT void
+e9k_debug_set_hblank_callback(void (*cb)(void *), void *user)
+{
+	e9k_debug_hblankCb = cb;
+	e9k_debug_hblankUser = user;
+}
+
+E9K_DEBUG_EXPORT void
 e9k_debug_set_debug_base_callback(void (*cb)(uint32_t section, uint32_t base))
 {
 	e9k_debug_setDebugBaseCb = cb;
@@ -1136,6 +1158,14 @@ e9k_vblank_notify(void)
 	}
 	if (e9k_debug_vblankCb) {
 		e9k_debug_vblankCb(e9k_debug_vblankUser);
+	}
+}
+
+E9K_DEBUG_EXPORT void
+e9k_hsync_notify(void)
+{
+	if (e9k_debug_hblankCb) {
+		e9k_debug_hblankCb(e9k_debug_hblankUser);
 	}
 }
 

@@ -294,6 +294,33 @@ for (let i = 0; i < 4; i++) {
 }
 check("eof pauses at end of frame", eofHit);
 
+// --- 15b. eol (run to end of line / hblank stepping) ---
+{
+  const readCycles = () => {
+    M._wasm_read_cycle_count();
+    const lo = M._wasm_get_cycle_count_lo() >>> 0;
+    const hi = M._wasm_get_cycle_count_hi() >>> 0;
+    return (BigInt(hi) << 32n) | BigInt(lo);
+  };
+
+  const cyclesBefore = readCycles();
+
+  send("eol");
+  let eolHit = false;
+  for (let i = 0; i < 8; i++) {
+    M._wasm_tick();
+    if (M._wasm_is_paused()) { eolHit = true; break; }
+  }
+  check("eol pauses at end of line", eolHit);
+
+  const delta = readCycles() - cyclesBefore;
+  // A PAL scanline is ~227 CCKs; a full frame is ~312 lines (~70800 CCKs).
+  // Assert eol stops within roughly one line, not a whole frame -- proving
+  // it's hooked to hsync, not vsync.
+  check("eol advances by roughly one scanline, not a full frame",
+    delta > 0n && delta < 1000n, delta.toString());
+}
+
 // --- 16. setRegister(usp) / register index 18 round-trip (both regs.s branches) ---
 // Run last: toggling SR's S bit swaps the live A7 with the usp/isp shadow
 // registers (UAE's MakeFromSR), and writing reg 18 mid-swap leaves those

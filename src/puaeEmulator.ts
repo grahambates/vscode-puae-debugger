@@ -49,7 +49,6 @@ interface PendingRpc {
  *    `pokeCustom16/32` work).
  *  - `getCpuTrace()` always returns `[]`, and `enableCpuLogging()` is a
  *    no-op — instruction logging isn't implemented.
- *  - `eol()` is a no-op (no hblank hook).
  *  - `stepBack()`/`continueReverse()` always resolve `false` (no execution
  *    history is recorded).
  *  - Breakpoint/watchpoint `ignores` counts are not supported; a non-zero
@@ -232,10 +231,6 @@ export class PuaeEmulator implements Emulator {
     this.sendCommand("eof");
   }
 
-  /**
-   * Run to end of line — not implemented (no hblank hook). Forwarded to the
-   * webview dispatcher, which logs a warning and otherwise no-ops.
-   */
   public eol(): void {
     this.invalidateCache();
     this.sendCommand("eol");

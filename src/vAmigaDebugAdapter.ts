@@ -1275,7 +1275,7 @@ export class VamigaDebugAdapter extends LoggingDebugSession {
         const cpuInfo = await this.vAmiga.getCpuInfo();
         const pc = Number(cpuInfo.pc);
         const loc = this.sourceMap?.lookupAddress(pc);
-        
+
         continueLoop = loc?.path === this.lineStepStart.path && loc?.line === this.lineStepStart.line;
       } catch { /* fall through and stop */ }
       if (continueLoop) {

@@ -490,7 +490,8 @@ export function setupRpcDispatcher(M, postMessage) {
         M._wasm_eof();
         break;
       case "eol":
-        console.warn("[puae_rpc] eol: not implemented (no hblank hook)");
+        // wasm_eol() registers a one-shot hblank (per-scanline) callback and resumes.
+        M._wasm_eol();
         break;
       case "setBreakpoint":
         if (args.ignores) {

@@ -403,6 +403,22 @@ void wasm_eof(void) {
     e9k_debug_resume();
 }
 
+// One-shot hblank callback for wasm_eol(): pauses on the next completed
+// scanline, then de-registers itself.
+static void wasm_eol_hblank_cb(void *user) {
+    (void)user;
+    e9k_debug_pause();
+    e9k_debug_set_hblank_callback(NULL, NULL);
+}
+
+// Resumes execution and arranges for it to pause again once the current
+// scanline finishes (i.e. "run to end of line").
+EMSCRIPTEN_KEEPALIVE
+void wasm_eol(void) {
+    e9k_debug_set_hblank_callback(wasm_eol_hblank_cb, NULL);
+    e9k_debug_resume();
+}
+
 EMSCRIPTEN_KEEPALIVE
 void wasm_add_temp_breakpoint(uint32_t addr) { e9k_debug_add_temp_breakpoint(addr); }
 

@@ -148,6 +148,15 @@ e9k_debug_set_vblank_callback(void (*cb)(void *), void *user);
 void
 e9k_vblank_notify(void);
 
+// Optional host callback invoked once per scanline (hsync), after all
+// per-line state updates for that line. Used to implement "run to end of
+// line" (eol) stepping.
+void
+e9k_debug_set_hblank_callback(void (*cb)(void *), void *user);
+
+void
+e9k_hsync_notify(void);
+
 void
 e9k_debug_reapply_memhooks(void);
 
