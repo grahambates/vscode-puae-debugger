@@ -1,0 +1,399 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>PUAE wasm debugger backend (debug UI)</title>
+<style>
+  body { background: #111; color: #eee; font-family: monospace; margin: 16px; }
+  canvas { display: block; image-rendering: pixelated; border: 1px solid #444; }
+  #status { margin-top: 8px; font-size: 13px; }
+  #debug, #debugG1, #debugG2 { margin-top: 12px; border: 1px solid #555; padding: 8px; }
+  #debug h3, #debugG1 h3, #debugG2 h3 { margin: 0 0 6px; font-size: 13px; color: #aaf; }
+  #debug label, #debugG1 label, #debugG2 label { font-size: 12px; }
+  #regs { font-size: 11px; column-count: 2; margin-top: 6px; white-space: pre; }
+  #debug button, #debugG1 button, #debugG2 button { margin: 0 4px 4px 0; font-size: 12px; padding: 2px 6px; }
+  #debug input[type=text], #debugG1 input[type=text], #debugG2 input[type=text] { width: 90px; font-family: monospace; font-size: 12px;
+                             background: #222; color: #eee; border: 1px solid #666; padding: 2px 4px; }
+  #debugG2 input[type=text].operand { width: 70px; }
+  #memDump, #disasmOut, #callstackOut, #cycleOut, #watchpointList, #protectList, #watchbreakOut { font-size: 11px; white-space: pre; margin: 4px 0; }
+</style>
+</head>
+<body>
+<canvas id="screen" width="720" height="574"></canvas>
+<div id="status">Loading…</div>
+<button id="btnAudio" disabled>Enable Audio</button>
+
+<div id="debug">
+  <h3>Debug (Stage D)</h3>
+  <label>Breakpoint addr (hex):
+    <input type="text" id="bpAddr" value="FC0002" placeholder="e.g. FC0002">
+  </label>
+  <button id="btnSetBp" disabled>Set BP</button>
+  <button id="btnClearBp" disabled>Clear BP</button>
+  <button id="btnSetTempBp" disabled>Set Temp BP</button>
+  <button id="btnClearTempBp" disabled>Clear Temp BP</button>
+  <button id="btnResume" disabled>Resume</button>
+  <button id="btnReadRegs" disabled>Read Regs</button>
+  <div id="regs"></div>
+  <div id="cycleOut" style="margin-top:4px;"></div>
+</div>
+
+<div id="debugG1">
+  <h3>Debug (Stage G1)</h3>
+  <div>
+    <label>Memory addr (hex):
+      <input type="text" id="memAddr" value="000004" placeholder="e.g. 000004">
+    </label>
+    <button id="btnReadMem" disabled>Read Mem (64B)</button>
+  </div>
+  <pre id="memDump"></pre>
+  <div>
+    <button id="btnDisasmPc" disabled>Disassemble @ PC</button>
+    <div id="disasmOut"></div>
+  </div>
+  <div>
+    <button id="btnStepInto" disabled>Step Into</button>
+    <button id="btnStepLine" disabled>Step Line</button>
+    <button id="btnStepNext" disabled>Step Next</button>
+    <button id="btnStepOut" disabled>Step Out</button>
+  </div>
+  <div>
+    <button id="btnCallstack" disabled>Read Callstack</button>
+    <div id="callstackOut"></div>
+  </div>
+</div>
+
+<div id="debugG2">
+  <h3>Debug (Stage G2) — watchpoints &amp; protects</h3>
+  <div>
+    <strong>Watchpoints</strong><br>
+    <label>Addr (hex): <input type="text" id="wpAddr" value="020000"></label>
+    <label><input type="checkbox" id="wpOpRead"> Read</label>
+    <label><input type="checkbox" id="wpOpWrite" checked> Write</label>
+    <label><input type="checkbox" id="wpOpValueNeqOld"> ValueNeqOld</label>
+    <label><input type="checkbox" id="wpOpValueEq"> ValueEq</label>
+    <label><input type="checkbox" id="wpOpOldValueEq"> OldValueEq</label>
+    <label><input type="checkbox" id="wpOpAccessSize"> AccessSize</label>
+    <label><input type="checkbox" id="wpOpAddrMask"> AddrCompareMask</label>
+    <br>
+    <label>diff_operand: <input type="text" class="operand" id="wpDiffOperand" value="0"></label>
+    <label>value_operand: <input type="text" class="operand" id="wpValueOperand" value="0"></label>
+    <label>old_value_operand: <input type="text" class="operand" id="wpOldValueOperand" value="0"></label>
+    <label>size_operand: <input type="text" class="operand" id="wpSizeOperand" value="0"></label>
+    <label>addr_mask_operand: <input type="text" class="operand" id="wpAddrMaskOperand" value="0"></label>
+    <br>
+    <button id="btnWpAdd" disabled>Add Watchpoint</button>
+    <label>Index: <input type="text" class="operand" id="wpRemoveIndex" value="0"></label>
+    <button id="btnWpRemove" disabled>Remove</button>
+    <button id="btnWpList" disabled>List Watchpoints</button>
+    <button id="btnWpConsume" disabled>Consume Watchbreak</button>
+    <div id="watchpointList"></div>
+    <div id="watchbreakOut"></div>
+  </div>
+  <div style="margin-top:8px;">
+    <strong>Memory protects</strong><br>
+    <label>Addr (hex): <input type="text" id="prAddr" value="020100"></label>
+    <label>Size:
+      <select id="prSize">
+        <option value="8">8</option>
+        <option value="16">16</option>
+        <option value="32">32</option>
+      </select>
+    </label>
+    <label>Mode:
+      <select id="prMode">
+        <option value="0">BLOCK</option>
+        <option value="1">SET</option>
+      </select>
+    </label>
+    <label>Value (hex): <input type="text" class="operand" id="prValue" value="00"></label>
+    <button id="btnPrAdd" disabled>Add Protect</button>
+    <label>Index: <input type="text" class="operand" id="prRemoveIndex" value="0"></label>
+    <button id="btnPrRemove" disabled>Remove</button>
+    <button id="btnPrList" disabled>List Protects</button>
+    <div id="protectList"></div>
+  </div>
+</div>
+
+<script src="puae.js"></script>
+<script type="module">
+import { main, REG_NAMES } from './puae_app.js';
+
+// ---------- debug UI (Stages D, G1, G2) ----------
+// Returns an API used by main()'s onBreakpoint hook to refresh these views
+// when the free-running emulator hits a breakpoint/watchpoint.
+function debugSetup(M) {
+  function readRegs() {
+    const n = M._wasm_read_regs();
+    if (n <= 0) { document.getElementById('regs').textContent = '(no regs)'; return; }
+    const ptr = M._wasm_get_reg_buf();
+    const buf = new Uint32Array(M.HEAPU32.buffer, ptr, n);
+    const lines = [];
+    for (let i = 0; i < n; i++) {
+      const hex = buf[i].toString(16).toUpperCase().padStart(8, '0');
+      lines.push((REG_NAMES[i] || 'R'+i).padEnd(8) + hex);
+    }
+    document.getElementById('regs').textContent = lines.join('\n');
+    return n >= 18 ? buf[17] : null; // PC
+  }
+
+  function readCycleCount() {
+    M._wasm_read_cycle_count();
+    const lo = M._wasm_get_cycle_count_lo() >>> 0;
+    const hi = M._wasm_get_cycle_count_hi() >>> 0;
+    const cycles = (BigInt(hi) << 32n) | BigInt(lo);
+    document.getElementById('cycleOut').textContent = `Cycles: ${cycles.toString()}`;
+    return cycles;
+  }
+
+  function readMem() {
+    const addr = parseInt(document.getElementById('memAddr').value, 16);
+    if (isNaN(addr)) { alert('Bad hex address'); return; }
+    const n = M._wasm_read_memory(addr >>> 0, 64);
+    const ptr = M._wasm_get_mem_buf();
+    const buf = new Uint8Array(M.HEAPU8.buffer, ptr, n);
+    const lines = [];
+    for (let row = 0; row < n; row += 16) {
+      const chunk = buf.subarray(row, Math.min(row + 16, n));
+      const hex = Array.from(chunk, b => b.toString(16).toUpperCase().padStart(2, '0')).join(' ');
+      const ascii = Array.from(chunk, b => (b >= 0x20 && b < 0x7f) ? String.fromCharCode(b) : '.').join('');
+      const rowAddr = ((addr + row) >>> 0).toString(16).toUpperCase().padStart(6, '0');
+      lines.push(`${rowAddr}: ${hex.padEnd(47)}  ${ascii}`);
+    }
+    document.getElementById('memDump').textContent = lines.join('\n');
+  }
+
+  function disasmAtPc() {
+    const pc = readRegs();
+    if (pc === null) { document.getElementById('disasmOut').textContent = '(no PC)'; return; }
+    const len = M._wasm_disassemble(pc >>> 0);
+    const text = M.UTF8ToString(M._wasm_get_disasm_buf());
+    const pcHex = (pc >>> 0).toString(16).toUpperCase().padStart(6, '0');
+    document.getElementById('disasmOut').textContent = `${pcHex}: ${text}  (len ${len})`;
+  }
+
+  function readCallstack() {
+    const n = M._wasm_read_callstack();
+    const out = document.getElementById('callstackOut');
+    if (n <= 0) { out.textContent = '(empty)'; return; }
+    const ptr = M._wasm_get_callstack_buf();
+    const buf = new Uint32Array(M.HEAPU32.buffer, ptr, n);
+    const lines = [];
+    for (let i = n - 1; i >= 0; i--) {
+      lines.push('0x' + buf[i].toString(16).toUpperCase().padStart(6, '0'));
+    }
+    out.textContent = lines.join('\n');
+  }
+
+  // Issue a step request and tick until the emulator pauses again (or a small
+  // tick cap is reached — step_line/next/out require a source-location
+  // resolver, which this build doesn't register, so they won't pause here).
+  function doStep(stepFn, label) {
+    stepFn();
+    const MAX_TICKS = 4;
+    let paused = false;
+    for (let i = 0; i < MAX_TICKS; i++) {
+      M._wasm_tick();
+      if (M._wasm_is_paused()) { paused = true; break; }
+    }
+    if (paused) {
+      console.log(`[debug] ${label}: paused`);
+      readRegs();
+      disasmAtPc();
+      readCallstack();
+      readCycleCount();
+    } else {
+      console.log(`[debug] ${label}: did not pause within ${MAX_TICKS} ticks`);
+    }
+  }
+
+  document.getElementById('btnReadRegs').addEventListener('click', readRegs);
+
+  document.getElementById('btnSetBp').addEventListener('click', () => {
+    const addr = parseInt(document.getElementById('bpAddr').value, 16);
+    if (isNaN(addr)) { alert('Bad hex address'); return; }
+    M._wasm_add_breakpoint(addr);
+    console.log('[debug] breakpoint set at 0x' + addr.toString(16).toUpperCase());
+    document.getElementById('btnResume').disabled = false;
+  });
+
+  document.getElementById('btnClearBp').addEventListener('click', () => {
+    const addr = parseInt(document.getElementById('bpAddr').value, 16);
+    if (isNaN(addr)) { alert('Bad hex address'); return; }
+    M._wasm_remove_breakpoint(addr);
+    console.log('[debug] breakpoint cleared at 0x' + addr.toString(16).toUpperCase());
+  });
+
+  document.getElementById('btnSetTempBp').addEventListener('click', () => {
+    const addr = parseInt(document.getElementById('bpAddr').value, 16);
+    if (isNaN(addr)) { alert('Bad hex address'); return; }
+    M._wasm_add_temp_breakpoint(addr);
+    console.log('[debug] temp breakpoint set at 0x' + addr.toString(16).toUpperCase());
+    document.getElementById('btnResume').disabled = false;
+  });
+
+  document.getElementById('btnClearTempBp').addEventListener('click', () => {
+    const addr = parseInt(document.getElementById('bpAddr').value, 16);
+    if (isNaN(addr)) { alert('Bad hex address'); return; }
+    M._wasm_remove_temp_breakpoint(addr);
+    console.log('[debug] temp breakpoint cleared at 0x' + addr.toString(16).toUpperCase());
+  });
+
+  document.getElementById('btnResume').addEventListener('click', () => {
+    M._wasm_resume();
+    document.getElementById('regs').textContent = '';
+    console.log('[debug] resumed');
+  });
+
+  document.getElementById('btnReadMem').addEventListener('click', readMem);
+  document.getElementById('btnDisasmPc').addEventListener('click', disasmAtPc);
+  document.getElementById('btnCallstack').addEventListener('click', readCallstack);
+
+  document.getElementById('btnStepInto').addEventListener('click', () => doStep(() => M._wasm_step_instr(), 'step into'));
+  document.getElementById('btnStepLine').addEventListener('click', () => doStep(() => M._wasm_step_line(), 'step line'));
+  document.getElementById('btnStepNext').addEventListener('click', () => doStep(() => M._wasm_step_next(), 'step next'));
+  document.getElementById('btnStepOut').addEventListener('click', () => doStep(() => M._wasm_step_out(), 'step out'));
+
+  // ---------- Stage G2: watchpoints & protects ----------
+  const E9K_WATCH_OP_READ              = 1 << 0;
+  const E9K_WATCH_OP_WRITE             = 1 << 1;
+  const E9K_WATCH_OP_VALUE_NEQ_OLD     = 1 << 2;
+  const E9K_WATCH_OP_VALUE_EQ          = 1 << 3;
+  const E9K_WATCH_OP_OLD_VALUE_EQ      = 1 << 4;
+  const E9K_WATCH_OP_ACCESS_SIZE       = 1 << 5;
+  const E9K_WATCH_OP_ADDR_COMPARE_MASK = 1 << 6;
+  const E9K_WATCH_ACCESS_NAMES = { 1: 'READ', 2: 'WRITE' };
+
+  function hexVal(id) {
+    const v = parseInt(document.getElementById(id).value, 16);
+    return isNaN(v) ? 0 : (v >>> 0);
+  }
+
+  function listWatchpoints() {
+    const n = M._wasm_read_watchpoints();
+    const ptr = M._wasm_get_watchpoint_buf();
+    const buf = new Uint32Array(M.HEAPU32.buffer, ptr, n * 7);
+    M._wasm_read_watchpoint_enabled_mask();
+    const lo = M._wasm_get_watchpoint_enabled_mask_lo() >>> 0;
+    const hi = M._wasm_get_watchpoint_enabled_mask_hi() >>> 0;
+    const mask = (BigInt(hi) << 32n) | BigInt(lo);
+    const lines = [`enabled mask: 0x${mask.toString(16)}`];
+    for (let i = 0; i < n; i++) {
+      if ((mask & (1n << BigInt(i))) === 0n) continue;
+      const off = i * 7;
+      const [addr, opMask, diff, value, oldValue, size, addrMask] = buf.slice(off, off + 7);
+      lines.push(`#${i}: addr=0x${addr.toString(16)} op_mask=0x${opMask.toString(16)} `
+        + `diff=0x${diff.toString(16)} value=0x${value.toString(16)} old_value=0x${oldValue.toString(16)} `
+        + `size=${size} addr_mask=0x${addrMask.toString(16)}`);
+    }
+    document.getElementById('watchpointList').textContent = lines.join('\n');
+  }
+
+  function listProtects() {
+    const n = M._wasm_read_protects();
+    const ptr = M._wasm_get_protect_buf();
+    const buf = new Uint32Array(M.HEAPU32.buffer, ptr, n * 5);
+    M._wasm_read_protect_enabled_mask();
+    const lo = M._wasm_get_protect_enabled_mask_lo() >>> 0;
+    const hi = M._wasm_get_protect_enabled_mask_hi() >>> 0;
+    const mask = (BigInt(hi) << 32n) | BigInt(lo);
+    const lines = [`enabled mask: 0x${mask.toString(16)}`];
+    for (let i = 0; i < n; i++) {
+      if ((mask & (1n << BigInt(i))) === 0n) continue;
+      const off = i * 5;
+      const [addr, addrMask, sizeBits, mode, value] = buf.slice(off, off + 5);
+      lines.push(`#${i}: addr=0x${addr.toString(16)} addr_mask=0x${addrMask.toString(16)} `
+        + `size=${sizeBits} mode=${mode === 0 ? 'BLOCK' : 'SET'} value=0x${value.toString(16)}`);
+    }
+    document.getElementById('protectList').textContent = lines.join('\n');
+  }
+
+  document.getElementById('btnWpAdd').addEventListener('click', () => {
+    const addr = hexVal('wpAddr');
+    let opMask = 0;
+    if (document.getElementById('wpOpRead').checked) opMask |= E9K_WATCH_OP_READ;
+    if (document.getElementById('wpOpWrite').checked) opMask |= E9K_WATCH_OP_WRITE;
+    if (document.getElementById('wpOpValueNeqOld').checked) opMask |= E9K_WATCH_OP_VALUE_NEQ_OLD;
+    if (document.getElementById('wpOpValueEq').checked) opMask |= E9K_WATCH_OP_VALUE_EQ;
+    if (document.getElementById('wpOpOldValueEq').checked) opMask |= E9K_WATCH_OP_OLD_VALUE_EQ;
+    if (document.getElementById('wpOpAccessSize').checked) opMask |= E9K_WATCH_OP_ACCESS_SIZE;
+    if (document.getElementById('wpOpAddrMask').checked) opMask |= E9K_WATCH_OP_ADDR_COMPARE_MASK;
+    const diff = hexVal('wpDiffOperand');
+    const value = hexVal('wpValueOperand');
+    const oldValue = hexVal('wpOldValueOperand');
+    const size = hexVal('wpSizeOperand');
+    const addrMask = hexVal('wpAddrMaskOperand');
+    const index = M._wasm_add_watchpoint(addr, opMask, diff, value, oldValue, size, addrMask);
+    console.log('[debug] add_watchpoint -> ' + index);
+    listWatchpoints();
+  });
+
+  document.getElementById('btnWpRemove').addEventListener('click', () => {
+    M._wasm_remove_watchpoint(hexVal('wpRemoveIndex'));
+    listWatchpoints();
+  });
+
+  document.getElementById('btnWpList').addEventListener('click', listWatchpoints);
+
+  document.getElementById('btnWpConsume').addEventListener('click', () => {
+    const got = M._wasm_consume_watchbreak();
+    const out = document.getElementById('watchbreakOut');
+    if (!got) { out.textContent = '(no watchbreak pending)'; return; }
+    const ptr = M._wasm_get_watchbreak_buf();
+    const buf = new Uint32Array(M.HEAPU32.buffer, ptr, 14);
+    const [index, watchAddr, opMask, diff, value, oldValue, size, addrMask,
+           accessAddr, accessKind, accessSize, val, oldVal, oldValValid] = buf;
+    out.textContent = `index=${index} watch_addr=0x${watchAddr.toString(16)} `
+      + `access_addr=0x${accessAddr.toString(16)} access_kind=${E9K_WATCH_ACCESS_NAMES[accessKind] || accessKind} `
+      + `access_size=${accessSize} value=0x${val.toString(16)} old_value=0x${oldVal.toString(16)} `
+      + `old_value_valid=${oldValValid}`;
+  });
+
+  document.getElementById('btnPrAdd').addEventListener('click', () => {
+    const addr = hexVal('prAddr');
+    const size = parseInt(document.getElementById('prSize').value, 10);
+    const mode = parseInt(document.getElementById('prMode').value, 10);
+    const value = hexVal('prValue');
+    const index = M._wasm_add_protect(addr, size, mode, value);
+    console.log('[debug] add_protect -> ' + index);
+    listProtects();
+  });
+
+  document.getElementById('btnPrRemove').addEventListener('click', () => {
+    M._wasm_remove_protect(hexVal('prRemoveIndex'));
+    listProtects();
+  });
+
+  document.getElementById('btnPrList').addEventListener('click', listProtects);
+
+  // Enable debug buttons once module is ready
+  ['btnSetBp','btnClearBp','btnSetTempBp','btnClearTempBp','btnResume','btnReadRegs',
+   'btnReadMem','btnDisasmPc','btnCallstack','btnStepInto','btnStepLine','btnStepNext','btnStepOut',
+   'btnWpAdd','btnWpRemove','btnWpList','btnWpConsume','btnPrAdd','btnPrRemove','btnPrList'].forEach(id => {
+    document.getElementById(id).disabled = false;
+  });
+
+  return { readRegs, disasmAtPc, readCallstack, readCycleCount };
+}
+
+let debugApi;
+
+main({
+  wasmLocateFile: undefined,
+  romUrl: './kick34005.A500',
+  extraConfigB64: '',
+  audioWorkletUrl: './puae_audioprocessor.js',
+  onModuleReady: (M) => { debugApi = debugSetup(M); },
+  onBreakpoint: () => {
+    debugApi.readRegs();
+    debugApi.disasmAtPc();
+    debugApi.readCallstack();
+    debugApi.readCycleCount();
+  },
+}).catch(e => {
+  console.error(e);
+  document.getElementById('status').textContent = 'FATAL: ' + e.message;
+});
+</script>
+</body>
+</html>

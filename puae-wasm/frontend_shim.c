@@ -23,7 +23,8 @@
 // when a breakpoint fires, causing retro_run() to return early.
 extern bool libretro_frame_end;
 
-// Max PUAE PAL framebuffer: 720×574 × 4 bytes per pixel
+// Max PUAE PAL framebuffer: 720×574 × 4 bytes per pixel (PUAE_VIDEO_WIDTH x
+// PUAE_VIDEO_HEIGHT_PAL in libretro-core.h)
 #define MAX_FB_PIXELS (720 * 574)
 
 static const void *g_fb_data;
@@ -202,6 +203,7 @@ static bool shim_environment(unsigned cmd, void *data) {
                 if (strcmp(var->key, "puae_kickstart")     == 0) { var->value = "kick34005.A500"; return true; }
                 if (strcmp(var->key, "puae_model")         == 0) { var->value = "A500";           return true; }
                 if (strcmp(var->key, "puae_model_fd")      == 0) { var->value = "A500";           return true; }
+                if (strcmp(var->key, "puae_video_resolution")== 0) { var->value = "hires";        return true; }
                 if (strcmp(var->key, "puae_crop")          == 0) { var->value = "disabled";       return true; }
                 if (strcmp(var->key, "puae_horizontal_pos")== 0) { var->value = "0";              return true; }
                 if (strcmp(var->key, "puae_vertical_pos")  == 0) { var->value = "0";              return true; }

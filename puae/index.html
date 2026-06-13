@@ -5,7 +5,11 @@
 <title>PUAE wasm debugger backend</title>
 <style>
   body { background: #111; color: #eee; font-family: monospace; margin: 16px; }
-  canvas { display: block; image-rendering: pixelated; border: 1px solid #444; }
+  /* The canvas bitmap is the emulator's native framebuffer size (720x574 for
+     PAL hires) — scale it to fit the webview's width while keeping the aspect
+     ratio, otherwise it overflows narrower panels and gets clipped by the
+     webview viewport instead of shrinking. */
+  canvas { display: block; image-rendering: pixelated; border: 1px solid #444; max-width: 100%; height: auto; }
   #status { margin-top: 8px; font-size: 13px; }
 </style>
 </head>
