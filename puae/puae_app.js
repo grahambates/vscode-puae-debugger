@@ -4,7 +4,7 @@
 // lives in debug.html instead — main() only assumes #screen exists;
 // #status is optional (used for boot/fps diagnostics if present).
 
-import { setupRpcDispatcher, getCurrentStopMessage, WARM_UP_TICKS } from './puae_rpc.js';
+import { setupRpcDispatcher, getCurrentStopMessage, tryExec, getCurrentProcess, WARM_UP_TICKS } from './puae_rpc.js';
 
 // The Amiga's PAL frame rate — both the render loop's due-frames accounting
 // and its driving tick-worker interval are derived from this.
@@ -52,6 +52,7 @@ export async function main(config = {}) {
     wasmLocateFile,
     romUrl = './kick34005.A500',
     extraConfigB64 = '',
+    programB64 = '',
     audioWorkletUrl = './puae_audioprocessor.js',
     // Called once with the wasm module after boot+warm-up, before the RPC
     // bridge is wired up — debug.html uses this to install its debug UI.
@@ -95,29 +96,50 @@ export async function main(config = {}) {
     log(`Config: ${extraConfig.length} bytes → /uae_system/puae_libretro_global.uae`);
   }
 
+  // Non-fastLoad program (OpenOptions.programPath): write it + a minimal
+  // startup-sequence into a MEMFS directory that the "filesystem=rw,dh0:..."
+  // line above (buildExtraConfig) mounts as a bootable DH0: hard disk.
+  // AmigaOS's uaehf.device autoconfigures this — no ADF/bootblock/OFS image
+  // needed. The render loop below polls for the resulting CLI process.
+  if (programB64) {
+    const programData = Uint8Array.from(atob(programB64), c => c.charCodeAt(0));
+    M.FS.mkdir('/uae_system/dh0');
+    M.FS.writeFile('/uae_system/dh0/file', programData);
+    M.FS.mkdir('/uae_system/dh0/s');
+    M.FS.writeFile('/uae_system/dh0/s/startup-sequence', 'file');
+    log(`Program: ${programData.length} bytes → /uae_system/dh0/file`);
+  }
+
   // Boot the core with no disk inserted. fastLoad injects a standalone
   // program directly into memory once Kickstart has booted far enough to
   // allocate it (see the warm-up below) — there's no DOS process to load
   // a disk-based program from, and a disk would only race fastLoad's memory
-  // injection with the disk's own boot code.
+  // injection with the disk's own boot code. Non-fastLoad programs (above)
+  // are loaded via DH0:, not a disk image, so this is still '' either way.
   const wasm_boot = M.cwrap('wasm_boot', 'number', ['string']);
   log('Calling wasm_boot…');
   const ok = wasm_boot('');
   if (!ok) { log('wasm_boot FAILED — check console'); return; }
 
-  // Warm-up: run enough frames for Kickstart to clear the CIA-A OVL bit
-  // (chip-RAM writes via e9k_debug_write_memory don't persist before this —
-  // proven to need ~150 ticks, see puae-wasm/test_g1.mjs) and for
-  // exec.library to finish initialising its memory-list allocator (needed
-  // by AmigaMemoryMapper for fastLoad program injection). WARM_UP_TICKS
-  // (200) gives margin over the 150-tick threshold. This redefines
-  // `exec-ready` for PUAE from "wasm module + RPC bridge ready" to "AmigaOS
-  // booted enough for fastLoad memory injection" — the PUAE equivalent of
-  // VAmiga's pre-booted-snapshot fastLoad path. puae_rpc.js's "load" command
-  // re-runs this same warm-up after a wasm_reset() to reuse this module +
-  // webview for a new debug session.
-  log(`Warming up (${WARM_UP_TICKS} frames)…`);
-  for (let i = 0; i < WARM_UP_TICKS; i++) M._wasm_tick();
+  if (!programB64) {
+    // Warm-up: run enough frames for Kickstart to clear the CIA-A OVL bit
+    // (chip-RAM writes via e9k_debug_write_memory don't persist before this —
+    // proven to need ~150 ticks, see puae-wasm/test_g1.mjs) and for
+    // exec.library to finish initialising its memory-list allocator (needed
+    // by AmigaMemoryMapper for fastLoad program injection). WARM_UP_TICKS
+    // (200) gives margin over the 150-tick threshold. This redefines
+    // `exec-ready` for PUAE from "wasm module + RPC bridge ready" to "AmigaOS
+    // booted enough for fastLoad memory injection" — the PUAE equivalent of
+    // VAmiga's pre-booted-snapshot fastLoad path. puae_rpc.js's "load" command
+    // re-runs this same warm-up after a wasm_reset() to reuse this module +
+    // webview for a new debug session.
+    //
+    // For non-fastLoad (programB64 set), this warm-up is skipped — the render
+    // loop runs from frame 0 so tryExec/getCurrentProcess polling (below) can
+    // observe AmigaOS booting from DH0: and running the startup-sequence.
+    log(`Warming up (${WARM_UP_TICKS} frames)…`);
+    for (let i = 0; i < WARM_UP_TICKS; i++) M._wasm_tick();
+  }
 
   // -------- audio setup --------
   let workletNode = null;
@@ -249,6 +271,15 @@ export async function main(config = {}) {
   let fpsCnt    = 0;
   let imgData   = null; // cached ImageData — owns its own ArrayBuffer
 
+  // Non-fastLoad (programB64) process-attach state: tryExec() arms an
+  // AllocMem breakpoint once exec/graphics libraries are ready (execReady),
+  // then getCurrentProcess() is checked on each hit until it identifies our
+  // "file" CLI process (attached) — see puae_rpc.js. fastLoad
+  // (programB64==='') has no separate attach step.
+  let execReady = !programB64;
+  let attached  = !programB64;
+  let allocMemAddr = 0;
+
   // Set up the audio graph now — this doesn't itself need a user gesture.
   // No "enable audio" button needed: the unlock listeners registered above
   // (via audioCtx.onstatechange) resume playback on the first click/keypress.
@@ -284,21 +315,50 @@ export async function main(config = {}) {
     const tTickEnd = performance.now();
     emuFrames += toRun;
 
+    // Non-fastLoad (programB64) boot: poll for exec/graphics libraries being
+    // ready, then arm the AllocMem breakpoint (tryExec) so the next hit can
+    // be checked against getCurrentProcess() below.
+    if (programB64 && !execReady) {
+      const r = tryExec(M);
+      if (r.ready) {
+        execReady = true;
+        allocMemAddr = r.allocMemAddr;
+      }
+    }
+
     if (hitBreakpoint) {
-      log('BREAKPOINT HIT — emulator paused');
-      const n = M._wasm_read_regs();
-      const ptr = M._wasm_get_reg_buf();
-      const buf = new Uint32Array(M.HEAPU32.buffer, ptr, n);
-      const pcHex = n >= 18 ? '0x' + buf[17].toString(16).toUpperCase() : '?';
-      console.log('[debug] halt at PC=' + pcHex);
+      if (programB64 && execReady && !attached) {
+        // AllocMem breakpoint hit while waiting for our "file" CLI process
+        // (s/startup-sequence) to start — check whether this is it yet.
+        const proc = getCurrentProcess(M);
+        if (proc) {
+          M._wasm_remove_breakpoint(allocMemAddr);
+          attached = true;
+          log(`Attached to process "${proc.command}" (${proc.segments.length} segment(s))`);
+          if (vscode) {
+            vscode.postMessage({ type: 'attached', segments: proc.segments });
+          }
+        } else {
+          // Not our process yet (e.g. AmigaOS's own startup tasks) — keep
+          // the breakpoint armed and resume.
+          M._wasm_resume();
+        }
+      } else {
+        log('BREAKPOINT HIT — emulator paused');
+        const n = M._wasm_read_regs();
+        const ptr = M._wasm_get_reg_buf();
+        const buf = new Uint32Array(M.HEAPU32.buffer, ptr, n);
+        const pcHex = n >= 18 ? '0x' + buf[17].toString(16).toUpperCase() : '?';
+        console.log('[debug] halt at PC=' + pcHex);
 
-      if (onBreakpoint) onBreakpoint(M);
+        if (onBreakpoint) onBreakpoint(M);
 
-      // Tells the DAP adapter a breakpoint/watchpoint was hit during
-      // continue, so it can send a StoppedEvent (handleStop,
-      // vAmigaDebugAdapter.ts) — mirrors vAmiga_ui.js's handleStop.
-      if (vscode) {
-        vscode.postMessage({ type: 'emulator-state', state: 'stopped', message: getCurrentStopMessage(M) });
+        // Tells the DAP adapter a breakpoint/watchpoint was hit during
+        // continue, so it can send a StoppedEvent (handleStop,
+        // vAmigaDebugAdapter.ts) — mirrors vAmiga_ui.js's handleStop.
+        if (vscode) {
+          vscode.postMessage({ type: 'emulator-state', state: 'stopped', message: getCurrentStopMessage(M) });
+        }
       }
     }
 

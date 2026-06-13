@@ -300,16 +300,6 @@ export class VamigaDebugAdapter extends LoggingDebugSession {
     this.trace = args.trace ?? false;
     this.fastLoad = args.fastLoad ?? false;
 
-    if (args.emulatorBackend === "puae" && !this.fastLoad) {
-      this.sendError(
-        response,
-        ErrorCode.INVALID_LAUNCH_CONFIG,
-        'The "puae" emulator backend requires "fastLoad": true (floppy-based loading is not yet supported for it)',
-      );
-      this.sendEvent(new TerminatedEvent());
-      return;
-    }
-
     const debugProgram = args.debugProgram || this.programPath;
     logger.log(`Reading debug symbols from ${debugProgram}`);
 

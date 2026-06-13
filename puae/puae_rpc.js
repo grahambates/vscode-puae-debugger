@@ -45,6 +45,83 @@ function hex(value, digits = 8) {
   return "0x" + (value >>> 0).toString(16).padStart(digits, "0");
 }
 
+// Reads `size` bytes at `address` and returns them as a single big-endian
+// unsigned integer. Module-level (not just inside setupRpcDispatcher's
+// closure) so tryExec/getCurrentProcess below can use it directly.
+function peekMem(M, address, size) {
+  M._wasm_peek_memory(address >>> 0, size);
+  const ptr = M._wasm_get_mem_buf();
+  const buf = new Uint8Array(M.HEAPU8.buffer, ptr, size);
+  let value = 0;
+  for (let i = 0; i < size; i++) value = value * 256 + buf[i];
+  return value >>> 0;
+}
+
+function readRegs(M) {
+  const n = M._wasm_read_regs();
+  const ptr = M._wasm_get_reg_buf();
+  return new Uint32Array(M.HEAPU32.buffer, ptr, n);
+}
+
+// Port of vAmiga_ui.js's tryExec (lines ~1936-1971), minus the fastLoad/
+// snapshot branch (not applicable to PUAE, which has no snapshot API). Once
+// exec.library + graphics.library are initialized and the CPU isn't in
+// supervisor mode, arms a breakpoint on AllocMem's LVO (-198 from ExecBase)
+// so getCurrentProcess() can be polled on each hit. Called every frame from
+// puae_app.js's frame() until it returns {ready: true}.
+export function tryExec(M) {
+  const execBase = peekMem(M, 4, 4);
+  const allocMemAddr = (execBase - 198) >>> 0;
+  const gfxBaseAddr = (execBase + 156) >>> 0;
+  const regs = readRegs(M);
+  const isSupervisor = (regs[16] & 0x2000) !== 0; // SR bit 13
+  if (
+    allocMemAddr > 0 &&
+    peekMem(M, allocMemAddr, 2) === 0x4ef9 && // jmp instruction
+    peekMem(M, gfxBaseAddr, 4) !== 0 && // GfxBase set
+    !isSupervisor
+  ) {
+    M._wasm_add_breakpoint(allocMemAddr);
+    return { ready: true, allocMemAddr };
+  }
+  return { ready: false };
+}
+
+// Port of vAmiga's wasm_get_current_process() (main.cpp ~4106-4203). Walks
+// ExecBase -> ThisTask -> CLI -> command name + seglist, returning null
+// unless the active task is a CLI process running "file" (the program
+// puae_app.js wrote to /uae_system/dh0/file, run via s/startup-sequence) —
+// else {command: 'file', segments: [{start, size}, ...]}.
+export function getCurrentProcess(M) {
+  const execbase = peekMem(M, 4, 4);
+  const activetask = peekMem(M, execbase + 276, 4);
+  if (!activetask) return null;
+  if (peekMem(M, activetask + 8, 1) !== 13) return null; // ln_Type == NT_PROCESS
+  const cliPtr = peekMem(M, activetask + 172, 4);
+  if (!cliPtr) return null;
+  const cli = cliPtr << 2; // BPTR -> APTR
+  const cmdPtr = peekMem(M, cli + 16, 4);
+  if (!cmdPtr) return null;
+  const cmdAddr = cmdPtr << 2;
+  const cmdLen = peekMem(M, cmdAddr, 1);
+  let command = "";
+  for (let i = 0; i < cmdLen; i++) {
+    command += String.fromCharCode(peekMem(M, cmdAddr + 1 + i, 1));
+  }
+  if (command !== "file") return null;
+  const seglistPtr = peekMem(M, cli + 60, 4);
+  if (!seglistPtr) return null;
+  const segments = [];
+  let seglist = seglistPtr << 2;
+  while (seglist) {
+    const size = peekMem(M, seglist - 4, 4) - 4;
+    segments.push({ start: seglist + 4, size });
+    const next = peekMem(M, seglist, 4);
+    seglist = next ? next << 2 : 0;
+  }
+  return { command, segments };
+}
+
 // Builds the StopMessage-shaped payload for an `emulator-state: stopped`
 // message (see src/vAmiga.ts's StopMessage), matching vAmiga_ui.js's
 // handleStop: a pending catchbreak (consumed here) means a 68k exception
@@ -148,12 +225,7 @@ export function setupRpcDispatcher(M, postMessage) {
   // Reads `size` bytes at `address` and returns them as a single big-endian
   // unsigned integer.
   function peek(address, size) {
-    M._wasm_peek_memory(address >>> 0, size);
-    const ptr = M._wasm_get_mem_buf();
-    const buf = new Uint8Array(M.HEAPU8.buffer, ptr, size);
-    let value = 0;
-    for (let i = 0; i < size; i++) value = value * 256 + buf[i];
-    return value >>> 0;
+    return peekMem(M, address, size);
   }
 
   function poke(address, value, size) {

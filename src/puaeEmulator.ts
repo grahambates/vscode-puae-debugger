@@ -36,17 +36,17 @@ interface PendingRpc {
  * (Kickstart ROMs are copyrighted by Cloanto/Amiga Inc.), and the embedded
  * AROS replacement ROM (`kickstart_rom_file=:AROS`) isn't currently usable as
  * a fastLoad target — `exec.library`'s memory list isn't initialized the way
- * `AmigaMemoryMapper` expects within any reasonable warm-up window. This
- * backend is otherwise fastLoad-only: `programPath`/`kickstartExtPath` and
- * most hardware-configuration options (`agnusRevision`/`deniseRevision`/
- * `cpuSpeed`/`blitterAccuracy`/etc., `useArosRom`, display/input options) are
- * ignored, with a `console.warn` listing any that were set.
+ * `AmigaMemoryMapper` expects within any reasonable warm-up window.
+ * `kickstartExtPath` and most hardware-configuration options
+ * (`agnusRevision`/`deniseRevision`/`cpuSpeed`/`blitterAccuracy`/etc.,
+ * `useArosRom`, display/input options) are ignored, with a `console.warn`
+ * listing any that were set.
  *
- * `chipRam`/`slowRam`/`fastRam`/`cpuRevision`, `configFilePath` and
- * `emulatorOptions.puae` ARE honored, via `buildExtraConfig()` writing a
- * `.uae`-format `puae_libretro_global.uae` file into the wasm MEMFS before
- * boot — `retro_create_config()` appends its lines to the generated config
- * with last-line-wins precedence, so:
+ * `chipRam`/`slowRam`/`fastRam`/`cpuRevision`, `configFilePath`,
+ * `emulatorOptions.puae` and `programPath` ARE honored, via
+ * `buildExtraConfig()` writing a `.uae`-format `puae_libretro_global.uae`
+ * file into the wasm MEMFS before boot — `retro_create_config()` appends its
+ * lines to the generated config with last-line-wins precedence, so:
  *  - `configFilePath` (if set) provides the base config (lowest precedence).
  *  - `chipRam`/`slowRam`/`fastRam`/`cpuRevision` map to `chipmem_size`/
  *    `bogomem_size`/`fastmem_size`/`cpu_model` and override the base config.
@@ -54,6 +54,16 @@ interface PendingRpc {
  *    1MB units). `cpuRevision: "fake_68030"` maps to `cpu_model=68030`, a
  *    real 68030 (with MMU) rather than vAmiga's pipeline-only "fake" 68030 —
  *    an approximation.
+ *  - `programPath` (non-fastLoad/`dos.library`-dependent programs): the exe
+ *    is read and base64-injected as `programB64`; `puae_app.js` writes it
+ *    into `/uae_system/dh0/file` plus `/uae_system/dh0/s/startup-sequence`
+ *    (containing `"file"`) in the MEMFS, and a `filesystem=rw,dh0:/uae_system/dh0`
+ *    line mounts that directory as a bootable DH0: hard disk (AmigaOS's
+ *    `uaehf.device` autoconfigures it — no ADF/bootblock/OFS image needed).
+ *    The render loop then polls for the program's CLI process via an
+ *    AllocMem breakpoint (`tryExec`/`getCurrentProcess` in `puae_rpc.js`,
+ *    ported from `vAmiga_ui.js`) and posts `{type:'attached', segments}` once
+ *    found.
  *  - `emulatorOptions.puae` (raw `key=value` pairs) has the highest
  *    precedence, overriding everything above.
  *
@@ -84,9 +94,12 @@ interface PendingRpc {
  * re-runs fastLoad injection for the new program. This is much cheaper than
  * re-instantiating the wasm module/webview, but it means ROM/config-affecting
  * `OpenOptions` (`kickstartRomPath`, `configFilePath`, `chipRam`/`slowRam`/
- * `fastRam`/`cpuRevision`, `emulatorOptions.puae`) from the FIRST session
- * remain in effect for reused panels — changing them requires closing the
- * panel first.
+ * `fastRam`/`cpuRevision`, `emulatorOptions.puae`, `programPath`) from the
+ * FIRST session remain in effect for reused panels — changing them requires
+ * closing the panel first. For `programPath` specifically, "load" doesn't
+ * rewrite `/uae_system/dh0` or re-run `retro_load_game`'s autoconfig, so a
+ * new program won't be picked up by a reused panel even if the file at the
+ * original `programPath` is overwritten on disk.
  */
 export class PuaeEmulator implements Emulator {
   public static readonly viewType = "vamiga-debugger.puaeWebview";
@@ -521,7 +534,6 @@ export class PuaeEmulator implements Emulator {
       return;
     }
     const ignoredKeys: (keyof OpenOptions)[] = [
-      "programPath",
       "kickstartExtPath",
       "useArosRom",
       "showNavBar",
@@ -603,6 +615,12 @@ export class PuaeEmulator implements Emulator {
     if (options?.cpuRevision) {
       lines.push(`cpu_model=${PuaeEmulator.CPU_MODEL_CONFIG[options.cpuRevision]}`);
     }
+    if (options?.programPath) {
+      // Mount the directory puae_app.js populates (program + s/startup-sequence)
+      // as a bootable DH0: hard disk — see PuaeEmulator.getHtmlForWebview's
+      // programB64 injection and the class doc comment.
+      lines.push("filesystem=rw,dh0:/uae_system/dh0");
+    }
     for (const [key, value] of Object.entries(options?.emulatorOptions?.puae ?? {})) {
       lines.push(`${key}=${value}`);
     }
@@ -641,6 +659,14 @@ export class PuaeEmulator implements Emulator {
     const extraConfigB64 = extraConfig
       ? Buffer.from(extraConfig, "utf-8").toString("base64")
       : "";
+
+    let programB64 = "";
+    if (this.openOptions.programPath) {
+      if (!existsSync(this.openOptions.programPath)) {
+        throw new Error(`Program file not found: ${this.openOptions.programPath}`);
+      }
+      programB64 = readFileSync(this.openOptions.programPath).toString("base64");
+    }
 
     // CSP: scripts from webview resource scheme, inline JS (incl. the page's
     // inline module), wasm-unsafe-eval for wasm execution, workers for
@@ -690,6 +716,15 @@ export class PuaeEmulator implements Emulator {
     html = html.replace(
       "extraConfigB64: '',",
       `extraConfigB64: '${extraConfigB64}',`,
+    );
+
+    // Inject the program executable (OpenOptions.programPath) — puae_app.js
+    // writes it into a MEMFS directory mounted as DH0: (see buildExtraConfig's
+    // "filesystem=rw,dh0:..." line) along with an s/startup-sequence that runs
+    // it, for non-fastLoad/dos.library-dependent programs.
+    html = html.replace(
+      "programB64: '',",
+      `programB64: '${programB64}',`,
     );
 
     // Patch AudioWorklet module path.
