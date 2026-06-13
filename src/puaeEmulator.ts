@@ -37,9 +37,8 @@ interface PendingRpc {
  * AROS replacement ROM (`kickstart_rom_file=:AROS`) isn't currently usable as
  * a fastLoad target — `exec.library`'s memory list isn't initialized the way
  * `AmigaMemoryMapper` expects within any reasonable warm-up window.
- * `kickstartExtPath` and most hardware-configuration options
- * (`agnusRevision`/`deniseRevision`/`cpuSpeed`/`blitterAccuracy`/etc.,
- * `useArosRom`, display/input options) are ignored, with a `console.warn`
+ * `kickstartExtPath` and `emulatorOptions.vamiga` (vAmiga-only hardware/
+ * display options — see `VamigaOptions`) are ignored, with a `console.warn`
  * listing any that were set.
  *
  * `chipRam`/`slowRam`/`fastRam`/`cpuRevision`, `configFilePath`,
@@ -48,12 +47,20 @@ interface PendingRpc {
  * file into the wasm MEMFS before boot — `retro_create_config()` appends its
  * lines to the generated config with last-line-wins precedence, so:
  *  - `configFilePath` (if set) provides the base config (lowest precedence).
- *  - `chipRam`/`slowRam`/`fastRam`/`cpuRevision` map to `chipmem_size`/
- *    `bogomem_size`/`fastmem_size`/`cpu_model` and override the base config.
- *    `fastRam: "256k"`/`"512k"` round up to 1MB (PUAE's `fastmem_size` is in
- *    1MB units). `cpuRevision: "fake_68030"` maps to `cpu_model=68030`, a
- *    real 68030 (with MMU) rather than vAmiga's pipeline-only "fake" 68030 —
- *    an approximation.
+ *    This may itself be a full preset (e.g. a `quickstart=A1200,1` line),
+ *    which `chipRam`/`slowRam`/`fastRam`/`cpuRevision` below can selectively
+ *    override.
+ *  - `emulatorOptions.puae` (raw `key=value` pairs) overrides the base
+ *    config, but is itself overridden by `chipRam`/`slowRam`/`fastRam`/
+ *    `cpuRevision` below.
+ *  - `chipRam`/`slowRam`/`fastRam`/`cpuRevision` (highest precedence) map to
+ *    `chipmem_size`/`bogomem_size`/`fastmem_size`/`cpu_model` and override
+ *    everything above. `fastRam: "256k"`/`"512k"` round up to 1MB (PUAE's
+ *    `fastmem_size` is in 1MB units). `cpuRevision` maps directly to
+ *    `cpu_model` for `"68000"`/`"68010"`/`"68020"`/`"68030"`/`"68040"`/
+ *    `"68060"` (a real CPU of that model, with MMU/FPU where applicable);
+ *    `"fake_68030"` (vAmiga's pipeline-only approximation) is not supported
+ *    and throws.
  *  - `programPath` (non-fastLoad/`dos.library`-dependent programs): the exe
  *    is read and base64-injected as `programB64`; `puae_app.js` writes it
  *    into `/uae_system/dh0/file` plus `/uae_system/dh0/s/startup-sequence`
@@ -64,8 +71,6 @@ interface PendingRpc {
  *    AllocMem breakpoint (`tryExec`/`getCurrentProcess` in `puae_rpc.js`,
  *    ported from `vAmiga_ui.js`) and posts `{type:'attached', segments}` once
  *    found.
- *  - `emulatorOptions.puae` (raw `key=value` pairs) has the highest
- *    precedence, overriding everything above.
  *
  * Documented gaps vs. `VAmiga` (see `puae_rpc.js` for the implementation of
  * each):
@@ -533,26 +538,17 @@ export class PuaeEmulator implements Emulator {
     if (!this.openOptions) {
       return;
     }
-    const ignoredKeys: (keyof OpenOptions)[] = [
-      "kickstartExtPath",
-      "useArosRom",
-      "showNavBar",
-      "wideScreen",
-      "darkMode",
-      "enableMouse",
-      "displayZoom",
-      "useGpu",
-      "agnusRevision",
-      "deniseRevision",
-      "cpuSpeed",
-      "blitterAccuracy",
-      "floppyDriveCount",
-      "driveSpeed",
-    ];
+    const ignoredKeys: (keyof OpenOptions)[] = ["kickstartExtPath"];
     const set = ignoredKeys.filter((key) => this.openOptions?.[key] !== undefined);
     if (set.length > 0) {
       console.warn(
         `PuaeEmulator: ignoring unsupported emulatorOptions: ${set.join(", ")}`,
+      );
+    }
+    const vamiga = this.openOptions.emulatorOptions?.vamiga;
+    if (vamiga && Object.values(vamiga).some((value) => value !== undefined)) {
+      console.warn(
+        "PuaeEmulator: ignoring emulatorOptions.vamiga (vAmiga-specific options, not applicable to PUAE)",
       );
     }
   }
@@ -582,7 +578,9 @@ export class PuaeEmulator implements Emulator {
     "68000": 68000,
     "68010": 68010,
     "68020": 68020,
-    fake_68030: 68030,
+    "68030": 68030,
+    "68040": 68040,
+    "68060": 68060,
   };
 
   /**
@@ -603,6 +601,9 @@ export class PuaeEmulator implements Emulator {
       }
       lines.push(readFileSync(options.configFilePath, "utf-8").trimEnd());
     }
+    for (const [key, value] of Object.entries(options?.emulatorOptions?.puae ?? {})) {
+      lines.push(`${key}=${value}`);
+    }
     if (options?.chipRam) {
       lines.push(`chipmem_size=${PuaeEmulator.CHIP_RAM_CONFIG[options.chipRam]}`);
     }
@@ -613,6 +614,12 @@ export class PuaeEmulator implements Emulator {
       lines.push(`fastmem_size=${PuaeEmulator.FAST_RAM_CONFIG[options.fastRam]}`);
     }
     if (options?.cpuRevision) {
+      if (options.cpuRevision === "fake_68030") {
+        throw new Error(
+          `PUAE doesn't support vAmiga's "fake_68030" CPU model — use "68030", ` +
+            `"68040", or "68060" for a real 68030+ CPU, or emulatorBackend: "vamiga".`,
+        );
+      }
       lines.push(`cpu_model=${PuaeEmulator.CPU_MODEL_CONFIG[options.cpuRevision]}`);
     }
     if (options?.programPath) {
@@ -620,9 +627,6 @@ export class PuaeEmulator implements Emulator {
       // as a bootable DH0: hard disk — see PuaeEmulator.getHtmlForWebview's
       // programB64 injection and the class doc comment.
       lines.push("filesystem=rw,dh0:/uae_system/dh0");
-    }
-    for (const [key, value] of Object.entries(options?.emulatorOptions?.puae ?? {})) {
-      lines.push(`${key}=${value}`);
     }
 
     return lines.length > 0 ? lines.join("\n") + "\n" : "";

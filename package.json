@@ -190,7 +190,7 @@
                 ],
                 "enumDescriptions": [
                   "WinUAE-based vAmiga emulator (default)",
-                  "PUAE/ami9000 wasm emulator. Currently requires \"fastLoad\": true"
+                  "PUAE/ami9000 wasm emulator"
                 ],
                 "default": "vamiga",
                 "description": "Emulator backend to debug against"
@@ -206,85 +206,18 @@
                     "type": "string",
                     "description": "Path to extended kickstart ROM file"
                   },
-                  "useArosRom": {
-                    "type": "boolean",
-                    "description": "Use free AROS ROMs"
-                  },
-                  "showNavBar": {
-                    "type": "boolean",
-                    "description": "Show navigation bar"
-                  },
-                  "wideScreen": {
-                    "type": "boolean",
-                    "description": "Stretch to full width, regardless of aspect ratio"
-                  },
-                  "darkMode": {
-                    "type": "boolean",
-                    "description": "Dark mode"
-                  },
-                  "enableMouse": {
-                    "type": "boolean",
-                    "description": "Enable mouse"
-                  },
-                  "displayZoom": {
-                    "type": "string",
-                    "enum": [
-                      "viewport tracking",
-                      "borderless",
-                      "narrow",
-                      "standard",
-                      "wider",
-                      "overscan",
-                      "extreme"
-                    ],
-                    "description": "Display zoom mode"
-                  },
-                  "useGpu": {
-                    "type": "boolean",
-                    "description": "Render with GPU, rather than software"
-                  },
-                  "agnusRevision": {
-                    "type": "string",
-                    "enum": [
-                      "OCS_OLD",
-                      "OCS",
-                      "ECS_1MB",
-                      "ECS_2MB"
-                    ],
-                    "description": "Agnus chip revision"
-                  },
-                  "deniseRevision": {
-                    "type": "string",
-                    "enum": [
-                      "OCS",
-                      "ECS"
-                    ],
-                    "description": "Denise chip revision"
-                  },
                   "cpuRevision": {
                     "type": "string",
                     "enum": [
                       "68000",
                       "68010",
                       "68020",
+                      "68030",
+                      "68040",
+                      "68060",
                       "fake_68030"
                     ],
-                    "description": "CPU model"
-                  },
-                  "cpuSpeed": {
-                    "type": "string",
-                    "enum": [
-                      "7MHz",
-                      "14Hz",
-                      "21Hz",
-                      "28Hz",
-                      "35Hz",
-                      "43Hz",
-                      "57Hz",
-                      "85Hz",
-                      "99Hz"
-                    ],
-                    "description": "CPU speed"
+                    "description": "CPU model. \"fake_68030\" is a vAmiga-only approximate 68030 (no MMU); \"68030\"/\"68040\"/\"68060\" are real CPUs supported by PUAE only. Unsupported combinations throw a validation error at launch."
                   },
                   "chipRam": {
                     "type": "string",
@@ -317,43 +250,298 @@
                     ],
                     "description": "Fast RAM size"
                   },
-                  "blitterAccuracy": {
-                    "type": "number",
-                    "enum": [
-                      0,
-                      1,
-                      2
-                    ],
-                    "description": "Blitter accuracy level"
-                  },
-                  "floppyDriveCount": {
-                    "type": "number",
-                    "enum": [
-                      1,
-                      2,
-                      3,
-                      4
-                    ],
-                    "description": "Number of floppy drives"
-                  },
-                  "driveSpeed": {
-                    "type": "number",
-                    "enum": [
-                      -1,
-                      1,
-                      2,
-                      4,
-                      8
-                    ],
-                    "description": "Floppy drive speed multiplier (-1: auto)"
-                  },
                   "configFilePath": {
                     "type": "string",
-                    "description": "PUAE only: path to a WinUAE-format .uae config file, loaded as the base configuration (overridden by chipRam/slowRam/fastRam/cpuRevision and emulatorOptions.puae)"
+                    "description": "PUAE only: path to a WinUAE-format .uae config file, loaded as the base configuration (e.g. a quickstart=A1200,1 preset). Overridden by emulatorOptions.puae, which is itself overridden by chipRam/slowRam/fastRam/cpuRevision"
+                  },
+                  "vamiga": {
+                    "type": "object",
+                    "description": "vAmiga-only options, ignored by other backends",
+                    "properties": {
+                      "useArosRom": {
+                        "type": "boolean",
+                        "description": "Use free AROS ROMs"
+                      },
+                      "showNavBar": {
+                        "type": "boolean",
+                        "description": "Show navigation bar"
+                      },
+                      "wideScreen": {
+                        "type": "boolean",
+                        "description": "Stretch to full width, regardless of aspect ratio"
+                      },
+                      "darkMode": {
+                        "type": "boolean",
+                        "description": "Dark mode"
+                      },
+                      "enableMouse": {
+                        "type": "boolean",
+                        "description": "Enable mouse"
+                      },
+                      "displayZoom": {
+                        "type": "string",
+                        "enum": [
+                          "viewport tracking",
+                          "borderless",
+                          "narrow",
+                          "standard",
+                          "wider",
+                          "overscan",
+                          "extreme"
+                        ],
+                        "description": "Display zoom mode"
+                      },
+                      "useGpu": {
+                        "type": "boolean",
+                        "description": "Render with GPU, rather than software"
+                      },
+                      "agnusRevision": {
+                        "type": "string",
+                        "enum": [
+                          "OCS_OLD",
+                          "OCS",
+                          "ECS_1MB",
+                          "ECS_2MB"
+                        ],
+                        "description": "Agnus chip revision"
+                      },
+                      "deniseRevision": {
+                        "type": "string",
+                        "enum": [
+                          "OCS",
+                          "ECS"
+                        ],
+                        "description": "Denise chip revision"
+                      },
+                      "cpuSpeed": {
+                        "type": "string",
+                        "enum": [
+                          "7MHz",
+                          "14Hz",
+                          "21Hz",
+                          "28Hz",
+                          "35Hz",
+                          "43Hz",
+                          "57Hz",
+                          "85Hz",
+                          "99Hz"
+                        ],
+                        "description": "CPU speed"
+                      },
+                      "blitterAccuracy": {
+                        "type": "number",
+                        "enum": [
+                          0,
+                          1,
+                          2
+                        ],
+                        "description": "Blitter accuracy level"
+                      },
+                      "floppyDriveCount": {
+                        "type": "number",
+                        "enum": [
+                          1,
+                          2,
+                          3,
+                          4
+                        ],
+                        "description": "Number of floppy drives"
+                      },
+                      "driveSpeed": {
+                        "type": "number",
+                        "enum": [
+                          -1,
+                          1,
+                          2,
+                          4,
+                          8
+                        ],
+                        "description": "Floppy drive speed multiplier (-1: auto)"
+                      }
+                    }
                   },
                   "puae": {
                     "type": "object",
-                    "description": "PUAE only: raw .uae key=value overrides, applied with the highest precedence",
+                    "description": "PUAE only: raw .uae key=value overrides. Overrides configFilePath, but is itself overridden by chipRam/slowRam/fastRam/cpuRevision. A curated set of commonly-used keys is listed below, but any WinUAE-format .uae key is accepted",
+                    "properties": {
+                      "quickstart": {
+                        "type": "string",
+                        "pattern": "^(A500\\+?|A600|A1000|A1200|A3000|A4000T?|CD32|CDTV-CR|CDTV|ARCADIA),\\d+$",
+                        "description": "WinUAE-style machine preset: \"<Model>,<ConfigIndex>\", e.g. \"A1200,1\". Model is one of A500/A500+/A600/A1000/A1200/A3000/A4000/A4000T/CD32/CDTV/CDTV-CR/ARCADIA. ConfigIndex selects a model-specific memory/expansion preset (e.g. for A500: 0=KS1.3 OCS Agnus 512k+512k, 1=KS1.3 ECS Agnus 512k+512k, 2=1MB chip). Resets chipset/CPU/RAM, so put it in configFilePath (lowest precedence) rather than here if also using chipRam/slowRam/fastRam/cpuRevision"
+                      },
+                      "chipset": {
+                        "type": "string",
+                        "enum": [
+                          "ocs",
+                          "ecs_agnus",
+                          "ecs_denise",
+                          "ecs",
+                          "aga"
+                        ],
+                        "description": "Chipset revision"
+                      },
+                      "chipset_compatible": {
+                        "type": "string",
+                        "enum": [
+                          "-",
+                          "Generic",
+                          "CDTV",
+                          "CDTV-CR",
+                          "CD32",
+                          "A500",
+                          "A500+",
+                          "A600",
+                          "A1000",
+                          "A1200",
+                          "A2000",
+                          "A3000",
+                          "A3000T",
+                          "A4000",
+                          "A4000T",
+                          "Velvet",
+                          "Casablanca",
+                          "DraCo"
+                        ],
+                        "description": "Machine compatibility preset (chipset timing/quirks)"
+                      },
+                      "cpu_compatible": {
+                        "type": "boolean",
+                        "description": "Enable CPU compatibility mode (more accurate but slower)"
+                      },
+                      "cpu_24bit_addressing": {
+                        "type": "boolean",
+                        "description": "Restrict CPU to 24-bit addressing (must be false for Z3/P96 fast RAM to work)"
+                      },
+                      "cpu_cycle_exact": {
+                        "type": "boolean",
+                        "description": "Cycle-exact CPU emulation"
+                      },
+                      "blitter_cycle_exact": {
+                        "type": "boolean",
+                        "description": "Cycle-exact blitter emulation"
+                      },
+                      "immediate_blits": {
+                        "type": "boolean",
+                        "description": "Perform blits immediately, ignoring blitter timing"
+                      },
+                      "cpu_speed": {
+                        "description": "CPU speed: \"max\" (unlimited), \"real\" (real Amiga speed), or an integer multiplier from 1 to 20",
+                        "oneOf": [
+                          {
+                            "type": "string",
+                            "enum": [
+                              "max",
+                              "real"
+                            ]
+                          },
+                          {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 20
+                          }
+                        ]
+                      },
+                      "finegrain_cpu_speed": {
+                        "type": "integer",
+                        "description": "Fine-grained CPU speed setting (alternative to cpu_speed)"
+                      },
+                      "collision_level": {
+                        "type": "string",
+                        "enum": [
+                          "none",
+                          "sprites",
+                          "playfields",
+                          "full"
+                        ],
+                        "description": "Sprite/playfield collision detection level"
+                      },
+                      "floppy_speed": {
+                        "type": "integer",
+                        "description": "Floppy drive speed as a percentage of real speed (0 = turbo/instant)"
+                      },
+                      "nr_floppies": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 4,
+                        "description": "Number of floppy drives"
+                      },
+                      "floppy0type": {
+                        "type": "integer",
+                        "enum": [
+                          -1,
+                          0,
+                          1,
+                          2
+                        ],
+                        "description": "DF0: drive type (-1=none, 0=3.5\" DD, 1=3.5\" HD, 2=5.25\" SD)"
+                      },
+                      "floppy1type": {
+                        "type": "integer",
+                        "enum": [
+                          -1,
+                          0,
+                          1,
+                          2
+                        ],
+                        "description": "DF1: drive type (-1=none, 0=3.5\" DD, 1=3.5\" HD, 2=5.25\" SD)"
+                      },
+                      "floppy2type": {
+                        "type": "integer",
+                        "enum": [
+                          -1,
+                          0,
+                          1,
+                          2
+                        ],
+                        "description": "DF2: drive type (-1=none, 0=3.5\" DD, 1=3.5\" HD, 2=5.25\" SD)"
+                      },
+                      "floppy3type": {
+                        "type": "integer",
+                        "enum": [
+                          -1,
+                          0,
+                          1,
+                          2
+                        ],
+                        "description": "DF3: drive type (-1=none, 0=3.5\" DD, 1=3.5\" HD, 2=5.25\" SD)"
+                      },
+                      "sound_output": {
+                        "type": "string",
+                        "enum": [
+                          "none",
+                          "interrupts",
+                          "good",
+                          "best"
+                        ],
+                        "description": "Sound emulation quality/method"
+                      },
+                      "sound_stereo_separation": {
+                        "type": "integer",
+                        "description": "Stereo separation level"
+                      },
+                      "sound_frequency": {
+                        "type": "integer",
+                        "description": "Audio sample rate in Hz"
+                      },
+                      "gfx_center_horizontal": {
+                        "type": "string",
+                        "enum": [
+                          "none",
+                          "simple",
+                          "smart"
+                        ],
+                        "description": "Horizontal display centering"
+                      },
+                      "gfx_center_vertical": {
+                        "type": "string",
+                        "enum": [
+                          "none",
+                          "simple",
+                          "smart"
+                        ],
+                        "description": "Vertical display centering"
+                      }
+                    },
                     "additionalProperties": {
                       "type": [
                         "string",
@@ -380,12 +568,13 @@
               "chipRam": "512k",
               "slowRam": "512k",
               "fastRam": "0",
-              "agnusRevision": "OCS",
-              "deniseRevision": "OCS",
-              "paulaRevision": "OCS",
-              "blitterAccuracy": 2,
               "cpuRevision": "68000",
-              "cpuSpeed": "7MHz"
+              "vamiga": {
+                "agnusRevision": "OCS",
+                "deniseRevision": "OCS",
+                "blitterAccuracy": 2,
+                "cpuSpeed": "7MHz"
+              }
             }
           }
         ],
@@ -405,11 +594,13 @@
                 "chipRam": "512k",
                 "slowRam": "512k",
                 "fastRam": "0",
-                "agnusRevision": "OCS",
-                "deniseRevision": "OCS",
-                "blitterAccuracy": 2,
                 "cpuRevision": "68000",
-                "cpuSpeed": "7MHz"
+                "vamiga": {
+                  "agnusRevision": "OCS",
+                  "deniseRevision": "OCS",
+                  "blitterAccuracy": 2,
+                  "cpuSpeed": "7MHz"
+                }
               }
             }
           },
@@ -428,21 +619,23 @@
                 "chipRam": "1M",
                 "slowRam": "0",
                 "fastRam": "1M",
-                "agnusRevision": "ECS_2MB",
-                "deniseRevision": "ECS",
-                "blitterAccuracy": 2,
                 "cpuRevision": "68000",
-                "cpuSpeed": "7MHz"
+                "vamiga": {
+                  "agnusRevision": "ECS_2MB",
+                  "deniseRevision": "ECS",
+                  "blitterAccuracy": 2,
+                  "cpuSpeed": "7MHz"
+                }
               }
             }
           },
           {
-            "label": "vAmiga (PUAE): fastLoad",
-            "description": "PUAE/ami9000 wasm backend (fastLoad only; chipRam/slowRam/fastRam/cpuRevision, configFilePath and emulatorOptions.puae are supported, other hardware/display options are not yet)",
+            "label": "vAmiga (PUAE)",
+            "description": "PUAE/ami9000 wasm backend (chipRam/slowRam/fastRam/cpuRevision, configFilePath and emulatorOptions.puae are supported; emulatorOptions.vamiga is ignored)",
             "body": {
               "type": "vamiga",
               "request": "launch",
-              "name": "vAmiga (PUAE): fastLoad",
+              "name": "vAmiga (PUAE)",
               "program": "^\"\\${workspaceFolder\\}/${1:out/a.exe}\"",
               "fastLoad": true,
               "stopOnEntry": true,

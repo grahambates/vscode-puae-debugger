@@ -268,13 +268,11 @@ export function isRpcResponseMessage(
 }
 
 /**
- * User options input using absolute file paths
+ * vAmiga-only options, not applicable to the PUAE backend (no equivalent
+ * shape in PUAE's `.uae` config — see `cpuRevision` on `OpenOptions` for the
+ * one hardware option that *is* shared, with per-backend value validation).
  */
-export interface OpenOptions {
-  // Paths will need to be converted to URIs
-  programPath?: string;
-  kickstartRomPath?: string;
-  kickstartExtPath?: string;
+export interface VamigaOptions {
   useArosRom?: boolean;
   showNavBar?: boolean;
   wideScreen?: boolean;
@@ -289,10 +287,8 @@ export interface OpenOptions {
     | "overscan"
     | "extreme";
   useGpu?: boolean;
-  // Hardware configuration options
   agnusRevision?: "OCS_OLD" | "OCS" | "ECS_1MB" | "ECS_2MB";
   deniseRevision?: "OCS" | "ECS";
-  cpuRevision?: "68000" | "68010" | "68020" | "fake_68030";
   cpuSpeed?:
     | "7MHz"
     | "14Hz"
@@ -303,12 +299,30 @@ export interface OpenOptions {
     | "57Hz"
     | "85Hz"
     | "99Hz";
-  chipRam?: "256k" | "512k" | "1M" | "2M";
-  slowRam?: "0" | "256k" | "512k";
-  fastRam?: "0" | "256k" | "512k" | "1M" | "2M" | "8M";
   blitterAccuracy?: 0 | 1 | 2;
   floppyDriveCount?: 1 | 2 | 3 | 4;
   driveSpeed?: -1 | 1 | 2 | 4 | 8;
+}
+
+/**
+ * User options input using absolute file paths
+ */
+export interface OpenOptions {
+  // Paths will need to be converted to URIs
+  programPath?: string;
+  kickstartRomPath?: string;
+  kickstartExtPath?: string;
+  /**
+   * CPU model. `68000`/`68010`/`68020` are supported by both backends.
+   * `68030`/`68040`/`68060` select a real CPU of that model on PUAE only
+   * (vAmiga has no MMU emulation and will throw). `fake_68030` selects
+   * vAmiga's pipeline-only 68030 approximation (no MMU) and is supported on
+   * vAmiga only (PUAE will throw).
+   */
+  cpuRevision?: "68000" | "68010" | "68020" | "68030" | "68040" | "68060" | "fake_68030";
+  chipRam?: "256k" | "512k" | "1M" | "2M";
+  slowRam?: "0" | "256k" | "512k";
+  fastRam?: "0" | "256k" | "512k" | "1M" | "2M" | "8M";
   /**
    * PUAE only: path to a WinUAE-format `.uae` config file, loaded as the
    * base configuration. The mapped hardware options above (`chipRam`,
@@ -317,6 +331,11 @@ export interface OpenOptions {
    */
   configFilePath?: string;
   emulatorOptions?: {
+    /**
+     * vAmiga only: hardware/display options with no PUAE equivalent.
+     * Ignored (with a warning) on the PUAE backend.
+     */
+    vamiga?: VamigaOptions;
     /**
      * PUAE only: raw `.uae` `key=value` overrides, applied with the highest
      * precedence (after `configFilePath` and the mapped hardware options
@@ -327,7 +346,12 @@ export interface OpenOptions {
 }
 
 // Option enums to call param values:
-const cpuRevision = { "68000": 0, "68010": 1, "68020": 2, fake_68030: 4 };
+const cpuRevision: Record<string, number> = {
+  "68000": 0,
+  "68010": 1,
+  "68020": 2,
+  fake_68030: 4,
+};
 const cpuSpeed = {
   "7MHz": 0,
   "14Hz": 2,
@@ -349,6 +373,9 @@ const fastRam = {
   "2M": 2048,
   "8M": 8192,
 };
+
+/** `OpenOptions.cpuRevision` values vAmiga can map to its `CPURev` enum. */
+const VAMIGA_CPU_REVISIONS = new Set(["68000", "68010", "68020", "fake_68030"]);
 
 /**
  * Subset of JSON params that can be passed to vAmiga in URL hash
@@ -384,7 +411,7 @@ interface CallParams {
   drive_speed?: number;
 }
 
-const defaultOptions: OpenOptions = {
+const defaultVamigaOptions: VamigaOptions = {
   showNavBar: false,
   enableMouse: true,
 };
@@ -412,9 +439,15 @@ export class VAmiga implements Emulator {
    * Opens the VAmiga emulator webview panel
    */
   public open(options?: OpenOptions): void {
-    const optionsWithDefaults = {
-      ...defaultOptions,
+    const optionsWithDefaults: OpenOptions = {
       ...options,
+      emulatorOptions: {
+        ...options?.emulatorOptions,
+        vamiga: {
+          ...defaultVamigaOptions,
+          ...options?.emulatorOptions?.vamiga,
+        },
+      },
     };
     if (!this.panel) {
       return this.initPanel(optionsWithDefaults);
@@ -1015,25 +1048,34 @@ export class VAmiga implements Emulator {
   }
 
   private optionsToCallParams(options: OpenOptions): CallParams {
+    if (options.cpuRevision && !VAMIGA_CPU_REVISIONS.has(options.cpuRevision)) {
+      throw new Error(
+        `vAmiga doesn't support a real ${options.cpuRevision} CPU — use ` +
+          `cpuRevision: "fake_68030" for an approximate 68030, or ` +
+          `emulatorBackend: "puae" for a real 68030+ CPU.`,
+      );
+    }
+    const vamiga = options.emulatorOptions?.vamiga;
     const params: CallParams = {
-      AROS: options.useArosRom,
-      navbar: options.showNavBar,
-      wide: options.wideScreen,
-      dark: options.darkMode,
-      mouse: options.enableMouse,
-      display: options.displayZoom,
-      gpu: options.useGpu,
-      agnus_revision: options.agnusRevision,
-      denise_revision: options.deniseRevision,
+      AROS: vamiga?.useArosRom,
+      navbar: vamiga?.showNavBar,
+      wide: vamiga?.wideScreen,
+      dark: vamiga?.darkMode,
+      mouse: vamiga?.enableMouse,
+      display: vamiga?.displayZoom,
+      gpu: vamiga?.useGpu,
+      agnus_revision: vamiga?.agnusRevision,
+      denise_revision: vamiga?.deniseRevision,
       cpu_revision: options.cpuRevision
         ? cpuRevision[options.cpuRevision]
         : undefined,
-      cpu_overclocking: options.cpuSpeed
-        ? cpuSpeed[options.cpuSpeed]
-        : undefined,
+      cpu_overclocking: vamiga?.cpuSpeed ? cpuSpeed[vamiga.cpuSpeed] : undefined,
       chip_ram: options.chipRam ? chipRam[options.chipRam] : undefined,
       slow_ram: options.slowRam ? slowRam[options.slowRam] : undefined,
       fast_ram: options.fastRam ? fastRam[options.fastRam] : undefined,
+      blitter_accuracy: vamiga?.blitterAccuracy,
+      floppy_drive_count: vamiga?.floppyDriveCount,
+      drive_speed: vamiga?.driveSpeed,
       url: options.programPath
         ? this.absolutePathToWebviewUri(options.programPath).toString()
         : undefined,

@@ -83,8 +83,7 @@ interface LaunchRequestArguments extends DebugProtocol.LaunchRequestArguments {
   emulatorOptions?: Exclude<OpenOptions, "programPath">;
   /**
    * Emulator backend to debug against. Defaults to "vamiga". The "puae"
-   * (PUAE/ami9000 wasm) backend currently requires `fastLoad: true` —
-   * non-fastLoad floppy-based loading isn't implemented for it yet.
+   * (PUAE/ami9000 wasm) backend ignores `emulatorOptions.vamiga`.
    */
   emulatorBackend?: "vamiga" | "puae";
 }
