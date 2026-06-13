@@ -1,8 +1,8 @@
 // Shared boot/render-loop logic for the PUAE wasm backend, used by both
 // index.html (the clean webview UI) and debug.html (manual test/debug UI).
 // Anything that touches the debug-only DOM (#debug, #debugG1, #debugG2 etc.)
-// lives in debug.html instead — main() only assumes #screen, #status and
-// #btnAudio exist.
+// lives in debug.html instead — main() only assumes #screen exists;
+// #status is optional (used for boot/fps diagnostics if present).
 
 import { setupRpcDispatcher, getCurrentStopMessage, WARM_UP_TICKS } from './puae_rpc.js';
 
@@ -67,10 +67,12 @@ export async function main(config = {}) {
   // during free-run — only set inside the VS Code webview, see below.
   let vscode;
 
+  // #status is optional — index.html (the panel view) omits it; debug.html
+  // keeps it for boot/fps diagnostics.
   const status = document.getElementById('status');
   function log(msg) {
     console.log(msg);
-    status.textContent = msg;
+    if (status) status.textContent = msg;
   }
 
   log('Initialising wasm module…');
@@ -117,8 +119,24 @@ export async function main(config = {}) {
   log(`Warming up (${WARM_UP_TICKS} frames)…`);
   for (let i = 0; i < WARM_UP_TICKS; i++) M._wasm_tick();
 
-  // -------- audio setup (requires user gesture) --------
+  // -------- audio setup --------
   let workletNode = null;
+  let audioCtx = null;
+
+  // Browsers' autoplay policy suspends new AudioContexts until a user
+  // gesture. Resume on the first click/keypress in the panel, and re-arm
+  // these listeners (via audioCtx.onstatechange, set in startAudio) if the
+  // context ever drops out of 'running' again (e.g. after the webview tab
+  // is hidden) — mirrors vAmiga_ui.js's add/remove_unlock_user_action.
+  const resumeAudio = () => audioCtx?.resume();
+  function addUnlockListeners() {
+    document.addEventListener('pointerdown', resumeAudio);
+    document.addEventListener('keydown', resumeAudio);
+  }
+  function removeUnlockListeners() {
+    document.removeEventListener('pointerdown', resumeAudio);
+    document.removeEventListener('keydown', resumeAudio);
+  }
 
   // PUAE always outputs at 44100 Hz; AudioContext may be at a different rate (e.g. 48000).
   // Resample each chunk with linear interpolation so the worklet's ring buffer
@@ -162,14 +180,23 @@ export async function main(config = {}) {
   }
 
   async function startAudio() {
-    // Discard any audio that built up before the user clicked — we don't want
-    // to hear a burst of old audio when the worklet starts.
+    // Discard any audio that built up before now — we don't want to hear a
+    // burst of old audio when the worklet starts.
     M._wasm_reset_audio_accum();
 
-    const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
     audioCtxRate = audioCtx.sampleRate;
     console.log('[audio] sampleRate=' + audioCtxRate + ' (PUAE=' + audioPuaeRate + ')' +
                 (audioCtxRate !== audioPuaeRate ? ' — resampling active' : ' — pass-through'));
+
+    // Re-arm (or clear) the unlock listeners whenever the context's running
+    // state changes — e.g. autoplay-suspended at creation, or re-suspended
+    // after the webview tab is hidden.
+    audioCtx.onstatechange = () => {
+      if (audioCtx.state === 'running') removeUnlockListeners();
+      else addUnlockListeners();
+    };
+    if (audioCtx.state !== 'running') addUnlockListeners();
     await audioCtx.audioWorklet.addModule(audioWorkletUrl);
     workletNode = new AudioWorkletNode(audioCtx, 'puae-audio-processor', {
       outputChannelCount: [2], numberOfInputs: 0, numberOfOutputs: 1
@@ -193,21 +220,6 @@ export async function main(config = {}) {
     emuFrames += 3;
     pushAccumToWorklet();
   }
-
-  document.getElementById('btnAudio').addEventListener('click', async () => {
-    const btn = document.getElementById('btnAudio');
-    btn.disabled = true;
-    btn.textContent = 'Audio starting…';
-    try {
-      await startAudio();
-      btn.textContent = 'Audio on';
-    } catch (e) {
-      btn.textContent = 'Audio failed: ' + e.message;
-      btn.disabled = false;
-      console.error(e);
-    }
-  });
-  document.getElementById('btnAudio').disabled = false;
   // -------------------------------------------------------
 
   if (onModuleReady) onModuleReady(M);
@@ -236,6 +248,11 @@ export async function main(config = {}) {
   let fpsTime   = 0;
   let fpsCnt    = 0;
   let imgData   = null; // cached ImageData — owns its own ArrayBuffer
+
+  // Set up the audio graph now — this doesn't itself need a user gesture.
+  // No "enable audio" button needed: the unlock listeners registered above
+  // (via audioCtx.onstatechange) resume playback on the first click/keypress.
+  startAudio().catch(e => console.error('[audio] init failed', e));
 
   function frame(ts) {
     if (startTs === null) { startTs = ts; fpsTime = ts; }
@@ -316,7 +333,7 @@ export async function main(config = {}) {
         const msWasm = ((tTickEnd - tTickStart) / toRun).toFixed(1);
         const msSet  = (tBlitStart - tSetStart ).toFixed(1);
         const msBlit = (tBlitEnd   - tBlitStart).toFixed(1);
-        status.textContent = `${fps} fps | wasm=${msWasm}ms set=${msSet}ms blit=${msBlit}ms`;
+        if (status) status.textContent = `${fps} fps | wasm=${msWasm}ms set=${msSet}ms blit=${msBlit}ms`;
         fpsCnt  = 0;
         fpsTime = ts;
       }

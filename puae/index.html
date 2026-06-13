@@ -4,19 +4,12 @@
 <meta charset="utf-8">
 <title>PUAE wasm debugger backend</title>
 <style>
-  body { background: #111; color: #eee; font-family: monospace; margin: 16px; }
-  /* The canvas bitmap is the emulator's native framebuffer size (720x574 for
-     PAL hires) — scale it to fit the webview's width while keeping the aspect
-     ratio, otherwise it overflows narrower panels and gets clipped by the
-     webview viewport instead of shrinking. */
-  canvas { display: block; image-rendering: pixelated; border: 1px solid #444; max-width: 100%; height: auto; }
-  #status { margin-top: 8px; font-size: 13px; }
+  body { margin: 0; padding: 0; }
+  #screen { display: block; max-width: 100%; }
 </style>
 </head>
 <body>
 <canvas id="screen" width="720" height="574"></canvas>
-<div id="status">Loading…</div>
-<button id="btnAudio" disabled>Enable Audio</button>
 
 <script src="puae.js"></script>
 <script type="module">
@@ -24,12 +17,11 @@ import { main } from './puae_app.js';
 
 main({
   wasmLocateFile: undefined,
-  romUrl: './kick34005.A500',
+  romUrl: '[ROMPATH]',
   extraConfigB64: '',
   audioWorkletUrl: './puae_audioprocessor.js',
 }).catch(e => {
   console.error(e);
-  document.getElementById('status').textContent = 'FATAL: ' + e.message;
 });
 </script>
 </body>

@@ -644,11 +644,12 @@ export class PuaeEmulator implements Emulator {
 
     // CSP: scripts from webview resource scheme, inline JS (incl. the page's
     // inline module), wasm-unsafe-eval for wasm execution, workers for
-    // AudioWorklet, connect for fetches.
+    // AudioWorklet, connect for fetches, inline <style> in the page head.
     const src = webview.cspSource;
     const csp = [
       `default-src 'none'`,
       `script-src ${src} 'unsafe-inline' 'wasm-unsafe-eval'`,
+      `style-src 'unsafe-inline'`,
       `worker-src ${src} blob:`,
       `connect-src ${src} data:`,
       `img-src data:`,
@@ -682,7 +683,7 @@ export class PuaeEmulator implements Emulator {
 
     // Patch ROM fetch path to a webview-accessible URI.
     // ROM is a symlink — use the already-resolved data URI.
-    html = html.replace("romUrl: './kick34005.A500',", `romUrl: '${romDataUri}',`);
+    html = html.replace("romUrl: '[ROMPATH]',", `romUrl: '${romDataUri}',`);
 
     // Inject the .uae config blob built from configFilePath/chipRam/slowRam/
     // fastRam/cpuRevision/emulatorOptions.puae (see buildExtraConfig).
