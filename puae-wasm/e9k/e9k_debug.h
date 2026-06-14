@@ -200,3 +200,19 @@ e9k_debug_set_debug_option(e9k_debug_option_t option, uint32_t argument, void *u
 // is now configurable (see OpenOptions.chipRam/configFilePath).
 uint32_t
 e9k_debug_get_chip_mem_size(void);
+
+// Enables/disables the CPU instruction trace ring buffer (see
+// e9k_debug_read_cpu_trace). Enabled by default, since nothing currently
+// calls this to turn logging on.
+void
+e9k_debug_enable_cpu_logging(int enabled);
+
+#define E9K_CPU_TRACE_CAP 256
+
+// Writes up to min(count, E9K_CPU_TRACE_CAP, <number logged>) of the most
+// recently retired instructions into `out` as interleaved (pc, sr) uint32
+// pairs (2 words per entry), most-recently-executed first. `cap` is the
+// capacity of `out` in uint32_t words (must be >= 2 * count to get `count`
+// entries). Returns the number of entries written.
+size_t
+e9k_debug_read_cpu_trace(uint32_t count, uint32_t *out, size_t cap);

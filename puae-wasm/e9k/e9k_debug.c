@@ -93,6 +93,16 @@ static int e9k_debug_catchbreakPending = 0;
 static int e9k_debug_checkpointEnabled = 0;
 static e9k_debug_checkpoint_t e9k_debug_checkpoints[E9K_CHECKPOINT_COUNT];
 
+// CPU instruction trace ring buffer (PC + SR per retired instruction),
+// modeled on WinUAE's debugger "H" command history[] and vAmiga/Moira's
+// Debugger::logBuffer. Enabled by default since enableCpuLogging() currently
+// has no caller.
+static int e9k_debug_cpuLoggingEnabled = 1;
+static uint32_t e9k_debug_cpuTracePc[E9K_CPU_TRACE_CAP];
+static uint16_t e9k_debug_cpuTraceSr[E9K_CPU_TRACE_CAP];
+static size_t e9k_debug_cpuTraceHead = 0; // next write index
+static size_t e9k_debug_cpuTraceCount = 0; // number of valid entries (<= CAP)
+
 static int e9k_debug_profilerEnabled = 0;
 
 // Minimal PC-sampling profiler used by e9k-debugger. The debugger resolves PCs to symbols/lines.
@@ -283,6 +293,50 @@ e9k_debug_profiler_instrHook(uint32_t pc24)
 	if ((e9k_debug_prof_tick % E9K_DEBUG_PROF_SAMPLE_DIV) == 0u) {
 		e9k_debug_profiler_samplePc(pc24);
 	}
+}
+
+static void
+e9k_debug_cpuTrace_instrHook(uint32_t pc24)
+{
+	if (!e9k_debug_cpuLoggingEnabled) {
+		return;
+	}
+	MakeSR();
+	e9k_debug_cpuTracePc[e9k_debug_cpuTraceHead] = pc24;
+	e9k_debug_cpuTraceSr[e9k_debug_cpuTraceHead] = regs.sr;
+	e9k_debug_cpuTraceHead = (e9k_debug_cpuTraceHead + 1) % E9K_CPU_TRACE_CAP;
+	if (e9k_debug_cpuTraceCount < E9K_CPU_TRACE_CAP) {
+		e9k_debug_cpuTraceCount++;
+	}
+}
+
+E9K_DEBUG_EXPORT void
+e9k_debug_enable_cpu_logging(int enabled)
+{
+	e9k_debug_cpuLoggingEnabled = enabled ? 1 : 0;
+}
+
+E9K_DEBUG_EXPORT size_t
+e9k_debug_read_cpu_trace(uint32_t count, uint32_t *out, size_t cap)
+{
+	if (!out || cap < 2) {
+		return 0;
+	}
+	size_t maxEntries = cap / 2;
+	if (count < maxEntries) {
+		maxEntries = count;
+	}
+	if (maxEntries > e9k_debug_cpuTraceCount) {
+		maxEntries = e9k_debug_cpuTraceCount;
+	}
+	for (size_t i = 0; i < maxEntries; ++i) {
+		// Index 0 = most recently logged entry, i.e. one before the
+		// (not-yet-overwritten) write head.
+		size_t idx = (e9k_debug_cpuTraceHead + E9K_CPU_TRACE_CAP - 1 - i) % E9K_CPU_TRACE_CAP;
+		out[i * 2] = e9k_debug_cpuTracePc[idx];
+		out[i * 2 + 1] = (uint32_t)e9k_debug_cpuTraceSr[idx];
+	}
+	return maxEntries;
 }
 
 void
@@ -1379,6 +1433,7 @@ e9k_debug_instructionHook(uaecptr pc, uae_u16 opcode)
 	uint32_t pc24 = e9k_debug_maskAddr(pc);
 
 	e9k_debug_profiler_instrHook(pc24);
+	e9k_debug_cpuTrace_instrHook(pc24);
 
 	if (e9k_debug_stepInstrAfter) {
 		e9k_debug_requestBreak();

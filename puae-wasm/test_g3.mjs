@@ -270,8 +270,27 @@ const copperDisasm = await request("disassembleCopper", { address: 0, count: 1 }
 check("disassembleCopper reports documented gap as error",
   typeof copperDisasm.error === "string" && copperDisasm.error.includes("Copper"), JSON.stringify(copperDisasm));
 
-const cpuTrace = await request("getCpuTrace");
-check("getCpuTrace returns []", Array.isArray(cpuTrace) && cpuTrace.length === 0, JSON.stringify(cpuTrace));
+const cpuTrace = await request("getCpuTrace", { count: 8 });
+check("getCpuTrace returns up to `count` recent instructions",
+  Array.isArray(cpuTrace) && cpuTrace.length === 8,
+  JSON.stringify(cpuTrace));
+check("getCpuTrace entries have pc/instruction/flags/length",
+  cpuTrace.every((item) =>
+    /^0x[0-9a-f]{6}$/.test(item.pc) &&
+    typeof item.instruction === "string" && item.instruction.length > 0 &&
+    /^[Tt]{2}[Ss][Mm]-[01]{3}---[XxNnZzVvCc]{5}$/.test(item.flags) &&
+    item.length > 0),
+  JSON.stringify(cpuTrace));
+
+send("enableCpuLogging", { enabled: false });
+send("stepInto");
+for (let i = 0; i < 4 && !M._wasm_is_paused(); i++) M._wasm_tick();
+const cpuTraceAfterDisable = await request("getCpuTrace", { count: 1 });
+check("enableCpuLogging(false) stops recording new instructions",
+  cpuTraceAfterDisable[0]?.pc === cpuTrace[0]?.pc,
+  JSON.stringify({ before: cpuTrace[0], after: cpuTraceAfterDisable[0] }));
+
+send("enableCpuLogging", { enabled: true });
 
 // stepBack/continueReverse now do real snapshot-restore work (see
 // test_reverse.mjs for thorough coverage) — by this point in the test,

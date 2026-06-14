@@ -22,6 +22,9 @@ const MEM_BUF_CAP = 4096;
 // fast RAM — so 20 history entries is ~30-200MB.
 const MAX_SNAPSHOT_HISTORY = 20;
 
+// Matches E9K_CPU_TRACE_CAP in e9k_debug.h.
+const E9K_CPU_TRACE_CAP = 256;
+
 const E9K_WATCH_OP_READ = 1 << 0;
 const E9K_WATCH_OP_WRITE = 1 << 1;
 const E9K_WATCH_OP_ADDR_COMPARE_MASK = 1 << 6;
@@ -560,6 +563,52 @@ export function setupRpcDispatcher(M, postMessage) {
     return { instructions };
   }
 
+  // 16-char status-register flag string, matching vAmiga/Moira's
+  // disassembleSR() format (vAmigaDebugAdapter.ts checks flags.includes("S")
+  // to detect supervisor mode for exception stack-frame handling).
+  function srFlags(sr) {
+    const bit = (n) => (sr & (1 << n)) !== 0;
+    const ipl = (sr >> 8) & 7;
+    return [
+      bit(15) ? "T" : "t",
+      bit(14) ? "T" : "t",
+      bit(13) ? "S" : "s",
+      bit(12) ? "M" : "m",
+      "-",
+      ipl & 4 ? "1" : "0",
+      ipl & 2 ? "1" : "0",
+      ipl & 1 ? "1" : "0",
+      "-",
+      "-",
+      "-",
+      bit(4) ? "X" : "x",
+      bit(3) ? "N" : "n",
+      bit(2) ? "Z" : "z",
+      bit(1) ? "V" : "v",
+      bit(0) ? "C" : "c",
+    ].join("");
+  }
+
+  function getCpuTrace(count) {
+    const maxCount = Math.min(Math.max(count >>> 0, 0), E9K_CPU_TRACE_CAP);
+    const n = M._wasm_read_cpu_trace(maxCount);
+    const bufPtr = M._wasm_get_cpu_trace_buf() >> 2;
+    const trace = [];
+    for (let i = 0; i < n; i++) {
+      const pc = M.HEAPU32[bufPtr + i * 2];
+      const sr = M.HEAPU32[bufPtr + i * 2 + 1];
+      const len = M._wasm_disassemble(pc);
+      const raw = M.UTF8ToString(M._wasm_get_disasm_buf());
+      trace.push({
+        pc: hex(pc, 6),
+        instruction: parseDisasmInstruction(raw, len),
+        flags: srFlags(sr),
+        length: Math.max(len, 0),
+      });
+    }
+    return trace;
+  }
+
   function setWatchpoint(address) {
     if (watchpoints.has(address)) return;
     // E9K_WATCH_OP_ADDR_COMPARE_MASK + addr_mask_operand=0xFFFFFFFF gives an
@@ -667,7 +716,7 @@ export function setupRpcDispatcher(M, postMessage) {
         M._wasm_remove_catchpoint(args.vector >>> 0);
         break;
       case "enableCpuLogging":
-        // Not implemented; getCpuTrace always returns [].
+        M._wasm_enable_cpu_logging(args.enabled ? 1 : 0);
         break;
       case "load":
         // Reuse the already-booted wasm module + webview for a new debug
@@ -743,7 +792,7 @@ export function setupRpcDispatcher(M, postMessage) {
         });
         break;
       case "getCpuTrace":
-        rpcRequest(() => []);
+        rpcRequest(() => getCpuTrace(args.count ?? 256));
         break;
       case "stepBack":
         // Restores the most recent snapshot captured before a run/stepInto/

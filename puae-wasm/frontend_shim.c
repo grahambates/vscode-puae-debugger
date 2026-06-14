@@ -536,6 +536,22 @@ int wasm_disassemble(uint32_t pc) {
 EMSCRIPTEN_KEEPALIVE
 const char *wasm_get_disasm_buf(void) { return g_disasm_buf; }
 
+// --- CPU instruction trace ---
+EMSCRIPTEN_KEEPALIVE
+void wasm_enable_cpu_logging(int enabled) { e9k_debug_enable_cpu_logging(enabled); }
+
+// Interleaved (pc, sr) uint32 pairs, most-recently-executed first.
+#define CPU_TRACE_BUF_CAP (E9K_CPU_TRACE_CAP * 2)
+static uint32_t g_cpu_trace_buf[CPU_TRACE_BUF_CAP];
+
+EMSCRIPTEN_KEEPALIVE
+int wasm_read_cpu_trace(uint32_t count) {
+    return (int)e9k_debug_read_cpu_trace(count, g_cpu_trace_buf, CPU_TRACE_BUF_CAP);
+}
+
+EMSCRIPTEN_KEEPALIVE
+uint32_t *wasm_get_cpu_trace_buf(void) { return g_cpu_trace_buf; }
+
 // --- Step variants ---
 // Each clears e9k_debug_is_paused(); caller must loop wasm_tick() until it
 // reports paused again, mirroring the breakpoint flow.

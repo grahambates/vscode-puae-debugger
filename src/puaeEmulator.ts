@@ -84,8 +84,9 @@ interface PendingRpc {
  *    export). Other write-only registers (sprite/bitplane/audio pointers,
  *    COP1LC/COP2LC, etc.) aren't catalogued yet (writes via
  *    `pokeCustom16/32` work).
- *  - `getCpuTrace()` always returns `[]`, and `enableCpuLogging()` is a
- *    no-op — instruction logging isn't implemented.
+ *  - `getCpuTrace()` returns up to 256 most-recently-executed instructions
+ *    (pc/instruction/flags/length) from an always-on ring buffer;
+ *    `enableCpuLogging(false)` pauses recording.
  *  - `stepBack()`/`continueReverse()` restore from an in-memory ring buffer
  *    of up to `MAX_SNAPSHOT_HISTORY` (puae_rpc.js) full-state snapshots
  *    (`retro_serialize`/`retro_unserialize`, the same mechanism RetroArch
@@ -336,14 +337,16 @@ export class PuaeEmulator implements Emulator {
   // --- CPU / registers ---
 
   /**
-   * Not implemented — the PUAE backend doesn't record an instruction trace.
+   * Enables/disables the CPU instruction trace ring buffer. Enabled by
+   * default, since nothing currently calls this to turn logging on.
    */
   public enableCpuLogging(enabled: boolean): void {
     this.sendCommand("enableCpuLogging", { enabled });
   }
 
   /**
-   * Always returns an empty array — see `enableCpuLogging`.
+   * Returns the most recently executed instructions (most recent first),
+   * up to `count` (capped at 256, the size of the trace ring buffer).
    */
   public async getCpuTrace(count = 256): Promise<CpuTraceItem[]> {
     return this.sendRpcCommand("getCpuTrace", { count });
