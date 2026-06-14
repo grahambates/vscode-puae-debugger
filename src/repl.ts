@@ -102,6 +102,10 @@ export const memoryAccessFunctions: UsageDocs = {
     `${ansi.func("disassembleCopper")}(${ansi.variable("addr")}[, ${ansi.variable("count")}])`,
     "Disassemble instructions with expandable view (default count: 1)",
   ],
+  trace: [
+    `${ansi.func("trace")}([${ansi.variable("count")}])`,
+    "Show recently executed instructions with expandable view, most recent first (default count: 256)",
+  ],
 };
 
 export const typeFunctions: UsageDocs = {
@@ -341,6 +345,7 @@ ${ansi.section("Examples:")}
   ${ansi.func("readBytes")}(${ansi.number("0x1000")}, ${ansi.number("16")}, ${ansi.number("8")}) - Read 16 bytes, 8 per line hex dump
   ${ansi.func("disassemble")}(${ansi.variable("pc")})     - Disassemble 1 instruction from current PC
   ${ansi.func("disassemble")}(${ansi.number("0x1000")}, ${ansi.number("5")}) - Disassemble 5 instructions from address
+  ${ansi.func("trace")}(${ansi.number("8")})              - Show the last 8 executed instructions
   ${ansi.variable("main")} + ${ansi.number("0x10")}        - Symbol address + offset
 `;
 

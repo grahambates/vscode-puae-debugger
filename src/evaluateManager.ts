@@ -15,6 +15,7 @@ import {
   u8,
 } from "./numbers";
 import { Emulator } from "./emulator";
+import { CpuTraceItem } from "./vAmiga";
 import { SourceMap } from "./sourceMap";
 import { VariablesManager } from "./variablesManager";
 import { DisassemblyManager } from "./disassemblyManager";
@@ -78,6 +79,17 @@ export function isDisassemblyValue(value: unknown): value is DisassemblyValue {
   );
 }
 
+export interface CpuTraceValue {
+  type: "cpuTrace";
+  items: CpuTraceItem[];
+}
+
+export function isCpuTraceValue(value: unknown): value is CpuTraceValue {
+  return (
+    typeof value === "object" && (value as CpuTraceValue).type === "cpuTrace"
+  );
+}
+
 // Validate argument count for each function
 const requiredArgs: Record<
   string,
@@ -113,6 +125,7 @@ const requiredArgs: Record<
     max: 2,
     usage: "disassembleCopper(address[, count])",
   },
+  trace: { min: 0, max: 1, usage: "trace([count])" },
 };
 
 const asyncFunctions = Object.keys(requiredArgs);
@@ -217,9 +230,11 @@ export class EvaluateManager {
         const result = await this.evaluateExpression(expression, numVars);
         if (
           typeof result === "object" &&
-          (result.type === "array" || result.type === "disassembly")
+          (result.type === "array" ||
+            result.type === "disassembly" ||
+            result.type === "cpuTrace")
         ) {
-          // Array or disassembly result - pass the object as the value for formatting
+          // Array, disassembly, or trace result - pass the object as the value for formatting
           return {
             value: result,
             type: EvaluateResultType.PARSED,
@@ -295,6 +310,8 @@ export class EvaluateManager {
         return this.handleDisassemblyResult(value);
       } else if (isMemoryArrayValue(value)) {
         return this.handleMemArrayResult(value);
+      } else if (isCpuTraceValue(value)) {
+        return this.handleCpuTraceResult(value);
       } else if (typeof value === "number") {
         // Show numeric result as hex and decimal
         result = formatNumber(value);
@@ -432,6 +449,32 @@ export class EvaluateManager {
     };
   }
 
+  private handleCpuTraceResult(
+    value: CpuTraceValue,
+  ): DebugProtocol.EvaluateResponse["body"] {
+    // Handle CPU instruction trace results (most recently executed first)
+    const items = value.items;
+    const mostRecent =
+      items.length > 0
+        ? `${items[0].pc}: ${items[0].instruction}`
+        : "no instructions";
+    const ellipsis = items.length > 1 ? "..." : "";
+
+    const result = `trace[${items.length}] = ${mostRecent}${ellipsis}`;
+
+    // Register with variables manager for handle management
+    const handle = this.variablesManager.createArrayHandle({
+      type: "cpuTrace",
+      data: value,
+    });
+
+    return {
+      result,
+      variablesReference: handle,
+      indexedVariables: items.length,
+    };
+  }
+
   /**
    * Evaluates complex expressions with async function support.
    *
@@ -445,7 +488,7 @@ export class EvaluateManager {
   private async evaluateExpression(
     expression: string,
     variables: Record<string, number>,
-  ): Promise<any | MemoryArrayValue | DisassemblyValue> {
+  ): Promise<any | MemoryArrayValue | DisassemblyValue | CpuTraceValue> {
     // Check if expression contains async functions
     const hasAsyncFunctions = asyncFunctions.some((fn) =>
       expression.includes(fn),
@@ -473,8 +516,13 @@ export class EvaluateManager {
       variables,
     );
 
-    // If this is an array or disassembly result and it's the whole expression, return it
-    if (isDisassemblyValue(callValue) || isMemoryArrayValue(callValue)) {
+    // If this is an array, disassembly, or trace result and it's the whole
+    // expression, return it
+    if (
+      isDisassemblyValue(callValue) ||
+      isMemoryArrayValue(callValue) ||
+      isCpuTraceValue(callValue)
+    ) {
       // Check if this function call is the entire expression
       if (
         innermostCall.start === 0 &&
@@ -482,7 +530,7 @@ export class EvaluateManager {
       ) {
         return callValue;
       } else {
-        // Array and disassembly functions can't be part of larger expressions
+        // Array, disassembly, and trace functions can't be part of larger expressions
         throw new Error(
           `Functions like ${innermostCall.func} cannot be used in complex expressions`,
         );
@@ -799,6 +847,22 @@ export class EvaluateManager {
           type: "disassembly",
           instructions,
           baseAddress,
+        };
+      }
+      case "trace": {
+        const count = args.length
+          ? await this.evaluateExpression(args[0], variables)
+          : 256;
+
+        if (typeof count !== "number") {
+          throw new Error("trace() argument must be a numeric expression");
+        }
+
+        const items = await this.vAmiga.getCpuTrace(count);
+
+        return {
+          type: "cpuTrace",
+          items,
         };
       }
       default:

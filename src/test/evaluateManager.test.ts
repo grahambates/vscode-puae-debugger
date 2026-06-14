@@ -308,6 +308,59 @@ describe("EvaluateManager - Comprehensive Tests", () => {
     });
   });
 
+  describe("CPU Trace Function", () => {
+    const mockTrace = [
+      { pc: "0x000408", instruction: "move.l #0,d0", flags: "TtSsM-000---XnZvc", length: 6 },
+      { pc: "0x000402", instruction: "bra.s $408", flags: "TtSsM-000---XnZvc", length: 2 },
+    ];
+
+    it("should default to 256 entries when called with no arguments", async () => {
+      mockVAmiga.getCpuTrace.resolves(mockTrace);
+      mockVariablesManager.getFlatVariables.resolves({});
+
+      const result = await evaluateManager.evaluate("trace()");
+
+      assert.ok(mockVAmiga.getCpuTrace.calledWith(256));
+      assert.strictEqual(result.type, EvaluateResultType.PARSED);
+      assert.deepStrictEqual((result.value as { items: unknown }).items, mockTrace);
+    });
+
+    it("should pass an explicit count through to getCpuTrace", async () => {
+      mockVAmiga.getCpuTrace.resolves(mockTrace);
+      mockVariablesManager.getFlatVariables.resolves({});
+
+      await evaluateManager.evaluate("trace(8)");
+
+      assert.ok(mockVAmiga.getCpuTrace.calledWith(8));
+    });
+
+    it("should format trace results and register a variables handle", async () => {
+      mockVAmiga.getCpuTrace.resolves(mockTrace);
+      mockVariablesManager.getFlatVariables.resolves({});
+      mockVariablesManager.createArrayHandle.returns(42);
+
+      const result = await evaluateManager.evaluateFormatted({
+        expression: "trace()",
+      });
+
+      assert.strictEqual(result.result, "trace[2] = 0x000408: move.l #0,d0...");
+      assert.strictEqual(result.variablesReference, 42);
+      assert.strictEqual(result.indexedVariables, 2);
+      assert.ok(
+        mockVariablesManager.createArrayHandle.calledWith(
+          sinon.match({ type: "cpuTrace" }),
+        ),
+      );
+    });
+
+    it("should not allow trace() inside a larger expression", async () => {
+      mockVAmiga.getCpuTrace.resolves(mockTrace);
+      mockVariablesManager.getFlatVariables.resolves({});
+
+      await assert.rejects(evaluateManager.evaluate("trace() + 1"));
+    });
+  });
+
   describe("Type Conversion Functions", () => {
     it("should support u32 function", async () => {
       mockVariablesManager.getFlatVariables.resolves({ val: -1 });

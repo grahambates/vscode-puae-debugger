@@ -1242,6 +1242,27 @@ describe("VariablesManager - Comprehensive Tests", () => {
       const refId = variablesManager.getVariableReference(registerRef);
       assert.strictEqual(refId, "registers");
     });
+
+    it("should expand cpuTrace array handles into readonly variables", async () => {
+      const handle = variablesManager.createArrayHandle({
+        type: "cpuTrace",
+        data: {
+          type: "cpuTrace",
+          items: [
+            { pc: "0x000408", instruction: "move.l #0,d0", flags: "TtSsM-000---XnZvc", length: 6 },
+            { pc: "0x000402", instruction: "bra.s $408", flags: "TtSsM-000---XnZvc", length: 2 },
+          ],
+        },
+      });
+
+      const variables = await variablesManager.getVariables(handle);
+
+      assert.strictEqual(variables.length, 2);
+      assert.strictEqual(variables[0].name, "0x000408");
+      assert.strictEqual(variables[0].value, "move.l #0,d0  [TtSsM-000---XnZvc]");
+      assert.strictEqual(variables[0].memoryReference, "0x000408");
+      assert.deepStrictEqual(variables[0].presentationHint, { attributes: ["readOnly"] });
+    });
   });
 
   describe("Edge Cases and Error Handling", () => {

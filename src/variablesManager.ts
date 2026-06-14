@@ -1,5 +1,5 @@
 import { DebugProtocol } from "@vscode/debugprotocol";
-import { CpuInfo } from "./vAmiga";
+import { CpuInfo, CpuTraceItem } from "./vAmiga";
 import { Emulator } from "./emulator";
 import { SourceMap, Location, LocalLocation, TypeDescriptor, FieldDescriptor } from "./sourceMap";
 import { Handles, Scope } from "@vscode/debugadapter";
@@ -17,7 +17,7 @@ import {
   formatNumber,
 } from "./numbers";
 import * as registerParsers from "./amigaRegisterParsers";
-import { DisassemblyValue, MemoryArrayValue } from "./evaluateManager";
+import { CpuTraceValue, DisassemblyValue, MemoryArrayValue } from "./evaluateManager";
 
 /**
  * Manages variable inspection and scoping for the debug adapter.
@@ -31,7 +31,7 @@ import { DisassemblyValue, MemoryArrayValue } from "./evaluateManager";
  */
 // Type for array values from evaluate manager
 export interface ArrayValue {
-  type: "memArray" | "disassembly";
+  type: "memArray" | "disassembly" | "cpuTrace";
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   data: any;
 }
@@ -675,6 +675,8 @@ export class VariablesManager {
       return this.getDisassemblyVariables(arrayValue.data);
     } else if (arrayValue.type === "memArray") {
       return this.getMemArrayVariables(arrayValue.data);
+    } else if (arrayValue.type === "cpuTrace") {
+      return this.getCpuTraceVariables(arrayValue.data);
     }
     return [];
   }
@@ -718,6 +720,18 @@ export class VariablesManager {
     }
 
     return variables;
+  }
+
+  private getCpuTraceVariables(
+    arrayData: CpuTraceValue,
+  ): DebugProtocol.Variable[] {
+    return arrayData.items.map((item: CpuTraceItem) => ({
+      name: item.pc,
+      value: `${item.instruction}  [${item.flags}]`,
+      memoryReference: item.pc,
+      variablesReference: 0,
+      presentationHint: { attributes: ["readOnly"] },
+    }));
   }
 
   private getMemArrayVariables(
