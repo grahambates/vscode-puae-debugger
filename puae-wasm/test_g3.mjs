@@ -273,11 +273,15 @@ check("disassembleCopper reports documented gap as error",
 const cpuTrace = await request("getCpuTrace");
 check("getCpuTrace returns []", Array.isArray(cpuTrace) && cpuTrace.length === 0, JSON.stringify(cpuTrace));
 
+// stepBack/continueReverse now do real snapshot-restore work (see
+// test_reverse.mjs for thorough coverage) — by this point in the test,
+// run/stepInto/eof/eol have all pushed snapshots, so history is non-empty
+// and both calls succeed.
 const stepBack = await request("stepBack");
-check("stepBack returns false", stepBack === false, JSON.stringify(stepBack));
+check("stepBack returns true", stepBack === true, JSON.stringify(stepBack));
 
 const continueReverse = await request("continueReverse");
-check("continueReverse returns false", continueReverse === false, JSON.stringify(continueReverse));
+check("continueReverse returns true", continueReverse === true, JSON.stringify(continueReverse));
 
 // --- 14. stepInto ---
 send("stepInto");

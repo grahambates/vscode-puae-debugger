@@ -15,6 +15,13 @@
 // clamps to this per call, so larger reads are chunked below.
 const MEM_BUF_CAP = 4096;
 
+// Max number of full-state snapshots retained for stepBack/continueReverse
+// (see captureSnapshot/restoreSnapshot below). Snapshot size is roughly
+// chipmem + bogomem + fastmem + z3fastmem + ~128KB overhead, e.g. ~1.6MB for
+// a default A500-like config up to ~10MB for an A1200-like config with 8MB
+// fast RAM — so 20 history entries is ~30-200MB.
+const MAX_SNAPSHOT_HISTORY = 20;
+
 const E9K_WATCH_OP_READ = 1 << 0;
 const E9K_WATCH_OP_WRITE = 1 << 1;
 const E9K_WATCH_OP_ADDR_COMPARE_MASK = 1 << 6;
@@ -61,6 +68,35 @@ function readRegs(M) {
   const n = M._wasm_read_regs();
   const ptr = M._wasm_get_reg_buf();
   return new Uint32Array(M.HEAPU32.buffer, ptr, n);
+}
+
+// Captures/restores full emulator state via the standard libretro
+// retro_serialize/retro_unserialize API (wasm_serialize/wasm_unserialize) —
+// the same mechanism RetroArch uses for its "rewind" feature. Used by
+// stepBack/continueReverse below.
+function captureSnapshot(M) {
+  const size = M._wasm_serialize_size();
+  const ptr = M._malloc(size);
+  try {
+    if (!M._wasm_serialize(ptr, size)) {
+      throw new Error("wasm_serialize failed");
+    }
+    return new Uint8Array(M.HEAPU8.buffer, ptr, size).slice();
+  } finally {
+    M._free(ptr);
+  }
+}
+
+function restoreSnapshot(M, bytes) {
+  const ptr = M._malloc(bytes.length);
+  try {
+    M.HEAPU8.set(bytes, ptr);
+    if (!M._wasm_unserialize(ptr, bytes.length)) {
+      throw new Error("wasm_unserialize failed");
+    }
+  } finally {
+    M._free(ptr);
+  }
 }
 
 // Port of vAmiga_ui.js's tryExec (lines ~1936-1971), minus the fastLoad/
@@ -162,6 +198,23 @@ export function getCurrentStopMessage(M) {
 export function setupRpcDispatcher(M, postMessage) {
   // Watchpoint address -> e9k_debug watchpoint slot index, for removeWatchpoint.
   const watchpoints = new Map();
+
+  // Ring buffer of full-state snapshots, oldest first, for stepBack/
+  // continueReverse (see captureSnapshot/restoreSnapshot above).
+  const snapshotHistory = [];
+
+  // Mirrors the set of addresses with an active breakpoint, populated by
+  // setBreakpoint/removeBreakpoint below. Used by continueReverse to decide
+  // where to stop while walking back through snapshotHistory.
+  const breakpointAddrs = new Set();
+
+  // Captures the current state onto snapshotHistory, ready for stepBack/
+  // continueReverse to restore. Called before any command that advances
+  // execution (run, stepInto, eof, eol).
+  function pushSnapshot() {
+    snapshotHistory.push(captureSnapshot(M));
+    if (snapshotHistory.length > MAX_SNAPSHOT_HISTORY) snapshotHistory.shift();
+  }
 
   function getCpuInfo() {
     const n = M._wasm_read_regs();
@@ -553,6 +606,7 @@ export function setupRpcDispatcher(M, postMessage) {
         postMessage({ type: "emulator-state", state: "paused" });
         break;
       case "run":
+        pushSnapshot();
         M._wasm_resume();
         // Mirrors vAmiga_ui.js's continue path: tells the DAP adapter the
         // emulator is running again so it can send a ContinuedEvent.
@@ -561,6 +615,7 @@ export function setupRpcDispatcher(M, postMessage) {
       case "stepInto": {
         // Mirrors index.html's Stage G1 "Step Instr" button: single-step
         // then tick until paused (or give up after a few ticks).
+        pushSnapshot();
         M._wasm_step_instr();
         const MAX_TICKS = 4;
         for (let i = 0; i < MAX_TICKS; i++) {
@@ -574,10 +629,12 @@ export function setupRpcDispatcher(M, postMessage) {
       }
       case "eof":
         // wasm_eof() registers a one-shot vblank callback and resumes.
+        pushSnapshot();
         M._wasm_eof();
         break;
       case "eol":
         // wasm_eol() registers a one-shot hblank (per-scanline) callback and resumes.
+        pushSnapshot();
         M._wasm_eol();
         break;
       case "setBreakpoint":
@@ -585,9 +642,11 @@ export function setupRpcDispatcher(M, postMessage) {
           console.warn("[puae_rpc] setBreakpoint: ignore counts not supported, breakpoint will fire every time");
         }
         M._wasm_add_breakpoint(args.address >>> 0);
+        breakpointAddrs.add(args.address >>> 0);
         break;
       case "removeBreakpoint":
         M._wasm_remove_breakpoint(args.address >>> 0);
+        breakpointAddrs.delete(args.address >>> 0);
         break;
       case "setWatchpoint":
         if (args.ignores) {
@@ -687,8 +746,28 @@ export function setupRpcDispatcher(M, postMessage) {
         rpcRequest(() => []);
         break;
       case "stepBack":
+        // Restores the most recent snapshot captured before a run/stepInto/
+        // eof/eol, giving exact instruction-level step-back for anything
+        // reached via stepping.
+        rpcRequest(() => {
+          if (snapshotHistory.length === 0) return false;
+          restoreSnapshot(M, snapshotHistory.pop());
+          return true;
+        });
+        break;
       case "continueReverse":
-        rpcRequest(() => false);
+        // Walks back through snapshotHistory, restoring each in turn, until
+        // one whose PC is at a breakpoint, or history is exhausted (in which
+        // case the oldest snapshot is left restored — "start of history").
+        rpcRequest(() => {
+          if (snapshotHistory.length === 0) return false;
+          while (snapshotHistory.length > 0) {
+            restoreSnapshot(M, snapshotHistory.pop());
+            const regs = readRegs(M);
+            if (breakpointAddrs.has(regs[17] >>> 0)) break;
+          }
+          return true;
+        });
         break;
       default:
         console.warn(`[puae_rpc] unhandled command: ${message.command}`);

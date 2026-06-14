@@ -6866,6 +6866,13 @@ void m68k_go (int may_quit)
 		if (restored) {
 			restored = 0;
 			savestate_restore_final();
+#ifdef __LIBRETRO__
+			// wasm_unserialize: stop the upcoming run_func() call below from
+			// executing any instructions, so retro_unserialize() leaves the
+			// CPU exactly where the snapshot was taken (see
+			// e9k_debug_request_break_before_next_instr).
+			e9k_debug_request_break_before_next_instr();
+#endif
 		}
 #endif
 

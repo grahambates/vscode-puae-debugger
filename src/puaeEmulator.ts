@@ -86,8 +86,14 @@ interface PendingRpc {
  *    `pokeCustom16/32` work).
  *  - `getCpuTrace()` always returns `[]`, and `enableCpuLogging()` is a
  *    no-op — instruction logging isn't implemented.
- *  - `stepBack()`/`continueReverse()` always resolve `false` (no execution
- *    history is recorded).
+ *  - `stepBack()`/`continueReverse()` restore from an in-memory ring buffer
+ *    of up to `MAX_SNAPSHOT_HISTORY` (puae_rpc.js) full-state snapshots
+ *    (`retro_serialize`/`retro_unserialize`, the same mechanism RetroArch
+ *    uses for "rewind"), captured before each run/stepInto/eof/eol. Once
+ *    that history is exhausted, `stepBack()` resolves `false` and
+ *    `continueReverse()` lands at the oldest retained snapshot. Stepping
+ *    back through a long free-running `continue` to an arbitrary
+ *    instruction (not just the pre-`continue` state) isn't supported.
  *  - Breakpoint/watchpoint `ignores` counts are not supported; a non-zero
  *    count is logged as a warning and otherwise ignored.
  *
@@ -270,19 +276,25 @@ export class PuaeEmulator implements Emulator {
   }
 
   /**
-   * No execution history is recorded by the PUAE backend, so there is
-   * nothing to step back to.
+   * Restores the most recently captured full-state snapshot (taken before
+   * each run/stepInto/eof/eol), giving exact instruction-level step-back.
+   * Returns `false` once the bounded snapshot history is exhausted.
    */
   public async stepBack(): Promise<boolean> {
-    return false;
+    this.invalidateCache();
+    const res = await this.sendRpcCommand("stepBack");
+    return !!res;
   }
 
   /**
-   * No execution history is recorded by the PUAE backend, so there is
-   * nothing to reverse-continue to.
+   * Walks back through the snapshot history, restoring each in turn, until
+   * one whose PC is at a breakpoint, or history is exhausted (lands at the
+   * oldest retained snapshot).
    */
   public async continueReverse(): Promise<boolean> {
-    return false;
+    this.invalidateCache();
+    const res = await this.sendRpcCommand("continueReverse");
+    return !!res;
   }
 
   public eof(): void {

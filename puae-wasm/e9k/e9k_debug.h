@@ -27,6 +27,15 @@ e9k_debug_is_paused(void);
 void
 e9k_debug_step_instr(void);
 
+// Arms the same one-shot mechanism as e9k_debug_step_instr's "after" flag:
+// the very next instructionHook call pauses (via requestBreak) *before*
+// executing that instruction, rather than after. Used by m68k_go's
+// save-state restore path (wasm_unserialize) to stop the CPU from running
+// any instructions immediately after a restore completes, giving an exact,
+// zero-drift restore.
+void
+e9k_debug_request_break_before_next_instr(void);
+
 void
 e9k_debug_step_line(void);
 

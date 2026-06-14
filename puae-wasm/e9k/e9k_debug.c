@@ -539,6 +539,15 @@ e9k_debug_pause(void)
 }
 
 E9K_DEBUG_EXPORT void
+e9k_debug_request_break_before_next_instr(void)
+{
+	// Reuses step-instr's "after" flag: the next instructionHook call requests
+	// a break and returns 1 *before* its instruction executes (see the
+	// e9k_debug_stepInstrAfter check at the top of e9k_debug_instructionHook).
+	e9k_debug_stepInstrAfter = 1;
+}
+
+E9K_DEBUG_EXPORT void
 e9k_debug_resume(void)
 {
 	e9k_debug_paused = 0;

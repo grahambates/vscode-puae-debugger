@@ -680,6 +680,19 @@ uint32_t *wasm_get_catchbreak_buf(void) { return (uint32_t *)&g_catchbreak_buf; 
 EMSCRIPTEN_KEEPALIVE
 uint32_t wasm_get_chip_mem_size(void) { return e9k_debug_get_chip_mem_size(); }
 
+// --- Save state snapshots (reverse stepping) ---
+// Thin wrappers around the standard libretro save-state API, used by the
+// frontend to capture/restore full emulator state for step-back support.
+
+EMSCRIPTEN_KEEPALIVE
+size_t wasm_serialize_size(void) { return retro_serialize_size(); }
+
+EMSCRIPTEN_KEEPALIVE
+int wasm_serialize(void *buf, size_t size) { return retro_serialize(buf, size) ? 1 : 0; }
+
+EMSCRIPTEN_KEEPALIVE
+int wasm_unserialize(const void *buf, size_t size) { return retro_unserialize(buf, size) ? 1 : 0; }
+
 int main(void) {
     EM_ASM({ console.log('[shim] module loaded, call _wasm_boot() to start'); });
     return 0;
