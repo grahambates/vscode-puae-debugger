@@ -152,6 +152,7 @@ export async function main(config = {}) {
   // -------- audio setup --------
   let workletNode = null;
   let audioCtx = null;
+  let gain = null; // hoisted so the speed control can mute audio when speedFactor !== 1
 
   // Browsers' autoplay policy suspends new AudioContexts until a user
   // gesture. Resume on the first click/keypress in the panel, and re-arm
@@ -231,8 +232,8 @@ export async function main(config = {}) {
     workletNode = new AudioWorkletNode(audioCtx, 'puae-audio-processor', {
       outputChannelCount: [2], numberOfInputs: 0, numberOfOutputs: 1
     });
-    const gain = audioCtx.createGain();
-    gain.gain.value = 0.5;
+    gain = audioCtx.createGain();
+    gain.gain.value = speedFactor === 1 ? 0.5 : 0;
     workletNode.connect(gain);
     gain.connect(audioCtx.destination);
 
@@ -274,7 +275,6 @@ export async function main(config = {}) {
   // fires at the right wall-clock time regardless of the display refresh rate.
   let emuFrames = 0;  // total emulation frames run so far
   let lastCheckpointFrame = 0; // emuFrames at the last periodic rpc.pushSnapshot()
-  let startTs   = null;
   let frames    = 0;
   let fpsTime   = 0;
   let fpsCnt    = 0;
@@ -295,16 +295,38 @@ export async function main(config = {}) {
   let attached  = !programB64;
   let allocMemAddr = 0;
 
+  // Playback speed control (#speed dropdown, optional — debug.html omits it).
+  // 1 = normal (100%) speed; values < 1 slow emulated time down relative to
+  // wall-clock time, for slow-motion debugging.
+  let speedFactor = 1;
+  let emuClockMs  = 0;    // accumulated emulated time, scaled by speedFactor
+  let lastTs      = null;
+  const speedSelect = document.getElementById('speed');
+  if (speedSelect) {
+    speedFactor = parseFloat(speedSelect.value) || 1;
+    speedSelect.addEventListener('change', () => {
+      speedFactor = parseFloat(speedSelect.value) || 1;
+      // Audio can't play correctly at non-1x speed (pitch/rate would need to
+      // change too), so just mute it while slowed down.
+      if (gain) gain.gain.value = speedFactor === 1 ? 0.5 : 0;
+    });
+  }
+
   // Set up the audio graph now — this doesn't itself need a user gesture.
   // No "enable audio" button needed: the unlock listeners registered above
   // (via audioCtx.onstatechange) resume playback on the first click/keypress.
   startAudio().catch(e => console.error('[audio] init failed', e));
 
   function frame(ts) {
-    if (startTs === null) { startTs = ts; fpsTime = ts; }
+    if (lastTs === null) { lastTs = ts; fpsTime = ts; }
 
-    // How many PAL frames should have elapsed since we started?
-    const dueFrames = Math.floor((ts - startTs) * PAL_FPS / 1000);
+    // Accumulate emulated time scaled by speedFactor, so changing speed
+    // mid-session doesn't cause a discontinuous jump in dueFrames.
+    emuClockMs += (ts - lastTs) * speedFactor;
+    lastTs = ts;
+
+    // How many PAL frames should have elapsed (in emulated time) so far?
+    const dueFrames = Math.floor(emuClockMs * PAL_FPS / 1000);
     const wasPaused = M._wasm_is_paused();
     const fbFrameCount = M._wasm_get_frame_count();
     const fbDirty = fbFrameCount !== lastFbFrameCount;

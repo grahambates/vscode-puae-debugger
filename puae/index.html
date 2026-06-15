@@ -6,10 +6,30 @@
 <style>
   body { margin: 0; padding: 0; }
   #screen { display: block; max-width: 100%; }
+  #controls {
+    padding: 4px 6px;
+    font-family: var(--vscode-font-family, sans-serif);
+    font-size: var(--vscode-font-size, 12px);
+    color: var(--vscode-foreground);
+  }
+  #controls select {
+    background: var(--vscode-dropdown-background);
+    color: var(--vscode-dropdown-foreground);
+    border: 1px solid var(--vscode-dropdown-border, transparent);
+  }
 </style>
 </head>
 <body>
 <canvas id="screen" width="720" height="574"></canvas>
+<div id="controls">
+  <label for="speed">Speed:</label>
+  <select id="speed">
+    <option value="1" selected>100%</option>
+    <option value="0.5">50%</option>
+    <option value="0.25">25%</option>
+    <option value="0.1">10%</option>
+  </select>
+</div>
 <div id="status">Loading…</div>
 
 <script src="puae.js"></script>
