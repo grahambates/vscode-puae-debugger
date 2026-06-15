@@ -59,17 +59,8 @@ GRAFT_FLAGS=(
     -I "$E9K"
 )
 
-echo "  Compiling e9k/newcpu.c…"
-"$EMCC" "${GRAFT_FLAGS[@]}" \
-    -c -o newcpu_ami.o "$E9K/newcpu.c"
-
 echo "  Compiling e9k/e9k_debug.c…"
-# e9k_compat.h forward-declares blitter_setDestinationWriteEnabled and
-# drawing_setSpriteEnabled, which exist only in ami9000's blitter/drawing sources.
-# Stubbed out in e9k_stubs.c (sprite/bitplane debug toggles, not needed for
-# basic breakpoints).
 "$EMCC" "${GRAFT_FLAGS[@]}" \
-    -include "$SCRIPT_DIR/e9k_compat.h" \
     -c -o e9k_debug.o "$E9K/e9k_debug.c"
 
 echo "  Compiling e9k_stubs.c…"
@@ -140,18 +131,17 @@ done
 echo "=== Stage 3: assemble libami9000.a ==="
 
 cp libpuae.a libami9000.a
-# Replace libretro-uae's stock newcpu.o with the instrumented version (which
-# calls e9k_debug_instructionHook at each instruction), then add the debug
-# layer and stubs.
-"$EMAR" d libami9000.a newcpu.o
-"$EMAR" r libami9000.a newcpu_ami.o e9k_debug.o e9k_stubs.o "${GRAFT_DEPS_OBJS[@]}"
+# libpuae.a's newcpu.o already calls e9k_debug_instructionHook at each
+# instruction (the hooks live directly in the libretro-uae submodule); just
+# add the debug layer, stubs, and grafted deps.
+"$EMAR" r libami9000.a e9k_debug.o e9k_stubs.o "${GRAFT_DEPS_OBJS[@]}"
 echo "  → $SCRIPT_DIR/libami9000.a"
 
 echo "=== Stage 4: final emcc link → puae.js ==="
 
 mkdir -p "$OUT_DIR"
 
-EXPORTED_FUNCTIONS='["_main","_wasm_boot","_wasm_tick","_wasm_get_frame_count","_wasm_get_audio_frames_total","_wasm_get_fb_width","_wasm_get_fb_height","_wasm_get_fb_data","_wasm_get_fb_rgba","_wasm_get_fb_pitch","_wasm_get_base_width","_wasm_get_base_height","_wasm_get_sound_buffer_address","_wasm_copy_into_sound_buffer","_wasm_set_sample_rate","_wasm_get_audio_accum_L","_wasm_get_audio_accum_R","_wasm_get_audio_accum_count","_wasm_reset_audio_accum","_wasm_is_paused","_wasm_read_regs","_wasm_get_reg_buf","_wasm_add_breakpoint","_wasm_remove_breakpoint","_wasm_resume","_wasm_pause","_wasm_set_reg","_wasm_reset","_wasm_eof","_wasm_eol","_wasm_add_temp_breakpoint","_wasm_remove_temp_breakpoint","_wasm_read_memory","_wasm_get_mem_buf","_wasm_write_memory","_wasm_write_memory_buf","_wasm_poke_memory","_wasm_peek_memory","_wasm_read_memory_map","_wasm_get_memory_map_buf","_wasm_read_display_regs","_wasm_get_display_regs_buf","_wasm_read_custom_regs_raw","_wasm_get_custom_regs_raw_buf","_wasm_read_audio_regs","_wasm_get_audio_regs_buf","_wasm_disassemble","_wasm_get_disasm_buf","_wasm_enable_cpu_logging","_wasm_read_cpu_trace","_wasm_get_cpu_trace_buf","_wasm_step_instr","_wasm_step_line","_wasm_step_next","_wasm_step_out","_wasm_read_callstack","_wasm_get_callstack_buf","_wasm_read_cycle_count","_wasm_get_cycle_count_lo","_wasm_get_cycle_count_hi","_wasm_read_instr_count","_wasm_get_instr_count_lo","_wasm_get_instr_count_hi","_wasm_write_instr_count","_wasm_replay_instructions","_wasm_replay_instructions_video","_wasm_replay_scan","_wasm_replay_scan_frame","_wasm_get_replay_scan_match_lo","_wasm_get_replay_scan_match_hi","_wasm_add_watchpoint","_wasm_remove_watchpoint","_wasm_read_watchpoints","_wasm_get_watchpoint_buf","_wasm_read_watchpoint_enabled_mask","_wasm_get_watchpoint_enabled_mask_lo","_wasm_get_watchpoint_enabled_mask_hi","_wasm_set_watchpoint_enabled_mask","_wasm_consume_watchbreak","_wasm_get_watchbreak_buf","_wasm_add_protect","_wasm_remove_protect","_wasm_read_protects","_wasm_get_protect_buf","_wasm_read_protect_enabled_mask","_wasm_get_protect_enabled_mask_lo","_wasm_get_protect_enabled_mask_hi","_wasm_set_protect_enabled_mask","_wasm_set_catchpoint","_wasm_remove_catchpoint","_wasm_consume_catchbreak","_wasm_get_catchbreak_buf","_wasm_get_chip_mem_size","_wasm_serialize_size","_wasm_serialize","_wasm_unserialize","_malloc","_free"]'
+EXPORTED_FUNCTIONS='["_main","_wasm_boot","_wasm_tick","_wasm_get_frame_count","_wasm_get_audio_frames_total","_wasm_get_fb_width","_wasm_get_fb_height","_wasm_get_fb_data","_wasm_get_fb_rgba","_wasm_get_fb_pitch","_wasm_get_base_width","_wasm_get_base_height","_wasm_get_sound_buffer_address","_wasm_copy_into_sound_buffer","_wasm_set_sample_rate","_wasm_get_audio_accum_L","_wasm_get_audio_accum_R","_wasm_get_audio_accum_count","_wasm_reset_audio_accum","_wasm_is_paused","_wasm_read_regs","_wasm_get_reg_buf","_wasm_add_breakpoint","_wasm_remove_breakpoint","_wasm_resume","_wasm_pause","_wasm_set_reg","_wasm_reset","_wasm_eof","_wasm_eol","_wasm_add_temp_breakpoint","_wasm_remove_temp_breakpoint","_wasm_read_memory","_wasm_get_mem_buf","_wasm_write_memory","_wasm_write_memory_buf","_wasm_poke_memory","_wasm_peek_memory","_wasm_read_memory_map","_wasm_get_memory_map_buf","_wasm_read_display_regs","_wasm_get_display_regs_buf","_wasm_read_custom_regs_raw","_wasm_get_custom_regs_raw_buf","_wasm_read_audio_regs","_wasm_get_audio_regs_buf","_wasm_disassemble","_wasm_get_disasm_buf","_wasm_enable_cpu_logging","_wasm_read_cpu_trace","_wasm_get_cpu_trace_buf","_wasm_step_instr","_wasm_step_line","_wasm_step_next","_wasm_step_out","_wasm_read_callstack","_wasm_get_callstack_buf","_wasm_read_cycle_count","_wasm_get_cycle_count_lo","_wasm_get_cycle_count_hi","_wasm_read_instr_count","_wasm_get_instr_count_lo","_wasm_get_instr_count_hi","_wasm_write_instr_count","_wasm_replay_instructions","_wasm_replay_instructions_video","_wasm_replay_scan","_wasm_replay_scan_frame","_wasm_get_replay_scan_match_lo","_wasm_get_replay_scan_match_hi","_wasm_add_watchpoint","_wasm_remove_watchpoint","_wasm_read_watchpoints","_wasm_get_watchpoint_buf","_wasm_read_watchpoint_enabled_mask","_wasm_get_watchpoint_enabled_mask_lo","_wasm_get_watchpoint_enabled_mask_hi","_wasm_set_watchpoint_enabled_mask","_wasm_consume_watchbreak","_wasm_get_watchbreak_buf","_wasm_add_protect","_wasm_remove_protect","_wasm_read_protects","_wasm_get_protect_buf","_wasm_read_protect_enabled_mask","_wasm_get_protect_enabled_mask_lo","_wasm_get_protect_enabled_mask_hi","_wasm_set_protect_enabled_mask","_wasm_set_catchpoint","_wasm_remove_catchpoint","_wasm_consume_catchbreak","_wasm_get_catchbreak_buf","_wasm_get_chip_mem_size","_wasm_get_cpu_model","_wasm_get_cpu_flags","_wasm_get_m68k_speed","_wasm_get_dma_diag","_wasm_get_estimate_diag","_wasm_serialize_size","_wasm_serialize","_wasm_unserialize","_malloc","_free"]'
 
 "$EMCC" \
     -include emscripten/emscripten.h \

@@ -7,11 +7,6 @@
 #include "uae/types.h"
 #include "e9k-lib.h"
 
-// Debug base register sections (passed to e9k_debug_set_debug_base_callback()).
-#define E9K_DEBUG_BASE_SECTION_TEXT 0u
-#define E9K_DEBUG_BASE_SECTION_DATA 1u
-#define E9K_DEBUG_BASE_SECTION_BSS  2u
-
 int
 e9k_debug_instructionHook(uaecptr pc, uae_u16 opcode);
 
@@ -230,9 +225,6 @@ e9k_hsync_notify(void);
 void
 e9k_debug_frame_boundary_notify(void);
 
-void
-e9k_debug_reapply_memhooks(void);
-
 // Memory-access hooks called from the chip-RAM bank accessors (see
 // libretro-uae.patch's memory.c changes) to drive watchpoints/protects.
 void
@@ -243,21 +235,6 @@ e9k_debug_memhook_filterWrite(uint32_t addr24, uint32_t sizeBits, uint32_t oldVa
 
 void
 e9k_debug_memhook_afterWrite(uint32_t addr24, uint32_t value, uint32_t oldValue, uint32_t sizeBits, int oldValueValid);
-
-// Optional host callback invoked when the target writes a new relocatable base.
-void
-e9k_debug_set_debug_base_callback(void (*cb)(uint32_t section, uint32_t base));
-
-// Optional host callback invoked when the target requests a breakpoint via a fake debug peripheral.
-void
-e9k_debug_set_debug_breakpoint_callback(void (*cb)(uint32_t addr));
-
-// Optional host callback used for source location resolution in cores that support source-line stepping.
-void
-e9k_debug_set_source_location_resolver(int (*resolver)(uint32_t pc24, uint64_t *out_location, void *user), void *user);
-
-void
-e9k_debug_set_debug_option(e9k_debug_option_t option, uint32_t argument, void *user);
 
 // Returns currprefs.chipmem.size: the actual configured/booted chip RAM size
 // in bytes. Used to derive getMemoryInfo()'s chipMask, since chip RAM size
@@ -296,3 +273,54 @@ e9k_debug_capture_event_phase(uint32_t *out);
 
 void
 e9k_debug_restore_event_phase(const uint32_t *in);
+
+// Diagnostics: currprefs.cpu_model (e.g. 68000, 68020, ...).
+uint32_t
+e9k_debug_get_cpu_model(void);
+
+// Diagnostics: bitmask of CPU timing-accuracy prefs - bit0 cpu_compatible,
+// bit1 cpu_cycle_exact, bit2 cpu_memory_cycle_exact, bit3 blitter_cycle_exact.
+uint32_t
+e9k_debug_get_cpu_flags(void);
+
+// Diagnostics: currprefs.m68k_speed (0 = "real" hardware rate, <0 = "max"/turbo).
+int32_t
+e9k_debug_get_m68k_speed(void);
+
+// Diagnostics: DMA/cycle-contention internals.
+//  0: ce_banktype[addr >> 16] for the given addr (CE_MEMBANK_* from memory.h)
+//  1: cpu_tracer (custom.c dma_cycle() early-exits if < 0)
+//  2: currprefs.cpu_memory_cycle_exact
+//  3: current_hpos_safe()
+//  4: vpos
+//  5: cycle_line_slot[current_hpos_safe()] (addr ignored)
+//  6: number of slots in cycle_line_slot[0..maxhpos) with CYCLE_MASK set
+//     (addr ignored) - i.e. how many DMA cycles are allocated this scanline
+//  7: number of slots in cycle_line_slot[0..maxhpos) equal to CYCLE_BITPLANE
+//     (addr ignored)
+//  8: maxhpos
+//  9: cycle_line_slot[addr] for arbitrary hpos `addr` (-1 if addr>=maxhpos)
+int32_t
+e9k_debug_get_dma_diag(uint32_t index, uint32_t addr);
+
+// Diagnostics: bitplane-DMA fetch prediction/scheduling state used by
+// dma_cycle()'s contention check (see e9k_get_estimate_diag in custom.c for
+// index meanings - estimated_cycles[]/estimated_cycles_next[], line_cyclebased,
+// bprun, dmacon_bpl, vdiwstate_bpl, ddf_stopping, etc).
+//  0-10: see e9k_get_estimate_diag in custom.c
+// 11: ddf_enable_on
+// 12: ddf_limit
+// 13: hwi_old
+// 14: harddis_h
+// 15: plfstrt
+// 16: plfstop
+// 17: bpl_hstart
+// 18: fetch_cycle
+// 19: ddfstrt_hpos
+// 20: ecs_agnus
+// 21: last_decide_line_hpos
+// 22: ddfstrt_match
+// 23: plfstop_prev
+// 24: ddfstop_hpos
+int32_t
+e9k_debug_get_estimate_diag(uint32_t index, uint32_t param);

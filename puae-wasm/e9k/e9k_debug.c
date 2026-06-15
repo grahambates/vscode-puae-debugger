@@ -1,8 +1,6 @@
 #include "e9k_debug.h"
 #include "e9k_catchpoint.h"
 #include "e9k_checkpoint.h"
-#include "e9k_debug_rom.h"
-#include "e9k_debug_sprite.h"
 #include "e9k_protect.h"
 #include "e9k_watchpoint.h"
 
@@ -17,8 +15,6 @@
 #include "custom.h"
 #include "audio.h"
 #include "newcpu.h"
-#include "blitter.h"
-#include "drawing.h"
 #include "debug.h"
 
 #define E9K_DEBUG_CALLSTACK_MAX 256
@@ -72,15 +68,9 @@ static uint64_t e9k_debug_scanLastMatch = 0;
 static int e9k_debug_scanFrameMode = 0;
 
 static int e9k_debug_stepLine = 0;
-static int e9k_debug_stepLineHasStart = 0;
-static uint64_t e9k_debug_stepLineStart = 0;
 static int e9k_debug_stepNext = 0;
-static size_t e9k_debug_stepNextDepth = 0;
 static int e9k_debug_stepNextSkipOnce = 0;
-static int e9k_debug_stepNextReturnPcValid = 0;
-static uint32_t e9k_debug_stepNextReturnPc = 0;
 static int e9k_debug_stepOut = 0;
-static size_t e9k_debug_stepOutDepth = 0;
 static int e9k_debug_stepOutSkipOnce = 0;
 static int e9k_debug_stepIntoPending = 0;
 
@@ -160,12 +150,6 @@ static evt_t e9k_debug_prof_lastCycle = 0;
 static int e9k_debug_prof_savedCachesize = -1;
 #endif
 
-static void (*e9k_debug_setDebugBaseCb)(uint32_t section, uint32_t base) = NULL;
-static void (*e9k_debug_setDebugBreakpointCb)(uint32_t addr) = NULL;
-static int (*e9k_debug_sourceLocationResolver)(uint32_t pc24, uint64_t *out_location, void *user) = NULL;
-static void *e9k_debug_sourceLocationResolverUser = NULL;
-static uint32_t e9k_debug_bitplaneMask = 0xffu;
-extern int audio_channel_mask;
 
 static char e9k_debug_textBuf[E9K_DEBUG_TEXT_CAP];
 static size_t e9k_debug_textHead = 0;
@@ -188,35 +172,6 @@ e9k_debug_profiler_reset(void)
 	e9k_debug_prof_lastValid = 0;
 	e9k_debug_prof_lastPc = 0;
 	e9k_debug_prof_lastCycle = 0;
-}
-
-static void
-e9k_debug_setBitplaneEnabled(int bitplaneIndex, int enabled)
-{
-	if (bitplaneIndex < 0 || bitplaneIndex > 7) {
-		return;
-	}
-	uint32_t bit = (1u << (uint32_t)bitplaneIndex);
-	if (enabled) {
-		e9k_debug_bitplaneMask |= bit;
-	} else {
-		e9k_debug_bitplaneMask &= ~bit;
-	}
-	debug_bpl_mask = (int)(e9k_debug_bitplaneMask & 0xffu);
-}
-
-static void
-e9k_debug_setAudioChannelEnabled(int audioChannelIndex, int enabled)
-{
-	if (audioChannelIndex < 0 || audioChannelIndex > 3) {
-		return;
-	}
-	uint32_t bit = (1u << (uint32_t)audioChannelIndex);
-	if (enabled) {
-		audio_channel_mask |= (int)bit;
-	} else {
-		audio_channel_mask &= (int)~bit;
-	}
 }
 
 static void
@@ -388,14 +343,6 @@ e9k_debug_text_write(uae_u8 byte)
 	e9k_debug_textCount++;
 }
 
-void
-e9k_debug_set_debug_base(uint32_t section, uae_u32 base)
-{
-	if (e9k_debug_setDebugBaseCb) {
-		e9k_debug_setDebugBaseCb(section, (uint32_t)base);
-	}
-}
-
 static uint32_t
 e9k_debug_maskAddr(uaecptr addr)
 {
@@ -427,19 +374,6 @@ e9k_debug_sizeBytes(uint32_t sizeBits)
 		return 4u;
 	}
 	return 0u;
-}
-
-static int
-e9k_debug_resolveSourceLocation(uint32_t pc24, uint64_t *outLocation)
-{
-	if (!outLocation) {
-		return 0;
-	}
-	*outLocation = 0;
-	if (!e9k_debug_sourceLocationResolver) {
-		return 0;
-	}
-	return e9k_debug_sourceLocationResolver(pc24 & 0x00ffffffu, outLocation, e9k_debug_sourceLocationResolverUser) ? 1 : 0;
 }
 
 static int
@@ -647,9 +581,7 @@ e9k_debug_resume(void)
 	e9k_debug_stepLine = 0;
 	e9k_debug_stepNext = 0;
 	e9k_debug_stepNextSkipOnce = 0;
-	e9k_debug_stepNextReturnPcValid = 0;
 	e9k_debug_stepOut = 0;
-	e9k_debug_stepOutDepth = 0;
 	e9k_debug_stepOutSkipOnce = 0;
 	e9k_debug_stepIntoPending = 0;
 
@@ -673,9 +605,7 @@ e9k_debug_step_instr(void)
 	e9k_debug_stepLine = 0;
 	e9k_debug_stepNext = 0;
 	e9k_debug_stepNextSkipOnce = 0;
-	e9k_debug_stepNextReturnPcValid = 0;
 	e9k_debug_stepOut = 0;
-	e9k_debug_stepOutDepth = 0;
 	e9k_debug_stepOutSkipOnce = 0;
 	e9k_debug_stepIntoPending = 0;
 	e9k_debug_stepInstr = 1;
@@ -691,19 +621,9 @@ e9k_debug_step_line(void)
 	e9k_debug_stepLine = 1;
 	e9k_debug_stepNext = 0;
 	e9k_debug_stepNextSkipOnce = 0;
-	e9k_debug_stepNextReturnPcValid = 0;
 	e9k_debug_stepOut = 0;
-	e9k_debug_stepOutDepth = 0;
 	e9k_debug_stepOutSkipOnce = 0;
 	e9k_debug_stepIntoPending = 0;
-
-	uint32_t pc24 = e9k_debug_maskAddr(m68k_getpc());
-	if (e9k_debug_resolveSourceLocation(pc24, &e9k_debug_stepLineStart)) {
-		e9k_debug_stepLineHasStart = 1;
-	} else {
-		e9k_debug_stepLineHasStart = 0;
-		e9k_debug_stepLineStart = 0;
-	}
 }
 
 E9K_DEBUG_EXPORT void
@@ -714,25 +634,10 @@ e9k_debug_step_next(void)
 	e9k_debug_stepInstrAfter = 0;
 	e9k_debug_stepLine = 1;
 	e9k_debug_stepNext = 1;
-	e9k_debug_stepNextDepth = e9k_debug_callstackDepth;
 	e9k_debug_stepNextSkipOnce = 0;
-	e9k_debug_stepNextReturnPcValid = 0;
-	e9k_debug_stepNextReturnPc = 0;
 	e9k_debug_stepOut = 0;
-	e9k_debug_stepOutDepth = 0;
 	e9k_debug_stepOutSkipOnce = 0;
 	e9k_debug_stepIntoPending = 0;
-	uint32_t pc24 = e9k_debug_maskAddr(m68k_getpc());
-	uae_u16 opcode = get_word(munge24((uaecptr)pc24));
-	if (e9k_debug_resolveSourceLocation(pc24, &e9k_debug_stepLineStart)) {
-		e9k_debug_stepLineHasStart = 1;
-	} else {
-		e9k_debug_stepLineHasStart = 0;
-		e9k_debug_stepLineStart = 0;
-	}
-	if (e9k_debug_tryGetCallReturnPc(pc24, opcode, &e9k_debug_stepNextReturnPc)) {
-		e9k_debug_stepNextReturnPcValid = 1;
-	}
 }
 
 E9K_DEBUG_EXPORT void
@@ -744,19 +649,9 @@ e9k_debug_step_out(void)
 	e9k_debug_stepLine = 1;
 	e9k_debug_stepNext = 0;
 	e9k_debug_stepNextSkipOnce = 0;
-	e9k_debug_stepNextReturnPcValid = 0;
 	e9k_debug_stepOut = 1;
-	e9k_debug_stepOutDepth = (e9k_debug_callstackDepth > 0) ? (e9k_debug_callstackDepth - 1u) : 0u;
 	e9k_debug_stepOutSkipOnce = 0;
 	e9k_debug_stepIntoPending = 0;
-
-	uint32_t pc24 = e9k_debug_maskAddr(m68k_getpc());
-	if (e9k_debug_resolveSourceLocation(pc24, &e9k_debug_stepLineStart)) {
-		e9k_debug_stepLineHasStart = 1;
-	} else {
-		e9k_debug_stepLineHasStart = 0;
-		e9k_debug_stepLineStart = 0;
-	}
 }
 
 E9K_DEBUG_EXPORT size_t
@@ -1325,109 +1220,6 @@ e9k_debug_set_hblank_callback(void (*cb)(void *), void *user)
 }
 
 E9K_DEBUG_EXPORT void
-e9k_debug_set_debug_base_callback(void (*cb)(uint32_t section, uint32_t base))
-{
-	e9k_debug_setDebugBaseCb = cb;
-}
-
-E9K_DEBUG_EXPORT void
-e9k_debug_set_debug_breakpoint_callback(void (*cb)(uint32_t addr))
-{
-	e9k_debug_setDebugBreakpointCb = cb;
-}
-
-E9K_DEBUG_EXPORT void
-e9k_debug_set_source_location_resolver(int (*resolver)(uint32_t pc24, uint64_t *out_location, void *user), void *user)
-{
-	e9k_debug_sourceLocationResolver = resolver;
-	e9k_debug_sourceLocationResolverUser = user;
-}
-
-E9K_DEBUG_EXPORT void
-e9k_debug_set_debug_option(e9k_debug_option_t option, uint32_t argument, void *user)
-{
-	(void)user;
-	switch (option) {
-		case E9K_DEBUG_OPTION_AMIGA_BLITTER:
-			blitter_setDestinationWriteEnabled(argument != 0u);
-			break;
-		case E9K_DEBUG_OPTION_AMIGA_SPRITE0:
-			drawing_setSpriteEnabled(0, argument != 0u);
-			break;
-		case E9K_DEBUG_OPTION_AMIGA_SPRITE1:
-			drawing_setSpriteEnabled(1, argument != 0u);
-			break;
-		case E9K_DEBUG_OPTION_AMIGA_SPRITE2:
-			drawing_setSpriteEnabled(2, argument != 0u);
-			break;
-		case E9K_DEBUG_OPTION_AMIGA_SPRITE3:
-			drawing_setSpriteEnabled(3, argument != 0u);
-			break;
-		case E9K_DEBUG_OPTION_AMIGA_SPRITE4:
-			drawing_setSpriteEnabled(4, argument != 0u);
-			break;
-		case E9K_DEBUG_OPTION_AMIGA_SPRITE5:
-			drawing_setSpriteEnabled(5, argument != 0u);
-			break;
-		case E9K_DEBUG_OPTION_AMIGA_SPRITE6:
-			drawing_setSpriteEnabled(6, argument != 0u);
-			break;
-		case E9K_DEBUG_OPTION_AMIGA_SPRITE7:
-			drawing_setSpriteEnabled(7, argument != 0u);
-			break;
-		case E9K_DEBUG_OPTION_AMIGA_BITPLANE0:
-			e9k_debug_setBitplaneEnabled(0, argument != 0u);
-			break;
-		case E9K_DEBUG_OPTION_AMIGA_BITPLANE1:
-			e9k_debug_setBitplaneEnabled(1, argument != 0u);
-			break;
-		case E9K_DEBUG_OPTION_AMIGA_BITPLANE2:
-			e9k_debug_setBitplaneEnabled(2, argument != 0u);
-			break;
-		case E9K_DEBUG_OPTION_AMIGA_BITPLANE3:
-			e9k_debug_setBitplaneEnabled(3, argument != 0u);
-			break;
-		case E9K_DEBUG_OPTION_AMIGA_BITPLANE4:
-			e9k_debug_setBitplaneEnabled(4, argument != 0u);
-			break;
-		case E9K_DEBUG_OPTION_AMIGA_BITPLANE5:
-			e9k_debug_setBitplaneEnabled(5, argument != 0u);
-			break;
-		case E9K_DEBUG_OPTION_AMIGA_BITPLANE6:
-			e9k_debug_setBitplaneEnabled(6, argument != 0u);
-			break;
-		case E9K_DEBUG_OPTION_AMIGA_BITPLANE7:
-			e9k_debug_setBitplaneEnabled(7, argument != 0u);
-			break;
-		case E9K_DEBUG_OPTION_AMIGA_AUDIO0:
-			e9k_debug_setAudioChannelEnabled(0, argument != 0u);
-			break;
-		case E9K_DEBUG_OPTION_AMIGA_AUDIO1:
-			e9k_debug_setAudioChannelEnabled(1, argument != 0u);
-			break;
-		case E9K_DEBUG_OPTION_AMIGA_AUDIO2:
-			e9k_debug_setAudioChannelEnabled(2, argument != 0u);
-			break;
-		case E9K_DEBUG_OPTION_AMIGA_AUDIO3:
-			e9k_debug_setAudioChannelEnabled(3, argument != 0u);
-			break;
-		default:
-			break;
-	}
-}
-
-void
-e9k_debug_add_breakpoint_fromPeripheral(uint32_t addr)
-{
-	uint32_t addr24 = e9k_debug_maskAddr((uaecptr)addr);
-	int had = e9k_debug_hasBreakpoint(addr24);
-	e9k_debug_add_breakpoint(addr24);
-	if (!had && e9k_debug_setDebugBreakpointCb) {
-		e9k_debug_setDebugBreakpointCb(addr24);
-	}
-}
-
-E9K_DEBUG_EXPORT void
 e9k_vblank_notify(void)
 {
 	if (e9k_debug_protectEnabledMask || e9k_debug_watchpointEnabledMask) {
@@ -1465,14 +1257,6 @@ e9k_debug_frame_boundary_notify(void)
 	}
 }
 
-E9K_DEBUG_EXPORT void
-e9k_debug_reapply_memhooks(void)
-{
-	if (e9k_debug_protectEnabledMask || e9k_debug_watchpointEnabledMask) {
-		e9k_debug_ensureMemhooks();
-	}
-}
-
 static void
 e9k_debug_requestBreak(void)
 {
@@ -1482,9 +1266,7 @@ e9k_debug_requestBreak(void)
 	e9k_debug_stepLine = 0;
 	e9k_debug_stepNext = 0;
 	e9k_debug_stepNextSkipOnce = 0;
-	e9k_debug_stepNextReturnPcValid = 0;
 	e9k_debug_stepOut = 0;
-	e9k_debug_stepOutDepth = 0;
 	e9k_debug_stepOutSkipOnce = 0;
 	e9k_debug_stepIntoPending = 0;
 	libretro_frame_end = true;
@@ -1752,15 +1534,6 @@ e9k_debug_instructionHookImpl(uaecptr pc, uae_u16 opcode)
 		}
 	}
 
-	if (e9k_debug_stepNext && !e9k_debug_stepNextReturnPcValid) {
-		uint64_t current = 0;
-		if (e9k_debug_resolveSourceLocation(pc24, &current) && e9k_debug_stepLineHasStart && current == e9k_debug_stepLineStart) {
-			if (e9k_debug_tryGetCallReturnPc(pc24, opcode, &e9k_debug_stepNextReturnPc)) {
-				e9k_debug_stepNextReturnPcValid = 1;
-			}
-		}
-	}
-
 	if (e9k_debug_stepNext && e9k_debug_stepNextSkipOnce) {
 		e9k_debug_stepNextSkipOnce = 0;
 		return 0;
@@ -1769,32 +1542,6 @@ e9k_debug_instructionHookImpl(uaecptr pc, uae_u16 opcode)
 		e9k_debug_stepOutSkipOnce = 0;
 		return 0;
 	}
-
-	if (e9k_debug_stepLine) {
-		if (e9k_debug_stepNext && e9k_debug_stepNextReturnPcValid) {
-			if (pc24 != e9k_debug_stepNextReturnPc) {
-				goto skip_step_line_break;
-			}
-			e9k_debug_stepNextReturnPcValid = 0;
-		}
-		uint64_t current = 0;
-		int hasCurrent = e9k_debug_resolveSourceLocation(pc24, &current);
-		int shouldBreak = 0;
-		if (hasCurrent) {
-			if (!e9k_debug_stepLineHasStart) {
-				shouldBreak = 1;
-			} else if (current != e9k_debug_stepLineStart) {
-				shouldBreak = 1;
-			}
-		}
-		int stepNextReady = (!e9k_debug_stepNext || e9k_debug_callstackDepth <= e9k_debug_stepNextDepth);
-		int stepOutReady = (!e9k_debug_stepOut || e9k_debug_callstackDepth <= e9k_debug_stepOutDepth);
-		if (shouldBreak && stepNextReady && stepOutReady) {
-			e9k_debug_requestBreak();
-			return 1;
-		}
-	}
-skip_step_line_break:
 
 	if (e9k_debug_skipBreakpointOnce) {
 		e9k_debug_skipBreakpointOnce = 0;
@@ -2155,34 +1902,6 @@ e9k_debug_text_read(char *out, size_t cap)
 }
 
 E9K_DEBUG_EXPORT size_t
-e9k_debug_neogeo_get_sprite_state(e9k_debug_sprite_state_t *out, size_t cap)
-{
-	(void)out;
-	(void)cap;
-	return 0;
-}
-
-E9K_DEBUG_EXPORT size_t
-e9k_debug_get_sprite_state(e9k_debug_sprite_state_t *out, size_t cap)
-{
-	return e9k_debug_neogeo_get_sprite_state(out, cap);
-}
-
-E9K_DEBUG_EXPORT size_t
-e9k_debug_neogeo_get_p1_rom(e9k_debug_rom_region_t *out, size_t cap)
-{
-	(void)out;
-	(void)cap;
-	return 0;
-}
-
-E9K_DEBUG_EXPORT size_t
-e9k_debug_get_p1_rom(e9k_debug_rom_region_t *out, size_t cap)
-{
-	return e9k_debug_neogeo_get_p1_rom(out, cap);
-}
-
-E9K_DEBUG_EXPORT size_t
 e9k_debug_read_checkpoints(e9k_debug_checkpoint_t *out, size_t cap)
 {
 	if (!out || cap == 0) {
@@ -2277,4 +1996,72 @@ E9K_DEBUG_EXPORT uint32_t
 e9k_debug_get_chip_mem_size(void)
 {
 	return (uint32_t)currprefs.chipmem.size;
+}
+
+E9K_DEBUG_EXPORT uint32_t
+e9k_debug_get_cpu_model(void)
+{
+	return (uint32_t)currprefs.cpu_model;
+}
+
+E9K_DEBUG_EXPORT uint32_t
+e9k_debug_get_cpu_flags(void)
+{
+	return (currprefs.cpu_compatible ? 1u : 0u)
+	     | (currprefs.cpu_cycle_exact ? 2u : 0u)
+	     | (currprefs.cpu_memory_cycle_exact ? 4u : 0u)
+	     | (currprefs.blitter_cycle_exact ? 8u : 0u);
+}
+
+E9K_DEBUG_EXPORT int32_t
+e9k_debug_get_m68k_speed(void)
+{
+	return (int32_t)currprefs.m68k_speed;
+}
+
+E9K_DEBUG_EXPORT int32_t
+e9k_debug_get_dma_diag(uint32_t index, uint32_t addr)
+{
+	extern int cpu_tracer;
+
+	switch (index) {
+	case 0:
+		return (int32_t)ce_banktype[(addr >> 16) & 0xffff];
+	case 1:
+		return (int32_t)cpu_tracer;
+	case 2:
+		return (int32_t)currprefs.cpu_memory_cycle_exact;
+	case 3:
+		return (int32_t)current_hpos_safe();
+	case 4:
+		return (int32_t)vpos;
+	case 5:
+		return (int32_t)cycle_line_slot[current_hpos_safe()];
+	case 6: {
+		int32_t n = 0;
+		for (int i = 0; i < maxhpos; i++) {
+			if (cycle_line_slot[i] & CYCLE_MASK) n++;
+		}
+		return n;
+	}
+	case 7: {
+		int32_t n = 0;
+		for (int i = 0; i < maxhpos; i++) {
+			if ((cycle_line_slot[i] & CYCLE_MASK) == CYCLE_BITPLANE) n++;
+		}
+		return n;
+	}
+	case 8:
+		return (int32_t)maxhpos;
+	case 9:
+		return (addr < (uint32_t)maxhpos) ? (int32_t)cycle_line_slot[addr] : -1;
+	default:
+		return -1;
+	}
+}
+
+E9K_DEBUG_EXPORT int32_t
+e9k_debug_get_estimate_diag(uint32_t index, uint32_t param)
+{
+	return e9k_get_estimate_diag(index, param);
 }
