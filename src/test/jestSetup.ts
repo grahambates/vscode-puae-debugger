@@ -7,6 +7,7 @@ jest.mock(
     window: {
       showErrorMessage: jest.fn(),
       showInformationMessage: jest.fn(),
+      setStatusBarMessage: jest.fn(),
       createWebviewPanel: jest.fn(),
     },
     workspace: {

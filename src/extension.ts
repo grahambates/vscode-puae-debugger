@@ -49,7 +49,13 @@ export function activate(context: vscode.ExtensionContext) {
   context.subscriptions.push(
     vscode.commands.registerCommand("vamiga-debugger.stepBackFrame", async () => {
       const emulator = VamigaDebugAdapter.getActiveAdapter()?.getEmulator() ?? vAmiga;
-      await emulator.stepBackFrame();
+      const moved = await emulator.stepBackFrame();
+      if (!moved) {
+        vscode.window.setStatusBarMessage(
+          "Cannot step back further: reached start of rewind history",
+          3000,
+        );
+      }
     }),
   );
 

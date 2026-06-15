@@ -637,7 +637,13 @@ export class VamigaDebugAdapter extends LoggingDebugSession {
     response: DebugProtocol.StepBackResponse,
   ): Promise<void> {
     try {
-      await this.vAmiga.stepBack();
+      const moved = await this.vAmiga.stepBack();
+      if (!moved) {
+        vscode.window.setStatusBarMessage(
+          "Cannot step back further: reached start of rewind history",
+          3000,
+        );
+      }
       this.sendEvent(new StoppedEvent("step", VamigaDebugAdapter.THREAD_ID));
       this.sendResponse(response);
     } catch (err) {
@@ -654,7 +660,13 @@ export class VamigaDebugAdapter extends LoggingDebugSession {
     response: DebugProtocol.ReverseContinueResponse,
   ): Promise<void> {
     try {
-      await this.vAmiga.continueReverse();
+      const moved = await this.vAmiga.continueReverse();
+      if (!moved) {
+        vscode.window.setStatusBarMessage(
+          "Cannot continue reverse: reached start of rewind history",
+          3000,
+        );
+      }
       this.sendEvent(new StoppedEvent("step", VamigaDebugAdapter.THREAD_ID));
       this.sendResponse(response);
     } catch (err) {
