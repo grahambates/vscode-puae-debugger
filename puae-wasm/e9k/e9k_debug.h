@@ -138,11 +138,50 @@ e9k_debug_disassemble_quick(uint32_t pc, char *out, size_t cap);
 uint64_t
 e9k_debug_read_cycle_count(void);
 
+// Monotonic count of retired instructions: instrCount == N means the
+// instruction at the current PC is instruction #N and has not yet executed.
+uint64_t
+e9k_debug_read_instr_count(void);
+
+// Not part of the libretro savestate — callers must restore this explicitly
+// after wasm_unserialize, to the instrCount recorded alongside that
+// checkpoint.
+void
+e9k_debug_write_instr_count(uint64_t value);
+
+// True while e9k_debug_replay_instructions/replay_scan is running. Lets
+// frontend_shim.c suppress audio/video/frame-count output during replay.
+int
+e9k_debug_is_replaying(void);
+
+// Runs forward exactly `count` retired instructions from the current state
+// (normally right after restoring a checkpoint), with debugger side effects
+// suppressed. Leaves the CPU paused with instrCount advanced by `count`.
+// count == 0 is a no-op (preserves a pending zero-drift restore, see
+// e9k_debug_request_break_before_next_instr).
+void
+e9k_debug_replay_instructions(uint32_t count);
+
+// Like e9k_debug_replay_instructions, but returns the instrCount of the
+// latest instruction within the replayed range whose PC has a breakpoint
+// set, or (uint64_t)-1 if none matched.
+uint64_t
+e9k_debug_replay_scan(uint32_t count);
+
 void
 e9k_debug_add_breakpoint(uint32_t addr);
 
 void
 e9k_debug_remove_breakpoint(uint32_t addr);
+
+// Temporarily zeroes e9k_debug_breakpointCount (saving its previous value),
+// for wasm_unserialize to call across retro_unserialize. See e9k_debug.c for
+// why this is needed. e9k_debug_resume_breakpoints restores the saved count.
+void
+e9k_debug_suspend_breakpoints(void);
+
+void
+e9k_debug_resume_breakpoints(void);
 
 void
 e9k_debug_add_temp_breakpoint(uint32_t addr);
@@ -216,3 +255,19 @@ e9k_debug_enable_cpu_logging(int enabled);
 // entries). Returns the number of entries written.
 size_t
 e9k_debug_read_cpu_trace(uint32_t count, uint32_t *out, size_t cap);
+
+// Captures/restores eventtab[ev_hsync]/[ev_hsynch]/[ev_misc] phase info plus
+// vpos/lof_store/lof_display, none of which the libretro savestate format
+// preserves correctly for mid-line checkpoints (see e9k_debug.c for why this
+// matters for exact-replay checkpoints). `out`/`in` must hold
+// E9K_EVENT_PHASE_WORDS uint32_t's. Called by wasm_serialize/wasm_unserialize
+// in frontend_shim.c, alongside the regular libretro savestate blob.
+// e9k_debug_restore_event_phase also calls events_schedule() to recompute
+// nextevent from the restored eventtab.
+#define E9K_EVENT_PHASE_WORDS (3 * 5 + 3)
+
+void
+e9k_debug_capture_event_phase(uint32_t *out);
+
+void
+e9k_debug_restore_event_phase(const uint32_t *in);

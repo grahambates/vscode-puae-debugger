@@ -38,6 +38,25 @@ static size_t e9k_debug_callstackDepth = 0;
 static int e9k_debug_stepInstr = 0;
 static int e9k_debug_stepInstrAfter = 0;
 
+// Monotonic count of retired instructions: instrCount == N means the
+// instruction at the current PC is instruction #N and has NOT yet executed
+// (it becomes N+1 once instructionHook lets it run). Used as the anchor for
+// exact-instruction rewind (see e9k_debug_replay_instructions below).
+static uint64_t e9k_debug_instrCount = 0;
+
+// Replay mode: instructionHook short-circuits all normal step/breakpoint
+// logic and instead runs forward exactly to e9k_debug_replayTarget
+// (an instrCount value), used to re-derive exact CPU/chipset state between a
+// restored checkpoint and a target instruction count.
+static int e9k_debug_replayMode = 0;
+static uint64_t e9k_debug_replayTarget = 0;
+
+// Scan mode (active only while e9k_debug_replayMode is set): records the
+// instrCount of the most recent (i.e. latest in forward time) instruction
+// hitting a breakpoint during the replay range, for continueReverse.
+static int e9k_debug_scanMode = 0;
+static uint64_t e9k_debug_scanLastMatch = 0;
+
 static int e9k_debug_stepLine = 0;
 static int e9k_debug_stepLineHasStart = 0;
 static uint64_t e9k_debug_stepLineStart = 0;
@@ -267,6 +286,10 @@ e9k_debug_profiler_instrHook(uint32_t pc24)
 		return;
 	}
 	if (e9k_debug_paused) {
+		return;
+	}
+	if (e9k_debug_replayMode) {
+		// Replay re-executes already-profiled instructions; don't double-count.
 		return;
 	}
 
@@ -997,6 +1020,130 @@ e9k_debug_disassemble_quick(uint32_t pc, char *out, size_t cap)
 }
 
 E9K_DEBUG_EXPORT uint64_t
+e9k_debug_read_instr_count(void)
+{
+	return e9k_debug_instrCount;
+}
+
+// e9k_debug_instrCount is not part of the libretro savestate (retro_serialize
+// /retro_unserialize): after restoring a checkpoint, the caller must restore
+// the instrCount that was recorded alongside that checkpoint via this setter.
+E9K_DEBUG_EXPORT void
+e9k_debug_write_instr_count(uint64_t value)
+{
+	e9k_debug_instrCount = value;
+}
+
+int
+e9k_debug_is_replaying(void)
+{
+	return e9k_debug_replayMode;
+}
+
+// Runs forward exactly `count` retired instructions from the current state
+// (normally immediately after restoring a checkpoint), with debugger
+// side-effects (watchpoints, catchpoints, profiler sampling, audio/video
+// output, frame count, callstack bookkeeping, step/breakpoint handling) all
+// suppressed via e9k_debug_replayMode. Leaves the CPU paused with
+// e9k_debug_instrCount advanced by exactly `count`.
+//
+// If count == 0, this is a no-op: in particular it does NOT clear
+// e9k_debug_stepInstrAfter, so a pending "exact restore, zero drift" request
+// from e9k_debug_request_break_before_next_instr (set by wasm_unserialize)
+// is preserved.
+E9K_DEBUG_EXPORT void
+e9k_debug_replay_instructions(uint32_t count)
+{
+	if (count == 0) {
+		return;
+	}
+	// A pending zero-drift "break before next instr" would otherwise abort
+	// before the first replayed instruction executes.
+	e9k_debug_stepInstrAfter = 0;
+	e9k_debug_replayMode = 1;
+	e9k_debug_replayTarget = e9k_debug_instrCount + (uint64_t)count;
+	e9k_debug_paused = 0;
+	while (e9k_debug_instrCount < e9k_debug_replayTarget) {
+		libretro_frame_end = false;
+		retro_run();
+	}
+	e9k_debug_replayMode = 0;
+}
+
+// Like e9k_debug_replay_instructions, but also records the instrCount of the
+// latest (most recent in forward time) instruction within the replayed range
+// whose PC has a breakpoint set. Returns that instrCount, or (uint64_t)-1 if
+// none matched. Used by continueReverse to find where to land.
+E9K_DEBUG_EXPORT uint64_t
+e9k_debug_replay_scan(uint32_t count)
+{
+	if (count == 0) {
+		return (uint64_t)-1;
+	}
+	e9k_debug_scanMode = 1;
+	e9k_debug_scanLastMatch = (uint64_t)-1;
+	e9k_debug_replay_instructions(count);
+	e9k_debug_scanMode = 0;
+	return e9k_debug_scanLastMatch;
+}
+
+// e9k-debugger (Phase 2): the libretro savestate format does not preserve
+// eventtab[ev_hsync]/[ev_hsynch]/[ev_misc] phase info, nor the vpos/lof_*
+// scanline-position state derived from it. On restore, init_eventtab() (via
+// devices_reset(), part of retro_unserialize's reset path) resyncs
+// ev_hsync/ev_hsynch to `get_cycles() + HSYNCTIME`, discarding the actual
+// "cycles into the current scanline" phase that existed when the snapshot
+// was taken; vpos/lof_store/lof_display aren't touched by retro_unserialize
+// at all, so they retain whatever value the emulator instance had *before*
+// the restore (e.g. a "future" vpos from continued execution), inconsistent
+// with the restored cycle/event state. For checkpoints captured mid-line
+// (not at a real savestate sync point, as ours are), this introduces a
+// constant offset that persists across replay even though
+// currcycle/CIA/intena/intreq all match exactly - causing replay to diverge
+// from ground truth after enough instructions (observed: a `vpos`-polling
+// loop exits one scanline later in replay than in ground truth). Capture/
+// restore this phase out-of-band, alongside the regular libretro savestate
+// blob (see wasm_serialize/wasm_unserialize in frontend_shim.c). Layout:
+// 3 events (ev_hsync, ev_hsynch, ev_misc) x 5 words (active, evtime lo/hi,
+// oldcycles lo/hi), then vpos, lof_store, lof_display.
+#define E9K_EVENT_PHASE_WORDS (3 * 5 + 3)
+
+E9K_DEBUG_EXPORT void
+e9k_debug_capture_event_phase(uint32_t *out)
+{
+	int i = 0;
+	for (int e = ev_hsync; e <= ev_misc; e++) {
+		out[i++] = (uint32_t)eventtab[e].active;
+		out[i++] = (uint32_t)((uint64_t)eventtab[e].evtime & 0xFFFFFFFFu);
+		out[i++] = (uint32_t)((uint64_t)eventtab[e].evtime >> 32);
+		out[i++] = (uint32_t)((uint64_t)eventtab[e].oldcycles & 0xFFFFFFFFu);
+		out[i++] = (uint32_t)((uint64_t)eventtab[e].oldcycles >> 32);
+	}
+	out[i++] = (uint32_t)vpos;
+	out[i++] = (uint32_t)lof_store;
+	out[i++] = (uint32_t)lof_display;
+}
+
+E9K_DEBUG_EXPORT void
+e9k_debug_restore_event_phase(const uint32_t *in)
+{
+	int i = 0;
+	for (int e = ev_hsync; e <= ev_misc; e++) {
+		eventtab[e].active = in[i++] ? true : false;
+		uint64_t evtime = (uint64_t)in[i] | ((uint64_t)in[i + 1] << 32);
+		i += 2;
+		uint64_t oldcycles = (uint64_t)in[i] | ((uint64_t)in[i + 1] << 32);
+		i += 2;
+		eventtab[e].evtime = (evt_t)evtime;
+		eventtab[e].oldcycles = (evt_t)oldcycles;
+	}
+	vpos = (int)in[i++];
+	lof_store = (int)in[i++];
+	lof_display = (int)in[i++];
+	events_schedule();
+}
+
+E9K_DEBUG_EXPORT uint64_t
 e9k_debug_read_cycle_count(void)
 {
 	// get_cycles() returns UAE internal "cycle units" (CYCLE_UNIT = 512), not raw CPU cycles.
@@ -1065,6 +1212,29 @@ e9k_debug_remove_breakpoint(uint32_t addr)
 			return;
 		}
 	}
+}
+
+static size_t e9k_debug_breakpointCountSuspended = 0;
+
+// retro_unserialize's restore path is sensitive to e9k_debug_breakpointCount:
+// restoring a checkpoint with a breakpoint registered measurably perturbs
+// chipset cycle timing, shifting a subsequent e9k_debug_replay_instructions/
+// replay_scan landing by a variable number of instructions (root cause not
+// isolated further than this). Since breakpoints are meaningless mid-restore
+// anyway (replay mode bypasses e9k_debug_hasBreakpoint entirely),
+// wasm_unserialize suspends them across retro_unserialize and restores them
+// immediately afterwards.
+void
+e9k_debug_suspend_breakpoints(void)
+{
+	e9k_debug_breakpointCountSuspended = e9k_debug_breakpointCount;
+	e9k_debug_breakpointCount = 0;
+}
+
+void
+e9k_debug_resume_breakpoints(void)
+{
+	e9k_debug_breakpointCount = e9k_debug_breakpointCountSuspended;
 }
 
 E9K_DEBUG_EXPORT void
@@ -1267,6 +1437,10 @@ e9k_debug_watchpointRead(uint32_t addr24, uint32_t value, uint32_t sizeBits)
 	if (e9k_debug_paused) {
 		return;
 	}
+	if (e9k_debug_replayMode) {
+		// Replay re-executes real memory accesses; watchpoints must not refire.
+		return;
+	}
 	if (e9k_debug_watchpointEnabledMask == 0) {
 		return;
 	}
@@ -1289,6 +1463,10 @@ e9k_debug_watchpointWrite(uint32_t addr24, uint32_t value, uint32_t oldValue, ui
 		return;
 	}
 	if (e9k_debug_paused) {
+		return;
+	}
+	if (e9k_debug_replayMode) {
+		// Replay re-executes real memory accesses; watchpoints must not refire.
 		return;
 	}
 	if (e9k_debug_watchpointEnabledMask == 0) {
@@ -1427,8 +1605,8 @@ e9k_debug_memhook_afterWrite(uint32_t addr24, uint32_t value, uint32_t oldValue,
 	e9k_debug_watchpointWrite(addr24, value, oldValue, sizeBits, oldValueValid);
 }
 
-E9K_DEBUG_EXPORT int
-e9k_debug_instructionHook(uaecptr pc, uae_u16 opcode)
+static int
+e9k_debug_instructionHookImpl(uaecptr pc, uae_u16 opcode)
 {
 	uint32_t pc24 = e9k_debug_maskAddr(pc);
 
@@ -1438,6 +1616,21 @@ e9k_debug_instructionHook(uaecptr pc, uae_u16 opcode)
 	if (e9k_debug_stepInstrAfter) {
 		e9k_debug_requestBreak();
 		return 1;
+	}
+
+	if (e9k_debug_replayMode) {
+		// Bypass all normal step/breakpoint/callstack handling: replay always
+		// runs to an exact instruction count (e9k_debug_replayTarget).
+		if (e9k_debug_scanMode && e9k_debug_hasBreakpoint(pc24)) {
+			// Record the latest (in forward time) match; continueReverse wants
+			// the most recent breakpoint hit within the replayed range.
+			e9k_debug_scanLastMatch = e9k_debug_instrCount;
+		}
+		if (e9k_debug_instrCount >= e9k_debug_replayTarget) {
+			e9k_debug_requestBreak();
+			return 1;
+		}
+		return 0;
 	}
 
 	if ((opcode & 0xFFC0u) == 0x4E80u) {
@@ -1553,6 +1746,19 @@ skip_step_line_break:
 	}
 
 	return 0;
+}
+
+E9K_DEBUG_EXPORT int
+e9k_debug_instructionHook(uaecptr pc, uae_u16 opcode)
+{
+	int brk = e9k_debug_instructionHookImpl(pc, opcode);
+	if (!brk) {
+		// Only count instructions that actually execute: instrCount tracks
+		// "number of retired instructions", i.e. the index of the
+		// not-yet-executed instruction at the current PC.
+		e9k_debug_instrCount++;
+	}
+	return brk;
 }
 
 E9K_DEBUG_EXPORT void
@@ -1970,6 +2176,11 @@ e9k_debug_remove_catchpoint(uint32_t vector)
 E9K_DEBUG_EXPORT void
 e9k_debug_check_catchpoint(uint32_t vector, uint32_t pc)
 {
+	if (e9k_debug_replayMode) {
+		// Replay re-enters exception vectors that already triggered forward;
+		// catchpoints must not refire.
+		return;
+	}
 	if (vector >= E9K_CATCHPOINT_VECTOR_MAX) {
 		return;
 	}

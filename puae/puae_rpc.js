@@ -19,8 +19,12 @@ const MEM_BUF_CAP = 4096;
 // (see captureSnapshot/restoreSnapshot below). Snapshot size is roughly
 // chipmem + bogomem + fastmem + z3fastmem + ~128KB overhead, e.g. ~1.6MB for
 // a default A500-like config up to ~10MB for an A1200-like config with 8MB
-// fast RAM — so 20 history entries is ~30-200MB.
-const MAX_SNAPSHOT_HISTORY = 20;
+// fast RAM — so 40 history entries is ~65-400MB. Entries come from both
+// command-boundary snapshots (run/stepInto/eof/eol) and periodic
+// checkpoints taken during a free-run (see pushSnapshot below and
+// puae_app.js's frame()), giving ~40s of rewindable history at the latter's
+// 1-per-emulated-second cadence.
+const MAX_SNAPSHOT_HISTORY = 40;
 
 // Matches E9K_CPU_TRACE_CAP in e9k_debug.h.
 const E9K_CPU_TRACE_CAP = 256;
@@ -100,6 +104,50 @@ function restoreSnapshot(M, bytes) {
   } finally {
     M._free(ptr);
   }
+}
+
+// e9k_debug_instrCount: a monotonic count of retired instructions, used as
+// the anchor for exact-instruction rewind (see e9k_debug_replay_instructions
+// in e9k/e9k_debug.c). Not part of the libretro savestate, so checkpoints
+// must record it alongside their snapshot bytes and restore it explicitly via
+// writeInstrCount after restoreSnapshot.
+function readInstrCount(M) {
+  M._wasm_read_instr_count();
+  const lo = M._wasm_get_instr_count_lo();
+  const hi = M._wasm_get_instr_count_hi();
+  return (BigInt(hi >>> 0) << 32n) | BigInt(lo >>> 0);
+}
+
+function writeInstrCount(M, value) {
+  M._wasm_write_instr_count(Number(value & 0xFFFFFFFFn), Number((value >> 32n) & 0xFFFFFFFFn));
+}
+
+// Restores a { bytes, instrCount } checkpoint entry (see pushSnapshot below)
+// to both the emulator state and the instrCount anchor.
+function restoreCheckpoint(M, entry) {
+  restoreSnapshot(M, entry.bytes);
+  writeInstrCount(M, entry.instrCount);
+}
+
+// Runs forward exactly `count` retired instructions from the current state
+// (normally right after restoreCheckpoint), with debugger side effects
+// suppressed. count == 0 is a no-op.
+function replayInstructions(M, count) {
+  M._wasm_replay_instructions(Number(count));
+}
+
+const REPLAY_SCAN_NO_MATCH = (1n << 64n) - 1n;
+
+// Like replayInstructions, but returns the instrCount of the latest (most
+// recent in forward time) instruction within the replayed range whose PC has
+// a breakpoint set, or null if none matched.
+function replayScan(M, count) {
+  if (count <= 0n) return null;
+  M._wasm_replay_scan(Number(count));
+  const lo = M._wasm_get_replay_scan_match_lo();
+  const hi = M._wasm_get_replay_scan_match_hi();
+  const match = (BigInt(hi >>> 0) << 32n) | BigInt(lo >>> 0);
+  return match === REPLAY_SCAN_NO_MATCH ? null : match;
 }
 
 // Port of vAmiga_ui.js's tryExec (lines ~1936-1971), minus the fastLoad/
@@ -202,20 +250,36 @@ export function setupRpcDispatcher(M, postMessage) {
   // Watchpoint address -> e9k_debug watchpoint slot index, for removeWatchpoint.
   const watchpoints = new Map();
 
-  // Ring buffer of full-state snapshots, oldest first, for stepBack/
-  // continueReverse (see captureSnapshot/restoreSnapshot above).
+  // Persistent array of checkpoint "anchors" for stepBack/continueReverse
+  // (see captureSnapshot/restoreCheckpoint/replayInstructions/replayScan
+  // above), sorted ascending by instrCount — current position is read live
+  // via readInstrCount(M), not tracked by popping entries. Each entry is
+  // { bytes, pc, instrCount } — pc/instrCount are the state at capture time,
+  // for inspection/debugging of what's in the history.
   const snapshotHistory = [];
 
-  // Mirrors the set of addresses with an active breakpoint, populated by
-  // setBreakpoint/removeBreakpoint below. Used by continueReverse to decide
-  // where to stop while walking back through snapshotHistory.
-  const breakpointAddrs = new Set();
-
-  // Captures the current state onto snapshotHistory, ready for stepBack/
-  // continueReverse to restore. Called before any command that advances
-  // execution (run, stepInto, eof, eol).
+  // Captures the current state onto snapshotHistory as a new anchor for
+  // stepBack/continueReverse to replay from. Called both before any command
+  // that advances execution (run, stepInto, eof, eol) and periodically during
+  // a free-run (see puae_app.js's frame(), ~once per emulated second) —
+  // giving rewindable history that extends into a long `continue`, not just
+  // back to its start. Shared ring buffer for both purposes: heavy
+  // single-stepping via stepInto can evict periodic continue-checkpoints from
+  // history.
   function pushSnapshot() {
-    snapshotHistory.push(captureSnapshot(M));
+    const pc = readRegs(M)[17] >>> 0;
+    const instrCount = readInstrCount(M);
+    // If a previous stepBack/continueReverse rewound execution to an earlier
+    // instrCount and new forward steps have now diverged from what was
+    // previously recorded, drop the abandoned "future" entries so
+    // snapshotHistory stays sorted ascending by instrCount.
+    while (
+      snapshotHistory.length > 0 &&
+      snapshotHistory[snapshotHistory.length - 1].instrCount >= instrCount
+    ) {
+      snapshotHistory.pop();
+    }
+    snapshotHistory.push({ bytes: captureSnapshot(M), pc, instrCount });
     if (snapshotHistory.length > MAX_SNAPSHOT_HISTORY) snapshotHistory.shift();
   }
 
@@ -691,11 +755,9 @@ export function setupRpcDispatcher(M, postMessage) {
           console.warn("[puae_rpc] setBreakpoint: ignore counts not supported, breakpoint will fire every time");
         }
         M._wasm_add_breakpoint(args.address >>> 0);
-        breakpointAddrs.add(args.address >>> 0);
         break;
       case "removeBreakpoint":
         M._wasm_remove_breakpoint(args.address >>> 0);
-        breakpointAddrs.delete(args.address >>> 0);
         break;
       case "setWatchpoint":
         if (args.ignores) {
@@ -732,6 +794,10 @@ export function setupRpcDispatcher(M, postMessage) {
         // a couple of extra ticks give margin (see test_reset.mjs).
         for (let i = 0; i < 4; i++) M._wasm_tick();
         for (let i = 0; i < WARM_UP_TICKS; i++) M._wasm_tick();
+        // Snapshots captured before the reset reference the previous
+        // program's RAM/state — restoring them now would be confusing/
+        // incorrect, so drop them.
+        snapshotHistory.length = 0;
         postMessage({ type: "exec-ready" });
         break;
 
@@ -795,26 +861,55 @@ export function setupRpcDispatcher(M, postMessage) {
         rpcRequest(() => getCpuTrace(args.count ?? 256));
         break;
       case "stepBack":
-        // Restores the most recent snapshot captured before a run/stepInto/
-        // eof/eol, giving exact instruction-level step-back for anything
-        // reached via stepping.
+        // Lands exactly one instruction before the current state, by
+        // restoring the newest checkpoint at or before that target instrCount
+        // and replaying forward the remaining (usually small) instruction
+        // count. Returns false if the target predates the oldest checkpoint
+        // still in history.
         rpcRequest(() => {
           if (snapshotHistory.length === 0) return false;
-          restoreSnapshot(M, snapshotHistory.pop());
+          const current = readInstrCount(M);
+          const target = current - 1n;
+          if (target < snapshotHistory[0].instrCount) return false;
+          let i = snapshotHistory.length - 1;
+          while (snapshotHistory[i].instrCount > target) i--;
+          const entry = snapshotHistory[i];
+          restoreCheckpoint(M, entry);
+          replayInstructions(M, target - entry.instrCount);
           return true;
         });
         break;
       case "continueReverse":
-        // Walks back through snapshotHistory, restoring each in turn, until
-        // one whose PC is at a breakpoint, or history is exhausted (in which
-        // case the oldest snapshot is left restored — "start of history").
+        // Walks back through snapshotHistory's checkpoint intervals (newest
+        // first), scanning each for the latest instruction whose PC matches a
+        // breakpoint, and lands exactly there. If no breakpoint matches
+        // anywhere in history, lands exactly one instruction before the
+        // current state, relative to the oldest checkpoint (mirroring
+        // stepBack's target but possibly replaying a much larger range).
+        // Returns false if the target predates the oldest checkpoint still in
+        // history.
         rpcRequest(() => {
           if (snapshotHistory.length === 0) return false;
-          while (snapshotHistory.length > 0) {
-            restoreSnapshot(M, snapshotHistory.pop());
-            const regs = readRegs(M);
-            if (breakpointAddrs.has(regs[17] >>> 0)) break;
+          const current = readInstrCount(M);
+          const target = current - 1n;
+          if (target < snapshotHistory[0].instrCount) return false;
+          let i = snapshotHistory.length - 1;
+          while (i >= 0 && snapshotHistory[i].instrCount > target) i--;
+          for (; i >= 0; i--) {
+            const entry = snapshotHistory[i];
+            const next = snapshotHistory[i + 1];
+            const upper = next && next.instrCount <= target + 1n ? next.instrCount : target + 1n;
+            restoreCheckpoint(M, entry);
+            const match = replayScan(M, upper - entry.instrCount);
+            if (match !== null) {
+              restoreCheckpoint(M, entry);
+              replayInstructions(M, match - entry.instrCount);
+              return true;
+            }
           }
+          const oldest = snapshotHistory[0];
+          restoreCheckpoint(M, oldest);
+          replayInstructions(M, target - oldest.instrCount);
           return true;
         });
         break;
@@ -823,5 +918,7 @@ export function setupRpcDispatcher(M, postMessage) {
     }
   }
 
-  return { handleMessage };
+  // pushSnapshot is also called by puae_app.js's frame() to take periodic
+  // checkpoints during a free-run.
+  return { handleMessage, pushSnapshot };
 }

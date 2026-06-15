@@ -10,6 +10,11 @@ import { setupRpcDispatcher, getCurrentStopMessage, tryExec, getCurrentProcess, 
 // and its driving tick-worker interval are derived from this.
 const PAL_FPS = 50;
 
+// How often to take a periodic full-state checkpoint (rpc.pushSnapshot())
+// during a free-run, for stepBack/continueReverse — one per second of
+// emulated time.
+const CHECKPOINT_INTERVAL_FRAMES = PAL_FPS;
+
 // Register names: D0-D7, A0-A7, SR, PC — order matches e9k_debug_read_regs().
 export const REG_NAMES = [
   'D0','D1','D2','D3','D4','D5','D6','D7',
@@ -67,6 +72,9 @@ export async function main(config = {}) {
   // post 'stopped' emulator-state messages on a breakpoint/watchpoint hit
   // during free-run — only set inside the VS Code webview, see below.
   let vscode;
+  // Hoisted alongside vscode so frame() can take periodic checkpoints via
+  // rpc.pushSnapshot() — also only set inside the VS Code webview.
+  let rpc;
 
   // #status is optional — index.html (the panel view) omits it; debug.html
   // keeps it for boot/fps diagnostics.
@@ -249,7 +257,7 @@ export async function main(config = {}) {
   // RPC bridge (Stage G3) — only present inside the VS Code webview.
   if (typeof acquireVsCodeApi === 'function') {
     vscode = acquireVsCodeApi();
-    const rpc = setupRpcDispatcher(M, (msg) => vscode.postMessage(msg));
+    rpc = setupRpcDispatcher(M, (msg) => vscode.postMessage(msg));
     window.addEventListener('message', (event) => rpc.handleMessage(event.data));
     // Tells PuaeEmulator the wasm module is ready, so it can fetch and cache
     // getMemoryInfo() — mirrors VAmiga's webview-ready handshake.
@@ -265,6 +273,7 @@ export async function main(config = {}) {
   // Drive at exactly 50 Hz PAL using a cumulative due-frames counter so the tick
   // fires at the right wall-clock time regardless of the display refresh rate.
   let emuFrames = 0;  // total emulation frames run so far
+  let lastCheckpointFrame = 0; // emuFrames at the last periodic rpc.pushSnapshot()
   let startTs   = null;
   let frames    = 0;
   let fpsTime   = 0;
@@ -314,6 +323,15 @@ export async function main(config = {}) {
     }
     const tTickEnd = performance.now();
     emuFrames += toRun;
+
+    // Periodic full-state checkpoint during a free-run, so stepBack/
+    // continueReverse can rewind into the middle of a long `continue`, not
+    // just back to its start (see puae_rpc.js's pushSnapshot). rpc is only
+    // set inside the VS Code webview — debug.html has no RPC bridge.
+    if (rpc && !wasPaused && toRun > 0 && emuFrames - lastCheckpointFrame >= CHECKPOINT_INTERVAL_FRAMES) {
+      rpc.pushSnapshot();
+      lastCheckpointFrame = emuFrames;
+    }
 
     // Non-fastLoad (programB64) boot: poll for exec/graphics libraries being
     // ready, then arm the AllocMem breakpoint (tryExec) so the next hit can

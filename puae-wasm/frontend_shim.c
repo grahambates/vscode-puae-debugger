@@ -55,6 +55,11 @@ static int   g_audio_accum_n = 0; // frames accumulated, not yet packed into slo
 static uint8_t g_rgba_buf[MAX_FB_PIXELS * 4];
 
 static void shim_video_refresh(const void *data, unsigned width, unsigned height, size_t pitch) {
+    if (e9k_debug_is_replaying()) {
+        // Suppress frame-count/pixel-buffer/profiler updates during replay —
+        // this frame doesn't correspond to real elapsed wall-clock time.
+        return;
+    }
     g_fb_data = data;
     g_fb_width = width;
     g_fb_height = height;
@@ -122,6 +127,11 @@ static void shim_video_refresh(const void *data, unsigned width, unsigned height
 }
 
 static size_t shim_audio_sample_batch(const int16_t *data, size_t frames) {
+    if (e9k_debug_is_replaying()) {
+        // Don't feed replayed audio (already played once) back into the
+        // live accumulation buffer.
+        return frames;
+    }
     // Convert int16 interleaved stereo → float32 planar into the accumulation buffer.
     size_t to_copy = frames;
     if (g_audio_accum_n + (int)to_copy > AUDIO_ACCUM_CAP)
@@ -136,6 +146,9 @@ static size_t shim_audio_sample_batch(const int16_t *data, size_t frames) {
 }
 
 static void shim_audio_sample(int16_t left, int16_t right) {
+    if (e9k_debug_is_replaying()) {
+        return;
+    }
     if (g_audio_accum_n < AUDIO_ACCUM_CAP) {
         g_audio_accum_L[g_audio_accum_n] = left  * (1.0f / 32768.0f);
         g_audio_accum_R[g_audio_accum_n] = right * (1.0f / 32768.0f);
@@ -593,6 +606,42 @@ uint32_t wasm_get_cycle_count_lo(void) { return (uint32_t)(g_cycle_count & 0xFFF
 EMSCRIPTEN_KEEPALIVE
 uint32_t wasm_get_cycle_count_hi(void) { return (uint32_t)(g_cycle_count >> 32); }
 
+// --- Instruction count (uint64_t split into lo/hi, same convention as cycle
+// count above) ---
+static uint64_t g_instr_count;
+
+EMSCRIPTEN_KEEPALIVE
+void wasm_read_instr_count(void) { g_instr_count = e9k_debug_read_instr_count(); }
+
+EMSCRIPTEN_KEEPALIVE
+uint32_t wasm_get_instr_count_lo(void) { return (uint32_t)(g_instr_count & 0xFFFFFFFFu); }
+
+EMSCRIPTEN_KEEPALIVE
+uint32_t wasm_get_instr_count_hi(void) { return (uint32_t)(g_instr_count >> 32); }
+
+// Not part of the libretro savestate — must be restored explicitly after
+// wasm_unserialize (see e9k_debug_write_instr_count).
+EMSCRIPTEN_KEEPALIVE
+void wasm_write_instr_count(uint32_t lo, uint32_t hi) {
+    e9k_debug_write_instr_count(((uint64_t)hi << 32) | (uint64_t)lo);
+}
+
+// --- Bulk instruction replay (Phase 2 exact-instruction rewind) ---
+
+EMSCRIPTEN_KEEPALIVE
+void wasm_replay_instructions(uint32_t count) { e9k_debug_replay_instructions(count); }
+
+static uint64_t g_replay_scan_match;
+
+EMSCRIPTEN_KEEPALIVE
+void wasm_replay_scan(uint32_t count) { g_replay_scan_match = e9k_debug_replay_scan(count); }
+
+EMSCRIPTEN_KEEPALIVE
+uint32_t wasm_get_replay_scan_match_lo(void) { return (uint32_t)(g_replay_scan_match & 0xFFFFFFFFu); }
+
+EMSCRIPTEN_KEEPALIVE
+uint32_t wasm_get_replay_scan_match_hi(void) { return (uint32_t)(g_replay_scan_match >> 32); }
+
 // --- Watchpoints (Stage G2) ---
 // e9k_debug_watchpoint_t is 7 x uint32 (addr, op_mask, diff_operand,
 // value_operand, old_value_operand, size_operand, addr_mask_operand).
@@ -700,14 +749,35 @@ uint32_t wasm_get_chip_mem_size(void) { return e9k_debug_get_chip_mem_size(); }
 // Thin wrappers around the standard libretro save-state API, used by the
 // frontend to capture/restore full emulator state for step-back support.
 
-EMSCRIPTEN_KEEPALIVE
-size_t wasm_serialize_size(void) { return retro_serialize_size(); }
+// E9K_EVENT_PHASE_WORDS extra uint32_t's appended after the regular libretro
+// savestate blob, preserving eventtab[ev_hsync/ev_hsynch/ev_misc] phase info
+// that retro_serialize/retro_unserialize don't (see e9k_debug_capture_event_phase
+// / e9k_debug_restore_event_phase in e9k_debug.c for why this is needed).
+#define EVENT_PHASE_BYTES (E9K_EVENT_PHASE_WORDS * sizeof(uint32_t))
 
 EMSCRIPTEN_KEEPALIVE
-int wasm_serialize(void *buf, size_t size) { return retro_serialize(buf, size) ? 1 : 0; }
+size_t wasm_serialize_size(void) { return retro_serialize_size() + EVENT_PHASE_BYTES; }
 
 EMSCRIPTEN_KEEPALIVE
-int wasm_unserialize(const void *buf, size_t size) { return retro_unserialize(buf, size) ? 1 : 0; }
+int wasm_serialize(void *buf, size_t size) {
+    size_t base = retro_serialize_size();
+    if (size < base + EVENT_PHASE_BYTES) return 0;
+    if (!retro_serialize(buf, base)) return 0;
+    e9k_debug_capture_event_phase((uint32_t *)((uint8_t *)buf + base));
+    return 1;
+}
+
+EMSCRIPTEN_KEEPALIVE
+int wasm_unserialize(const void *buf, size_t size) {
+    size_t base = retro_serialize_size();
+    if (size < base + EVENT_PHASE_BYTES) return 0;
+    e9k_debug_suspend_breakpoints();
+    int ok = retro_unserialize(buf, base);
+    e9k_debug_resume_breakpoints();
+    if (!ok) return 0;
+    e9k_debug_restore_event_phase((const uint32_t *)((const uint8_t *)buf + base));
+    return 1;
+}
 
 int main(void) {
     EM_ASM({ console.log('[shim] module loaded, call _wasm_boot() to start'); });

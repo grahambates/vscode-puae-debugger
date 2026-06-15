@@ -308,7 +308,12 @@ check("stepInto re-pauses", M._wasm_is_paused() === 1);
 {
   M._wasm_read_regs();
   const buf = new Uint32Array(M.HEAPU32.buffer, M._wasm_get_reg_buf(), 18);
-  check("stepInto advances PC past pc0", buf[17] !== pc0, hex(buf[17]));
+  // stepBack exactly restored the pre-stepInto state at pc0 (instrCount IC0),
+  // then continueReverse (no breakpoint match) landed exactly one instruction
+  // earlier (IC0-1) — so this single stepInto should land back on pc0 exactly
+  // (round-trip), demonstrating exact instruction-level rewind (see
+  // test_reverse.mjs for thorough coverage).
+  check("stepInto restores PC back to pc0 (exact round-trip)", buf[17] === pc0, hex(buf[17]));
 }
 
 // --- 15. eof (run to end of frame) ---

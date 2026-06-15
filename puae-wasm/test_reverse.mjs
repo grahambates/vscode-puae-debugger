@@ -63,6 +63,13 @@ function hex(value) {
   return "0x" + (value >>> 0).toString(16).padStart(8, "0");
 }
 
+function readInstrCount() {
+  M._wasm_read_instr_count();
+  const lo = M._wasm_get_instr_count_lo();
+  const hi = M._wasm_get_instr_count_hi();
+  return (BigInt(hi >>> 0) << 32n) | BigInt(lo >>> 0);
+}
+
 // --- 1. stepInto N times, recording the regs *before* each step, then
 // stepBack the same number of times and check we land back on each prior
 // state exactly (PC + all other regs). ---
@@ -137,6 +144,122 @@ send("removeBreakpoint", { address: state1[17] });
 {
   const res = await request("continueReverse");
   check("continueReverse returns false once history is exhausted", res === false);
+}
+
+// --- 4. Mid-interval exact stepBack: spanning >=2 periodic checkpoints, then
+// pausing partway through the following interval (not at a checkpoint
+// boundary). stepBack must land exactly one instruction earlier — verified
+// both via instrCount and via an exact round-trip (stepping forward again
+// reproduces the pre-stepBack state exactly). ---
+{
+  for (let i = 0; i < 2; i++) {
+    for (let j = 0; j < 5; j++) M._wasm_tick();
+    rpc.pushSnapshot();
+  }
+  const lastCheckpointRegs = regsSnapshot();
+  const lastCheckpointInstrCount = readInstrCount();
+
+  for (let j = 0; j < 7; j++) M._wasm_tick();
+
+  const preRegs = regsSnapshot();
+  const preInstrCount = readInstrCount();
+  check(
+    "mid-interval test position is past the last checkpoint",
+    preInstrCount > lastCheckpointInstrCount + 1n,
+    `preInstrCount=${preInstrCount} lastCheckpointInstrCount=${lastCheckpointInstrCount}`,
+  );
+
+  const res = await request("stepBack");
+  check("stepBack (mid-interval) returns true", res === true);
+
+  check(
+    "stepBack (mid-interval) decrements instrCount by exactly 1",
+    readInstrCount() === preInstrCount - 1n,
+    `instrCount after=${readInstrCount()} expected=${preInstrCount - 1n}`,
+  );
+  check(
+    "stepBack (mid-interval) does not land on the last checkpoint's own state",
+    JSON.stringify(regsSnapshot()) !== JSON.stringify(lastCheckpointRegs),
+  );
+
+  // Step forward exactly one instruction and confirm it reproduces the
+  // pre-stepBack state exactly (round-trip).
+  M._wasm_step_instr();
+  const MAX_TICKS = 4;
+  for (let i = 0; i < MAX_TICKS; i++) {
+    M._wasm_tick();
+    if (M._wasm_is_paused()) break;
+  }
+  const after = regsSnapshot();
+  check(
+    "stepBack (mid-interval) is exactly reversible by one stepInto",
+    JSON.stringify(after) === JSON.stringify(preRegs),
+    `pc after=${hex(after[17])} expected=${hex(preRegs[17])}`,
+  );
+  check(
+    "round-trip restores instrCount too",
+    readInstrCount() === preInstrCount,
+    `instrCount after=${readInstrCount()} expected=${preInstrCount}`,
+  );
+}
+
+// --- 5. Mid-interval continueReverse: a breakpoint on a PC that occurs only
+// once, strictly between two periodic checkpoints (not on either checkpoint's
+// own captured state) — continueReverse must land exactly there, not snap to
+// a checkpoint boundary. ---
+{
+  rpc.pushSnapshot(); // entry A
+  const instrCountA = readInstrCount();
+
+  for (let j = 0; j < 30; j++) M._wasm_tick();
+
+  rpc.pushSnapshot(); // entry B
+  const instrCountB = readInstrCount();
+
+  check(
+    "mid-interval breakpoint test spans more than one instruction",
+    instrCountB - instrCountA > 1n,
+    `delta=${instrCountB - instrCountA}`,
+  );
+
+  // The most recently retired instruction before entry B was captured: its pc
+  // can't recur later in [instrCountA, instrCountB), so a breakpoint on it
+  // matches exactly once, at exactly instrCountB - 1.
+  const E9K_CPU_TRACE_CAP = 256;
+  M._wasm_read_cpu_trace(E9K_CPU_TRACE_CAP);
+  const tracePtr = M._wasm_get_cpu_trace_buf();
+  const traceWords = new Uint32Array(M.HEAPU32.buffer, tracePtr, E9K_CPU_TRACE_CAP * 2);
+  const targetPc = traceWords[0] >>> 0;
+  const targetInstrCount = instrCountB - 1n;
+
+  send("setBreakpoint", { address: targetPc });
+  {
+    const res = await request("continueReverse");
+    check("continueReverse (mid-interval) returns true", res === true);
+
+    const after = regsSnapshot();
+    check(
+      "continueReverse (mid-interval) lands exactly on the mid-interval breakpoint pc",
+      (after[17] >>> 0) === targetPc,
+      `pc after=${hex(after[17])} expected=${hex(targetPc)}`,
+    );
+    check(
+      "continueReverse (mid-interval) lands exactly on the breakpoint's instrCount",
+      readInstrCount() === targetInstrCount,
+      `instrCount after=${readInstrCount()} expected=${targetInstrCount}`,
+    );
+  }
+  send("removeBreakpoint", { address: targetPc });
+}
+
+// --- 6. "load" (hard reset / panel reuse) clears snapshotHistory, since
+// post-reset snapshots would reference the previous program's state. ---
+{
+  rpc.pushSnapshot();
+  rpc.pushSnapshot();
+  send("load");
+  const res = await request("stepBack");
+  check('"load" clears snapshotHistory', res === false);
 }
 
 console.log("");
