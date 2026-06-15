@@ -17,6 +17,9 @@
     color: var(--vscode-dropdown-foreground);
     border: 1px solid var(--vscode-dropdown-border, transparent);
   }
+  #controls label.warp {
+    margin-left: 12px;
+  }
 </style>
 </head>
 <body>
@@ -29,6 +32,7 @@
     <option value="0.25">25%</option>
     <option value="0.1">10%</option>
   </select>
+  <label class="warp"><input type="checkbox" id="warp"> Warp</label>
 </div>
 <div id="status">Loading…</div>
 

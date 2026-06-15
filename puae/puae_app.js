@@ -10,6 +10,11 @@ import { setupRpcDispatcher, getCurrentStopMessage, tryExec, getCurrentProcess, 
 // and its driving tick-worker interval are derived from this.
 const PAL_FPS = 50;
 
+// In warp mode, run as many ticks as fit in this time budget per tick-worker
+// callback (which itself fires every 1000/PAL_FPS ms), leaving headroom in
+// each callback for rendering/audio/RPC handling.
+const WARP_TICK_BUDGET_MS = 15;
+
 // How often to take a periodic full-state checkpoint (rpc.pushSnapshot())
 // during a free-run, for stepBack/continueReverse — one per second of
 // emulated time.
@@ -233,7 +238,7 @@ export async function main(config = {}) {
       outputChannelCount: [2], numberOfInputs: 0, numberOfOutputs: 1
     });
     gain = audioCtx.createGain();
-    gain.gain.value = speedFactor === 1 ? 0.5 : 0;
+    applyAudioMute();
     workletNode.connect(gain);
     gain.connect(audioCtx.destination);
 
@@ -301,14 +306,32 @@ export async function main(config = {}) {
   let speedFactor = 1;
   let emuClockMs  = 0;    // accumulated emulated time, scaled by speedFactor
   let lastTs      = null;
+  // Warp mode (#warp checkbox, optional): runs as many ticks as fit in
+  // WARP_TICK_BUDGET_MS per tick-worker callback, ignoring speedFactor.
+  // Mutually exclusive with the speed dropdown (disabled while warp is on).
+  let warpMode = false;
+
+  // Audio can't play correctly at non-1x speed or in warp mode (pitch/rate
+  // would need to change too), so mute it whenever either is active.
+  function applyAudioMute() {
+    if (gain) gain.gain.value = (warpMode || speedFactor !== 1) ? 0 : 0.5;
+  }
+
   const speedSelect = document.getElementById('speed');
   if (speedSelect) {
     speedFactor = parseFloat(speedSelect.value) || 1;
     speedSelect.addEventListener('change', () => {
       speedFactor = parseFloat(speedSelect.value) || 1;
-      // Audio can't play correctly at non-1x speed (pitch/rate would need to
-      // change too), so just mute it while slowed down.
-      if (gain) gain.gain.value = speedFactor === 1 ? 0.5 : 0;
+      applyAudioMute();
+    });
+  }
+
+  const warpCheckbox = document.getElementById('warp');
+  if (warpCheckbox) {
+    warpCheckbox.addEventListener('change', () => {
+      warpMode = warpCheckbox.checked;
+      if (speedSelect) speedSelect.disabled = warpMode;
+      applyAudioMute();
     });
   }
 
@@ -341,27 +364,45 @@ export async function main(config = {}) {
       // continueReverse/stepBackFrame) landed on a different point in time,
       // its replay re-renders the framebuffer (fbDirty) and we must redraw.
       if (imgData && !fbDirty) return;
-    } else {
-      if (dueFrames <= emuFrames) return; // display is faster than 50 Hz — nothing to do yet
+    } else if (!warpMode && dueFrames <= emuFrames) {
+      return; // display is faster than 50 Hz — nothing to do yet
     }
-
-    // Run ticks to catch up (cap at 2 to avoid spiral-of-death if we fall behind).
-    const toRun = wasPaused ? 0 : Math.min(dueFrames - emuFrames, 2);
 
     const tTickStart = performance.now();
     let hitBreakpoint = false;
-    for (let i = 0; i < toRun; i++) {
-      M._wasm_tick();
-      if (M._wasm_is_paused()) { hitBreakpoint = true; break; }
+    let ranCount = 0;
+    if (wasPaused) {
+      // no ticks to run
+    } else if (warpMode) {
+      // Run flat-out for a time budget, ignoring speedFactor/dueFrames.
+      while (performance.now() - tTickStart < WARP_TICK_BUDGET_MS) {
+        M._wasm_tick();
+        ranCount++;
+        if (M._wasm_is_paused()) { hitBreakpoint = true; break; }
+      }
+    } else {
+      // Run ticks to catch up (cap at 2 to avoid spiral-of-death if we fall behind).
+      const toRun = Math.min(dueFrames - emuFrames, 2);
+      for (let i = 0; i < toRun; i++) {
+        M._wasm_tick();
+        ranCount++;
+        if (M._wasm_is_paused()) { hitBreakpoint = true; break; }
+      }
     }
     const tTickEnd = performance.now();
-    emuFrames += toRun;
+    emuFrames += ranCount;
+    // Warp mode can run emuFrames ahead of the wall-clock schedule — pull
+    // emuClockMs forward to match so playback doesn't "freeze" waiting for
+    // real time to catch up once warp mode is turned off. Never moves
+    // emuClockMs backward (normal-speed catch-up after falling behind still
+    // works as before).
+    emuClockMs = Math.max(emuClockMs, emuFrames * 1000 / PAL_FPS);
 
     // Periodic full-state checkpoint during a free-run, so stepBack/
     // continueReverse can rewind into the middle of a long `continue`, not
     // just back to its start (see puae_rpc.js's pushSnapshot). rpc is only
     // set inside the VS Code webview — debug.html has no RPC bridge.
-    if (rpc && !wasPaused && toRun > 0 && emuFrames - lastCheckpointFrame >= CHECKPOINT_INTERVAL_FRAMES) {
+    if (rpc && !wasPaused && ranCount > 0 && emuFrames - lastCheckpointFrame >= CHECKPOINT_INTERVAL_FRAMES) {
       rpc.pushSnapshot();
       lastCheckpointFrame = emuFrames;
     }
@@ -413,7 +454,7 @@ export async function main(config = {}) {
       }
     }
 
-    if (toRun > 0) pushAccumToWorklet(); // push this tick's samples to the ring-buffer worklet
+    if (ranCount > 0) pushAccumToWorklet(); // push this tick's samples to the ring-buffer worklet
 
     const w = M._wasm_get_fb_width();
     const h = M._wasm_get_fb_height();
@@ -439,12 +480,12 @@ export async function main(config = {}) {
     // call's own tick loop, if any) so the comparison next time is accurate.
     lastFbFrameCount = M._wasm_get_frame_count();
 
-    if (toRun > 0) {
-      frames += toRun;
-      fpsCnt += toRun;
+    if (ranCount > 0) {
+      frames += ranCount;
+      fpsCnt += ranCount;
       if (ts - fpsTime >= 1000) {
         const fps    = (fpsCnt * 1000 / (ts - fpsTime)).toFixed(1);
-        const msWasm = ((tTickEnd - tTickStart) / toRun).toFixed(1);
+        const msWasm = ((tTickEnd - tTickStart) / ranCount).toFixed(1);
         const msSet  = (tBlitStart - tSetStart ).toFixed(1);
         const msBlit = (tBlitEnd   - tBlitStart).toFixed(1);
         if (status) status.textContent = `${fps} fps | wasm=${msWasm}ms set=${msSet}ms blit=${msBlit}ms`;
