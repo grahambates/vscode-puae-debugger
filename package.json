@@ -29,6 +29,12 @@
   "contributes": {
     "commands": [
       {
+        "command": "vamiga-debugger.stepBackFrame",
+        "title": "Start of Frame",
+        "icon": "$(run-above)",
+        "enablement": "debugType == 'vamiga' && debugState == 'stopped'"
+      },
+      {
         "command": "vamiga-debugger.eof",
         "title": "End of Frame",
         "icon": "$(run-below)",
@@ -75,6 +81,11 @@
         }
       ],
       "debug/toolBar": [
+        {
+          "command": "vamiga-debugger.stepBackFrame",
+          "when": "debugType == 'vamiga'",
+          "group": "navigation@50"
+        },
         {
           "command": "vamiga-debugger.eof",
           "when": "debugType == 'vamiga'",

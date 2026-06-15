@@ -45,6 +45,14 @@ export function activate(context: vscode.ExtensionContext) {
     }),
   );
 
+  // Register "step back a frame" command
+  context.subscriptions.push(
+    vscode.commands.registerCommand("vamiga-debugger.stepBackFrame", async () => {
+      const emulator = VamigaDebugAdapter.getActiveAdapter()?.getEmulator() ?? vAmiga;
+      await emulator.stepBackFrame();
+    }),
+  );
+
   // Register EOF command
   context.subscriptions.push(
     vscode.commands.registerCommand("vamiga-debugger.eof", () => {

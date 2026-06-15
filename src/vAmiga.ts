@@ -673,6 +673,13 @@ export class VAmiga implements Emulator {
   }
 
   /**
+   * This backend has no periodic-checkpoint/frame history to rewind through.
+   */
+  public async stepBackFrame(): Promise<boolean> {
+    return false;
+  }
+
+  /**
    * Run to end of frame
    */
   public eof(): void {

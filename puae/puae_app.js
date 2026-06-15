@@ -279,6 +279,12 @@ export async function main(config = {}) {
   let fpsTime   = 0;
   let fpsCnt    = 0;
   let imgData   = null; // cached ImageData — owns its own ArrayBuffer
+  // wasm_get_frame_count() as of the last canvas redraw — lets us notice the
+  // framebuffer changed while paused (e.g. stepBack/continueReverse/
+  // stepBackFrame's landing replay renders a frame via
+  // wasm_replay_instructions_video) and redraw even though emulation isn't
+  // advancing.
+  let lastFbFrameCount = -1;
 
   // Non-fastLoad (programB64) process-attach state: tryExec() arms an
   // AllocMem breakpoint once exec/graphics libraries are ready (execReady),
@@ -300,14 +306,19 @@ export async function main(config = {}) {
     // How many PAL frames should have elapsed since we started?
     const dueFrames = Math.floor((ts - startTs) * PAL_FPS / 1000);
     const wasPaused = M._wasm_is_paused();
+    const fbFrameCount = M._wasm_get_frame_count();
+    const fbDirty = fbFrameCount !== lastFbFrameCount;
 
     if (wasPaused) {
       // Don't try to "catch up" once resumed.
       emuFrames = dueFrames;
-      // The framebuffer doesn't change while paused, so only draw once — e.g.
-      // right after fastLoad injection pauses the CPU before stopOnEntry, so
-      // the canvas isn't left blank for the whole time the debugger is stopped.
-      if (imgData) return;
+      // The framebuffer doesn't normally change while paused, so only draw
+      // once — e.g. right after fastLoad injection pauses the CPU before
+      // stopOnEntry, so the canvas isn't left blank for the whole time the
+      // debugger is stopped. But if a reverse-stepping command (stepBack/
+      // continueReverse/stepBackFrame) landed on a different point in time,
+      // its replay re-renders the framebuffer (fbDirty) and we must redraw.
+      if (imgData && !fbDirty) return;
     } else {
       if (dueFrames <= emuFrames) return; // display is faster than 50 Hz — nothing to do yet
     }
@@ -402,6 +413,9 @@ export async function main(config = {}) {
     const tBlitStart = performance.now();
     ctx.putImageData(imgData, 0, 0);
     const tBlitEnd = performance.now();
+    // Re-read rather than reuse fbFrameCount (captured before this frame()
+    // call's own tick loop, if any) so the comparison next time is accurate.
+    lastFbFrameCount = M._wasm_get_frame_count();
 
     if (toRun > 0) {
       frames += toRun;

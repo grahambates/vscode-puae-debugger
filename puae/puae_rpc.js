@@ -131,19 +131,35 @@ function restoreCheckpoint(M, entry) {
 
 // Runs forward exactly `count` retired instructions from the current state
 // (normally right after restoreCheckpoint), with debugger side effects
-// suppressed. count == 0 is a no-op.
-function replayInstructions(M, count) {
-  M._wasm_replay_instructions(Number(count));
+// suppressed, and lets the framebuffer be refreshed for frames rendered
+// during the replay (e.g. eof/eol callbacks stay suppressed). Used for the
+// final "land on target" replay of stepBack/continueReverse/stepBackFrame, so
+// the on-screen canvas reflects the landed-on state instead of whatever was
+// on screen before the rewind — the restored checkpoint doesn't include
+// rendered pixels. count == 0 is a no-op.
+function replayInstructionsVideo(M, count) {
+  M._wasm_replay_instructions_video(Number(count));
 }
 
 const REPLAY_SCAN_NO_MATCH = (1n << 64n) - 1n;
 
-// Like replayInstructions, but returns the instrCount of the latest (most
-// recent in forward time) instruction within the replayed range whose PC has
-// a breakpoint set, or null if none matched.
+// Like replayInstructionsVideo, but returns the instrCount of the latest
+// (most recent in forward time) instruction within the replayed range whose
+// PC has a breakpoint set, or null if none matched.
 function replayScan(M, count) {
   if (count <= 0n) return null;
   M._wasm_replay_scan(Number(count));
+  const lo = M._wasm_get_replay_scan_match_lo();
+  const hi = M._wasm_get_replay_scan_match_hi();
+  const match = (BigInt(hi >>> 0) << 32n) | BigInt(lo >>> 0);
+  return match === REPLAY_SCAN_NO_MATCH ? null : match;
+}
+
+// Like replayScan, but returns the instrCount of the latest frame boundary
+// (vblank) crossed within the replayed range, or null if none was crossed.
+function replayScanFrame(M, count) {
+  if (count <= 0n) return null;
+  M._wasm_replay_scan_frame(Number(count));
   const lo = M._wasm_get_replay_scan_match_lo();
   const hi = M._wasm_get_replay_scan_match_hi();
   const match = (BigInt(hi >>> 0) << 32n) | BigInt(lo >>> 0);
@@ -251,7 +267,7 @@ export function setupRpcDispatcher(M, postMessage) {
   const watchpoints = new Map();
 
   // Persistent array of checkpoint "anchors" for stepBack/continueReverse
-  // (see captureSnapshot/restoreCheckpoint/replayInstructions/replayScan
+  // (see captureSnapshot/restoreCheckpoint/replayInstructionsVideo/replayScan
   // above), sorted ascending by instrCount — current position is read live
   // via readInstrCount(M), not tracked by popping entries. Each entry is
   // { bytes, pc, instrCount } — pc/instrCount are the state at capture time,
@@ -875,7 +891,7 @@ export function setupRpcDispatcher(M, postMessage) {
           while (snapshotHistory[i].instrCount > target) i--;
           const entry = snapshotHistory[i];
           restoreCheckpoint(M, entry);
-          replayInstructions(M, target - entry.instrCount);
+          replayInstructionsVideo(M, target - entry.instrCount);
           return true;
         });
         break;
@@ -903,14 +919,51 @@ export function setupRpcDispatcher(M, postMessage) {
             const match = replayScan(M, upper - entry.instrCount);
             if (match !== null) {
               restoreCheckpoint(M, entry);
-              replayInstructions(M, match - entry.instrCount);
+              replayInstructionsVideo(M, match - entry.instrCount);
               return true;
             }
           }
           const oldest = snapshotHistory[0];
           restoreCheckpoint(M, oldest);
-          replayInstructions(M, target - oldest.instrCount);
+          replayInstructionsVideo(M, target - oldest.instrCount);
           return true;
+        });
+        break;
+      case "stepBackFrame":
+        // Steps back to the start of the current frame (the most recent
+        // vblank strictly before the current instrCount). A frame boundary
+        // recorded with instrCount==N means "vblank occurred just before
+        // instruction N retires" — it fires during a replay targeting N
+        // itself (before the break-check for instruction N). So to avoid
+        // re-finding the boundary we're already paused at/just past, scan up
+        // to `target = current - 1`, mirroring stepBack/continueReverse's
+        // target computation. Walks back through snapshotHistory's
+        // checkpoints (newest first); for each, scans the whole range up to
+        // `target` for frame boundaries — scanLastMatch's "last write wins"
+        // semantics mean this always yields the latest (closest-to-current)
+        // boundary regardless of how large the scanned range is, so unlike
+        // continueReverse no per-interval upper bound is needed. Returns
+        // false if no frame boundary exists anywhere in history (e.g. before
+        // the first vblank after boot).
+        rpcRequest(() => {
+          if (snapshotHistory.length === 0) return false;
+          const current = readInstrCount(M);
+          const target = current - 1n;
+          if (target < snapshotHistory[0].instrCount) return false;
+          let i = snapshotHistory.length - 1;
+          while (i >= 0 && snapshotHistory[i].instrCount > target) i--;
+          for (; i >= 0; i--) {
+            const entry = snapshotHistory[i];
+            restoreCheckpoint(M, entry);
+            const match = replayScanFrame(M, target - entry.instrCount);
+            if (match !== null) {
+              restoreCheckpoint(M, entry);
+              replayInstructionsVideo(M, match - entry.instrCount);
+              postMessage({ type: "emulator-state", state: "stopped", message: getCurrentStopMessage(M) });
+              return true;
+            }
+          }
+          return false;
         });
         break;
       default:

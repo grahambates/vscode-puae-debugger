@@ -252,7 +252,57 @@ send("removeBreakpoint", { address: state1[17] });
   send("removeBreakpoint", { address: targetPc });
 }
 
-// --- 6. "load" (hard reset / panel reuse) clears snapshotHistory, since
+// --- 6. stepBackFrame: steps back to the start of the current frame (the
+// most recent vblank boundary before the current position), making
+// progressively earlier progress on repeated calls. ---
+{
+  rpc.pushSnapshot(); // checkpoint C
+  const instrCountC = readInstrCount();
+
+  const FRAMES = 10;
+  for (let j = 0; j < FRAMES; j++) M._wasm_tick();
+
+  const current1 = readInstrCount();
+  check(
+    "stepBackFrame test position is past the checkpoint",
+    current1 > instrCountC,
+    `current1=${current1} instrCountC=${instrCountC}`,
+  );
+
+  const frameCountBefore = M._wasm_get_frame_count();
+
+  const res1 = await request("stepBackFrame");
+  check("stepBackFrame returns true", res1 === true);
+
+  const landed1 = readInstrCount();
+  check(
+    "stepBackFrame lands at an earlier instrCount",
+    landed1 < current1,
+    `landed1=${landed1} current1=${current1}`,
+  );
+  check(
+    "stepBackFrame lands at or after the checkpoint",
+    landed1 >= instrCountC,
+    `landed1=${landed1} instrCountC=${instrCountC}`,
+  );
+  check(
+    "stepBackFrame's landing replay refreshes the framebuffer/frame count",
+    M._wasm_get_frame_count() !== frameCountBefore,
+    `frameCount unchanged at ${frameCountBefore}`,
+  );
+
+  const res2 = await request("stepBackFrame");
+  check("stepBackFrame (again) returns true", res2 === true);
+
+  const landed2 = readInstrCount();
+  check(
+    "stepBackFrame (again) makes further backward progress",
+    landed2 < landed1,
+    `landed2=${landed2} landed1=${landed1}`,
+  );
+}
+
+// --- 7. "load" (hard reset / panel reuse) clears snapshotHistory, since
 // post-reset snapshots would reference the previous program's state. ---
 {
   rpc.pushSnapshot();
@@ -260,6 +310,8 @@ send("removeBreakpoint", { address: state1[17] });
   send("load");
   const res = await request("stepBack");
   check('"load" clears snapshotHistory', res === false);
+  const resFrame = await request("stepBackFrame");
+  check('"load" clears snapshotHistory (stepBackFrame)', resFrame === false);
 }
 
 console.log("");

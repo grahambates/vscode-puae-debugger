@@ -55,7 +55,7 @@ static int   g_audio_accum_n = 0; // frames accumulated, not yet packed into slo
 static uint8_t g_rgba_buf[MAX_FB_PIXELS * 4];
 
 static void shim_video_refresh(const void *data, unsigned width, unsigned height, size_t pitch) {
-    if (e9k_debug_is_replaying()) {
+    if (e9k_debug_is_replaying() && !e9k_debug_is_replay_video_enabled()) {
         // Suppress frame-count/pixel-buffer/profiler updates during replay —
         // this frame doesn't correspond to real elapsed wall-clock time.
         return;
@@ -119,6 +119,14 @@ static void shim_video_refresh(const void *data, unsigned width, unsigned height
                 src_row += pitch;
             }
         }
+    }
+
+    if (e9k_debug_is_replaying()) {
+        // Pixel buffer refreshed above (e9k_debug_replay_instructions_video),
+        // but per-frame debugger hooks (memhook re-arming, profiler sampling,
+        // one-shot wasm_eof()/wasm_eol() callbacks) must stay suppressed
+        // during replay, same as plain replay.
+        return;
     }
 
     // Drives e9k_debug's per-frame hooks (memhook re-arming, profiler
@@ -631,10 +639,22 @@ void wasm_write_instr_count(uint32_t lo, uint32_t hi) {
 EMSCRIPTEN_KEEPALIVE
 void wasm_replay_instructions(uint32_t count) { e9k_debug_replay_instructions(count); }
 
+// Like wasm_replay_instructions, but lets shim_video_refresh update the pixel
+// buffer/frame count for frames rendered during the replay — used for the
+// final "land on target" replay so the on-screen framebuffer reflects the
+// landed-on state.
+EMSCRIPTEN_KEEPALIVE
+void wasm_replay_instructions_video(uint32_t count) { e9k_debug_replay_instructions_video(count); }
+
 static uint64_t g_replay_scan_match;
 
 EMSCRIPTEN_KEEPALIVE
 void wasm_replay_scan(uint32_t count) { g_replay_scan_match = e9k_debug_replay_scan(count); }
+
+// Shares g_replay_scan_match/wasm_get_replay_scan_match_lo/hi with
+// wasm_replay_scan above — only one scan kind runs at a time.
+EMSCRIPTEN_KEEPALIVE
+void wasm_replay_scan_frame(uint32_t count) { g_replay_scan_match = e9k_debug_replay_scan_frame(count); }
 
 EMSCRIPTEN_KEEPALIVE
 uint32_t wasm_get_replay_scan_match_lo(void) { return (uint32_t)(g_replay_scan_match & 0xFFFFFFFFu); }

@@ -69,6 +69,12 @@ export interface Emulator {
   continueReverse(): Promise<boolean>;
 
   /**
+   * Step back to the start of the current frame (previous vblank boundary).
+   * PUAE-only; backends without checkpoint history resolve to false.
+   */
+  stepBackFrame(): Promise<boolean>;
+
+  /**
    * Run to end of frame
    */
   eof(): void;

@@ -154,6 +154,13 @@ e9k_debug_write_instr_count(uint64_t value);
 int
 e9k_debug_is_replaying(void);
 
+// True while e9k_debug_replay_instructions_video is running. Lets
+// frontend_shim.c's shim_video_refresh update the pixel buffer/frame count
+// even though e9k_debug_is_replaying() is also true (e9k_vblank_notify's
+// per-frame debugger hooks stay suppressed regardless).
+int
+e9k_debug_is_replay_video_enabled(void);
+
 // Runs forward exactly `count` retired instructions from the current state
 // (normally right after restoring a checkpoint), with debugger side effects
 // suppressed. Leaves the CPU paused with instrCount advanced by `count`.
@@ -162,11 +169,24 @@ e9k_debug_is_replaying(void);
 void
 e9k_debug_replay_instructions(uint32_t count);
 
+// Like e9k_debug_replay_instructions, but allows shim_video_refresh to update
+// the pixel buffer/frame count for frames rendered during the replay. Used
+// for the final "land on target" replay of stepBack/continueReverse/
+// stepBackFrame so the on-screen framebuffer reflects the landed-on state.
+void
+e9k_debug_replay_instructions_video(uint32_t count);
+
 // Like e9k_debug_replay_instructions, but returns the instrCount of the
 // latest instruction within the replayed range whose PC has a breakpoint
 // set, or (uint64_t)-1 if none matched.
 uint64_t
 e9k_debug_replay_scan(uint32_t count);
+
+// Like e9k_debug_replay_scan, but returns the instrCount of the latest frame
+// boundary (vblank) crossed within the replayed range, or (uint64_t)-1 if
+// none was crossed.
+uint64_t
+e9k_debug_replay_scan_frame(uint32_t count);
 
 void
 e9k_debug_add_breakpoint(uint32_t addr);
@@ -204,6 +224,11 @@ e9k_debug_set_hblank_callback(void (*cb)(void *), void *user);
 
 void
 e9k_hsync_notify(void);
+
+// Called from hsync_handler() (custom.c) on the scanline where a new frame's
+// vblank starts — including during replay. Drives e9k_debug_replay_scan_frame.
+void
+e9k_debug_frame_boundary_notify(void);
 
 void
 e9k_debug_reapply_memhooks(void);

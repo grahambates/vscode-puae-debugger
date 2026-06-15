@@ -51,11 +51,25 @@ static uint64_t e9k_debug_instrCount = 0;
 static int e9k_debug_replayMode = 0;
 static uint64_t e9k_debug_replayTarget = 0;
 
+// When set during replay, shim_video_refresh (frontend_shim.c) still updates
+// the pixel buffer/frame count (but NOT e9k_vblank_notify's per-frame debugger
+// hooks, which stay suppressed). Used by e9k_debug_replay_instructions_video
+// so the framebuffer reflects the landed-on state after stepBack/
+// continueReverse/stepBackFrame, which would otherwise leave a stale frame on
+// screen (the restored checkpoint doesn't include rendered pixels).
+static int e9k_debug_replayVideoEnabled = 0;
+
 // Scan mode (active only while e9k_debug_replayMode is set): records the
 // instrCount of the most recent (i.e. latest in forward time) instruction
 // hitting a breakpoint during the replay range, for continueReverse.
 static int e9k_debug_scanMode = 0;
 static uint64_t e9k_debug_scanLastMatch = 0;
+
+// Like e9k_debug_scanMode, but records the instrCount of the most recent
+// frame boundary (vblank) crossed during the replay range, for
+// stepBackFrame. Shares e9k_debug_scanLastMatch with e9k_debug_scanMode —
+// only one scan kind is ever active at a time.
+static int e9k_debug_scanFrameMode = 0;
 
 static int e9k_debug_stepLine = 0;
 static int e9k_debug_stepLineHasStart = 0;
@@ -1040,6 +1054,12 @@ e9k_debug_is_replaying(void)
 	return e9k_debug_replayMode;
 }
 
+int
+e9k_debug_is_replay_video_enabled(void)
+{
+	return e9k_debug_replayVideoEnabled;
+}
+
 // Runs forward exactly `count` retired instructions from the current state
 // (normally immediately after restoring a checkpoint), with debugger
 // side-effects (watchpoints, catchpoints, profiler sampling, audio/video
@@ -1070,6 +1090,21 @@ e9k_debug_replay_instructions(uint32_t count)
 	e9k_debug_replayMode = 0;
 }
 
+// Like e9k_debug_replay_instructions, but shim_video_refresh
+// (frontend_shim.c) is allowed to update the pixel buffer/frame count for
+// frames rendered during the replay (e9k_vblank_notify's per-frame debugger
+// hooks remain suppressed, as in plain replay). Used for the final "land on
+// target" replay of stepBack/continueReverse/stepBackFrame, so the on-screen
+// framebuffer reflects the landed-on state rather than whatever was on screen
+// before the rewind.
+E9K_DEBUG_EXPORT void
+e9k_debug_replay_instructions_video(uint32_t count)
+{
+	e9k_debug_replayVideoEnabled = 1;
+	e9k_debug_replay_instructions(count);
+	e9k_debug_replayVideoEnabled = 0;
+}
+
 // Like e9k_debug_replay_instructions, but also records the instrCount of the
 // latest (most recent in forward time) instruction within the replayed range
 // whose PC has a breakpoint set. Returns that instrCount, or (uint64_t)-1 if
@@ -1084,6 +1119,22 @@ e9k_debug_replay_scan(uint32_t count)
 	e9k_debug_scanLastMatch = (uint64_t)-1;
 	e9k_debug_replay_instructions(count);
 	e9k_debug_scanMode = 0;
+	return e9k_debug_scanLastMatch;
+}
+
+// Like e9k_debug_replay_scan, but records the instrCount of the most recent
+// frame boundary (vblank) crossed during the replay range, for
+// stepBackFrame. Returns (uint64_t)-1 if no frame boundary was crossed.
+E9K_DEBUG_EXPORT uint64_t
+e9k_debug_replay_scan_frame(uint32_t count)
+{
+	if (count == 0) {
+		return (uint64_t)-1;
+	}
+	e9k_debug_scanFrameMode = 1;
+	e9k_debug_scanLastMatch = (uint64_t)-1;
+	e9k_debug_replay_instructions(count);
+	e9k_debug_scanFrameMode = 0;
 	return e9k_debug_scanLastMatch;
 }
 
@@ -1399,6 +1450,18 @@ e9k_hsync_notify(void)
 {
 	if (e9k_debug_hblankCb) {
 		e9k_debug_hblankCb(e9k_debug_hblankUser);
+	}
+}
+
+// Called from hsync_handler() (custom.c) on the scanline where a new frame's
+// vblank starts — including during replay (unlike e9k_vblank_notify, which
+// is suppressed then). Used by e9k_debug_replay_scan_frame to find the most
+// recent frame boundary within a replayed range, for stepBackFrame.
+E9K_DEBUG_EXPORT void
+e9k_debug_frame_boundary_notify(void)
+{
+	if (e9k_debug_replayMode && e9k_debug_scanFrameMode) {
+		e9k_debug_scanLastMatch = e9k_debug_instrCount;
 	}
 }
 

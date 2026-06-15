@@ -298,6 +298,17 @@ export class PuaeEmulator implements Emulator {
     return !!res;
   }
 
+  /**
+   * Steps back to the start of the current frame (the most recent vblank
+   * boundary before the current position), using the same checkpoint+replay
+   * history as stepBack/continueReverse.
+   */
+  public async stepBackFrame(): Promise<boolean> {
+    this.invalidateCache();
+    const res = await this.sendRpcCommand("stepBackFrame");
+    return !!res;
+  }
+
   public eof(): void {
     this.invalidateCache();
     this.sendCommand("eof");
