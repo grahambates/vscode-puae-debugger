@@ -765,23 +765,6 @@ uint32_t *wasm_get_catchbreak_buf(void) { return (uint32_t *)&g_catchbreak_buf; 
 EMSCRIPTEN_KEEPALIVE
 uint32_t wasm_get_chip_mem_size(void) { return puae_debug_get_chip_mem_size(); }
 
-// --- CPU prefs diagnostics (cpu_compatible/cpu_cycle_exact/etc.) ---
-
-EMSCRIPTEN_KEEPALIVE
-uint32_t wasm_get_cpu_model(void) { return puae_debug_get_cpu_model(); }
-
-EMSCRIPTEN_KEEPALIVE
-uint32_t wasm_get_cpu_flags(void) { return puae_debug_get_cpu_flags(); }
-
-EMSCRIPTEN_KEEPALIVE
-int32_t wasm_get_m68k_speed(void) { return puae_debug_get_m68k_speed(); }
-
-EMSCRIPTEN_KEEPALIVE
-int32_t wasm_get_dma_diag(uint32_t index, uint32_t addr) { return puae_debug_get_dma_diag(index, addr); }
-
-EMSCRIPTEN_KEEPALIVE
-int32_t wasm_get_estimate_diag(uint32_t index, uint32_t param) { return puae_debug_get_estimate_diag(index, param); }
-
 // --- Save state snapshots (reverse stepping) ---
 // Thin wrappers around the standard libretro save-state API, used by the
 // frontend to capture/restore full emulator state for step-back support.

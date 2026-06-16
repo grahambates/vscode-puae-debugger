@@ -143,27 +143,6 @@ puae_debug_consume_catchbreak(e9k_debug_catchbreak_t *out);
 uint32_t
 puae_debug_get_chip_mem_size(void);
 
-// Diagnostics: currprefs.cpu_model (e.g. 68000, 68020, ...).
-uint32_t
-puae_debug_get_cpu_model(void);
-
-// Diagnostics: bitmask of CPU timing-accuracy prefs — bit0 cpu_compatible,
-// bit1 cpu_cycle_exact, bit2 cpu_memory_cycle_exact, bit3 blitter_cycle_exact.
-uint32_t
-puae_debug_get_cpu_flags(void);
-
-// Diagnostics: currprefs.m68k_speed (0 = real hardware rate, <0 = max/turbo).
-int32_t
-puae_debug_get_m68k_speed(void);
-
-// Diagnostics: DMA/cycle-contention internals (see ami_debug.c for index meanings).
-int32_t
-puae_debug_get_dma_diag(uint32_t index, uint32_t addr);
-
-// Diagnostics: bitplane-DMA fetch prediction state (see ami_debug.c for index meanings).
-int32_t
-puae_debug_get_estimate_diag(uint32_t index, uint32_t param);
-
 // Set during e9k_debug_read_memory/peek_memory to suppress write-only-register
 // readback side effects in custom_wget_1 (suppresses real-hardware echo behavior
 // so that debugger memory inspection cannot corrupt chipset registers like DDFSTRT).

@@ -673,8 +673,9 @@
     "check-types": "tsc --noEmit && tsc --noEmit -p src/webview/tsconfig.json",
     "pretest": "npm run compile && npm run lint",
     "lint": "eslint src --ext ts,tsx",
-    "test": "npm run test:unit",
+    "test": "npm run test:unit && npm run test:wasm",
     "test:unit": "jest",
+    "test:wasm": "node puae-wasm/test/test_g1.mjs && node puae-wasm/test/test_g2.mjs && node puae-wasm/test/test_g3.mjs && node puae-wasm/test/test_g4.mjs && node puae-wasm/test/test_g5.mjs && node puae-wasm/test/test_g6.mjs && node puae-wasm/test/test_reset.mjs && node puae-wasm/test/test_reverse.mjs",
     "test:coverage": "jest --coverage",
     "format": "prettier --write \"src/**/*.{ts,tsx}\"",
     "format:check": "prettier --check \"src/**/*.{ts,tsx}\""
