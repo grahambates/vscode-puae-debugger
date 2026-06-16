@@ -1,11 +1,11 @@
 import fs from "node:fs";
-import createPuaeModule from "../puae/puae.js";
+import createPuaeModule from "../../puae/puae.js";
 
 async function diag(label, extraConfig) {
   const M = await createPuaeModule();
 
   M.FS.mkdir("/uae_system");
-  M.FS.writeFile("/uae_system/kick34005.A500", fs.readFileSync("../puae/kick34005.A500"));
+  M.FS.writeFile("/uae_system/kick34005.A500", fs.readFileSync(new URL("../../puae/kick34005.A500", import.meta.url).pathname));
   M.FS.writeFile(
     "/uae_system/puae_libretro_global.uae",
     "nr_floppies=0\nfloppy0type=-1\nchipmem_size=4\nfastmem_size=2\n" + extraConfig,

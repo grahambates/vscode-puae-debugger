@@ -1,5 +1,5 @@
 import fs from "node:fs";
-import createPuaeModule from "../puae/puae.js";
+import createPuaeModule from "../../puae/puae.js";
 
 const CYCLE_BITPLANE = 1;
 const CYCLE_MASK = 0x0f;

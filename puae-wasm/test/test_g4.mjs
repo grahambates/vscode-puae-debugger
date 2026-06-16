@@ -1,6 +1,6 @@
 import fs from "node:fs";
-import createPuaeModule from "../puae/puae.js";
-import { setupRpcDispatcher } from "../puae/puae_rpc.js";
+import createPuaeModule from "../../puae/puae.js";
+import { setupRpcDispatcher } from "../../puae/puae_rpc.js";
 import { parseHunksFromFile } from "./test_g4_hunkparser.mjs";
 import { loadAmigaProgram } from "./test_g4_hunkloader.mjs";
 import { AmigaMemoryMapper } from "./test_g4_memmapper.mjs";
@@ -8,7 +8,7 @@ import { AmigaMemoryMapper } from "./test_g4_memmapper.mjs";
 const M = await createPuaeModule();
 
 M.FS.mkdir("/uae_system");
-M.FS.writeFile("/uae_system/kick34005.A500", fs.readFileSync("../puae/kick34005.A500"));
+M.FS.writeFile("/uae_system/kick34005.A500", fs.readFileSync(new URL("../../puae/kick34005.A500", import.meta.url).pathname));
 
 // Boot with no disk inserted, matching index.html's fastLoad boot sequence.
 const ok = M.ccall("wasm_boot", "number", ["string"], [""]);
@@ -127,7 +127,7 @@ for (let i = 0; i < 64; i++) {
 console.log("Resident libraries:", libNames);
 
 // --- Parse and load fixture ---
-const hunks = await parseHunksFromFile("./hunk.exe");
+const hunks = await parseHunksFromFile(new URL("../hunk.exe", import.meta.url).pathname);
 console.log("hunks:", hunks.map(h => `${h.index} ${h.hunkType} ${h.allocSize} (${h.memType})`));
 
 const program = await loadAmigaProgram(emu, hunks);

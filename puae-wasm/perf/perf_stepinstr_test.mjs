@@ -1,6 +1,6 @@
 import fs from "node:fs";
-import createPuaeModule from "../puae/puae.js";
-import { tryExec, getCurrentProcess } from "../puae/puae_rpc.js";
+import createPuaeModule from "../../puae/puae.js";
+import { tryExec, getCurrentProcess } from "../../puae/puae_rpc.js";
 
 // Exploratory/throwaway: measure raw cost of single-instruction stepping
 // (wasm_step_instr + tick-until-paused), to ground Phase 2 feasibility
@@ -8,13 +8,13 @@ import { tryExec, getCurrentProcess } from "../puae/puae_rpc.js";
 // periodic-checkpoint boundary).
 const M = await createPuaeModule();
 M.FS.mkdir("/uae_system");
-M.FS.writeFile("/uae_system/kick34005.A500", fs.readFileSync("../puae/kick34005.A500"));
+M.FS.writeFile("/uae_system/kick34005.A500", fs.readFileSync(new URL("../../puae/kick34005.A500", import.meta.url).pathname));
 M.FS.writeFile(
   "/uae_system/puae_libretro_global.uae",
   "filesystem=rw,dh0:/uae_system/dh0\nnr_floppies=0\nfloppy0type=-1\nchipmem_size=4\nfastmem_size=2\n",
 );
 M.FS.mkdir("/uae_system/dh0");
-M.FS.writeFile("/uae_system/dh0/file", fs.readFileSync("./hunk.exe"));
+M.FS.writeFile("/uae_system/dh0/file", fs.readFileSync(new URL("../hunk.exe", import.meta.url).pathname));
 M.FS.mkdir("/uae_system/dh0/s");
 M.FS.writeFile("/uae_system/dh0/s/startup-sequence", "file");
 

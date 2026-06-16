@@ -1,5 +1,5 @@
 import fs from "node:fs";
-import createPuaeModule from "../puae/puae.js";
+import createPuaeModule from "../../puae/puae.js";
 
 async function diag(label, extraConfig) {
   const M = await createPuaeModule();

@@ -1,11 +1,11 @@
 import fs from "node:fs";
-import createPuaeModule from "../puae/puae.js";
-import { tryExec, getCurrentProcess } from "../puae/puae_rpc.js";
+import createPuaeModule from "../../puae/puae.js";
+import { tryExec, getCurrentProcess } from "../../puae/puae_rpc.js";
 
 const M = await createPuaeModule();
 
 M.FS.mkdir("/uae_system");
-M.FS.writeFile("/uae_system/kick34005.A500", fs.readFileSync("../puae/kick34005.A500"));
+M.FS.writeFile("/uae_system/kick34005.A500", fs.readFileSync(new URL("../../puae/kick34005.A500", import.meta.url).pathname));
 
 // Mount /uae_system/dh0 as a bootable DH0: hard disk (filesystem=rw,dh0:...,
 // the directory-mount approach from puaeEmulator.ts's buildExtraConfig).
@@ -18,7 +18,7 @@ M.FS.writeFile(
 
 // Program + startup-sequence (matches puae_app.js's programB64 handling).
 M.FS.mkdir("/uae_system/dh0");
-M.FS.writeFile("/uae_system/dh0/file", fs.readFileSync("./hunk.exe"));
+M.FS.writeFile("/uae_system/dh0/file", fs.readFileSync(new URL("../hunk.exe", import.meta.url).pathname));
 M.FS.mkdir("/uae_system/dh0/s");
 M.FS.writeFile("/uae_system/dh0/s/startup-sequence", "file");
 

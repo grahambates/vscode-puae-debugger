@@ -1,22 +1,22 @@
 import fs from "node:fs";
-import createPuaeModule from "../puae/puae.js";
-import { tryExec, getCurrentProcess } from "../puae/puae_rpc.js";
+import createPuaeModule from "../../puae/puae.js";
+import { tryExec, getCurrentProcess } from "../../puae/puae_rpc.js";
 
-// Stage 2b validation: wasm_replay_scan(count) should behave like
+// Phase 3 validation: wasm_replay_scan_frame(count) should behave like
 // wasm_replay_instructions(count) (landing exactly on instrCount0 + count),
 // but additionally report the instrCount of the *latest* (most recent in
-// forward time) instruction within the scanned range whose PC has a
-// breakpoint set, or the UINT64_MAX sentinel if none matched.
+// forward time) frame boundary (vblank) crossed within the scanned range, or
+// the UINT64_MAX sentinel if none was crossed. Used by stepBackFrame.
 
 const M = await createPuaeModule();
 M.FS.mkdir("/uae_system");
-M.FS.writeFile("/uae_system/kick34005.A500", fs.readFileSync("../puae/kick34005.A500"));
+M.FS.writeFile("/uae_system/kick34005.A500", fs.readFileSync(new URL("../../puae/kick34005.A500", import.meta.url).pathname));
 M.FS.writeFile(
   "/uae_system/puae_libretro_global.uae",
   "filesystem=rw,dh0:/uae_system/dh0\nnr_floppies=0\nfloppy0type=-1\nchipmem_size=4\nfastmem_size=2\n",
 );
 M.FS.mkdir("/uae_system/dh0");
-M.FS.writeFile("/uae_system/dh0/file", fs.readFileSync("./hunk.exe"));
+M.FS.writeFile("/uae_system/dh0/file", fs.readFileSync(new URL("../hunk.exe", import.meta.url).pathname));
 M.FS.mkdir("/uae_system/dh0/s");
 M.FS.writeFile("/uae_system/dh0/s/startup-sequence", "file");
 
@@ -90,8 +90,8 @@ function restoreSnapshot(bytes) {
   }
 }
 
-function replayScan(count) {
-  M._wasm_replay_scan(count);
+function replayScanFrame(count) {
+  M._wasm_replay_scan_frame(count);
   const lo = M._wasm_get_replay_scan_match_lo();
   const hi = M._wasm_get_replay_scan_match_hi();
   return (BigInt(hi >>> 0) << 32n) | BigInt(lo >>> 0);
@@ -107,8 +107,8 @@ for (let i = 0; i < 10; i++) M._wasm_tick();
 const instrCount0 = readInstrCount();
 const snapshot0 = captureSnapshot();
 
-// --- Free-run ~1 emulated second, recording the "future" instrCount/regs and
-// the CPU trace covering the replayed range. ---
+// --- Free-run ~1 emulated second (~50 vblanks), recording the "future"
+// instrCount/regs covering the replayed range. ---
 const FRAMES = 50;
 for (let i = 0; i < FRAMES; i++) M._wasm_tick();
 
@@ -117,70 +117,56 @@ const regs1 = readRegs();
 const delta = instrCount1 - instrCount0;
 console.log(`instrCount delta over ${FRAMES} frames: ${delta}`);
 
-const PUAE_DEBUG_CPU_TRACE_CAP = 256;
-M._wasm_read_cpu_trace(PUAE_DEBUG_CPU_TRACE_CAP);
-{
-  const ptr = M._wasm_get_cpu_trace_buf();
-  const words = new Uint32Array(M.HEAPU32.buffer, ptr, PUAE_DEBUG_CPU_TRACE_CAP * 2);
-  // trace[0] = most recently retired instruction, i.e. instrCount1 - 1.
-  const TRACE_INDEX = 5;
-  const targetPc = words[TRACE_INDEX * 2] >>> 0;
-  const targetInstrCount = instrCount1 - 1n - BigInt(TRACE_INDEX);
+// --- Scan [instrCount0, instrCount1) for the latest frame boundary. ---
+restoreSnapshot(snapshot0);
+writeInstrCount(instrCount0);
+const match = replayScanFrame(Number(delta));
+console.log(`match=${match} (instrCount0=${instrCount0}, instrCount1=${instrCount1})`);
 
-  console.log(`target: pc=${hex(targetPc)} instrCount=${targetInstrCount}`);
+check("a frame boundary was found within ~50 frames", match !== UINT64_MAX, `match=${match}`);
+check(
+  "match is within [instrCount0, instrCount1)",
+  match >= instrCount0 && match < instrCount1,
+  `match=${match} range=[${instrCount0},${instrCount1})`,
+);
+check(
+  "scan still advances instrCount exactly like replay_instructions",
+  readInstrCount() === instrCount1,
+  `instrCount=${readInstrCount()} expected=${instrCount1}`,
+);
 
-  // --- Sentinel case: a breakpoint that never matches anywhere in range. ---
-  restoreSnapshot(snapshot0);
-  writeInstrCount(instrCount0);
-  M._wasm_add_breakpoint(0x00f80000); // unused address, never executed
-  const noMatch = replayScan(Number(delta));
-  check("no-match scan returns UINT64_MAX sentinel", noMatch === UINT64_MAX, `noMatch=${noMatch}`);
-  check(
-    "no-match scan still advances instrCount exactly like replay_instructions",
-    readInstrCount() === instrCount1,
-    `instrCount=${readInstrCount()} expected=${instrCount1}`,
-  );
-  M._wasm_remove_breakpoint(0x00f80000);
+// --- Determinism: re-running the same scan from the same checkpoint finds
+// the same boundary. ---
+restoreSnapshot(snapshot0);
+writeInstrCount(instrCount0);
+const match2 = replayScanFrame(Number(delta));
+check("re-scanning the same range finds the same boundary", match2 === match, `match=${match} match2=${match2}`);
 
-  // --- Real match case: breakpoint at a PC visited mid-range. ---
-  restoreSnapshot(snapshot0);
-  writeInstrCount(instrCount0);
-  M._wasm_add_breakpoint(targetPc);
-  const match = replayScan(Number(delta));
-  console.log(`match=${match} (targetInstrCount=${targetInstrCount}, instrCount0=${instrCount0}, instrCount1=${instrCount1})`);
-  check("match found within scanned range", match !== UINT64_MAX, `match=${match}`);
-  check(
-    "match is within [instrCount0, instrCount1)",
-    match >= instrCount0 && match < instrCount1,
-    `match=${match} range=[${instrCount0},${instrCount1})`,
-  );
-  check(
-    "match is the LATEST occurrence (>= the trace-derived target)",
-    match >= targetInstrCount,
-    `match=${match} targetInstrCount=${targetInstrCount}`,
-  );
+// --- Restoring + replaying to `match` lands exactly on the same state both
+// times (deterministic landing). ---
+restoreSnapshot(snapshot0);
+writeInstrCount(instrCount0);
+M._wasm_replay_instructions(Number(match - instrCount0));
+const landedRegs = readRegs();
 
-  // --- Restoring + replaying to `match` should land exactly on a PC with the
-  // breakpoint set (continueReverse's actual usage pattern). ---
-  restoreSnapshot(snapshot0);
-  writeInstrCount(instrCount0);
-  M._wasm_replay_instructions(Number(match - instrCount0));
-  const landedPc = readRegs()[17] >>> 0;
-  check(
-    "restore+replay to match lands exactly on the breakpointed PC",
-    landedPc === targetPc,
-    `landedPc=${hex(landedPc)} targetPc=${hex(targetPc)}`,
-  );
-  check(
-    "restore+replay to match leaves instrCount == match",
-    readInstrCount() === match,
-    `instrCount=${readInstrCount()} match=${match}`,
-  );
-  M._wasm_remove_breakpoint(targetPc);
-}
+restoreSnapshot(snapshot0);
+writeInstrCount(instrCount0);
+M._wasm_replay_instructions(Number(match - instrCount0));
+const landedRegs2 = readRegs();
 
-// --- Sanity: forward replay still lands exactly on regs1 afterwards (scan
-// mode doesn't leave any stray state behind). ---
+check(
+  "restore+replay to match lands on the same state both times",
+  JSON.stringify(landedRegs) === JSON.stringify(landedRegs2),
+  `pc=${hex(landedRegs[17])} pc2=${hex(landedRegs2[17])}`,
+);
+check(
+  "restore+replay to match leaves instrCount == match",
+  readInstrCount() === match,
+  `instrCount=${readInstrCount()} match=${match}`,
+);
+
+// --- Sanity: forward replay of the full range still lands exactly on regs1
+// afterwards (scan mode doesn't leave any stray state behind). ---
 restoreSnapshot(snapshot0);
 writeInstrCount(instrCount0);
 M._wasm_replay_instructions(Number(delta));

@@ -1,11 +1,11 @@
 import fs from "node:fs";
-import createPuaeModule from "../puae/puae.js";
+import createPuaeModule from "../../puae/puae.js";
 
 const M = await createPuaeModule();
 
 M.FS.mkdir("/uae_system");
-M.FS.writeFile("/uae_system/kick34005.A500", fs.readFileSync("../puae/kick34005.A500"));
-M.FS.writeFile("/uae_system/game.adf", fs.readFileSync("../puae/demo.adf"));
+M.FS.writeFile("/uae_system/kick34005.A500", fs.readFileSync(new URL("../../puae/kick34005.A500", import.meta.url).pathname));
+M.FS.writeFile("/uae_system/game.adf", fs.readFileSync(new URL("../../puae/demo.adf", import.meta.url).pathname));
 
 const ok = M.ccall("wasm_boot", "number", ["string"], ["/uae_system/game.adf"]);
 console.log("wasm_boot ->", ok);
