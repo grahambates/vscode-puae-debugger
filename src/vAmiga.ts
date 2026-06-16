@@ -326,23 +326,21 @@ export interface OpenOptions {
   /**
    * PUAE only: path to a WinUAE-format `.uae` config file, loaded as the
    * base configuration. The mapped hardware options above (`chipRam`,
-   * `slowRam`, `fastRam`, `cpuRevision`) and `emulatorOptions.puae` take
-   * precedence over settings in this file.
+   * `slowRam`, `fastRam`, `cpuRevision`) and `puae` take precedence over
+   * settings in this file.
    */
   configFilePath?: string;
-  emulatorOptions?: {
-    /**
-     * vAmiga only: hardware/display options with no PUAE equivalent.
-     * Ignored (with a warning) on the PUAE backend.
-     */
-    vamiga?: VamigaOptions;
-    /**
-     * PUAE only: raw `.uae` `key=value` overrides, applied with the highest
-     * precedence (after `configFilePath` and the mapped hardware options
-     * above).
-     */
-    puae?: Record<string, string | number | boolean>;
-  };
+  /**
+   * vAmiga only: hardware/display options with no PUAE equivalent.
+   * Ignored (with a warning) on the PUAE backend.
+   */
+  vamiga?: VamigaOptions;
+  /**
+   * PUAE only: raw `.uae` `key=value` overrides, applied with the highest
+   * precedence (after `configFilePath` and the mapped hardware options
+   * above).
+   */
+  puae?: Record<string, string | number | boolean>;
 }
 
 // Option enums to call param values:
@@ -441,12 +439,9 @@ export class VAmiga implements Emulator {
   public open(options?: OpenOptions): void {
     const optionsWithDefaults: OpenOptions = {
       ...options,
-      emulatorOptions: {
-        ...options?.emulatorOptions,
-        vamiga: {
-          ...defaultVamigaOptions,
-          ...options?.emulatorOptions?.vamiga,
-        },
+      vamiga: {
+        ...defaultVamigaOptions,
+        ...options?.vamiga,
       },
     };
     if (!this.panel) {
@@ -1062,7 +1057,7 @@ export class VAmiga implements Emulator {
           `emulatorBackend: "puae" for a real 68030+ CPU.`,
       );
     }
-    const vamiga = options.emulatorOptions?.vamiga;
+    const vamiga = options.vamiga;
     const params: CallParams = {
       AROS: vamiga?.useArosRom,
       navbar: vamiga?.showNavBar,

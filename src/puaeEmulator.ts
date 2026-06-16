@@ -571,10 +571,10 @@ export class PuaeEmulator implements Emulator {
         `PuaeEmulator: ignoring unsupported emulatorOptions: ${set.join(", ")}`,
       );
     }
-    const vamiga = this.openOptions.emulatorOptions?.vamiga;
+    const vamiga = this.openOptions.vamiga;
     if (vamiga && Object.values(vamiga).some((value) => value !== undefined)) {
       console.warn(
-        "PuaeEmulator: ignoring emulatorOptions.vamiga (vAmiga-specific options, not applicable to PUAE)",
+        "PuaeEmulator: ignoring vamiga options (vAmiga-specific options, not applicable to PUAE)",
       );
     }
   }
@@ -627,7 +627,7 @@ export class PuaeEmulator implements Emulator {
       }
       lines.push(readFileSync(options.configFilePath, "utf-8").trimEnd());
     }
-    for (const [key, value] of Object.entries(options?.emulatorOptions?.puae ?? {})) {
+    for (const [key, value] of Object.entries(options?.puae ?? {})) {
       lines.push(`${key}=${value}`);
     }
     if (options?.chipRam) {
