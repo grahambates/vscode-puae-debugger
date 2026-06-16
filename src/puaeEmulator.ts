@@ -619,7 +619,12 @@ export class PuaeEmulator implements Emulator {
    */
   private buildExtraConfig(): string {
     const options = this.openOptions;
-    const lines: string[] = [];
+    const lines: string[] = [
+      "cpu_compatible=true",
+      "cpu_cycle_exact=true",
+      "cpu_memory_cycle_exact=true",
+      "blitter_cycle_exact=true",
+    ];
 
     if (options?.configFilePath) {
       if (!existsSync(options.configFilePath)) {
