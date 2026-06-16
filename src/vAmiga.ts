@@ -667,11 +667,10 @@ export class VAmiga implements Emulator {
     return this.sendRpcCommand("continueReverse");
   }
 
-  /**
-   * This backend has no periodic-checkpoint/frame history to rewind through.
-   */
   public async stepBackFrame(): Promise<boolean> {
-    return false;
+    this.invalidateCache();
+    const res = await this.sendRpcCommand("stepBackFrame");
+    return !!res;
   }
 
   /**

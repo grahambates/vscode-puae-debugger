@@ -9,8 +9,11 @@ let workerInitialized = false;
 let vscode;
 
 // Backward stepping snapshot history
-const MAX_SNAPSHOTS = 50; // Maximum number of snapshots to keep
+const MAX_SNAPSHOTS = 50;
 let snapshotHistory = [];
+let snapshotIndex = -1;          // points to the "current" entry (-1 = empty)
+let periodicSnapshotCounter = 0;
+const SNAPSHOT_INTERVAL_FRAMES = 50; // ~1 second at 50fps
 
 let stop_request_animation_frame = false;
 let call_param_openROMS=false;
@@ -1991,25 +1994,67 @@ function InitWrappers() {
         return attached;
     };
 
-    // Take a snapshot for backward stepping
-    const takeStepSnapshot = function() {
+    // --- Time-travel replay helpers (mirror puae_rpc.js) ---
+    const REPLAY_NO_MATCH = 0xFFFFFFFFFFFFFFFFn;
+
+    const readInstrCount = () => {
+        Module._wasm_read_instr_count();
+        const lo = Module._wasm_get_instr_count_lo();
+        const hi = Module._wasm_get_instr_count_hi();
+        return (BigInt(hi >>> 0) << 32n) | BigInt(lo >>> 0);
+    };
+
+    const replayInstructionsVideo = (count) => {
+        Module._wasm_replay_instructions_video(Number(count));
+    };
+
+    const replayScan = (count) => {
+        if (count <= 0n) return null;
+        Module._wasm_replay_scan(Number(count));
+        const lo = Module._wasm_get_replay_scan_lo();
+        const hi = Module._wasm_get_replay_scan_hi();
+        const match = (BigInt(hi >>> 0) << 32n) | BigInt(lo >>> 0);
+        return match === REPLAY_NO_MATCH ? null : match;
+    };
+
+    const replayScanFrame = (count) => {
+        if (count <= 0n) return null;
+        Module._wasm_replay_scan_frame(Number(count));
+        const lo = Module._wasm_get_replay_scan_lo();
+        const hi = Module._wasm_get_replay_scan_hi();
+        const match = (BigInt(hi >>> 0) << 32n) | BigInt(lo >>> 0);
+        return match === REPLAY_NO_MATCH ? null : match;
+    };
+    // --- end replay helpers ---
+
+    const pushSnapshot = function() {
         try {
             const snap = JSON.parse(wasm_take_user_snapshot());
             const data = new Uint8Array(Module.HEAPU8.buffer, snap.address, snap.size).slice(0, snap.size);
-            const { pc } = JSON.parse(wasm_get_cpu_info());
+            const instrCount = readInstrCount();
 
-            // Add to history with circular buffer behavior
-            snapshotHistory.push({ data, pc: Number(pc) });
-            if (snapshotHistory.length > MAX_SNAPSHOTS) {
-                snapshotHistory.shift(); // Remove oldest snapshot
+            // Discard "future" entries when execution diverges from a rewound state
+            if (snapshotIndex < snapshotHistory.length - 1) {
+                snapshotHistory = snapshotHistory.slice(0, snapshotIndex + 1);
+            }
+            // Also drop any entries at or beyond this instrCount (safety net for wrap-around)
+            while (snapshotHistory.length > 0 &&
+                   snapshotHistory[snapshotHistory.length - 1].instrCount >= instrCount) {
+                snapshotHistory.pop();
             }
 
+            snapshotHistory.push({ data, instrCount });
+            if (snapshotHistory.length > MAX_SNAPSHOTS) {
+                snapshotHistory.shift();
+            }
+            snapshotIndex = snapshotHistory.length - 1;
+            periodicSnapshotCounter = 0;
+
             wasm_delete_user_snapshot();
-            console.log(`Snapshot taken at ${pc}. ${snap.size} bytes, History length: ${snapshotHistory.length}`);
         } catch (err) {
             console.error("Failed to take snapshot:", err);
         }
-    }
+    };
 
     // Callback for error thrown during frame, which is likely to be a breakpoint or similar.
     // There's a message available via wasm that contains the reason for the stop.
@@ -2020,7 +2065,7 @@ function InitWrappers() {
         }
         console.log("Execution stopped (breakpoint or exception):", e);
         wasm_halt(false);
-        takeStepSnapshot();
+        pushSnapshot();
 
         // Get current message for stop
         const message = JSON.parse(wasm_get_current_message());
@@ -2166,6 +2211,10 @@ postMessage({ type: 'ready' });
             do_animation_frame = function(now) {
                 try {
                     calculate_and_render(now);
+                    periodicSnapshotCounter++;
+                    if (periodicSnapshotCounter >= SNAPSHOT_INTERVAL_FRAMES) {
+                        pushSnapshot();
+                    }
                 } catch(e) {
                     handleStop(err);
                 }
@@ -2609,11 +2658,10 @@ postMessage({ type: 'ready' });
             switch (message.command) {
                 case 'pause':
                     wasm_halt();
-                    takeStepSnapshot();
+                    pushSnapshot();
                     break;
                 case 'run':
                     wasm_run();
-                    snapshotHistory = []; // Clear snapshot history
                     break;
                 case 'setBreakpoint':
                     wasm_set_breakpoint(message.args.address, message.args.ignores);
@@ -2656,41 +2704,78 @@ postMessage({ type: 'ready' });
                     break;
                 case 'stepBack':
                     rpcRequest(() => {
-                        if (snapshotHistory.length >= 2) {
-                            // Remove current snapshot (the one we just took when stopping)
-                            snapshotHistory.pop();
-                            // Get and load the previous snapshot
-                            const previousSnapshot = snapshotHistory[snapshotHistory.length - 1];
-                            wasm_loadfile('stepback.vAmiga', previousSnapshot.data);
-                            wasm_configure('WARP_MODE', 'NEVER'); // Prevents bug where warp is enabled after stepping back to first instruction
-                            console.log(`Stepped back. PC: ${previousSnapshot.pc}, History size: ${snapshotHistory.length}`);
-                        } else {
-                            throw new Error("No previous snapshot available for stepping back");
-                        }
+                        if (snapshotHistory.length === 0) return false;
+                        const current = readInstrCount();
+                        const target = current - 1n;
+                        if (target < snapshotHistory[0].instrCount) return false;
+                        let i = snapshotHistory.length - 1;
+                        while (snapshotHistory[i].instrCount > target) i--;
+                        const entry = snapshotHistory[i];
+                        wasm_loadfile('stepback.vAmiga', entry.data);
+                        wasm_configure('WARP_MODE', 'NEVER');
+                        const replayCount = target - entry.instrCount;
+                        if (replayCount > 0n) replayInstructionsVideo(replayCount);
+                        snapshotIndex = i;
+                        return true;
                     });
                     break;
                 case 'continueReverse':
                     rpcRequest(() => {
-                        if (snapshotHistory.length >= 2) {
-                            // Remove current snapshot (the one we just took when stopping)
-                            snapshotHistory.pop();
-                            // keep stepping back until we hit a breakpoint, of run out of snapshots
-                            let previousSnapshot;
-                            while (true) {
-                                previousSnapshot = snapshotHistory[snapshotHistory.length - 1];
-                                if (breakpoints.has(previousSnapshot.pc) || snapshotHistory.length == 1) {
-                                    break;
-                                } else {
-                                    snapshotHistory.pop();
-                                }
-                            }
-                            // Load the previous snapshot
-                            wasm_loadfile('stepback.vAmiga', previousSnapshot.data);
+                        if (snapshotHistory.length === 0) return false;
+                        const current = readInstrCount();
+                        const target = current - 1n;
+                        if (target < snapshotHistory[0].instrCount) return false;
+                        let i = snapshotHistory.length - 1;
+                        while (i >= 0 && snapshotHistory[i].instrCount > target) i--;
+                        // Scan backward through checkpoint intervals for a breakpoint hit
+                        for (; i >= 0; i--) {
+                            const entry = snapshotHistory[i];
+                            const next = snapshotHistory[i + 1];
+                            const upper = (next && next.instrCount <= target + 1n)
+                                ? next.instrCount : target + 1n;
+                            wasm_loadfile('stepback.vAmiga', entry.data);
                             wasm_configure('WARP_MODE', 'NEVER');
-                            console.log(`Stepped back. PC: ${previousSnapshot.pc}, History size: ${snapshotHistory.length}`);
-                        } else {
-                            throw new Error("No previous snapshot available for stepping back");
+                            const match = replayScan(upper - entry.instrCount);
+                            if (match !== null) {
+                                wasm_loadfile('stepback.vAmiga', entry.data);
+                                wasm_configure('WARP_MODE', 'NEVER');
+                                replayInstructionsVideo(match - entry.instrCount);
+                                snapshotIndex = i;
+                                return true;
+                            }
                         }
+                        // No breakpoint found: land at oldest checkpoint
+                        const oldest = snapshotHistory[0];
+                        wasm_loadfile('stepback.vAmiga', oldest.data);
+                        wasm_configure('WARP_MODE', 'NEVER');
+                        const replayCount = target - oldest.instrCount;
+                        if (replayCount > 0n) replayInstructionsVideo(replayCount);
+                        snapshotIndex = 0;
+                        return true;
+                    });
+                    break;
+                case 'stepBackFrame':
+                    rpcRequest(() => {
+                        if (snapshotHistory.length === 0) return false;
+                        const current = readInstrCount();
+                        const target = current - 1n;
+                        if (target < snapshotHistory[0].instrCount) return false;
+                        let i = snapshotHistory.length - 1;
+                        while (i >= 0 && snapshotHistory[i].instrCount > target) i--;
+                        for (; i >= 0; i--) {
+                            const entry = snapshotHistory[i];
+                            wasm_loadfile('stepback.vAmiga', entry.data);
+                            wasm_configure('WARP_MODE', 'NEVER');
+                            const match = replayScanFrame(target - entry.instrCount);
+                            if (match !== null) {
+                                wasm_loadfile('stepback.vAmiga', entry.data);
+                                wasm_configure('WARP_MODE', 'NEVER');
+                                replayInstructionsVideo(match - entry.instrCount);
+                                snapshotIndex = i;
+                                return true;
+                            }
+                        }
+                        return false;
                     });
                     break;
                 case 'getCpuInfo':
@@ -2745,11 +2830,13 @@ postMessage({ type: 'ready' });
                     rpcRequest(() => {
                         wasm_jump(message.args.address);
                         wasm_set_register('sr', 0);
-                        takeStepSnapshot();
+                        pushSnapshot();
                     });
                     break;
                 case 'load':
                     rpcRequest(async () => {
+                        snapshotHistory = [];
+                        snapshotIndex = -1;
                         callParams = message.args;
                         if (callParams.url) {
                             // Load program exe/adf
