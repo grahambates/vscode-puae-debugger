@@ -129,6 +129,7 @@ export function dmaIsCustomReg(owner: number, flags: number, addr: number): bool
 export interface DmaSnapshot {
   chip: Uint8Array; // chip RAM at capture start
   slow: Uint8Array; // slow/bogo RAM at capture start (may be empty)
+  custom: Uint16Array; // custom-register file at capture start (256 regs; for DMACON/reconstruction)
 }
 
 // A program symbol shipped to the webview for on-demand address symbolization (the

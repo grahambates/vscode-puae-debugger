@@ -10,7 +10,7 @@ import {
   ISymbol,
   Category,
 } from "./shared/profilerTypes";
-import { decodeDmaGrid } from "./dma";
+import { decodeDmaGrid, decodeCustomRegs } from "./dma";
 
 export type { ProfileFrame, CallTreeNode, ProfileResult, IProfileModel };
 
@@ -373,7 +373,9 @@ export interface RawCapture {
     isPAL: boolean; // normalized at the RPC boundary (defaults true)
   };
   dma?: Uint8Array; // raw enriched DMA grid bytes (absent if DMA capture produced nothing)
-  snapshot?: { chip: Uint8Array; slow: Uint8Array }; // reconstruction baseline
+  // Reconstruction baseline (raw bytes; `custom` is 256 little-endian u16 = the custom-register
+  // file at capture start, used for DMACON / register reconstruction).
+  snapshot?: { chip: Uint8Array; slow: Uint8Array; custom: Uint8Array };
 }
 
 // Pure transform: RawCapture + SourceMap → IProfileModel (+ the decoded samples, retained
@@ -402,7 +404,11 @@ export function buildModelFromCapture(
     if (dma) {
       model.dma = dma;
       if (raw.snapshot) {
-        model.dmaSnapshot = { chip: raw.snapshot.chip, slow: raw.snapshot.slow };
+        model.dmaSnapshot = {
+          chip: raw.snapshot.chip,
+          slow: raw.snapshot.slow,
+          custom: decodeCustomRegs(raw.snapshot.custom),
+        };
       }
     }
   }
@@ -499,8 +505,10 @@ export class ProfilerManager {
       const dmaBytes = u8(dmaRes.data);
       if (dmaBytes.length) {
         raw.dma = dmaBytes;
-        const snap = await this.rpc.sendRpcCommand<{ chip: Uint8Array; slow: Uint8Array }>("getDmaSnapshot");
-        raw.snapshot = { chip: u8(snap.chip), slow: u8(snap.slow) };
+        const snap = await this.rpc.sendRpcCommand<{ chip: Uint8Array; slow: Uint8Array; custom: Uint8Array }>(
+          "getDmaSnapshot",
+        );
+        raw.snapshot = { chip: u8(snap.chip), slow: u8(snap.slow), custom: u8(snap.custom) };
       }
     } catch (e) {
       console.warn("[profiler] DMA capture failed (CPU profile unaffected):", e);

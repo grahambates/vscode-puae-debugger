@@ -65,6 +65,7 @@ export function encodeCapture(raw: RawCapture, opts: EncodeOptions = {}): Buffer
   if (raw.snapshot) {
     sections.push({ name: "chip", bytes: raw.snapshot.chip });
     sections.push({ name: "slow", bytes: raw.snapshot.slow });
+    sections.push({ name: "custom", bytes: raw.snapshot.custom });
   }
   if (opts.elf) sections.push({ name: "elf", bytes: opts.elf });
 
@@ -142,7 +143,9 @@ export function decodeCapture(file: Uint8Array): DecodedCapture {
       isPAL: manifest.meta.isPAL,
     },
     dma: get("dma"),
-    snapshot: chip && slow ? { chip, slow } : undefined,
+    // `custom` (the custom-register baseline) may be absent in pre-baseline documents;
+    // decodeCustomRegs() tolerates an empty array, so default it rather than dropping the snapshot.
+    snapshot: chip && slow ? { chip, slow, custom: get("custom") ?? new Uint8Array(0) } : undefined,
   };
   return { raw, elf: get("elf"), manifest };
 }

@@ -139,7 +139,11 @@ describe("channelStyle", () => {
 });
 
 describe("reconstructMemoryAt", () => {
-  const snapshot = (): DmaSnapshot => ({ chip: new Uint8Array(0x1000), slow: new Uint8Array(0) });
+  const snapshot = (): DmaSnapshot => ({
+    chip: new Uint8Array(0x1000),
+    slow: new Uint8Array(0),
+    custom: new Uint16Array(256),
+  });
 
   it("applies word writes big-endian and byte writes to the exact address", () => {
     const dma = makeModel([

@@ -16,7 +16,11 @@ function sampleRaw(withDma: boolean): RawCapture {
   };
   if (withDma) {
     raw.dma = new Uint8Array([0, 1, 2, 3, 4, 5, 6, 7]);
-    raw.snapshot = { chip: new Uint8Array([0xaa, 0xbb, 0xcc]), slow: new Uint8Array([]) };
+    raw.snapshot = {
+      chip: new Uint8Array([0xaa, 0xbb, 0xcc]),
+      slow: new Uint8Array([]),
+      custom: new Uint8Array([0x96, 0x03, 0x80, 0x7f]), // DMACONR=0x0396, ... (LE u16 pairs)
+    };
   }
   return raw;
 }

@@ -32,3 +32,15 @@ export function decodeDmaGrid(bytes: Uint8Array): IDmaModel | undefined {
   }
   return { owner, flags, addr, value };
 }
+
+// Decode the custom-register baseline (the DmaProfiler spypeek snapshot) — 256 u16,
+// little-endian, indexed by register-offset/2. Always returns a 256-entry array; missing
+// or short input yields zeros so the register/DMACON lookups stay in-bounds.
+export function decodeCustomRegs(bytes: Uint8Array | undefined): Uint16Array {
+  const regs = new Uint16Array(256);
+  if (!bytes || bytes.byteLength < 2) return regs;
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const n = Math.min(256, bytes.byteLength >>> 1);
+  for (let i = 0; i < n; i++) regs[i] = view.getUint16(i * 2, true);
+  return regs;
+}
