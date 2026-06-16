@@ -117,11 +117,11 @@ const regs1 = readRegs();
 const delta = instrCount1 - instrCount0;
 console.log(`instrCount delta over ${FRAMES} frames: ${delta}`);
 
-const E9K_CPU_TRACE_CAP = 256;
-M._wasm_read_cpu_trace(E9K_CPU_TRACE_CAP);
+const PUAE_DEBUG_CPU_TRACE_CAP = 256;
+M._wasm_read_cpu_trace(PUAE_DEBUG_CPU_TRACE_CAP);
 {
   const ptr = M._wasm_get_cpu_trace_buf();
-  const words = new Uint32Array(M.HEAPU32.buffer, ptr, E9K_CPU_TRACE_CAP * 2);
+  const words = new Uint32Array(M.HEAPU32.buffer, ptr, PUAE_DEBUG_CPU_TRACE_CAP * 2);
   // trace[0] = most recently retired instruction, i.e. instrCount1 - 1.
   const TRACE_INDEX = 5;
   const targetPc = words[TRACE_INDEX * 2] >>> 0;

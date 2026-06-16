@@ -22,15 +22,6 @@ e9k_debug_is_paused(void);
 void
 e9k_debug_step_instr(void);
 
-// Arms the same one-shot mechanism as e9k_debug_step_instr's "after" flag:
-// the very next instructionHook call pauses (via requestBreak) *before*
-// executing that instruction, rather than after. Used by m68k_go's
-// save-state restore path (wasm_unserialize) to stop the CPU from running
-// any instructions immediately after a restore completes, giving an exact,
-// zero-drift restore.
-void
-e9k_debug_request_break_before_next_instr(void);
-
 void
 e9k_debug_step_line(void);
 
@@ -133,70 +124,11 @@ e9k_debug_disassemble_quick(uint32_t pc, char *out, size_t cap);
 uint64_t
 e9k_debug_read_cycle_count(void);
 
-// Monotonic count of retired instructions: instrCount == N means the
-// instruction at the current PC is instruction #N and has not yet executed.
-uint64_t
-e9k_debug_read_instr_count(void);
-
-// Not part of the libretro savestate — callers must restore this explicitly
-// after wasm_unserialize, to the instrCount recorded alongside that
-// checkpoint.
-void
-e9k_debug_write_instr_count(uint64_t value);
-
-// True while e9k_debug_replay_instructions/replay_scan is running. Lets
-// frontend_shim.c suppress audio/video/frame-count output during replay.
-int
-e9k_debug_is_replaying(void);
-
-// True while e9k_debug_replay_instructions_video is running. Lets
-// frontend_shim.c's shim_video_refresh update the pixel buffer/frame count
-// even though e9k_debug_is_replaying() is also true (e9k_vblank_notify's
-// per-frame debugger hooks stay suppressed regardless).
-int
-e9k_debug_is_replay_video_enabled(void);
-
-// Runs forward exactly `count` retired instructions from the current state
-// (normally right after restoring a checkpoint), with debugger side effects
-// suppressed. Leaves the CPU paused with instrCount advanced by `count`.
-// count == 0 is a no-op (preserves a pending zero-drift restore, see
-// e9k_debug_request_break_before_next_instr).
-void
-e9k_debug_replay_instructions(uint32_t count);
-
-// Like e9k_debug_replay_instructions, but allows shim_video_refresh to update
-// the pixel buffer/frame count for frames rendered during the replay. Used
-// for the final "land on target" replay of stepBack/continueReverse/
-// stepBackFrame so the on-screen framebuffer reflects the landed-on state.
-void
-e9k_debug_replay_instructions_video(uint32_t count);
-
-// Like e9k_debug_replay_instructions, but returns the instrCount of the
-// latest instruction within the replayed range whose PC has a breakpoint
-// set, or (uint64_t)-1 if none matched.
-uint64_t
-e9k_debug_replay_scan(uint32_t count);
-
-// Like e9k_debug_replay_scan, but returns the instrCount of the latest frame
-// boundary (vblank) crossed within the replayed range, or (uint64_t)-1 if
-// none was crossed.
-uint64_t
-e9k_debug_replay_scan_frame(uint32_t count);
-
 void
 e9k_debug_add_breakpoint(uint32_t addr);
 
 void
 e9k_debug_remove_breakpoint(uint32_t addr);
-
-// Temporarily zeroes e9k_debug_breakpointCount (saving its previous value),
-// for wasm_unserialize to call across retro_unserialize. See e9k_debug.c for
-// why this is needed. e9k_debug_resume_breakpoints restores the saved count.
-void
-e9k_debug_suspend_breakpoints(void);
-
-void
-e9k_debug_resume_breakpoints(void);
 
 void
 e9k_debug_add_temp_breakpoint(uint32_t addr);
@@ -220,11 +152,6 @@ e9k_debug_set_hblank_callback(void (*cb)(void *), void *user);
 void
 e9k_hsync_notify(void);
 
-// Called from hsync_handler() (custom.c) on the scanline where a new frame's
-// vblank starts — including during replay. Drives e9k_debug_replay_scan_frame.
-void
-e9k_debug_frame_boundary_notify(void);
-
 // Memory-access hooks called from the chip-RAM bank accessors (see
 // libretro-uae.patch's memory.c changes) to drive watchpoints/protects.
 void
@@ -235,92 +162,3 @@ e9k_debug_memhook_filterWrite(uint32_t addr24, uint32_t sizeBits, uint32_t oldVa
 
 void
 e9k_debug_memhook_afterWrite(uint32_t addr24, uint32_t value, uint32_t oldValue, uint32_t sizeBits, int oldValueValid);
-
-// Returns currprefs.chipmem.size: the actual configured/booted chip RAM size
-// in bytes. Used to derive getMemoryInfo()'s chipMask, since chip RAM size
-// is now configurable (see OpenOptions.chipRam/configFilePath).
-uint32_t
-e9k_debug_get_chip_mem_size(void);
-
-// Enables/disables the CPU instruction trace ring buffer (see
-// e9k_debug_read_cpu_trace). Enabled by default, since nothing currently
-// calls this to turn logging on.
-void
-e9k_debug_enable_cpu_logging(int enabled);
-
-#define E9K_CPU_TRACE_CAP 256
-
-// Writes up to min(count, E9K_CPU_TRACE_CAP, <number logged>) of the most
-// recently retired instructions into `out` as interleaved (pc, sr) uint32
-// pairs (2 words per entry), most-recently-executed first. `cap` is the
-// capacity of `out` in uint32_t words (must be >= 2 * count to get `count`
-// entries). Returns the number of entries written.
-size_t
-e9k_debug_read_cpu_trace(uint32_t count, uint32_t *out, size_t cap);
-
-// Captures/restores eventtab[ev_hsync]/[ev_hsynch]/[ev_misc] phase info plus
-// vpos/lof_store/lof_display, none of which the libretro savestate format
-// preserves correctly for mid-line checkpoints (see e9k_debug.c for why this
-// matters for exact-replay checkpoints). `out`/`in` must hold
-// E9K_EVENT_PHASE_WORDS uint32_t's. Called by wasm_serialize/wasm_unserialize
-// in frontend_shim.c, alongside the regular libretro savestate blob.
-// e9k_debug_restore_event_phase also calls events_schedule() to recompute
-// nextevent from the restored eventtab.
-#define E9K_EVENT_PHASE_WORDS (3 * 5 + 3)
-
-void
-e9k_debug_capture_event_phase(uint32_t *out);
-
-void
-e9k_debug_restore_event_phase(const uint32_t *in);
-
-// Diagnostics: currprefs.cpu_model (e.g. 68000, 68020, ...).
-uint32_t
-e9k_debug_get_cpu_model(void);
-
-// Diagnostics: bitmask of CPU timing-accuracy prefs - bit0 cpu_compatible,
-// bit1 cpu_cycle_exact, bit2 cpu_memory_cycle_exact, bit3 blitter_cycle_exact.
-uint32_t
-e9k_debug_get_cpu_flags(void);
-
-// Diagnostics: currprefs.m68k_speed (0 = "real" hardware rate, <0 = "max"/turbo).
-int32_t
-e9k_debug_get_m68k_speed(void);
-
-// Diagnostics: DMA/cycle-contention internals.
-//  0: ce_banktype[addr >> 16] for the given addr (CE_MEMBANK_* from memory.h)
-//  1: cpu_tracer (custom.c dma_cycle() early-exits if < 0)
-//  2: currprefs.cpu_memory_cycle_exact
-//  3: current_hpos_safe()
-//  4: vpos
-//  5: cycle_line_slot[current_hpos_safe()] (addr ignored)
-//  6: number of slots in cycle_line_slot[0..maxhpos) with CYCLE_MASK set
-//     (addr ignored) - i.e. how many DMA cycles are allocated this scanline
-//  7: number of slots in cycle_line_slot[0..maxhpos) equal to CYCLE_BITPLANE
-//     (addr ignored)
-//  8: maxhpos
-//  9: cycle_line_slot[addr] for arbitrary hpos `addr` (-1 if addr>=maxhpos)
-int32_t
-e9k_debug_get_dma_diag(uint32_t index, uint32_t addr);
-
-// Diagnostics: bitplane-DMA fetch prediction/scheduling state used by
-// dma_cycle()'s contention check (see e9k_get_estimate_diag in custom.c for
-// index meanings - estimated_cycles[]/estimated_cycles_next[], line_cyclebased,
-// bprun, dmacon_bpl, vdiwstate_bpl, ddf_stopping, etc).
-//  0-10: see e9k_get_estimate_diag in custom.c
-// 11: ddf_enable_on
-// 12: ddf_limit
-// 13: hwi_old
-// 14: harddis_h
-// 15: plfstrt
-// 16: plfstop
-// 17: bpl_hstart
-// 18: fetch_cycle
-// 19: ddfstrt_hpos
-// 20: ecs_agnus
-// 21: last_decide_line_hpos
-// 22: ddfstrt_match
-// 23: plfstop_prev
-// 24: ddfstop_hpos
-int32_t
-e9k_debug_get_estimate_diag(uint32_t index, uint32_t param);

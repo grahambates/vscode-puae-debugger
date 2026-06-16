@@ -15,9 +15,9 @@
 #include <emscripten.h>
 #include "libretro.h"
 #include "e9k_debug.h"
+#include "puae_debug.h"
 #include "e9k_watchpoint.h"
 #include "e9k_protect.h"
-#include "e9k_catchpoint.h"
 
 // Defined in ami9000's libretro-core.c; set to true by e9k_debug_requestBreak()
 // when a breakpoint fires, causing retro_run() to return early.
@@ -55,7 +55,7 @@ static int   g_audio_accum_n = 0; // frames accumulated, not yet packed into slo
 static uint8_t g_rgba_buf[MAX_FB_PIXELS * 4];
 
 static void shim_video_refresh(const void *data, unsigned width, unsigned height, size_t pitch) {
-    if (e9k_debug_is_replaying() && !e9k_debug_is_replay_video_enabled()) {
+    if (puae_debug_is_replaying() && !puae_debug_is_replay_video_enabled()) {
         // Suppress frame-count/pixel-buffer/profiler updates during replay —
         // this frame doesn't correspond to real elapsed wall-clock time.
         return;
@@ -121,8 +121,8 @@ static void shim_video_refresh(const void *data, unsigned width, unsigned height
         }
     }
 
-    if (e9k_debug_is_replaying()) {
-        // Pixel buffer refreshed above (e9k_debug_replay_instructions_video),
+    if (puae_debug_is_replaying()) {
+        // Pixel buffer refreshed above (puae_debug_replay_instructions_video),
         // but per-frame debugger hooks (memhook re-arming, profiler sampling,
         // one-shot wasm_eof()/wasm_eol() callbacks) must stay suppressed
         // during replay, same as plain replay.
@@ -135,7 +135,7 @@ static void shim_video_refresh(const void *data, unsigned width, unsigned height
 }
 
 static size_t shim_audio_sample_batch(const int16_t *data, size_t frames) {
-    if (e9k_debug_is_replaying()) {
+    if (puae_debug_is_replaying()) {
         // Don't feed replayed audio (already played once) back into the
         // live accumulation buffer.
         return frames;
@@ -154,7 +154,7 @@ static size_t shim_audio_sample_batch(const int16_t *data, size_t frames) {
 }
 
 static void shim_audio_sample(int16_t left, int16_t right) {
-    if (e9k_debug_is_replaying()) {
+    if (puae_debug_is_replaying()) {
         return;
     }
     if (g_audio_accum_n < AUDIO_ACCUM_CAP) {
@@ -559,15 +559,15 @@ const char *wasm_get_disasm_buf(void) { return g_disasm_buf; }
 
 // --- CPU instruction trace ---
 EMSCRIPTEN_KEEPALIVE
-void wasm_enable_cpu_logging(int enabled) { e9k_debug_enable_cpu_logging(enabled); }
+void wasm_enable_cpu_logging(int enabled) { puae_debug_enable_cpu_logging(enabled); }
 
 // Interleaved (pc, sr) uint32 pairs, most-recently-executed first.
-#define CPU_TRACE_BUF_CAP (E9K_CPU_TRACE_CAP * 2)
+#define CPU_TRACE_BUF_CAP (PUAE_DEBUG_CPU_TRACE_CAP * 2)
 static uint32_t g_cpu_trace_buf[CPU_TRACE_BUF_CAP];
 
 EMSCRIPTEN_KEEPALIVE
 int wasm_read_cpu_trace(uint32_t count) {
-    return (int)e9k_debug_read_cpu_trace(count, g_cpu_trace_buf, CPU_TRACE_BUF_CAP);
+    return (int)puae_debug_read_cpu_trace(count, g_cpu_trace_buf, CPU_TRACE_BUF_CAP);
 }
 
 EMSCRIPTEN_KEEPALIVE
@@ -619,7 +619,7 @@ uint32_t wasm_get_cycle_count_hi(void) { return (uint32_t)(g_cycle_count >> 32);
 static uint64_t g_instr_count;
 
 EMSCRIPTEN_KEEPALIVE
-void wasm_read_instr_count(void) { g_instr_count = e9k_debug_read_instr_count(); }
+void wasm_read_instr_count(void) { g_instr_count = puae_debug_read_instr_count(); }
 
 EMSCRIPTEN_KEEPALIVE
 uint32_t wasm_get_instr_count_lo(void) { return (uint32_t)(g_instr_count & 0xFFFFFFFFu); }
@@ -628,33 +628,33 @@ EMSCRIPTEN_KEEPALIVE
 uint32_t wasm_get_instr_count_hi(void) { return (uint32_t)(g_instr_count >> 32); }
 
 // Not part of the libretro savestate — must be restored explicitly after
-// wasm_unserialize (see e9k_debug_write_instr_count).
+// wasm_unserialize (see puae_debug_write_instr_count).
 EMSCRIPTEN_KEEPALIVE
 void wasm_write_instr_count(uint32_t lo, uint32_t hi) {
-    e9k_debug_write_instr_count(((uint64_t)hi << 32) | (uint64_t)lo);
+    puae_debug_write_instr_count(((uint64_t)hi << 32) | (uint64_t)lo);
 }
 
 // --- Bulk instruction replay (Phase 2 exact-instruction rewind) ---
 
 EMSCRIPTEN_KEEPALIVE
-void wasm_replay_instructions(uint32_t count) { e9k_debug_replay_instructions(count); }
+void wasm_replay_instructions(uint32_t count) { puae_debug_replay_instructions(count); }
 
 // Like wasm_replay_instructions, but lets shim_video_refresh update the pixel
 // buffer/frame count for frames rendered during the replay — used for the
 // final "land on target" replay so the on-screen framebuffer reflects the
 // landed-on state.
 EMSCRIPTEN_KEEPALIVE
-void wasm_replay_instructions_video(uint32_t count) { e9k_debug_replay_instructions_video(count); }
+void wasm_replay_instructions_video(uint32_t count) { puae_debug_replay_instructions_video(count); }
 
 static uint64_t g_replay_scan_match;
 
 EMSCRIPTEN_KEEPALIVE
-void wasm_replay_scan(uint32_t count) { g_replay_scan_match = e9k_debug_replay_scan(count); }
+void wasm_replay_scan(uint32_t count) { g_replay_scan_match = puae_debug_replay_scan(count); }
 
 // Shares g_replay_scan_match/wasm_get_replay_scan_match_lo/hi with
 // wasm_replay_scan above — only one scan kind runs at a time.
 EMSCRIPTEN_KEEPALIVE
-void wasm_replay_scan_frame(uint32_t count) { g_replay_scan_match = e9k_debug_replay_scan_frame(count); }
+void wasm_replay_scan_frame(uint32_t count) { g_replay_scan_match = puae_debug_replay_scan_frame(count); }
 
 EMSCRIPTEN_KEEPALIVE
 uint32_t wasm_get_replay_scan_match_lo(void) { return (uint32_t)(g_replay_scan_match & 0xFFFFFFFFu); }
@@ -749,48 +749,48 @@ void wasm_set_protect_enabled_mask(uint32_t lo, uint32_t hi) {
 static e9k_debug_catchbreak_t g_catchbreak_buf;
 
 EMSCRIPTEN_KEEPALIVE
-void wasm_set_catchpoint(uint32_t vector) { e9k_debug_set_catchpoint(vector); }
+void wasm_set_catchpoint(uint32_t vector) { puae_debug_set_catchpoint(vector); }
 
 EMSCRIPTEN_KEEPALIVE
-void wasm_remove_catchpoint(uint32_t vector) { e9k_debug_remove_catchpoint(vector); }
+void wasm_remove_catchpoint(uint32_t vector) { puae_debug_remove_catchpoint(vector); }
 
 EMSCRIPTEN_KEEPALIVE
 int wasm_consume_catchbreak(void) {
-    return e9k_debug_consume_catchbreak(&g_catchbreak_buf);
+    return puae_debug_consume_catchbreak(&g_catchbreak_buf);
 }
 
 EMSCRIPTEN_KEEPALIVE
 uint32_t *wasm_get_catchbreak_buf(void) { return (uint32_t *)&g_catchbreak_buf; }
 
 EMSCRIPTEN_KEEPALIVE
-uint32_t wasm_get_chip_mem_size(void) { return e9k_debug_get_chip_mem_size(); }
+uint32_t wasm_get_chip_mem_size(void) { return puae_debug_get_chip_mem_size(); }
 
 // --- CPU prefs diagnostics (cpu_compatible/cpu_cycle_exact/etc.) ---
 
 EMSCRIPTEN_KEEPALIVE
-uint32_t wasm_get_cpu_model(void) { return e9k_debug_get_cpu_model(); }
+uint32_t wasm_get_cpu_model(void) { return puae_debug_get_cpu_model(); }
 
 EMSCRIPTEN_KEEPALIVE
-uint32_t wasm_get_cpu_flags(void) { return e9k_debug_get_cpu_flags(); }
+uint32_t wasm_get_cpu_flags(void) { return puae_debug_get_cpu_flags(); }
 
 EMSCRIPTEN_KEEPALIVE
-int32_t wasm_get_m68k_speed(void) { return e9k_debug_get_m68k_speed(); }
+int32_t wasm_get_m68k_speed(void) { return puae_debug_get_m68k_speed(); }
 
 EMSCRIPTEN_KEEPALIVE
-int32_t wasm_get_dma_diag(uint32_t index, uint32_t addr) { return e9k_debug_get_dma_diag(index, addr); }
+int32_t wasm_get_dma_diag(uint32_t index, uint32_t addr) { return puae_debug_get_dma_diag(index, addr); }
 
 EMSCRIPTEN_KEEPALIVE
-int32_t wasm_get_estimate_diag(uint32_t index, uint32_t param) { return e9k_debug_get_estimate_diag(index, param); }
+int32_t wasm_get_estimate_diag(uint32_t index, uint32_t param) { return puae_debug_get_estimate_diag(index, param); }
 
 // --- Save state snapshots (reverse stepping) ---
 // Thin wrappers around the standard libretro save-state API, used by the
 // frontend to capture/restore full emulator state for step-back support.
 
-// E9K_EVENT_PHASE_WORDS extra uint32_t's appended after the regular libretro
+// PUAE_DEBUG_EVENT_PHASE_WORDS extra uint32_t's appended after the regular libretro
 // savestate blob, preserving eventtab[ev_hsync/ev_hsynch/ev_misc] phase info
-// that retro_serialize/retro_unserialize don't (see e9k_debug_capture_event_phase
-// / e9k_debug_restore_event_phase in e9k_debug.c for why this is needed).
-#define EVENT_PHASE_BYTES (E9K_EVENT_PHASE_WORDS * sizeof(uint32_t))
+// that retro_serialize/retro_unserialize don't (see puae_debug_capture_event_phase
+// / puae_debug_restore_event_phase in e9k_debug.c for why this is needed).
+#define EVENT_PHASE_BYTES (PUAE_DEBUG_EVENT_PHASE_WORDS * sizeof(uint32_t))
 
 EMSCRIPTEN_KEEPALIVE
 size_t wasm_serialize_size(void) { return retro_serialize_size() + EVENT_PHASE_BYTES; }
@@ -800,7 +800,7 @@ int wasm_serialize(void *buf, size_t size) {
     size_t base = retro_serialize_size();
     if (size < base + EVENT_PHASE_BYTES) return 0;
     if (!retro_serialize(buf, base)) return 0;
-    e9k_debug_capture_event_phase((uint32_t *)((uint8_t *)buf + base));
+    puae_debug_capture_event_phase((uint32_t *)((uint8_t *)buf + base));
     return 1;
 }
 
@@ -808,11 +808,11 @@ EMSCRIPTEN_KEEPALIVE
 int wasm_unserialize(const void *buf, size_t size) {
     size_t base = retro_serialize_size();
     if (size < base + EVENT_PHASE_BYTES) return 0;
-    e9k_debug_suspend_breakpoints();
+    puae_debug_suspend_breakpoints();
     int ok = retro_unserialize(buf, base);
-    e9k_debug_resume_breakpoints();
+    puae_debug_resume_breakpoints();
     if (!ok) return 0;
-    e9k_debug_restore_event_phase((const uint32_t *)((const uint8_t *)buf + base));
+    puae_debug_restore_event_phase((const uint32_t *)((const uint8_t *)buf + base));
     return 1;
 }
 

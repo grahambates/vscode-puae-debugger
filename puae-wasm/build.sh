@@ -59,12 +59,9 @@ GRAFT_FLAGS=(
     -I "$E9K"
 )
 
-echo "  Compiling e9k/e9k_debug.c…"
+echo "  Compiling ami_debug.c…"
 "$EMCC" "${GRAFT_FLAGS[@]}" \
-    -c -o e9k_debug.o "$E9K/e9k_debug.c"
-
-echo "  Compiling e9k_stubs.c…"
-"$EMCC" -O2 -c -o e9k_stubs.o "$SCRIPT_DIR/e9k_stubs.c"
+    -c -o e9k_debug.o "$SCRIPT_DIR/ami_debug.c"
 
 echo "=== Stage 2b: libretro-common/deps file/path/VFS/zlib/7z objects ==="
 
@@ -133,8 +130,8 @@ echo "=== Stage 3: assemble libami9000.a ==="
 cp libpuae.a libami9000.a
 # libpuae.a's newcpu.o already calls e9k_debug_instructionHook at each
 # instruction (the hooks live directly in the libretro-uae submodule); just
-# add the debug layer, stubs, and grafted deps.
-"$EMAR" r libami9000.a e9k_debug.o e9k_stubs.o "${GRAFT_DEPS_OBJS[@]}"
+# add the debug layer and grafted deps.
+"$EMAR" r libami9000.a e9k_debug.o "${GRAFT_DEPS_OBJS[@]}"
 echo "  → $SCRIPT_DIR/libami9000.a"
 
 echo "=== Stage 4: final emcc link → puae.js ==="

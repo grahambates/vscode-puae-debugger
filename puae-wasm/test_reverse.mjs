@@ -225,10 +225,10 @@ send("removeBreakpoint", { address: state1[17] });
   // The most recently retired instruction before entry B was captured: its pc
   // can't recur later in [instrCountA, instrCountB), so a breakpoint on it
   // matches exactly once, at exactly instrCountB - 1.
-  const E9K_CPU_TRACE_CAP = 256;
-  M._wasm_read_cpu_trace(E9K_CPU_TRACE_CAP);
+  const PUAE_DEBUG_CPU_TRACE_CAP = 256;
+  M._wasm_read_cpu_trace(PUAE_DEBUG_CPU_TRACE_CAP);
   const tracePtr = M._wasm_get_cpu_trace_buf();
-  const traceWords = new Uint32Array(M.HEAPU32.buffer, tracePtr, E9K_CPU_TRACE_CAP * 2);
+  const traceWords = new Uint32Array(M.HEAPU32.buffer, tracePtr, PUAE_DEBUG_CPU_TRACE_CAP * 2);
   const targetPc = traceWords[0] >>> 0;
   const targetInstrCount = instrCountB - 1n;
 
