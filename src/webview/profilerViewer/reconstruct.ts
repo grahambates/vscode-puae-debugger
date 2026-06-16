@@ -5,12 +5,13 @@
 // GetMemoryAfterDma / GetCustomRegsAfterDma, adapted to our enriched grid (flags-based
 // write/size + owner-aware custom-register routing).
 //
-// UNWIRED this phase: no consumer yet, and the snapshot isn't shipped to the webview yet
-// (retained extension-side). Wire both when building the first consuming view.
+// The capture-start snapshot (chip/slow RAM + the custom-register baseline) IS shipped to
+// the webview (model.dmaSnapshot); reconstructCustomRegs is wired into the DMA tooltip's
+// "DMA Control" view. reconstructMemoryAt is still unwired (no memory/screen consumer yet).
 //
 // Known gaps: FAST-RAM writes bypass the chip bus (not recorded); copper colour-register
 // writes (0x180..0x1BE) bypass doCopperDmaWrite in vAmiga (not in the grid); the custom-
-// register baseline is deferred (write-only regs aren't exposed via spypeek).
+// register baseline covers readable regs + DMACON exactly, other write-only regs start at 0.
 
 import { IDmaModel, DmaSnapshot, DMA_WRITE, DMA_BYTE, dmaIsCustomReg } from "../../shared/profilerTypes";
 
@@ -56,7 +57,9 @@ export function reconstructMemoryAt(
       buf[off + 1] = v & 0xff;
     }
   }
-  return { chip, slow };
+  // Custom registers aren't RAM; pass the baseline through unchanged so the result is a
+  // complete DmaSnapshot (use reconstructCustomRegs for register state at a slot).
+  return { chip, slow, custom: snapshot.custom };
 }
 
 // Reconstruct the 256-entry custom-register file (u16 each) at slot `sliceEnd`, starting

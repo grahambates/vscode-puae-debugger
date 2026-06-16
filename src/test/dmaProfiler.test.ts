@@ -1,8 +1,10 @@
-import { decodeDmaGrid } from "../dma";
+import { decodeDmaGrid, decodeCustomRegs } from "../dma";
 import { createSymbolizer } from "../webview/profilerViewer/symbols";
 import { reconstructMemoryAt, reconstructCustomRegs } from "../webview/profilerViewer/reconstruct";
 import { createTopDownGraph } from "../webview/profilerViewer/topDownGraph";
-import { channelStyle } from "../webview/profilerViewer/dma";
+import { channelStyle, dmaconChannels, ownerRegister, DMACON_REG_INDEX } from "../webview/profilerViewer/dma";
+import { customRegisterName, CUSTOM_REGISTER_OFFSETS } from "../webview/shared/customRegisters";
+import { getCustomRegDoc } from "../webview/shared/customRegisterDocs";
 import { buildProfileModel, InstructionSample } from "../profilerManager";
 import { SourceMap } from "../sourceMap";
 import {
@@ -123,11 +125,13 @@ describe("channelStyle", () => {
     expect(channelStyle(BusOwner.COPPER, COP_SUB_WAIT << DMA_SUB_SHIFT)?.key).toBe("cop-wait");
   });
 
-  it("identifies owner-level channels and ignores idle/blocked", () => {
+  it("identifies owner-level channels and gives idle/blocked the dark '-' style", () => {
     expect(channelStyle(BusOwner.BPL1, 0)?.key).toBe("bpl1");
     expect(channelStyle(BusOwner.SPRITE7, 0)?.key).toBe("spr7");
-    expect(channelStyle(BusOwner.NONE, 0)).toBeNull();
-    expect(channelStyle(BusOwner.BLOCKED, 0)).toBeNull();
+    // Idle/blocked are now drawn (continuous band, like the old extension), not skipped.
+    expect(channelStyle(BusOwner.NONE, 0)?.key).toBe("idle");
+    expect(channelStyle(BusOwner.NONE, 0)?.label).toBe("-");
+    expect(channelStyle(BusOwner.BLOCKED, 0)?.key).toBe("idle");
   });
 
   it("extracts color channels in 0xAABBGGRR order (R=low byte — red/blue not swapped)", () => {
@@ -135,6 +139,95 @@ describe("channelStyle", () => {
     expect(channelStyle(BusOwner.COPPER, 0)?.color).toBe("rgb(238,238,0)");
     // CPU Code constant 0xff4253a2 → R=0xa2, G=0x53, B=0x42.
     expect(channelStyle(BusOwner.CPU, DMA_CODE)?.color).toBe("rgb(162,83,66)");
+  });
+});
+
+describe("decodeCustomRegs", () => {
+  it("decodes little-endian u16 into a 256-entry register file", () => {
+    // DMACONR (0x002) = 0x83e0, COLOR00 (0x180) word at index 0xc0.
+    const bytes = new Uint8Array(512);
+    bytes[0x002] = 0xe0;
+    bytes[0x003] = 0x83;
+    const regs = decodeCustomRegs(bytes);
+    expect(regs.length).toBe(256);
+    expect(regs[0x002 >> 1]).toBe(0x83e0);
+  });
+
+  it("returns a zeroed 256-entry array for empty/short input", () => {
+    expect(Array.from(decodeCustomRegs(undefined))).toEqual(new Array(256).fill(0));
+    expect(decodeCustomRegs(new Uint8Array(0)).length).toBe(256);
+  });
+});
+
+describe("custom-register offsets (canonical)", () => {
+  it("maps the control-register span to the correct hardware offsets", () => {
+    // Regression guard for the old -2 shift bug in this span (DMACON had been at 0x094 etc.).
+    expect(customRegisterName(0x096)).toBe("DMACON");
+    expect(customRegisterName(0x09a)).toBe("INTENA");
+    expect(customRegisterName(0x09c)).toBe("INTREQ");
+    expect(customRegisterName(0x09e)).toBe("ADKCON");
+    expect(customRegisterName(0x080)).toBe("COP1LCH");
+    expect(customRegisterName(0x08e)).toBe("DIWSTRT");
+    expect(CUSTOM_REGISTER_OFFSETS.DMACON).toBe(0x096);
+    expect(DMACON_REG_INDEX).toBe(0x096 >> 1);
+  });
+});
+
+describe("getCustomRegDoc", () => {
+  it("expands family docs from one shared body (heading varies by index)", () => {
+    // COLOR / BPL / SPR / AUD families are generated in code: per-member heading + shared body.
+    expect(getCustomRegDoc(CUSTOM_REGISTER_OFFSETS.COLOR05)).toMatch(/^\*\*Color 5\*\*/);
+    expect(getCustomRegDoc(CUSTOM_REGISTER_OFFSETS.SPR3DATB)).toMatch(/^\*\*Sprite 3 image data register B\*\*/);
+    expect(getCustomRegDoc(CUSTOM_REGISTER_OFFSETS.BPL2DAT)).toMatch(/^\*\*Bit plane 2 data/);
+    // AUD headings were normalized to a single casing ("Audio Channel N Period").
+    expect(getCustomRegDoc(CUSTOM_REGISTER_OFFSETS.AUD2PER)).toMatch(/^\*\*Audio Channel 2 Period\*\*/);
+    // Same family, same body — only the heading line differs.
+    const c5 = getCustomRegDoc(CUSTOM_REGISTER_OFFSETS.COLOR05)!.split("\n").slice(1).join("\n");
+    const c20 = getCustomRegDoc(CUSTOM_REGISTER_OFFSETS.COLOR20)!.split("\n").slice(1).join("\n");
+    expect(c5).toBe(c20);
+  });
+
+  it("returns inline one-off docs and masks odd offsets", () => {
+    expect(getCustomRegDoc(CUSTOM_REGISTER_OFFSETS.DMACON)).toMatch(/DMA Control/);
+    expect(getCustomRegDoc(CUSTOM_REGISTER_OFFSETS.DMACON + 1)).toBe(getCustomRegDoc(CUSTOM_REGISTER_OFFSETS.DMACON));
+    expect(getCustomRegDoc(0x1f0)).toBeUndefined(); // documented gap
+  });
+});
+
+describe("ownerRegister", () => {
+  it("maps channel bus owners to their data registers", () => {
+    expect(ownerRegister(BusOwner.BPL1)).toBe(0x110); // BPL1DAT
+    expect(ownerRegister(BusOwner.BPL6)).toBe(0x11a); // BPL6DAT
+    expect(ownerRegister(BusOwner.AUD0)).toBe(0x0aa); // AUD0DAT
+    expect(ownerRegister(BusOwner.AUD3)).toBe(0x0da); // AUD3DAT
+    expect(ownerRegister(BusOwner.SPRITE0)).toBe(0x144); // SPR0DATA
+    expect(ownerRegister(BusOwner.DISK)).toBe(0x026); // DSKDAT
+  });
+
+  it("returns undefined where the register can't be determined", () => {
+    expect(ownerRegister(BusOwner.BLITTER)).toBeUndefined(); // channel (A/B/C/D) not recorded
+    expect(ownerRegister(BusOwner.REFRESH)).toBeUndefined();
+    expect(ownerRegister(BusOwner.NONE)).toBeUndefined();
+  });
+});
+
+describe("dmaconChannels", () => {
+  it("lists only Master (off) when DMAEN is clear", () => {
+    const ch = dmaconChannels(0x0040); // BLTEN set but master clear
+    expect(ch).toEqual([{ name: "Master", on: false }]);
+  });
+
+  it("reflects the enabled channel bits when DMAEN is set", () => {
+    // DMAEN(0x200) | BPLEN(0x100) | COPEN(0x080) | BLTEN(0x040) | AUD0(0x001)
+    const ch = dmaconChannels(0x0200 | 0x0100 | 0x0080 | 0x0040 | 0x0001);
+    const on = Object.fromEntries(ch.map((c) => [c.name, c.on]));
+    expect(on.Master).toBe(true);
+    expect(on.Raster).toBe(true);
+    expect(on.Copper).toBe(true);
+    expect(on.Blitter).toBe(true);
+    expect(on.Sprite).toBe(false);
+    expect(on.Aud0).toBe(true);
+    expect(on.Aud1).toBe(false);
   });
 });
 

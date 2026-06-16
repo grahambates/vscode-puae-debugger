@@ -28,6 +28,7 @@ export class ProfilerViewerProvider {
   private lastSaveAdapter?: VamigaDebugAdapter; // which session lastSaveData came from (read ELF once per session)
   private symbolsSent = false; // symbols are session-constant — send them only once per webview mount
   private lastBulkUri?: string; // webview URI of the last capture's bulk blob (reused on webview reload)
+  private capturing = false; // a frame capture is in flight (drops re-entrant capture requests)
 
   constructor(
     private readonly extensionUri: vscode.Uri,
@@ -44,8 +45,21 @@ export class ProfilerViewerProvider {
   }
 
   public dispose(): void {
+    // Disposing the panel fires onDidDispose, which clears the cached capture + bulk file.
     this.panel?.dispose();
-    this.panel = undefined;
+  }
+
+  // Drop the cached capture (model + bulk blob + per-session save data). Called when a
+  // FRESH panel is created (so it auto-captures the current program instead of re-showing
+  // a previous session's frame) and when the panel is disposed. A webview *reload* goes
+  // through neither path, so the reload-survives-capture feature (the reason lastModel is
+  // cached at all) is preserved.
+  private resetCapture(): void {
+    this.lastModel = undefined;
+    this.lastBulkUri = undefined;
+    this.symbolsSent = false;
+    this.lastSaveData = undefined;
+    this.lastSaveAdapter = undefined;
     void vscode.workspace.fs.delete(this.bulkFileUri()).then(undefined, () => undefined); // best-effort
   }
 
@@ -69,9 +83,19 @@ export class ProfilerViewerProvider {
 
   public async show(): Promise<void> {
     if (this.panel) {
-      this.panel.reveal(vscode.ViewColumn.Beside);
+      // Already open: leave the panel exactly where the user put it. reveal() with no ViewColumn
+      // shows it in its current column; passing ViewColumn.Beside (a position *relative* to the
+      // active group) would move/resize it on every click. Then grab a fresh frame so a repeat
+      // click is visibly a new capture rather than a no-op.
+      this.panel.reveal();
+      await this.capture();
       return;
     }
+
+    // Fresh panel: discard any cache left over from a previous (now-disposed) panel or a
+    // prior debug session, so the first "ready" auto-captures the CURRENT program rather
+    // than re-showing a stale frame.
+    this.resetCapture();
 
     this.panel = vscode.window.createWebviewPanel(
       ProfilerViewerProvider.viewType,
@@ -83,6 +107,7 @@ export class ProfilerViewerProvider {
     this.panel.webview.html = getProfilerHtml(this.panel.webview, this.extensionUri, "live");
     this.panel.onDidDispose(() => {
       this.panel = undefined;
+      this.resetCapture();
     });
 
     this.panel.webview.onDidReceiveMessage(async (message: ProfilerInboundMessage) => {
@@ -120,6 +145,11 @@ export class ProfilerViewerProvider {
   }
 
   private async capture(): Promise<void> {
+    // Ignore re-entrant requests while a frame is in flight (e.g. repeatedly clicking the
+    // "Open CPU Profiler" button) — overlapping captures would advance the emulator twice and
+    // race on lastModel/bulk.
+    if (this.capturing) return;
+    this.capturing = true;
     this.post({ command: "capturing" });
     try {
       const model = await this.manager.capture(1);
@@ -132,6 +162,8 @@ export class ProfilerViewerProvider {
         command: "showError",
         error: error instanceof Error ? error.message : String(error),
       });
+    } finally {
+      this.capturing = false;
     }
   }
 

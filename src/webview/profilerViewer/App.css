@@ -33,6 +33,13 @@ body {
   cursor: default;
 }
 
+/* Fixed width so the capture button doesn't resize when its label toggles between
+   "Capture frame" and "Capturing…" (sized for the wider label). */
+.toolbar .capture-btn {
+  min-width: 9em;
+  text-align: center;
+}
+
 .error {
   margin: 8px 10px;
   padding: 6px 10px;
@@ -62,7 +69,11 @@ body {
 
 .flame {
   position: relative;
-  flex: 1;
+  /* Height is set inline to the (capped) call-stack depth; don't grow/shrink off that. The
+     max-height caps it at ~70% of the split-pane so a deep stack can't squeeze the TimeView out
+     (the canvas-wrap then scrolls). */
+  flex: 0 0 auto;
+  max-height: 70%;
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -188,21 +199,9 @@ body {
   direction: rtl;
 }
 
-.tooltip .tt-row {
-  display: flex;
-  justify-content: space-between;
-  gap: 16px;
-  font-variant-numeric: tabular-nums;
-}
-
 /* DMA address / call-stack value: allow it to wrap and break instead of overflowing. */
 .tooltip .tt-addr {
-  text-align: right;
   word-break: break-word;
-}
-
-.tooltip .tt-row span:first-child {
-  color: var(--vscode-descriptionForeground);
 }
 
 .tooltip .tt-hint {
@@ -211,15 +210,15 @@ body {
   font-size: 11px;
 }
 
-/* Blitter tooltip: a 2-column definition grid (bold label left, value right), one entry per
-   row, mirroring the old extension. Chips, Shift/Modulo, and FWM/LWM all flow inline in the
-   value column. */
+/* Shared tooltip body: a 2-column definition grid (bold label left, value right), one entry per
+   row, mirroring the old extension. Used by the call-stack, DMA and blitter tooltips. Chips,
+   Shift/Modulo, and FWM/LWM all flow inline in the value column. */
 .blit-tip {
   max-width: 600px;
   white-space: normal;
 }
 
-.blit-grid {
+.tip-grid {
   display: grid;
   grid-template-columns: max-content 1fr;
   gap: 2px 14px;
@@ -228,13 +227,13 @@ body {
   font-variant-numeric: tabular-nums;
 }
 
-.blit-grid > .bt-label {
+.tip-grid > .tip-label {
   font-weight: bold;
   white-space: nowrap;
   color: var(--vscode-foreground);
 }
 
-.blit-grid > .bt-chips {
+.tip-grid > .bt-chips {
   display: flex;
   flex-wrap: wrap;
   gap: 3px;
@@ -252,13 +251,14 @@ body {
   margin: 0 4px 0 10px;
 }
 
-.bt-val > .bt-eh:first-child {
+.tip-val > .bt-eh:first-child {
   margin-left: 0;
 }
 
-/* Flag / minterm chip (used in the value column). */
+/* Flag / minterm / channel chip (used in the value column). UI font, not monospace (matches the
+   old extension and the blitter tooltip). */
 .tooltip .tt-bit {
-  font: 600 11px var(--vscode-editor-font-family, monospace);
+  font: 11px var(--vscode-font-family, sans-serif);
   padding: 0 3px;
   background: var(--vscode-toolbar-hoverBackground, rgba(255, 255, 255, 0.08));
   color: var(--vscode-descriptionForeground);
@@ -269,6 +269,65 @@ body {
   background: var(--vscode-inputOption-activeBackground);
   color: var(--vscode-inputOption-activeForeground, var(--vscode-foreground));
   opacity: 1;
+}
+
+/* The DMA tooltip is wider than the default tooltip (the DMA Control chips + the register-doc
+   table need room); override the base .tooltip max-width so the inline width is honoured, and
+   allow wrapping (the base .tooltip is white-space:nowrap, which would overflow the call stack,
+   the register-doc paragraphs and the doc table). */
+.dma-tip {
+  max-width: 760px;
+  white-space: normal;
+}
+
+/* Let grid value cells shrink below their content so long values (call stack, addresses) wrap
+   inside the column instead of overflowing the tooltip. */
+.tip-grid > .tip-val {
+  min-width: 0;
+}
+
+/* Custom-register documentation (wholesale-copied markdown, rendered via markdown-to-jsx)
+   shown under the DMA tooltip grid for register accesses. Compact, with a bit-description table. */
+.dma-doc {
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px solid var(--vscode-panel-border, #444);
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--vscode-descriptionForeground);
+  overflow-wrap: anywhere;
+}
+
+.dma-doc :first-child {
+  margin-top: 0;
+}
+
+.dma-doc p {
+  margin: 4px 0;
+}
+
+.dma-doc strong {
+  color: var(--vscode-foreground);
+}
+
+.dma-doc table {
+  border-collapse: collapse;
+  width: 100%;
+  margin: 4px 0;
+}
+
+.dma-doc th,
+.dma-doc td {
+  border: 1px solid var(--vscode-panel-border, #444);
+  padding: 1px 5px;
+  text-align: left;
+  vertical-align: top;
+  word-break: break-word; /* wrap long descriptions instead of overflowing the tooltip */
+}
+
+.dma-doc th {
+  color: var(--vscode-foreground);
+  font-weight: 600;
 }
 
 /* ── TimeView (top-down function table) ─────────────────────────────────────

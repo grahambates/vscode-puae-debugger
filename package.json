@@ -455,6 +455,7 @@
     "downshift": "^9.0.10",
     "expr-eval": "^2.0.2",
     "m68kdecode": "^1.1.4",
+    "markdown-to-jsx": "^9.8.2",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
     "react-window": "^2.2.7"

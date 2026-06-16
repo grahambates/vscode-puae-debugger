@@ -1,15 +1,18 @@
-import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { PointerEvent as ReactPointerEvent } from "react";
-import { Category, ILocation, DMA_WRITE, DMA_BYTE, DMA_HPOS, dmaIsCustomReg } from "../../shared/profilerTypes";
+import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import type { PointerEvent as ReactPointerEvent, ReactNode } from "react";
+import { BusOwner, Category, ILocation, DMA_WRITE, DMA_BYTE, DMA_HPOS, dmaIsCustomReg } from "../../shared/profilerTypes";
 import { getProfileModel } from "./modelStore";
 import { buildColumns, IColumn, IColumnLocation } from "./columns";
 import { binarySearch } from "./array";
 import { dataName, DisplayUnit, formatValue, scaleValue, Timing } from "./display";
 import { compileFilter, IRichFilter } from "./filter";
-import { channelStyle, blitStyle } from "./dma";
+import Markdown from "markdown-to-jsx/react";
+import { channelStyle, blitStyle, dmaconChannels, ownerRegister, DMACON_REG_INDEX, ChannelStyle } from "./dma";
 import { getBlits, blitLabel, blitTooltip, Blit } from "./blits";
+import { reconstructCustomRegs } from "./reconstruct";
 import { createSymbolizer } from "./symbols";
 import { customRegisterName } from "../shared/customRegisters";
+import { getCustomRegDoc } from "../shared/customRegisterDocs";
 import { MiddleOut } from "./MiddleOut";
 
 // Time-ordered flame chart on a 2D canvas. x = cycles in execution order (the old
@@ -24,7 +27,15 @@ const TIMELINE_H = 18;
 const DMA_BAND_H = 18; // height of the DMA channel line above the CPU rows
 const BLIT_BAND_H = 18; // height of the blitter line (one box per blit), below the DMA line
 const Y_BUFFER = 8;
+const HSCROLL_H = 14; // height of the horizontal pan scrollbar (matches .flame .hscroll in App.css)
+// Hard cap on call-stack depth: rows deeper than this aren't built or drawn (so the canvas / the
+// flame area can't balloon on a pathologically deep stack). The flame area sizes itself to the
+// actual depth up to this limit; beyond it, the deepest frames are intentionally not rendered.
+const MAX_DEPTH = 16;
 const MIN_LABEL_W = 28; // px; narrower boxes get no text
+// Min slot length for a DMA run to be kept in `longRuns` (the labelable-width subset). Below this a
+// run can only fit a label at extreme zoom, where the full run list is cheap to scan anyway.
+const LABEL_LONG_RUN_SLOTS = 16;
 const MIN_DRAW_W = 0.4; // px; narrower boxes are skipped entirely
 const TIMELINE_LABEL_SPACING = 200; // min px between ruler labels (old Constants)
 const TICK_SEQ = [2, 2.5, 2]; // "nice number" step sequence: 1,2,5,10,20,50,…
@@ -56,6 +67,33 @@ interface IDrag {
   pageXOrigin: number;
   xPerPixel: number;
   timestamp: number;
+}
+
+// Draw `text` left-aligned and vertically centred in a box, clipped to it, ellipsising if it
+// doesn't fit. Shared by the flame boxes, the DMA band and the blitter band. Caller sets ctx.font.
+function drawClippedLabel(
+  ctx: CanvasRenderingContext2D,
+  text: string,
+  x: number,
+  y: number,
+  boxW: number,
+  boxH: number,
+  color: string,
+) {
+  const maxW = boxW - 6;
+  if (maxW <= 0) return;
+  let label = text;
+  if (ctx.measureText(label).width > maxW) {
+    while (label.length > 0 && ctx.measureText(label + "…").width > maxW) label = label.slice(0, -1);
+    label += "…";
+  }
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(x, y, boxW, boxH);
+  ctx.clip();
+  ctx.fillStyle = color;
+  ctx.fillText(label, x + 3, y + boxH / 2);
+  ctx.restore();
 }
 
 // murmur3 32-bit finalizer — a fast hash for stable per-box colours.
@@ -95,7 +133,9 @@ const buildBoxes = (columns: readonly IColumn[], yOffset: number) => {
   let maxY = 0;
   for (let x = 0; x < columns.length; x++) {
     const col = columns[x];
-    for (let y = 0; y < col.rows.length; y++) {
+    // Don't build boxes deeper than the hard cap — they'd never be drawn and only inflate maxY.
+    const rowCount = Math.min(col.rows.length, MAX_DEPTH);
+    for (let y = 0; y < rowCount; y++) {
       const cell = col.rows[y];
       if (typeof cell === "number") {
         const existing = getBoxInRowColumn(columns, boxById, x, y);
@@ -124,6 +164,46 @@ const buildBoxes = (columns: readonly IColumn[], yOffset: number) => {
 
 const QuadEaseInOut = (p: number) => (p < 0.5 ? 2 * p * p : -2 * p * p + 4 * p - 1);
 
+// A tooltip that clamps itself into the viewport using its *measured* size, so it never runs off
+// the right/bottom edge regardless of content width. (Hardcoded width guesses mis-clamped: a fixed
+// width that ignored padding/border clipped on the right, and a too-large guess yanked a narrow
+// tooltip needlessly leftward near the edge.) `useLayoutEffect` reads offsetWidth/Height and adjusts
+// before paint, so there's no visible flash at the unclamped position.
+function Tooltip({
+  x,
+  y,
+  className,
+  width,
+  children,
+}: {
+  x: number;
+  y: number;
+  className?: string;
+  width?: number;
+  children: ReactNode;
+}) {
+  const ref = useRef<HTMLDivElement>(null);
+  const [pos, setPos] = useState({ left: x + 12, top: y + 12 });
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const left = Math.max(8, Math.min(x + 12, window.innerWidth - el.offsetWidth - 8));
+    const top = Math.max(8, Math.min(y + 12, window.innerHeight - el.offsetHeight - 8));
+    // Functional update so the no-op pass after a setState bails out (converges in one extra pass).
+    setPos((p) => (p.left === left && p.top === top ? p : { left, top }));
+    // x/y change on every pointer move (so the hovered content always re-measures with them).
+  }, [x, y]);
+  return (
+    <div
+      ref={ref}
+      className={className ? `tooltip ${className}` : "tooltip"}
+      style={{ left: pos.left, top: pos.top, width }}
+    >
+      {children}
+    </div>
+  );
+}
+
 const locText = (loc: ILocation): string | undefined =>
   loc.callFrame.url
     ? `${loc.callFrame.url}${loc.callFrame.lineNumber >= 0 ? `:${loc.callFrame.lineNumber}` : ""}`
@@ -141,7 +221,6 @@ export function FlameGraph({
   // The model is read from the external store (not a prop) so its large arrays never go through
   // React's serializer. FlameGraph is only rendered when a model exists (App guards it), and it
   // re-renders with its parent, so this read is non-null and current.
-  // eslint-disable-next-line react-hooks/purity -- model is read from an external store (modelStore)
   const model = getProfileModel()!;
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const canvasWrapRef = useRef<HTMLDivElement>(null);
@@ -164,6 +243,48 @@ export function FlameGraph({
   const dma = model.dma;
   const dmaSlots = dma ? dma.owner.length : 0;
   const bandH = dma ? DMA_BAND_H : 0;
+  // DMA band as 1-D summed-area tables (prefix sums of r/g/b over slots): a pixel covering many
+  // cycles gets a box-filtered average colour in O(1) — avg = (pre[s1]-pre[s0]) / (s1-s0). Channels
+  // sum separately (a single channel reaches ~255·N ≈ 18M — too big to pack into one int, fine in
+  // Int32). The band has no gaps (idle cycles have their own colour) so the denominator is the slot
+  // count; an unknown owner (channelStyle → null) uses the idle colour. Also returns the colour
+  // runs (for labels): `runs` is all of them, `longRuns` the labelable-width subset.
+  const dmaData = useMemo(() => {
+    if (!dma) return null;
+    const owner = dma.owner;
+    const flags = dma.flags;
+    const N = owner.length;
+    const preR = new Int32Array(N + 1);
+    const preG = new Int32Array(N + 1);
+    const preB = new Int32Array(N + 1);
+    // Runs coalesce adjacent same-style cycles (by shared-style reference). `longRuns` keeps only
+    // those long enough to ever fit a label, so the per-frame label scan skips the many tiny runs.
+    const runs: { start: number; end: number; label: string }[] = [];
+    const longRuns: { start: number; end: number; label: string }[] = [];
+    const pushRun = (start: number, end: number, label: string) => {
+      const run = { start, end, label };
+      runs.push(run);
+      if (end - start >= LABEL_LONG_RUN_SLOTS) longRuns.push(run);
+    };
+    const idle = channelStyle(BusOwner.NONE, 0)!; // fallback colour for any null style
+    let r = 0, g = 0, b = 0;
+    let start = 0;
+    let cur: ChannelStyle | null = null;
+    for (let i = 0; i < N; i++) {
+      const st = channelStyle(owner[i], flags[i]) ?? idle;
+      r += st.r; g += st.g; b += st.b;
+      preR[i + 1] = r; preG[i + 1] = g; preB[i + 1] = b;
+      if (st !== cur) {
+        if (cur && i > start) pushRun(start, i, cur.label);
+        cur = st;
+        start = i;
+      }
+    }
+    if (cur && N > start) pushRun(start, N, cur.label);
+    return { N, preR, preG, preB, runs, longRuns };
+  }, [dma]);
+  // Offscreen 1px-tall band: the DMA fill writes per-pixel RGBA here and blits it in one drawImage.
+  const dmaBandRef = useRef<{ canvas: HTMLCanvasElement; ctx: CanvasRenderingContext2D; img: ImageData; cap: number } | null>(null);
   const blitResult = useMemo(() => (dma ? getBlits(dma) : { blits: [], fastBlitter: false }), [dma]);
   const blits = blitResult.blits;
   const blitH = blits.length ? BLIT_BAND_H : 0;
@@ -313,34 +434,68 @@ export function FlameGraph({
     ctx.stroke();
     ctx.globalAlpha = 1;
 
-    // DMA channel line: one row per dma-cycle, colored by bus owner (CPU Code/Data,
-    // Copper MOVE/WAIT/SKIP, etc.). Drawn directly off the typed arrays, coalescing
-    // adjacent same-color slots into one fillRect at draw time (the box MODEL stays
-    // per-cycle for tooltips). Only the visible slot range is touched.
-    if (dma && dmaSlots > 0) {
-      const N = dmaSlots;
+    // DMA channel line: colored by bus owner (CPU Code/Data, Copper MOVE/WAIT/SKIP, etc.). Each
+    // pixel is the box-filtered average of the cycles it covers (see dmaData), so the band stays
+    // accurate and alias-free when many cycles map to one pixel.
+    if (dma && dmaSlots > 0 && dmaData) {
+      const { N, preR, preG, preB, runs, longRuns } = dmaData;
       const bandY = TIMELINE_H;
-      const sLo = Math.max(0, Math.floor(bounds.minX * N));
-      const sHi = Math.min(N, Math.ceil(bounds.maxX * N) + 1);
-      let runStart = -1;
-      let runColor = "";
-      const flushRun = (end: number) => {
-        if (runStart < 0) return;
-        const x1 = Math.max(0, toX(runStart / N));
-        const x2 = Math.min(width, toX(end / N));
-        if (x2 > x1) ctx.fillRect(x1, bandY, Math.max(x2 - x1, MIN_DRAW_W), DMA_BAND_H - 1);
-        runStart = -1;
-      };
-      for (let i = sLo; i < sHi; i++) {
-        const st = channelStyle(dma.owner[i], dma.flags[i]);
-        const c = st ? st.color : "";
-        if (c !== runColor) {
-          flushRun(i);
-          runColor = c;
-          if (c) { runStart = i; ctx.fillStyle = c; }
-        }
+      ctx.font = `11px ${cs.fontFamily || "sans-serif"}`;
+      const W = Math.max(1, Math.ceil(width));
+      const slot0 = bounds.minX * N;
+      const slotPerPx = ((bounds.maxX - bounds.minX) * N) / width;
+      // Reusable W×1 offscreen band: write each pixel's colour as raw RGBA, then blit it once.
+      let band = dmaBandRef.current;
+      if (!band || band.cap < W) {
+        const canvas = document.createElement("canvas");
+        canvas.width = W;
+        canvas.height = 1;
+        const bctx = canvas.getContext("2d")!;
+        band = { canvas, ctx: bctx, img: bctx.createImageData(W, 1), cap: W };
+        dmaBandRef.current = band;
       }
-      flushRun(sHi);
+      const data = band.img.data;
+      // Box-filter each pixel from the prefix sums into the RGBA buffer (denominator = slot count,
+      // since the band has no gaps); a gap past the last slot gets alpha 0.
+      for (let p = 0; p < W; p++) {
+        const o = p * 4;
+        const i0 = (slot0 + p * slotPerPx) | 0; // floor (operands ≥ 0)
+        let i1 = Math.ceil(slot0 + (p + 1) * slotPerPx);
+        if (i1 > N) i1 = N;
+        if (i1 <= i0) { if (i0 >= N) { data[o + 3] = 0; continue; } i1 = i0 + 1; }
+        const denom = i1 - i0;
+        data[o] = ((preR[i1] - preR[i0]) / denom + 0.5) | 0;
+        data[o + 1] = ((preG[i1] - preG[i0]) / denom + 0.5) | 0;
+        data[o + 2] = ((preB[i1] - preB[i0]) / denom + 0.5) | 0;
+        data[o + 3] = 255;
+      }
+      // Blit the 1px band scaled to band height (nearest sampling, so the row just repeats down).
+      band.ctx.putImageData(band.img, 0, 0);
+      const prevSmooth = ctx.imageSmoothingEnabled;
+      ctx.imageSmoothingEnabled = false;
+      ctx.drawImage(band.canvas, 0, 0, W, 1, 0, bandY, width, DMA_BAND_H - 1);
+      ctx.imageSmoothingEnabled = prevSmooth;
+
+      // Labels: a run needs ≥ minSlots slots to span MIN_LABEL_W px. Scan only `longRuns` once that
+      // threshold clears the long-run floor; below it (extreme zoom) the full list is short anyway.
+      const hiSlot = bounds.maxX * N;
+      const minSlots = (MIN_LABEL_W * (bounds.maxX - bounds.minX) * N) / width;
+      const src = minSlots >= LABEL_LONG_RUN_SLOTS ? longRuns : runs;
+      let lo = 0;
+      let hi = src.length;
+      while (lo < hi) {
+        const m = (lo + hi) >> 1;
+        if (src[m].end <= slot0) lo = m + 1;
+        else hi = m;
+      }
+      for (let ri = lo; ri < src.length && src[ri].start < hiSlot; ri++) {
+        const run = src[ri];
+        if (!run.label || run.end - run.start < minSlots) continue;
+        const a = Math.max(0, toX(run.start / N));
+        const w = Math.min(width, toX(run.end / N)) - a;
+        if (w > MIN_LABEL_W) drawClippedLabel(ctx, run.label, a, bandY, w, DMA_BAND_H, "#fff");
+      }
+
       // Highlight the hovered slot.
       if (dmaHover) {
         const hx = toX(dmaHover.slot / N);
@@ -377,19 +532,7 @@ export function FlameGraph({
         ctx.fillStyle = style.color;
         ctx.fillRect(cx, blitBandY, Math.max(cw, MIN_DRAW_W), BLIT_BAND_H - 1);
         if (cw > MIN_LABEL_W) {
-          const maxW = cw - 6;
-          let label = blitLabel(blit);
-          if (ctx.measureText(label).width > maxW) {
-            while (label.length > 0 && ctx.measureText(label + "…").width > maxW) label = label.slice(0, -1);
-            label += "…";
-          }
-          ctx.save();
-          ctx.beginPath();
-          ctx.rect(cx, blitBandY, cw, BLIT_BAND_H);
-          ctx.clip();
-          ctx.fillStyle = style.textDark ? "#000" : "#fff";
-          ctx.fillText(label, cx + 3, blitBandY + BLIT_BAND_H / 2);
-          ctx.restore();
+          drawClippedLabel(ctx, blitLabel(blit), cx, blitBandY, cw, BLIT_BAND_H, style.textDark ? "#000" : "#fff");
         }
       }
       // Highlight the hovered blit.
@@ -416,7 +559,7 @@ export function FlameGraph({
       ctx.stroke();
     }
 
-    // Boxes. Labels use the UI font (no glyph cache / monospace requirement anymore).
+    // Boxes. Labels use the UI font.
     ctx.font = `11px ${cs.fontFamily || "sans-serif"}`;
     for (const b of boxes) {
       const x1 = toX(b.x1);
@@ -436,23 +579,10 @@ export function FlameGraph({
         ctx.strokeRect(cx + 0.5, b.y1 + 0.5, Math.max(cw - 2, 0), ROW_H - 2);
       }
       if (w > MIN_LABEL_W) {
-        ctx.fillStyle = dim ? "rgba(255,255,255,0.4)" : b.textDark ? "#000" : "#fff";
-        // Proportional font: measure-and-truncate rather than estimate a fixed char width.
-        const maxW = cw - 6;
-        let label = b.text;
-        if (ctx.measureText(label).width > maxW) {
-          while (label.length > 0 && ctx.measureText(label + "…").width > maxW) label = label.slice(0, -1);
-          label += "…";
-        }
-        ctx.save();
-        ctx.beginPath();
-        ctx.rect(cx, b.y1, cw, ROW_H);
-        ctx.clip();
-        ctx.fillText(label, cx + 3, b.y1 + ROW_H / 2);
-        ctx.restore();
+        drawClippedLabel(ctx, b.text, cx, b.y1, cw, ROW_H, dim ? "rgba(255,255,255,0.4)" : b.textDark ? "#000" : "#fff");
       }
     }
-  }, [boxes, width, height, bounds, hovered, focused, duration, displayUnit, timing, matches, dma, dmaSlots, dmaHover, bandH, blits, blitH, blitHover, blitResult]);
+  }, [boxes, width, height, bounds, hovered, focused, duration, displayUnit, timing, matches, dma, dmaSlots, dmaData, dmaHover, bandH, blits, blitH, blitHover, blitResult]);
 
   // --- horizontal pan scrollbar (synced to `bounds`) ----------------------------
   // The scroll child's width is canvasWidth/range, so when zoomed in it overflows
@@ -660,12 +790,6 @@ export function FlameGraph({
   const fileEndChars = hoverText
     ? hoverText.length - (Math.max(hoverText.lastIndexOf("/"), hoverText.lastIndexOf("\\")) + 1)
     : 8;
-  // Clamp the tooltip into the viewport so it never runs off the right/bottom edge.
-  const TIP_W = 480;
-  const TIP_H = 150;
-  const tipLeft = hovered ? Math.max(8, Math.min(hovered.x + 12, window.innerWidth - TIP_W - 8)) : 0;
-  const tipTop = hovered ? Math.max(8, Math.min(hovered.y + 12, window.innerHeight - TIP_H - 8)) : 0;
-
   // DMA band hover info — mirrors the old extension's DMA tooltip: channel, symbolized
   // Address (call-stack for code) or custom Register name, sized Data, R/W + size, and the
   // raster Line / Color Clock decoded from the slot index.
@@ -678,29 +802,42 @@ export function FlameGraph({
     const isWrite = !!(flags & DMA_WRITE);
     const isByte = !!(flags & DMA_BYTE);
     const isCustom = dmaIsCustomReg(owner, flags, addr);
-    const off = addr & 0x1fe;
-    // Custom register → name ($offset); otherwise symbolize the bus address.
-    const symbol = isCustom
-      ? `${customRegisterName(off) ?? "custom"} ($${off.toString(16).padStart(3, "0")})`
-      : symbolize(addr);
+    const isCpu = owner === BusOwner.CPU;
+    const isRefresh = owner === BusOwner.REFRESH;
+    const isIdle = owner === BusOwner.NONE || owner === BusOwner.BLOCKED;
+    // The associated custom register: a custom access carries it in its address; a channel DMA
+    // (bitplane/audio/sprite/disk) maps from its bus owner (BPLxDAT, AUDxDAT, …). undefined → none.
+    const regOff = isCustom ? addr & 0x1fe : ownerRegister(owner);
+    const registerLabel =
+      regOff !== undefined
+        ? `${customRegisterName(regOff) ?? "custom"} ($${regOff.toString(16).padStart(3, "0")})`
+        : undefined;
+    const addrSymbol = symbolize(addr); // memory-address symbolization for the Address row
     const data = isByte
       ? `$${(dma.value[slot] & 0xff).toString(16).padStart(2, "0")}`
       : `$${dma.value[slot].toString(16).padStart(4, "0")}`;
+    // DMA Control: DMACON reconstructed at this slot (baseline + the frame's writes up to here).
+    const custom = model.dmaSnapshot?.custom;
+    const dmacon = custom ? reconstructCustomRegs(dma, custom, slot + 1)[DMACON_REG_INDEX] : undefined;
     return {
       style: channelStyle(owner, flags),
       isCustom,
-      symbol,
+      // Refresh and idle/"-" cycles carry no meaningful address/data; Access is CPU-only.
+      showAddrData: !isRefresh && !isIdle,
+      showAccess: isCpu,
+      registerLabel,
+      addrSymbol,
       addrHex: `$${addr.toString(16).padStart(6, "0")}`,
       data,
       access: `${isWrite ? "Write" : "Read"}${isByte ? ".B" : ".W"}`,
+      channels: dmacon !== undefined ? dmaconChannels(dmacon) : [],
+      doc: regOff !== undefined ? getCustomRegDoc(regOff) : undefined,
       line: Math.floor(slot / DMA_HPOS),
       colorClock: slot % DMA_HPOS,
       // CPU call stack at this instant (outer→leaf), from the flame columns at this x.
       callStack: stackAtX((slot + 0.5) / dmaSlots),
     };
   })();
-  const dmaTipLeft = dmaHover ? Math.max(8, Math.min(dmaHover.x + 12, window.innerWidth - 360 - 8)) : 0;
-  const dmaTipTop = dmaHover ? Math.max(8, Math.min(dmaHover.y + 12, window.innerHeight - 170 - 8)) : 0;
 
   // Blit band hover info — the old extension's blitter tooltip: size, BLTCON chips, minterm
   // (hex + boolean expression + the 8 LF bits), per-channel source/destination (symbolized
@@ -714,11 +851,12 @@ export function FlameGraph({
     return sym ? `${sym} (${hex})` : hex;
   };
   const bin16 = (v: number) => `%${(v & 0xffff).toString(2).padStart(16, "0")}`;
-  const blitTipLeft = blitHover ? Math.max(8, Math.min(blitHover.x + 12, window.innerWidth - 500 - 8)) : 0;
-  const blitTipTop = blitHover ? Math.max(8, Math.min(blitHover.y + 12, window.innerHeight - 300 - 8)) : 0;
 
   return (
-    <div className="flame">
+    // Size the flame area to the actual (capped) call-stack depth — canvas height plus the pan
+    // scrollbar — instead of flex-filling the pane, so a shallow capture leaves the rest of the
+    // space to the TimeView. A CSS max-height keeps the TimeView visible when the depth is large.
+    <div className="flame" style={{ height: height + HSCROLL_H }}>
       <div className="canvas-wrap" ref={canvasWrapRef}>
         <canvas
           ref={canvasRef}
@@ -738,88 +876,118 @@ export function FlameGraph({
         <div ref={scrollChildRef} />
       </div>
       {hovered && hoverLoc && (
-        <div className="tooltip" style={{ left: tipLeft, top: tipTop }}>
-          <div className="tt-func">{hovered.box.text}</div>
+        <Tooltip x={hovered.x} y={hovered.y} width={440}>
+          <div className="tt-func">
+            <span className="dma-dot" style={{ background: hovered.box.fill }} />
+            {hovered.box.text}
+          </div>
           <div className="tt-loc">
             {hoverText ? <MiddleOut text={hoverText} endChars={fileEndChars} /> : "no source"}
           </div>
-          <div className="tt-row">
-            <span>Total {dataName(displayUnit)}</span>
-            <span>{formatValue(hoverLoc.selfTime + hoverLoc.aggregateTime, displayUnit, timing)}</span>
+          <div className="tip-grid">
+            <span className="tip-label">Total {dataName(displayUnit)}</span>
+            <span className="tip-val">{formatValue(hoverLoc.selfTime + hoverLoc.aggregateTime, displayUnit, timing)}</span>
+
+            <span className="tip-label">Self {dataName(displayUnit)}</span>
+            <span className="tip-val">{formatValue(hoverLoc.selfTime, displayUnit, timing)}</span>
+
+            {hoverLoc.aggregateTime > 0 && (
+              <>
+                <span className="tip-label">Aggregate {dataName(displayUnit)}</span>
+                <span className="tip-val">{formatValue(hoverLoc.aggregateTime, displayUnit, timing)}</span>
+              </>
+            )}
           </div>
-          <div className="tt-row">
-            <span>Self {dataName(displayUnit)}</span>
-            <span>{formatValue(hoverLoc.selfTime, displayUnit, timing)}</span>
-          </div>
-          {hoverLoc.aggregateTime > 0 && (
-            <div className="tt-row">
-              <span>Aggregate {dataName(displayUnit)}</span>
-              <span>{formatValue(hoverLoc.aggregateTime, displayUnit, timing)}</span>
-            </div>
-          )}
           {hoverLoc.callFrame.url && <div className="tt-hint">Ctrl+Click to open source</div>}
-        </div>
+        </Tooltip>
       )}
       {dmaHover && dmaInfo?.style && (
-        <div className="tooltip" style={{ left: dmaTipLeft, top: dmaTipTop, width: 360 }}>
+        <Tooltip x={dmaHover.x} y={dmaHover.y} className="dma-tip" width={dmaInfo.doc ? 620 : 500}>
           <div className="tt-func">
             <span className="dma-dot" style={{ background: dmaInfo.style.color }} />
             {dmaInfo.style.label}
           </div>
-          {dmaInfo.isCustom ? (
-            <div className="tt-row">
-              <span>Register</span>
-              <span>{dmaInfo.symbol ?? dmaInfo.addrHex}</span>
-            </div>
-          ) : (
-            <div className="tt-row">
-              <span>Address</span>
-              <span className="tt-addr">{dmaInfo.symbol ?? dmaInfo.addrHex}</span>
+          <div className="tip-grid">
+            {/* Memory accesses show the bus Address; the associated Register (custom reg, or the
+                channel's data register) gets its own row. Custom accesses have no separate Address. */}
+            {!dmaInfo.isCustom && dmaInfo.showAddrData && (
+              <>
+                <span className="tip-label">Address</span>
+                <span className="tip-val tt-addr">{dmaInfo.addrSymbol ?? dmaInfo.addrHex}</span>
+              </>
+            )}
+
+            {dmaInfo.registerLabel && (
+              <>
+                <span className="tip-label">Register</span>
+                <span className="tip-val">{dmaInfo.registerLabel}</span>
+              </>
+            )}
+
+            {dmaInfo.showAddrData && (
+              <>
+                <span className="tip-label">Data</span>
+                <span className="tip-val">{dmaInfo.data}</span>
+              </>
+            )}
+
+            {dmaInfo.showAccess && (
+              <>
+                <span className="tip-label">Access</span>
+                <span className="tip-val">{dmaInfo.access}</span>
+              </>
+            )}
+
+            {dmaInfo.channels.length > 0 && (
+              <>
+                <span className="tip-label">DMA Control</span>
+                <span className="tip-val bt-chips">
+                  {dmaInfo.channels.map((c) => (
+                    <span key={c.name} className={c.on ? "tt-bit on" : "tt-bit"}>{c.name}</span>
+                  ))}
+                </span>
+              </>
+            )}
+
+            <span className="tip-label">Line</span>
+            <span className="tip-val">{dmaInfo.line}</span>
+
+            <span className="tip-label">Color Clock</span>
+            <span className="tip-val">{dmaInfo.colorClock}</span>
+
+            {dmaInfo.callStack.length > 0 && (
+              <>
+                <span className="tip-label">CPU Call Stack</span>
+                <span className="tip-val tt-addr">{dmaInfo.callStack.join(" › ")}</span>
+              </>
+            )}
+          </div>
+          {dmaInfo.doc && (
+            <div className="dma-doc">
+              <Markdown>{dmaInfo.doc}</Markdown>
             </div>
           )}
-          <div className="tt-row">
-            <span>Data</span>
-            <span>{dmaInfo.data}</span>
-          </div>
-          <div className="tt-row">
-            <span>Access</span>
-            <span>{dmaInfo.access}</span>
-          </div>
-          <div className="tt-row">
-            <span>Line</span>
-            <span>{dmaInfo.line}</span>
-          </div>
-          <div className="tt-row">
-            <span>Color Clock</span>
-            <span>{dmaInfo.colorClock}</span>
-          </div>
-          {dmaInfo.callStack.length > 0 && (
-            <>
-              <div className="tt-loc" style={{ marginTop: 4 }}>CPU call stack</div>
-              <div className="tt-addr">{dmaInfo.callStack.join(" › ")}</div>
-            </>
-          )}
-        </div>
+        </Tooltip>
       )}
       {blitHover && blitInfo && (
-        <div className="tooltip blit-tip" style={{ left: blitTipLeft, top: blitTipTop }}>
+        <Tooltip x={blitHover.x} y={blitHover.y} className="blit-tip" width={480}>
           <div className="tt-func">
             <span className="dma-dot" style={{ background: blitStyle(blitHover.blit.mode).color }} />
             {blitLabel(blitHover.blit)}
           </div>
-          <div className="blit-grid">
-            <span className="bt-label">Size</span>
-            <span className="bt-val">{blitInfo.size}</span>
+          <div className="tip-grid">
+            <span className="tip-label">Size</span>
+            <span className="tip-val">{blitInfo.size}</span>
 
-            <span className="bt-label">Blitter Control</span>
-            <span className="bt-val bt-chips">
+            <span className="tip-label">Blitter Control</span>
+            <span className="tip-val bt-chips">
               {blitInfo.control.map((c) => (
                 <span key={c.name} className={c.on ? "tt-bit on" : "tt-bit"}>{c.name}</span>
               ))}
             </span>
 
-            <span className="bt-label">Minterm</span>
-            <span className="bt-val bt-chips">
+            <span className="tip-label">Minterm</span>
+            <span className="tip-val bt-chips">
               <span className="bt-mt">{blitInfo.mintermHex} {blitInfo.mintermExpr}</span>
               {blitInfo.mintermBits.map((c, i) => (
                 <span key={i} className={c.on ? "tt-bit on" : "tt-bit"}>{c.name}</span>
@@ -828,8 +996,8 @@ export function FlameGraph({
 
             {blitInfo.line && (
               <>
-                <span className="bt-label">Line</span>
-                <span className="bt-val">
+                <span className="tip-label">Line</span>
+                <span className="tip-val">
                   <span className="bt-eh">Start</span> {blitInfo.line.start}
                   <span className="bt-eh">Texture</span> {blitInfo.line.texture}
                 </span>
@@ -838,8 +1006,8 @@ export function FlameGraph({
 
             {blitInfo.channels.map((ch) => (
               <Fragment key={ch.label}>
-                <span className="bt-label">{ch.label}</span>
-                <span className="bt-val">
+                <span className="tip-label">{ch.label}</span>
+                <span className="tip-val">
                   {ch.literal !== undefined ? (
                     bin16(ch.literal)
                   ) : (
@@ -852,8 +1020,8 @@ export function FlameGraph({
                 </span>
                 {ch.fwm !== undefined && (
                   <>
-                    <span className="bt-label">Masks</span>
-                    <span className="bt-val">
+                    <span className="tip-label">Masks</span>
+                    <span className="tip-val">
                       <span className="bt-eh">FWM</span> {bin16(ch.fwm)}
                       <span className="bt-eh">LWM</span> {bin16(ch.lwm!)}
                     </span>
@@ -862,18 +1030,18 @@ export function FlameGraph({
               </Fragment>
             ))}
 
-            <span className="bt-label">Start</span>
-            <span className="bt-val">Line {blitInfo.start.line}, Color Clock {blitInfo.start.colorClock}, DMA Cycle {blitInfo.start.slot}</span>
+            <span className="tip-label">Start</span>
+            <span className="tip-val">Line {blitInfo.start.line}, Color Clock {blitInfo.start.colorClock}, DMA Cycle {blitInfo.start.slot}</span>
             {blitInfo.end && (
               <>
-                <span className="bt-label">End</span>
-                <span className="bt-val">Line {blitInfo.end.line}, Color Clock {blitInfo.end.colorClock}, DMA Cycle {blitInfo.end.slot}</span>
-                <span className="bt-label">Duration</span>
-                <span className="bt-val">{blitInfo.end.durationSlots} DMA Cycles ({formatValue(blitInfo.end.durationSlots * 2, displayUnit, timing)})</span>
+                <span className="tip-label">End</span>
+                <span className="tip-val">Line {blitInfo.end.line}, Color Clock {blitInfo.end.colorClock}, DMA Cycle {blitInfo.end.slot}</span>
+                <span className="tip-label">Duration</span>
+                <span className="tip-val">{blitInfo.end.durationSlots} DMA Cycles ({formatValue(blitInfo.end.durationSlots * 2, displayUnit, timing)})</span>
               </>
             )}
           </div>
-        </div>
+        </Tooltip>
       )}
     </div>
   );

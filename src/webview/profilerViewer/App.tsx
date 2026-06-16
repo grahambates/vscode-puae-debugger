@@ -109,7 +109,7 @@ export function App() {
       <div className="toolbar">
         {mode === "live" && (
           <>
-            <button onClick={capture} disabled={busy}>
+            <button className="capture-btn" onClick={capture} disabled={busy}>
               {busy ? "Capturing…" : "Capture frame"}
             </button>
             <button onClick={save} disabled={busy || !model} title="Save this capture to a .vamigaprofile file">
