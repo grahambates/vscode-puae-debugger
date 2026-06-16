@@ -30,13 +30,36 @@ export function kickstartSymbolModule(
   romBuffer: Buffer,
 ): KickstartSymbolModule | undefined {
   const sha1 = crypto.createHash("sha1").update(romBuffer).digest("hex");
+  return buildModule(sha1, romBuffer.length);
+}
+
+/**
+ * Reconstruct a {@link KickstartSymbolModule} from a ROM sha1 alone — no ROM bytes needed. The ROM
+ * size (hence the mapped base) comes from the {@link kickstartRoms} table entry, so a saved
+ * `.vamigaprofile` only needs to persist the sha1 to re-symbolicate ROM/OS addresses on load.
+ * Returns `undefined` for an unknown/empty sha1 (the caller carries on without ROM symbols).
+ */
+export function kickstartSymbolModuleBySha1(
+  sha1: string,
+): KickstartSymbolModule | undefined {
+  const rom = kickstartRoms[sha1];
+  if (!rom) {
+    return undefined;
+  }
+  return buildModule(sha1, rom.size);
+}
+
+// Relocate a known ROM's symbols to absolute addresses and build the synthetic segment. Shared by
+// the ROM-bytes and sha1-only entry points; `size` is the ROM length (the table entry's size and
+// the loaded buffer's length agree for a matched ROM).
+function buildModule(sha1: string, size: number): KickstartSymbolModule | undefined {
   const rom = kickstartRoms[sha1];
   if (!rom) {
     return undefined;
   }
 
   // Kickstart ROMs are mapped at the top of the 16MB address space.
-  const base = 0x1000000 - romBuffer.length;
+  const base = 0x1000000 - size;
 
   const symbols: Record<string, number> = {};
   for (const [name, offset] of rom.symbols) {
@@ -46,7 +69,7 @@ export function kickstartSymbolModule(
   const segment: Segment = {
     name: "kickstart",
     address: base,
-    size: romBuffer.length,
+    size,
     memType: MemoryType.ANY,
   };
 

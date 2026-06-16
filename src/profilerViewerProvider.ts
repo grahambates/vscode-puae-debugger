@@ -24,7 +24,7 @@ export class ProfilerViewerProvider {
   private lastModel?: IProfileModel;
   // Everything Save needs, grabbed at capture time while the debug session is live, so saving
   // still works after the emulator webview / session is closed (which clears the adapter).
-  private lastSaveData?: { elf: Uint8Array; programName: string; segmentOffsets: number[]; baseDir: string };
+  private lastSaveData?: { elf: Uint8Array; programName: string; segmentOffsets: number[]; baseDir: string; kickstart: { sha1: string; name: string } };
   private lastSaveAdapter?: VamigaDebugAdapter; // which session lastSaveData came from (read ELF once per session)
   private symbolsSent = false; // symbols are session-constant — send them only once per webview mount
   private lastBulkUri?: string; // webview URI of the last capture's bulk blob (reused on webview reload)
@@ -184,6 +184,7 @@ export class ProfilerViewerProvider {
         programName: path.basename(elfPath),
         segmentOffsets: reloc.segmentOffsets,
         baseDir: reloc.baseDir,
+        kickstart: adapter.getKickstartInfo(),
       };
       this.lastSaveAdapter = adapter;
     } catch (error) {
@@ -225,6 +226,7 @@ export class ProfilerViewerProvider {
         capturedAt: Date.now(),
         segmentOffsets: save.segmentOffsets,
         baseDir: save.baseDir,
+        kickstart: save.kickstart,
       });
       await vscode.workspace.fs.writeFile(target, buf);
       // Open the saved profile in its (read-only) editor, then close the live capture panel —

@@ -9,6 +9,7 @@ import { parseHunks } from "./amigaHunkParser";
 import { sourceMapFromDwarf } from "./dwarfSourceMap";
 import { sourceMapFromHunks } from "./amigaHunkSourceMap";
 import { SourceMap } from "./sourceMap";
+import { kickstartSymbolModuleBySha1 } from "./kickstart";
 import { decodeCapture, ProfileManifest } from "./vamigaProfile";
 import { buildModelFromCapture, RawCapture } from "./profilerManager";
 import { IProfileModel } from "./shared/profilerTypes";
@@ -17,16 +18,22 @@ const ELF_MAGIC = [0x7f, 0x45, 0x4c, 0x46]; // \x7fELF
 
 // Rebuild the SourceMap from the embedded program + relocation. Uses the same inputs the
 // debug adapter fed to sourceMapFromDwarf/Hunks at capture time, so the absolute captured
-// PCs symbolicate identically. (Kickstart ROM symbols are not re-merged here — the ROM
-// isn't in the bundle; ROM/OS addresses stay unsymbolicated on file load for now.)
+// PCs symbolicate identically. Kickstart ROM symbols are re-merged from the manifest's ROM sha1
+// (rebuilt by kickstartSymbolModuleBySha1, no ROM bytes needed) so ROM/OS leaves symbolicate as
+// [Kick] <name> just like the live view; an empty/unknown sha1 leaves them as flat [Kickstart].
 export function buildSourceMapFromBundle(program: Uint8Array, manifest: ProfileManifest): SourceMap {
   const { segmentOffsets, baseDir } = manifest.relocation;
   const buf = Buffer.from(program.buffer, program.byteOffset, program.byteLength);
   const isElf = program.length >= 4 && ELF_MAGIC.every((b, i) => program[i] === b);
-  if (isElf) {
-    return sourceMapFromDwarf(parseDwarf(buf), segmentOffsets, baseDir);
+  const sourceMap = isElf
+    ? sourceMapFromDwarf(parseDwarf(buf), segmentOffsets, baseDir)
+    : sourceMapFromHunks(parseHunks(buf), segmentOffsets);
+
+  const kick = kickstartSymbolModuleBySha1(manifest.kickstart.sha1);
+  if (kick) {
+    sourceMap.addSymbolModule(kick.segment, kick.symbols);
   }
-  return sourceMapFromHunks(parseHunks(buf), segmentOffsets);
+  return sourceMap;
 }
 
 export function loadProfile(file: Uint8Array): { model: IProfileModel; raw: RawCapture; manifest: ProfileManifest } {

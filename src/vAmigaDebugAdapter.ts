@@ -1462,4 +1462,15 @@ export class VamigaDebugAdapter extends LoggingDebugSession {
   public getRelocation(): { segmentOffsets: number[]; baseDir: string } {
     return { segmentOffsets: this.segmentOffsets, baseDir: this.sourceBaseDir };
   }
+
+  /**
+   * Kickstart ROM identity, so a saved profile can re-merge the `.kick` symbol module on load and
+   * symbolicate ROM/OS leaves as [Kick] <name>. The empty sentinel means no ROM symbols were
+   * resolved (unset/unknown ROM) — the loader then leaves ROM addresses as flat [Kickstart].
+   */
+  public getKickstartInfo(): { sha1: string; name: string } {
+    return this.kickstartSymbols
+      ? { sha1: this.kickstartSymbols.sha1, name: this.kickstartSymbols.name }
+      : { sha1: "", name: "" };
+  }
 }

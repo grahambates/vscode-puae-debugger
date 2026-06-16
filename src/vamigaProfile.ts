@@ -37,6 +37,11 @@ export interface ProfileManifest {
   // segmentOffsets are the loaded segment base addresses; baseDir resolves ELF source paths.
   // Always present (empty segmentOffsets/baseDir == the -Ttext=0 / no-relocation case).
   relocation: { segmentOffsets: number[]; baseDir: string };
+  // Kickstart ROM identity at capture time, so the loader can re-merge the `.kick` symbol module
+  // (via kickstartSymbolModuleBySha1) and symbolicate ROM/OS leaves as [Kick] <name> — matching the
+  // live view. Always present; the empty sentinel { sha1: "", name: "" } means "no ROM symbols"
+  // (unknown/unset ROM), which the loader treats as a flat [Kickstart] fallback.
+  kickstart: { sha1: string; name: string };
   sections: { name: string; offset: number; length: number }[];
 }
 
@@ -52,6 +57,7 @@ export interface EncodeOptions {
   capturedAt?: number; // ms since epoch; pass Date.now() at the call site
   segmentOffsets?: number[]; // loaded segment base addresses (relocation)
   baseDir?: string; // base directory for resolving ELF source paths
+  kickstart?: { sha1: string; name: string }; // ROM identity for re-symbolicating ROM/OS leaves
 }
 
 // View a Uint8Array as a Buffer over the same memory (no copy) for concatenation.
@@ -93,6 +99,7 @@ export function encodeCapture(raw: RawCapture, opts: EncodeOptions = {}): Buffer
       inRange: raw.profile.inRange,
     },
     relocation: { segmentOffsets: opts.segmentOffsets ?? [], baseDir: opts.baseDir ?? "" },
+    kickstart: opts.kickstart ?? { sha1: "", name: "" },
     sections: index,
   };
 
@@ -116,6 +123,9 @@ export function decodeCapture(file: Uint8Array): DecodedCapture {
   if (manifest.version !== FORMAT_VERSION) {
     throw new Error(`Unsupported .vamigaprofile version ${manifest.version} (expected ${FORMAT_VERSION})`);
   }
+  // Normalize legacy files (pre-kickstart-field) to the empty sentinel here, at the decode boundary,
+  // so every consumer reads manifest.kickstart.sha1 without a guard.
+  manifest.kickstart ??= { sha1: "", name: "" };
   const blobStart = manifestStart + manifestLen;
 
   // Copy each section into its own ArrayBuffer (byteOffset 0) so downstream typed-array

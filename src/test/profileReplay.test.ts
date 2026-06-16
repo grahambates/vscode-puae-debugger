@@ -33,6 +33,9 @@ describe("replay template.vamigaprofile", () => {
     expect(names[0]).toBe("(all)"); // synthetic root
     // a.elf inlines functions — they must appear as their own frames, suffixed.
     expect(names.some((n) => n.endsWith(" (inlined)"))).toBe(true);
+    // Kickstart ROM leaves re-symbolicate from the manifest's ROM sha1 (the .kick module is
+    // re-merged on load) — ROM/OS calls show [Kick] <name>, matching the live view.
+    expect(names.some((n) => n.startsWith("[Kick] "))).toBe(true);
     // DMA captured in the same frame.
     expect(model.dma?.owner.length).toBe(DMA_HPOS * DMA_VPOS);
     expect(model.dmaSnapshot).toBeDefined();
