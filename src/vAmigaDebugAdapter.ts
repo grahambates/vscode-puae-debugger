@@ -490,7 +490,7 @@ export class VamigaDebugAdapter extends LoggingDebugSession {
     const maxLevels = args.levels ?? 16;
 
     try {
-      const stk = await this.getStackManager().getStackFrames(
+      const { frames: stk, total: totalFrames } = await this.getStackManager().getStackFrames(
         startFrame,
         maxLevels,
         this.exceptionInstruction,
@@ -503,7 +503,7 @@ export class VamigaDebugAdapter extends LoggingDebugSession {
       }
       response.body = {
         stackFrames: stk,
-        totalFrames: stk.length,
+        totalFrames,
       };
       this.sendResponse(response);
     } catch (err) {

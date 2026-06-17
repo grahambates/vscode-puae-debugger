@@ -76,7 +76,7 @@ describe("StackManager - Comprehensive Tests", () => {
       mockVAmiga.isValidAddress.returns(false); // No valid return addresses in stack
 
       // Test: Get stack frames
-      const frames = await stackManager.getStackFrames(0, 5);
+      const { frames } = await stackManager.getStackFrames(0, 5);
 
       // Verify: Current PC is included as first frame
       assert.strictEqual(frames.length, 1);
@@ -102,7 +102,7 @@ describe("StackManager - Comprehensive Tests", () => {
       });
 
       // Test: Get stack frames
-      const frames = await stackManager.getStackFrames(0, 1);
+      const { frames } = await stackManager.getStackFrames(0, 1);
 
       // Verify: Frame has source information
       assert.strictEqual(frames.length, 1);
@@ -122,7 +122,7 @@ describe("StackManager - Comprehensive Tests", () => {
       mockSourceMap.lookupAddress.returns(null);
 
       // Test: Get stack frames
-      const frames = await stackManager.getStackFrames(0, 1);
+      const { frames } = await stackManager.getStackFrames(0, 1);
 
       // Verify: Frame is disassembly-only
       assert.strictEqual(frames.length, 1);
@@ -154,7 +154,7 @@ describe("StackManager - Comprehensive Tests", () => {
       mockSourceMap.lookupAddress.withArgs(0xe80000).returns(null);
 
       // Test: Get all stack frames
-      const frames = await stackManager.getStackFrames(0, 10);
+      const { frames } = await stackManager.getStackFrames(0, 10);
 
       // Verify: Stops after user code, doesn't include ROM frame
       assert.strictEqual(frames.length, 2);
@@ -176,7 +176,7 @@ describe("StackManager - Comprehensive Tests", () => {
       mockSourceMap.lookupAddress.returns(null); // All disassembly frames
 
       // Test: Get frames 1-2 (skip first, take 2)
-      const frames = await stackManager.getStackFrames(1, 2);
+      const { frames } = await stackManager.getStackFrames(1, 2);
 
       // Verify: Returns correct slice of frames
       assert.strictEqual(frames.length, 2);
@@ -338,7 +338,7 @@ describe("StackManager - Comprehensive Tests", () => {
       });
 
       // Test: Get frames
-      const frames = await stackManager.getStackFrames(0, 1);
+      const { frames } = await stackManager.getStackFrames(0, 1);
 
       // Verify: Uses source map for naming and location
       assert.strictEqual(frames.length, 1);
@@ -358,7 +358,7 @@ describe("StackManager - Comprehensive Tests", () => {
       mockSourceMap.lookupAddress.withArgs(0x1000).returns(null);
 
       // Test: Get frames when source map has no info for address
-      const frames = await stackManager.getStackFrames(0, 1);
+      const { frames } = await stackManager.getStackFrames(0, 1);
 
       // Verify: Falls back to disassembly frame
       assert.strictEqual(frames.length, 1);
@@ -389,7 +389,7 @@ describe("StackManager - Comprehensive Tests", () => {
       mockVAmiga.readMemory.withArgs(0x8000, 4).resolves(buf1); // CFA-4 for frame 0
       mockVAmiga.readMemory.withArgs(0x8004, 4).resolves(buf2); // CFA-4 for frame 1
 
-      const frames = await stackManager.getStackFrames(0, 10);
+      const { frames } = await stackManager.getStackFrames(0, 10);
 
       assert.strictEqual(frames.length, 3);
       assert.strictEqual(frames[0].instructionPointerReference, "0x00001000");
@@ -415,7 +415,7 @@ describe("StackManager - Comprehensive Tests", () => {
       mockVAmiga.readMemory.withArgs(0x7FFC, 4).resolves(retBuf); // CFA-4 = 0x7FFC
       mockVAmiga.readMemory.withArgs(0x7FF8, 4).resolves(a5Buf); // CFA-8 = 0x7FF8 (saved A5)
 
-      const frames = await stackManager.getStackFrames(0, 10);
+      const { frames } = await stackManager.getStackFrames(0, 10);
 
       assert.strictEqual(frames.length, 2);
       assert.strictEqual(frames[0].instructionPointerReference, "0x00001000");
@@ -441,7 +441,7 @@ describe("StackManager - Comprehensive Tests", () => {
         { name: "inline_func", callPath: "/src/outer.c", callLine: 20 },
       ]);
 
-      const frames = await stackManager.getStackFrames(0, 10);
+      const { frames } = await stackManager.getStackFrames(0, 10);
 
       // inline frame + real outer (0x1000) + no-source frame (0x2000)
       assert.strictEqual(frames.length, 3);
@@ -461,7 +461,7 @@ describe("StackManager - Comprehensive Tests", () => {
       sinon.stub(stackManager, "guessStack").resolves([[0x1000, 0x1000], [0x2000, 0x2000]]);
       mockSourceMap.lookupAddress.returns(null);
 
-      const frames = await stackManager.getStackFrames(0, 10);
+      const { frames } = await stackManager.getStackFrames(0, 10);
 
       assert.strictEqual(frames.length, 2);
       assert.strictEqual(frames[0].instructionPointerReference, "0x00001000");

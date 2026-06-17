@@ -41,13 +41,13 @@ export class StackManager {
    *
    * @param startFrame Starting frame index for pagination
    * @param maxLevels Maximum number of frames to return
-   * @returns Array of stack frames with source or disassembly information
+   * @returns Sliced stack frames plus the total frame count before slicing
    */
   public async getStackFrames(
     startFrame: number,
     maxLevels: number,
     exceptionInstruction: { address: number; isSupervisor: boolean } | null = null,
-  ): Promise<StackFrame[]> {
+  ): Promise<{ frames: StackFrame[]; total: number }> {
     const endFrame = startFrame + maxLevels;
 
     const cpuInfo = await this.vAmiga.getCpuInfo();
@@ -69,6 +69,7 @@ export class StackManager {
     }
   }
 
+
   // Builds stack frames using DWARF .debug_frame unwinding.
   // Expands inline frames and records register snapshots per frame.
   private async buildDwarfFrames(
@@ -77,7 +78,7 @@ export class StackManager {
     cpuInfo: CpuInfo,
     startFrame: number,
     endFrame: number,
-  ): Promise<StackFrame[]> {
+  ): Promise<{ frames: StackFrame[]; total: number }> {
     const { addresses, snapshots } = await this.dwarfUnwindStack(pc, stackAddress, cpuInfo, endFrame);
     this.lastFrameRegs.clear();
     const allFrames: StackFrame[] = [];
@@ -125,7 +126,7 @@ export class StackManager {
       frameId++;
     }
 
-    return allFrames.slice(startFrame, endFrame);
+    return { frames: allFrames.slice(startFrame, endFrame), total: allFrames.length };
   }
 
   // Builds stack frames by heuristic guessing (no DWARF info available).
@@ -135,7 +136,7 @@ export class StackManager {
     stackAddress: number,
     startFrame: number,
     endFrame: number,
-  ): Promise<StackFrame[]> {
+  ): Promise<{ frames: StackFrame[]; total: number }> {
     const addresses = await this.guessStack(pc, stackAddress, endFrame);
     this.lastFrameRegs.clear();
     const allFrames: StackFrame[] = [];
@@ -159,7 +160,7 @@ export class StackManager {
       }
     }
 
-    return allFrames.slice(startFrame, endFrame);
+    return { frames: allFrames.slice(startFrame, endFrame), total: allFrames.length };
   }
 
   private cpuInfoToRegs(cpuInfo: CpuInfo): Map<number, number> {
