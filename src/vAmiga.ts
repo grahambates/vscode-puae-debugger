@@ -347,7 +347,6 @@ interface CallParams {
   url?: string;
   kickstart_rom_url?: string;
   kickstart_ext_url?: string;
-  AROS?: boolean;
   navbar?: boolean;
   wide?: boolean;
   dark?: boolean;
@@ -1018,8 +1017,21 @@ export class VAmiga implements Emulator {
           `debug type "puae" for a real 68030+ CPU.`,
       );
     }
+    // When no Kickstart ROM is configured, embed the bundled AROS ROMs as
+    // data URIs and pass them via kickstart_rom_url/kickstart_ext_url — the
+    // same direct wasm_loadfile path used for real Kickstart ROMs. This is
+    // more reliable than the AROS:true / fetchOpenROMS path which depends on
+    // IndexedDB storage working in the VS Code webview context.
+    const arosRomPath = join(this.extensionUri.fsPath, "vamiga", "roms", "aros-rom-20250219.bin");
+    const arosExtPath = join(this.extensionUri.fsPath, "vamiga", "roms", "aros-ext-20250219.bin");
+    const romUrl = options.kickstartRom
+      ? this.absolutePathToDataUri(options.kickstartRom)
+      : this.absolutePathToDataUri(arosRomPath);
+    const extUrl = options.kickstartExt
+      ? this.absolutePathToDataUri(options.kickstartExt)
+      : this.absolutePathToDataUri(arosExtPath);
+
     const params: CallParams = {
-      AROS: !options.kickstartRom || undefined,
       navbar: options.showNavBar,
       wide: options.wideScreen,
       dark: options.darkMode,
@@ -1041,12 +1053,8 @@ export class VAmiga implements Emulator {
       url: options.programPath
         ? this.absolutePathToWebviewUri(options.programPath).toString()
         : undefined,
-      kickstart_rom_url: options.kickstartRom
-        ? this.absolutePathToDataUri(options.kickstartRom)
-        : undefined,
-      kickstart_ext_url: options.kickstartExt
-        ? this.absolutePathToDataUri(options.kickstartExt)
-        : undefined,
+      kickstart_rom_url: romUrl,
+      kickstart_ext_url: extUrl,
     };
     return params;
   }
