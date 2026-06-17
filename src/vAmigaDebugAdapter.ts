@@ -209,7 +209,7 @@ export class VamigaDebugAdapter extends LoggingDebugSession {
    * same backend instead of always defaulting to VAmiga.
    */
   public getEmulator(): Emulator {
-    return this.vAmiga;
+    return this.emulator;
   }
 
   public notifySteppedBack(): void {
@@ -226,7 +226,7 @@ export class VamigaDebugAdapter extends LoggingDebugSession {
    *
    * @param vAmiga VAmiga instance for dependency injection (primarily for testing)
    */
-  public constructor(private vAmiga: Emulator) {
+  public constructor(private emulator: Emulator) {
     super();
     this.setDebuggerLinesStartAt1(false);
     this.setDebuggerColumnsStartAt1(false);
@@ -247,7 +247,7 @@ export class VamigaDebugAdapter extends LoggingDebugSession {
     if (VamigaDebugAdapter.activeAdapter === this) {
       VamigaDebugAdapter.activeAdapter = undefined;
     }
-    this.vAmiga.run(); // unpause emulator if we're leaving it open
+    this.emulator.run(); // unpause emulator if we're leaving it open
     this.breakpointManager?.clearAll();
     this.disposables.forEach((d) => d?.dispose());
     this.disposables = [];
@@ -378,7 +378,7 @@ export class VamigaDebugAdapter extends LoggingDebugSession {
       if (this.fastLoad) {
         // Use fast loading - inject program directly into memory
         logger.log("Using fast memory injection mode");
-        this.vAmiga.open({
+        this.emulator.open({
           kickstartRom,
           kickstartExt,
           emulatorConfigFile: args.emulatorConfigFile,
@@ -386,7 +386,7 @@ export class VamigaDebugAdapter extends LoggingDebugSession {
         });
       } else {
         // Traditional loading via floppy disk emulation
-        this.vAmiga.open({
+        this.emulator.open({
           programPath: this.programPath,
           kickstartRom,
           kickstartExt,
@@ -397,10 +397,10 @@ export class VamigaDebugAdapter extends LoggingDebugSession {
 
       // Add listeners to emulator
       this.disposables.push(
-        this.vAmiga.onDidDispose(() => this.sendEvent(new TerminatedEvent())),
+        this.emulator.onDidDispose(() => this.sendEvent(new TerminatedEvent())),
       );
       this.disposables.push(
-        this.vAmiga.onDidReceiveMessage(async (message) => {
+        this.emulator.onDidReceiveMessage(async (message) => {
           try {
             await this.handleMessageFromEmulator(message);
           } catch (err) {
@@ -449,19 +449,19 @@ export class VamigaDebugAdapter extends LoggingDebugSession {
       // Resume emulator
       // even if stopOnEntry is set, we need to run to hit the temporary breakpoin in normal mode
       this.sendEvent(new OutputEvent(`Program started\n`));
-      this.vAmiga.run();
+      this.emulator.run();
     }
     this.sendResponse(response);
   }
 
   protected continueRequest(response: DebugProtocol.ContinueResponse): void {
-    this.vAmiga.run();
+    this.emulator.run();
     response.body = { allThreadsContinued: true };
     this.sendResponse(response);
   }
 
   protected pauseRequest(response: DebugProtocol.PauseResponse): void {
-    this.vAmiga.pause();
+    this.emulator.pause();
     this.sendResponse(response);
   }
 
@@ -608,13 +608,13 @@ export class VamigaDebugAdapter extends LoggingDebugSession {
       this.lastStepGranularity = args.granularity;
       if (args.granularity !== "instruction") {
         // Record start location so handleStep can loop until the source line changes.
-        const cpuInfo = await this.vAmiga.getCpuInfo();
+        const cpuInfo = await this.emulator.getCpuInfo();
         const loc = this.sourceMap?.lookupAddress(Number(cpuInfo.pc));
         if (loc) this.lineStepStart = { path: loc.path, line: loc.line, isOver: false };
       }
       this.stepping = true;
       this.isRunning = true;
-      this.vAmiga.stepInto();
+      this.emulator.stepInto();
       this.sendResponse(response);
     } catch (err) {
       this.sendError(
@@ -631,9 +631,9 @@ export class VamigaDebugAdapter extends LoggingDebugSession {
   // Need to implement this ourselves.
   private async doInstructionStepOver(): Promise<void> {
     // Disassemble at pc to get current and next instruction.
-    const cpuInfo = await this.vAmiga.getCpuInfo();
+    const cpuInfo = await this.emulator.getCpuInfo();
     const pc = Number(cpuInfo.pc);
-    const disasm = await this.vAmiga.disassemble(pc, 2);
+    const disasm = await this.emulator.disassemble(pc, 2);
     const currInst = disasm?.instructions[0]?.instruction ?? "";
     const next = disasm?.instructions[1];
 
@@ -643,10 +643,10 @@ export class VamigaDebugAdapter extends LoggingDebugSession {
     if (next && isBranch) {
       const addr = parseInt(next.addr, 16);
       this.getBreakpointManager().setTmpBreakpoint(addr, "step");
-      this.vAmiga.run();
+      this.emulator.run();
     } else {
       this.stepping = true;
-      this.vAmiga.stepInto();
+      this.emulator.stepInto();
     }
     this.isRunning = true;
   }
@@ -657,7 +657,7 @@ export class VamigaDebugAdapter extends LoggingDebugSession {
   ): Promise<void> {
     try {
       if (args.granularity !== "instruction") {
-        const cpuInfo = await this.vAmiga.getCpuInfo();
+        const cpuInfo = await this.emulator.getCpuInfo();
         const pc = Number(cpuInfo.pc);
         const loc = this.sourceMap?.lookupAddress(pc);
         if (loc) {
@@ -688,7 +688,7 @@ export class VamigaDebugAdapter extends LoggingDebugSession {
   ): Promise<void> {
     try {
       // vAmiga has no stepOut function, as it doesn't track stack frames. We need to use our guessed stack list to set a tmp breakpoint.
-      const cpuInfo = await this.vAmiga.getCpuInfo();
+      const cpuInfo = await this.emulator.getCpuInfo();
       const pc = Number(cpuInfo.pc);
       const stackAddress = Number(cpuInfo.a7);
       const stack = await this.getStackManager().guessStack(pc, stackAddress);
@@ -697,11 +697,11 @@ export class VamigaDebugAdapter extends LoggingDebugSession {
       if (stack[1]) {
         this.getBreakpointManager().setTmpBreakpoint(stack[1][1], "step");
         this.isRunning = true;
-        this.vAmiga.run();
+        this.emulator.run();
       } else {
         this.stepping = true;
         this.isRunning = true;
-        this.vAmiga.stepInto();
+        this.emulator.stepInto();
       }
       this.sendResponse(response);
     } catch (err) {
@@ -718,7 +718,7 @@ export class VamigaDebugAdapter extends LoggingDebugSession {
     response: DebugProtocol.StepBackResponse,
   ): Promise<void> {
     try {
-      const moved = await this.vAmiga.stepBack();
+      const moved = await this.emulator.stepBack();
       if (!moved) {
         vscode.window.setStatusBarMessage(
           "Cannot step back further: reached start of rewind history",
@@ -741,7 +741,7 @@ export class VamigaDebugAdapter extends LoggingDebugSession {
     response: DebugProtocol.ReverseContinueResponse,
   ): Promise<void> {
     try {
-      const moved = await this.vAmiga.continueReverse();
+      const moved = await this.emulator.continueReverse();
       if (!moved) {
         vscode.window.setStatusBarMessage(
           "Cannot continue reverse: reached start of rewind history",
@@ -955,7 +955,7 @@ export class VamigaDebugAdapter extends LoggingDebugSession {
       const address = Number(args.memoryReference) + (args.offset || 0);
       const count = Math.min(4096, args.count);
       if (count) {
-        const result = await this.vAmiga.readMemory(address, count);
+        const result = await this.emulator.readMemory(address, count);
         response.body = {
           address: formatHex(address),
           data: result.toString("base64"),
@@ -983,7 +983,7 @@ export class VamigaDebugAdapter extends LoggingDebugSession {
     try {
       const address = Number(args.memoryReference) + (args.offset || 0);
       const buf = Buffer.from(args.data, "base64");
-      await this.vAmiga.writeMemory(address, buf); // Pass base64 data directly
+      await this.emulator.writeMemory(address, buf); // Pass base64 data directly
       response.body = {
         offset: args.offset,
         bytesWritten: buf.length,
@@ -1183,8 +1183,8 @@ export class VamigaDebugAdapter extends LoggingDebugSession {
       // for the PUAE backend (still running freely after exec-ready), and a
       // harmless no-op for VAmiga (already halted by its fastLoad snapshot
       // load).
-      this.vAmiga.pause();
-      this.loadedProgram = await loadAmigaProgram(this.vAmiga, this.hunks);
+      this.emulator.pause();
+      this.loadedProgram = await loadAmigaProgram(this.emulator, this.hunks);
       logger.log(
         `Program loaded at ${formatHex(this.loadedProgram.entryPoint)}`,
       );
@@ -1229,18 +1229,18 @@ export class VamigaDebugAdapter extends LoggingDebugSession {
       }
 
       // Initialize specialized manager classes for debugging functionality:
-      this.variablesManager = new VariablesManager(this.vAmiga, this.sourceMap);
+      this.variablesManager = new VariablesManager(this.emulator, this.sourceMap);
       this.breakpointManager = new BreakpointManager(
-        this.vAmiga,
+        this.emulator,
         this.sourceMap,
       );
-      this.stackManager = new StackManager(this.vAmiga, this.sourceMap);
+      this.stackManager = new StackManager(this.emulator, this.sourceMap);
       this.disassemblyManager = new DisassemblyManager(
-        this.vAmiga,
+        this.emulator,
         this.sourceMap,
       );
       this.evaluateManager = new EvaluateManager(
-        this.vAmiga,
+        this.emulator,
         this.sourceMap,
         this.variablesManager,
         this.disassemblyManager,
@@ -1305,7 +1305,7 @@ export class VamigaDebugAdapter extends LoggingDebugSession {
     // Fetch PC once; reused for both the line-step loop check and the disassembly-view hint below.
     let pc: number | undefined;
     try {
-      const cpuInfo = await this.vAmiga.getCpuInfo();
+      const cpuInfo = await this.emulator.getCpuInfo();
       pc = Number(cpuInfo.pc);
     } catch (error) {
       // If we can't get CPU info, still send the step event to avoid hanging the debugger
@@ -1325,7 +1325,7 @@ export class VamigaDebugAdapter extends LoggingDebugSession {
         } else {
           this.stepping = true;
           this.isRunning = true;
-          this.vAmiga.stepInto();
+          this.emulator.stepInto();
         }
         return;
       }
@@ -1376,7 +1376,7 @@ export class VamigaDebugAdapter extends LoggingDebugSession {
     if (result.reason === "step" && this.lineStepStart?.isOver) {
       let continueLoop = false;
       try {
-        const cpuInfo = await this.vAmiga.getCpuInfo();
+        const cpuInfo = await this.emulator.getCpuInfo();
         const pc = Number(cpuInfo.pc);
         const loc = this.sourceMap?.lookupAddress(pc);
 
@@ -1408,7 +1408,7 @@ export class VamigaDebugAdapter extends LoggingDebugSession {
         // Get last instruction executed before exception
         // The current PC is the exception vector handler, so we need to step back one instruction
         // If the previous instruction is not in supervisor mode, we need to use the user stack for the next stack frame request
-        const trace = await this.vAmiga.getCpuTrace(1);
+        const trace = await this.emulator.getCpuTrace(1);
         if (trace[0]) {
           const lastInst = trace[0];
           const isSupervisor = lastInst.flags.includes("S");

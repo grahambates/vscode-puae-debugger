@@ -24,7 +24,7 @@ export class StackManager {
    * @param sourceMap Source map for resolving addresses to source locations
    */
   constructor(
-    private vAmiga: Emulator,
+    private emulator: Emulator,
     private sourceMap: SourceMap,
   ) {}
 
@@ -50,7 +50,7 @@ export class StackManager {
   ): Promise<{ frames: StackFrame[]; total: number }> {
     const endFrame = startFrame + maxLevels;
 
-    const cpuInfo = await this.vAmiga.getCpuInfo();
+    const cpuInfo = await this.emulator.getCpuInfo();
     let pc = Number(cpuInfo.pc);
     let stackAddress = Number(cpuInfo.a7);
     if (exceptionInstruction) {
@@ -197,19 +197,19 @@ export class StackManager {
 
       let retAddrBuf: Buffer;
       try {
-        retAddrBuf = await this.vAmiga.readMemory(cfaVal - 4, 4);
+        retAddrBuf = await this.emulator.readMemory(cfaVal - 4, 4);
       } catch {
         break;
       }
       const returnAddress = retAddrBuf.readUInt32BE(0);
-      if (!this.vAmiga.isValidAddress(returnAddress) || returnAddress <= 0x100 || returnAddress & 1) break;
+      if (!this.emulator.isValidAddress(returnAddress) || returnAddress <= 0x100 || returnAddress & 1) break;
 
       regs.set(15, cfaVal); // caller's SP = CFA
       // If CFA reg is not SP (DWARF r15 = A7), it was set by `link Ax, #N`,
       // which saves Ax on the stack; restore it from mem[CFA-8] for the next frame.
       if (cfa.reg !== 15) {
         try {
-          const fpBuf = await this.vAmiga.readMemory(cfaVal - 8, 4);
+          const fpBuf = await this.emulator.readMemory(cfaVal - 8, 4);
           regs.set(cfa.reg, fpBuf.readUInt32BE(0));
         } catch { /* ignore */ }
       }
@@ -243,7 +243,7 @@ export class StackManager {
     // vAmiga doesn't currently track stack frames, so we'll need to look at the stack data and guess...
     // Fetch data from sp, up to a reasonable length
     const maxSize = 128;
-    const stackData = await this.vAmiga.readMemory(stackAddress, 128);
+    const stackData = await this.emulator.readMemory(stackAddress, 128);
 
     const addresses: [number, number][] = [[pc, pc]]; // Start with at least the current frame
 
@@ -252,13 +252,13 @@ export class StackManager {
     addresses: while (offset <= maxSize - 4 && addresses.length < maxLength) {
       const addr = stackData.readInt32BE(offset);
       if (
-        this.vAmiga.isValidAddress(addr) &&
+        this.emulator.isValidAddress(addr) &&
         addr > 0x100 &&
         !(addr & 1) // even address
       ) {
         try {
           // Look at previous 3 words, and check if they look like a jsr or bsr
-          const prevBytes = await this.vAmiga.readMemory(addr - 6, 6);
+          const prevBytes = await this.emulator.readMemory(addr - 6, 6);
           for (let i = 0; i < 3; i++) {
             const w = prevBytes.readUInt16BE(i * 2);
             if (

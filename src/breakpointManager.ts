@@ -63,7 +63,7 @@ export class BreakpointManager {
    * @param sourceMap Source map for resolving source locations to addresses
    */
   constructor(
-    private vAmiga: Emulator,
+    private emulator: Emulator,
     private sourceMap: SourceMap,
   ) {}
 
@@ -104,7 +104,7 @@ export class BreakpointManager {
         logger.log(
           `Breakpoint #${ref.id} removed at ${formatHex(ref.address)}`,
         );
-        this.vAmiga.removeBreakpoint(ref.address);
+        this.emulator.removeBreakpoint(ref.address);
       }
     }
 
@@ -122,7 +122,7 @@ export class BreakpointManager {
         const ignores = this.parseHitCondition(bp.hitCondition);
 
         refs.push({ id, address });
-        this.vAmiga.setBreakpoint(address, ignores);
+        this.emulator.setBreakpoint(address, ignores);
         logger.log(
           `Breakpoint #${id} at ${path}:${bp.line} set at ${instructionReference}`,
         );
@@ -160,7 +160,7 @@ export class BreakpointManager {
       logger.log(
         `Instruction breakpoint #${ref.id} removed at ${formatHex(ref.address)}`,
       );
-      this.vAmiga.removeBreakpoint(ref.address);
+      this.emulator.removeBreakpoint(ref.address);
     }
     this.instructionBreakpoints = [];
 
@@ -173,7 +173,7 @@ export class BreakpointManager {
       const ignores = this.parseHitCondition(bp.hitCondition);
 
       this.instructionBreakpoints.push({ id, address });
-      this.vAmiga.setBreakpoint(address, ignores);
+      this.emulator.setBreakpoint(address, ignores);
       logger.log(
         `Instruction breakpoint #${id} set at ${bp.instructionReference}`,
       );
@@ -199,7 +199,7 @@ export class BreakpointManager {
       logger.log(
         `Function breakpoint #${ref.id} removed at ${formatHex(ref.address)}`,
       );
-      this.vAmiga.removeBreakpoint(ref.address);
+      this.emulator.removeBreakpoint(ref.address);
     }
     this.functionBreakpoints = [];
 
@@ -214,7 +214,7 @@ export class BreakpointManager {
         const ignores = this.parseHitCondition(bp.hitCondition);
 
         this.functionBreakpoints.push({ id, address });
-        this.vAmiga.setBreakpoint(address, ignores);
+        this.emulator.setBreakpoint(address, ignores);
         logger.log(
           `Function breakpoint #${id} set at ${formatHex(address)} for ${bp.name}`,
         );
@@ -271,7 +271,7 @@ export class BreakpointManager {
       logger.log(
         `Data breakpoint #${ref.id} removed at ${formatHex(ref.address)}`,
       );
-      this.vAmiga.removeWatchpoint(ref.address);
+      this.emulator.removeWatchpoint(ref.address);
     }
     this.dataBreakpoints = [];
 
@@ -286,7 +286,7 @@ export class BreakpointManager {
         if (parts.length === 2) {
           const [type, name] = parts;
           if (type === "registers") {
-            const cpuInfo = await this.vAmiga.getCpuInfo();
+            const cpuInfo = await this.emulator.getCpuInfo();
             address = Number(cpuInfo[name as keyof CpuInfo]);
           } else if (type === "symbols") {
             const symbols = this.sourceMap.getSymbols();
@@ -300,7 +300,7 @@ export class BreakpointManager {
           this.dataBreakpoints.push({ id, address });
           const ignores = this.parseHitCondition(bp.hitCondition);
 
-          this.vAmiga.setWatchpoint(address, ignores);
+          this.emulator.setWatchpoint(address, ignores);
           logger.log(
             `Data breakpoint #${id} set at ${formatHex(address)} (${accessType})`,
           );
@@ -335,7 +335,7 @@ export class BreakpointManager {
     filters: string[],
   ): DebugProtocol.Breakpoint[] {
     for (const ref of this.exceptionBreakpoints) {
-      this.vAmiga.removeCatchpoint(ref.address);
+      this.emulator.removeCatchpoint(ref.address);
     }
     this.exceptionBreakpoints = [];
 
@@ -344,7 +344,7 @@ export class BreakpointManager {
     for (const filter of filters) {
       const vector = Number(filter);
       const id = this.bpId++;
-      this.vAmiga.setCatchpoint(vector);
+      this.emulator.setCatchpoint(vector);
       this.exceptionBreakpoints.push({ id, address: vector });
       breakpoints.push({ id, verified: true });
     }
@@ -371,7 +371,7 @@ export class BreakpointManager {
       `Setting temporary breakpoint at ${formatHex(address)} (${reason})`,
     );
     this.tmpBreakpoints.push({ address, reason });
-    this.vAmiga.setBreakpoint(address);
+    this.emulator.setBreakpoint(address);
   }
 
   /**
@@ -431,7 +431,7 @@ export class BreakpointManager {
             hitBreakpointIds: [userBp.id],
           };
         }
-        this.vAmiga.removeBreakpoint(tmpMatch.address);
+        this.emulator.removeBreakpoint(tmpMatch.address);
         return {
           reason: tmpMatch.reason,
         };
@@ -489,38 +489,38 @@ export class BreakpointManager {
     // Clear source breakpoints
     for (const refs of this.sourceBreakpoints.values()) {
       for (const ref of refs) {
-        this.vAmiga.removeBreakpoint(ref.address);
+        this.emulator.removeBreakpoint(ref.address);
       }
     }
     this.sourceBreakpoints.clear();
 
     // Clear instruction breakpoints
     for (const ref of this.instructionBreakpoints) {
-      this.vAmiga.removeBreakpoint(ref.address);
+      this.emulator.removeBreakpoint(ref.address);
     }
     this.instructionBreakpoints = [];
 
     // Clear function breakpoints
     for (const ref of this.functionBreakpoints) {
-      this.vAmiga.removeBreakpoint(ref.address);
+      this.emulator.removeBreakpoint(ref.address);
     }
     this.functionBreakpoints = [];
 
     // Clear data breakpoints
     for (const ref of this.dataBreakpoints) {
-      this.vAmiga.removeWatchpoint(ref.address);
+      this.emulator.removeWatchpoint(ref.address);
     }
     this.dataBreakpoints = [];
 
     // Clear exception breakpoints
     for (const ref of this.exceptionBreakpoints) {
-      this.vAmiga.removeCatchpoint(ref.address);
+      this.emulator.removeCatchpoint(ref.address);
     }
     this.exceptionBreakpoints = [];
 
     // Clear temporary breakpoints
     for (const tmp of this.tmpBreakpoints) {
-      this.vAmiga.removeBreakpoint(tmp.address);
+      this.emulator.removeBreakpoint(tmp.address);
     }
     this.tmpBreakpoints = [];
   }

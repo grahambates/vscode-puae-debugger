@@ -155,7 +155,7 @@ export class EvaluateManager {
    * @param disassemblyManager Disassembly manager for code inspection
    */
   constructor(
-    private vAmiga: Emulator,
+    private emulator: Emulator,
     private sourceMap: SourceMap,
     private variablesManager: VariablesManager,
     private disassemblyManager: DisassemblyManager,
@@ -169,7 +169,7 @@ export class EvaluateManager {
       i16,
       i8,
     };
-    this.cExpr = new CExpressionEvaluator(vAmiga, sourceMap, variablesManager);
+    this.cExpr = new CExpressionEvaluator(emulator, sourceMap, variablesManager);
   }
 
   /**
@@ -204,7 +204,7 @@ export class EvaluateManager {
       // Interpret hex as address:
       const address = Number(expression);
       // Read longword value at address
-      const memData = await this.vAmiga.readMemory(address, 4);
+      const memData = await this.emulator.readMemory(address, 4);
       value = memData.readUInt32BE(0);
       memoryReference = formatHex(address);
     } else {
@@ -213,8 +213,8 @@ export class EvaluateManager {
       if (expression in numVars) {
         // Exact match of variable
         value = numVars[expression];
-        const cpuInfo = await this.vAmiga.getCpuInfo();
-        const customRegs = await this.vAmiga.getAllCustomRegisters();
+        const cpuInfo = await this.emulator.getCpuInfo();
+        const customRegs = await this.emulator.getAllCustomRegisters();
         const symbols = this.sourceMap?.getSymbols() ?? {};
 
         if (expression in symbols) {
@@ -392,8 +392,8 @@ export class EvaluateManager {
 
     // Assembly fallback: CPU or custom register by name — delegate the write to VariablesManager
     // (single source of truth for register writes).
-    const cpuInfo = await this.vAmiga.getCpuInfo();
-    const customRegs = await this.vAmiga.getAllCustomRegisters();
+    const cpuInfo = await this.emulator.getCpuInfo();
+    const customRegs = await this.emulator.getAllCustomRegisters();
     if (expr in cpuInfo || expr in customRegs) {
       const value = await this.variablesManager.writeRegister(expr, numericValue);
       return { value, variablesReference: 0 };
@@ -440,13 +440,13 @@ export class EvaluateManager {
     if (byteLength === 1 || byteLength === 2 || byteLength === 4) {
       let ptrVal: number;
       if (byteLength === 4) {
-        ptrVal = await this.vAmiga.peek32(value);
+        ptrVal = await this.emulator.peek32(value);
         if (signed) ptrVal = i32(ptrVal);
       } else if (byteLength === 2) {
-        ptrVal = await this.vAmiga.peek16(value);
+        ptrVal = await this.emulator.peek16(value);
         if (signed) ptrVal = i16(ptrVal);
       } else {
-        ptrVal = await this.vAmiga.peek8(value);
+        ptrVal = await this.emulator.peek8(value);
         if (signed) ptrVal = i8(ptrVal);
       }
       if (byteLength === 4) {
@@ -707,42 +707,42 @@ export class EvaluateManager {
         if (typeof addrResult !== "number") {
           throw new Error("Peek function address must be a numeric expression");
         }
-        return this.vAmiga.peek32(addrResult);
+        return this.emulator.peek32(addrResult);
       }
       case "peekU16": {
         const addrResult = await this.evaluateExpression(args[0], variables);
         if (typeof addrResult !== "number") {
           throw new Error("Peek function address must be a numeric expression");
         }
-        return this.vAmiga.peek16(addrResult);
+        return this.emulator.peek16(addrResult);
       }
       case "peekU8": {
         const addrResult = await this.evaluateExpression(args[0], variables);
         if (typeof addrResult !== "number") {
           throw new Error("Peek function address must be a numeric expression");
         }
-        return this.vAmiga.peek8(addrResult);
+        return this.emulator.peek8(addrResult);
       }
       case "peekI32": {
         const addrResult = await this.evaluateExpression(args[0], variables);
         if (typeof addrResult !== "number") {
           throw new Error("Peek function address must be a numeric expression");
         }
-        return i32(await this.vAmiga.peek32(addrResult));
+        return i32(await this.emulator.peek32(addrResult));
       }
       case "peekI16": {
         const addrResult = await this.evaluateExpression(args[0], variables);
         if (typeof addrResult !== "number") {
           throw new Error("Peek function address must be a numeric expression");
         }
-        return i16(await this.vAmiga.peek16(addrResult));
+        return i16(await this.emulator.peek16(addrResult));
       }
       case "peekI8": {
         const addrResult = await this.evaluateExpression(args[0], variables);
         if (typeof addrResult !== "number") {
           throw new Error("Peek function address must be a numeric expression");
         }
-        return i8(await this.vAmiga.peek8(addrResult));
+        return i8(await this.emulator.peek8(addrResult));
       }
       case "poke32": {
         const addrResult = await this.evaluateExpression(args[0], variables);
@@ -752,7 +752,7 @@ export class EvaluateManager {
             "Poke function arguments must be numeric expressions",
           );
         }
-        await this.vAmiga.poke32(addrResult, valueResult);
+        await this.emulator.poke32(addrResult, valueResult);
         return valueResult;
       }
       case "poke16": {
@@ -763,7 +763,7 @@ export class EvaluateManager {
             "Poke function arguments must be numeric expressions",
           );
         }
-        await this.vAmiga.poke16(addrResult, valueResult);
+        await this.emulator.poke16(addrResult, valueResult);
         return valueResult;
       }
       case "poke8": {
@@ -774,7 +774,7 @@ export class EvaluateManager {
             "Poke function arguments must be numeric expressions",
           );
         }
-        await this.vAmiga.poke8(addrResult, valueResult);
+        await this.emulator.poke8(addrResult, valueResult);
         return valueResult;
       }
       case "readBytes": {
@@ -797,7 +797,7 @@ export class EvaluateManager {
         const addr = addrResult;
         const count = countResult;
         const valuesPerLine = valuesPerLineResult;
-        const buffer = await this.vAmiga.readMemory(addr, count);
+        const buffer = await this.emulator.readMemory(addr, count);
         const elements: number[] = [];
         for (let i = 0; i < count; i++) {
           elements.push(buffer.readUInt8(i));
@@ -830,7 +830,7 @@ export class EvaluateManager {
         const addr = addrResult;
         const count = countResult;
         const valuesPerLine = valuesPerLineResult;
-        const buffer = await this.vAmiga.readMemory(addr, count * 2);
+        const buffer = await this.emulator.readMemory(addr, count * 2);
         const elements: number[] = [];
         for (let i = 0; i < count; i++) {
           elements.push(buffer.readUInt16BE(i * 2));
@@ -863,7 +863,7 @@ export class EvaluateManager {
         const addr = addrResult;
         const count = countResult;
         const valuesPerLine = valuesPerLineResult;
-        const buffer = await this.vAmiga.readMemory(addr, count * 4);
+        const buffer = await this.emulator.readMemory(addr, count * 4);
         const elements: number[] = [];
         for (let i = 0; i < count; i++) {
           elements.push(buffer.readUInt32BE(i * 4));
@@ -932,7 +932,7 @@ export class EvaluateManager {
           throw new Error("trace() argument must be a numeric expression");
         }
 
-        const items = await this.vAmiga.getCpuTrace(count);
+        const items = await this.emulator.getCpuTrace(count);
 
         return {
           type: "cpuTrace",
