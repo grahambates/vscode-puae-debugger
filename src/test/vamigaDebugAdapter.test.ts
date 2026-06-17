@@ -365,6 +365,18 @@ describe("VamigaDebugAdapter - Simplified Tests", () => {
     });
   });
 
+  describe("Capabilities", () => {
+    it("advertises value-editing capabilities on initialize", () => {
+      const response =
+        createMockResponse<DebugProtocol.InitializeResponse>("initialize");
+
+      (adapter as any).initializeRequest(response);
+
+      assert.strictEqual(response.body?.supportsSetVariable, true);
+      assert.strictEqual(response.body?.supportsSetExpression, true);
+    });
+  });
+
   describe("Stepping and Execution Control", () => {
     it("should handle stepIn request", async () => {
       // Setup: Mock stepInto functionality

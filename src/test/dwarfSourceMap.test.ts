@@ -172,6 +172,23 @@ describe('dwarfSourceMap', () => {
     expect(charField!.type.kind).toBe('primitive');
   });
 
+  it('should resolve a global defined via DW_AT_specification (SysBase)', () => {
+    // simple_c.cpp defines `struct ExecBase* SysBase;` whose DWARF definition DIE
+    // carries only the location and points back to a declaration DIE (DW_AT_specification)
+    // for its name and type. Both must be followed, otherwise it shows up as "??? = ???".
+    const globals = loadSourceMap('simple_c/07_sysbase/simple_c.elf').getGlobalVariables();
+
+    const sysBase = globals.find(v => v.name === 'SysBase');
+    expect(sysBase).toBeDefined();
+    expect(sysBase!.location.kind).toBe('addr');
+    const td = assertKind(sysBase!.typeDescriptor, 'pointer');
+    expect(td.byteSize).toBe(4);
+    expect(sysBase!.typeName).toContain('ExecBase');
+
+    // No stray placeholder entries leaked in.
+    expect(globals.some(v => v.name === '???')).toBe(false);
+  });
+
   // Verifies address→line mapping for 05_line_numbers/simple_c.cpp against the DWARF line table.
   // With -Ttext=0 the ELF .text section has addr=0, so loadSourceMap gives us
   // ELF-virtual addresses directly (no runtime relocation needed).

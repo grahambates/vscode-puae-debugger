@@ -556,8 +556,13 @@ function buildGlobalsTable(
       if (die.tag !== DW_TAG.variable) continue;
       const location = resolveLocation(die, relocate);
       if (location.kind !== 'addr') continue;
-      const name = findAttribute(die, DW_AT.name)?.value as string ?? '???';
-      const typeDie = getTypeDie(die);
+      // A C/C++ definition may carry only the location and point back (via
+      // DW_AT_specification) to a separate declaration DIE that holds the name
+      // and type. Fall back to that DIE when they're absent on the definition.
+      const specDie = findAttribute(die, DW_AT.specification)?.value?.die as DebugInfoEntry | undefined;
+      const name = (findAttribute(die, DW_AT.name)?.value
+        ?? (specDie && findAttribute(specDie, DW_AT.name)?.value)) as string ?? '???';
+      const typeDie = getTypeDie(die) ?? (specDie ? getTypeDie(specDie) : undefined);
       const typeName = typeDie ? typeNameFromDie(typeDie) : '<unknown>';
       const byteSize = resolveByteSize(typeDie, cu.addressSize);
       const typeDescriptor = buildTypeDescriptor(typeDie, cu.addressSize);
