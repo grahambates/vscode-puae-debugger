@@ -26,7 +26,7 @@ import { CExpressionEvaluator } from "./cExpressionEvaluator";
  */
 export interface EvaluateResult {
   /** Numeric value of the expression, if successfully evaluated */
-  value?: any;
+  value?: number | MemoryArrayValue | DisassemblyValue | CpuTraceValue;
   /** Memory reference string for values that represent addresses */
   memoryReference?: string;
   /** Type classification of the result for appropriate formatting */
@@ -234,7 +234,7 @@ export class EvaluateManager {
         const result = await this.evaluateExpression(expression, numVars);
         if (
           typeof result === "object" &&
-          (result.type === "array" ||
+          (result.type === "memArray" ||
             result.type === "disassembly" ||
             result.type === "cpuTrace")
         ) {
@@ -318,13 +318,13 @@ export class EvaluateManager {
     }
 
     if (resultType === EvaluateResultType.ADDRESS_REGISTER) {
-      result = formatAddress(value, this.sourceMap);
+      result = formatAddress(value as number, this.sourceMap);
     } else if (resultType === EvaluateResultType.DATA_REGISTER) {
-      result = this.formatDataRegister(value, signed, byteLength);
+      result = this.formatDataRegister(value as number, signed, byteLength);
     } else if (resultType === EvaluateResultType.SYMBOL) {
-      result = await this.formatSymbol(value, expression, signed, byteLength);
+      result = await this.formatSymbol(value as number, expression, signed, byteLength);
     } else if (resultType === EvaluateResultType.CUSTOM_REGISTER) {
-      result = formatHex(value, 4);
+      result = formatHex(value as number, 4);
     } else {
       // Default - parsed expression result
       if (isDisassemblyValue(value)) {
@@ -562,7 +562,7 @@ export class EvaluateManager {
   private async evaluateExpression(
     expression: string,
     variables: Record<string, number>,
-  ): Promise<any | MemoryArrayValue | DisassemblyValue | CpuTraceValue> {
+  ): Promise<number | MemoryArrayValue | DisassemblyValue | CpuTraceValue> {
     // Check if expression contains async functions
     const hasAsyncFunctions = asyncFunctionPatterns.some((re) =>
       re.test(expression),
