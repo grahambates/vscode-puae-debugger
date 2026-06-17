@@ -268,12 +268,16 @@ export function isRpcResponseMessage(
 }
 
 /**
- * vAmiga-only options, not applicable to the PUAE backend (no equivalent
- * shape in PUAE's `.uae` config — see `cpuRevision` on `OpenOptions` for the
- * one hardware option that *is* shared, with per-backend value validation).
+ * Options for opening the vAmiga emulator.
  */
-export interface VamigaOptions {
-  useArosRom?: boolean;
+export interface OpenOptions {
+  programPath?: string;
+  kickstartRom?: string;
+  kickstartExt?: string;
+  cpuRevision?: "68000" | "68010" | "68020" | "68030" | "fake_68030";
+  chipRam?: "256k" | "512k" | "1M" | "2M";
+  slowRam?: "0" | "256k" | "512k";
+  fastRam?: "0" | "256k" | "512k" | "1M" | "2M" | "8M";
   showNavBar?: boolean;
   wideScreen?: boolean;
   darkMode?: boolean;
@@ -302,45 +306,6 @@ export interface VamigaOptions {
   blitterAccuracy?: 0 | 1 | 2;
   floppyDriveCount?: 1 | 2 | 3 | 4;
   driveSpeed?: -1 | 1 | 2 | 4 | 8;
-}
-
-/**
- * User options input using absolute file paths
- */
-export interface OpenOptions {
-  // Paths will need to be converted to URIs
-  programPath?: string;
-  kickstartRomPath?: string;
-  kickstartExtPath?: string;
-  /**
-   * CPU model. `68000`/`68010`/`68020` are supported by both backends.
-   * `68030`/`68040`/`68060` select a real CPU of that model on PUAE only
-   * (vAmiga has no MMU emulation and will throw). `fake_68030` selects
-   * vAmiga's pipeline-only 68030 approximation (no MMU) and is supported on
-   * vAmiga only (PUAE will throw).
-   */
-  cpuRevision?: "68000" | "68010" | "68020" | "68030" | "68040" | "68060" | "fake_68030";
-  chipRam?: "256k" | "512k" | "1M" | "2M";
-  slowRam?: "0" | "256k" | "512k";
-  fastRam?: "0" | "256k" | "512k" | "1M" | "2M" | "8M";
-  /**
-   * PUAE only: path to a WinUAE-format `.uae` config file, loaded as the
-   * base configuration. The mapped hardware options above (`chipRam`,
-   * `slowRam`, `fastRam`, `cpuRevision`) and `puae` take precedence over
-   * settings in this file.
-   */
-  configFilePath?: string;
-  /**
-   * vAmiga only: hardware/display options with no PUAE equivalent.
-   * Ignored (with a warning) on the PUAE backend.
-   */
-  vamiga?: VamigaOptions;
-  /**
-   * PUAE only: raw `.uae` `key=value` overrides, applied with the highest
-   * precedence (after `configFilePath` and the mapped hardware options
-   * above).
-   */
-  puae?: Record<string, string | number | boolean>;
 }
 
 // Option enums to call param values:
@@ -409,7 +374,7 @@ interface CallParams {
   drive_speed?: number;
 }
 
-const defaultVamigaOptions: VamigaOptions = {
+const defaultOptions: Partial<OpenOptions> = {
   showNavBar: false,
   enableMouse: true,
 };
@@ -436,13 +401,10 @@ export class VAmiga implements Emulator {
   /**
    * Opens the VAmiga emulator webview panel
    */
-  public open(options?: OpenOptions): void {
+  public open(options?: Record<string, unknown>): void {
     const optionsWithDefaults: OpenOptions = {
-      ...options,
-      vamiga: {
-        ...defaultVamigaOptions,
-        ...options?.vamiga,
-      },
+      ...defaultOptions,
+      ...(options as OpenOptions | undefined),
     };
     if (!this.panel) {
       return this.initPanel(optionsWithDefaults);
@@ -915,17 +877,17 @@ export class VAmiga implements Emulator {
       const progDir = dirname(options.programPath);
       localResourceRoots.push(vscode.Uri.file(progDir));
     }
-    if (options.kickstartRomPath) {
-      if (!existsSync(options.kickstartRomPath)) {
+    if (options.kickstartRom) {
+      if (!existsSync(options.kickstartRom)) {
         throw new Error(
-          `Kickstart ROM file not found: ${options.kickstartRomPath}`,
+          `Kickstart ROM file not found: ${options.kickstartRom}`,
         );
       }
     }
-    if (options.kickstartExtPath) {
-      if (!existsSync(options.kickstartExtPath)) {
+    if (options.kickstartExt) {
+      if (!existsSync(options.kickstartExt)) {
         throw new Error(
-          `Kickstart extension ROM file not found: ${options.kickstartExtPath}`,
+          `Kickstart extension ROM file not found: ${options.kickstartExt}`,
         );
       }
     }
@@ -1053,38 +1015,37 @@ export class VAmiga implements Emulator {
       throw new Error(
         `vAmiga doesn't support a real ${options.cpuRevision} CPU — use ` +
           `cpuRevision: "fake_68030" for an approximate 68030, or ` +
-          `emulatorBackend: "puae" for a real 68030+ CPU.`,
+          `debug type "puae" for a real 68030+ CPU.`,
       );
     }
-    const vamiga = options.vamiga;
     const params: CallParams = {
-      AROS: vamiga?.useArosRom,
-      navbar: vamiga?.showNavBar,
-      wide: vamiga?.wideScreen,
-      dark: vamiga?.darkMode,
-      mouse: vamiga?.enableMouse,
-      display: vamiga?.displayZoom,
-      gpu: vamiga?.useGpu,
-      agnus_revision: vamiga?.agnusRevision,
-      denise_revision: vamiga?.deniseRevision,
+      AROS: !options.kickstartRom || undefined,
+      navbar: options.showNavBar,
+      wide: options.wideScreen,
+      dark: options.darkMode,
+      mouse: options.enableMouse,
+      display: options.displayZoom,
+      gpu: options.useGpu,
+      agnus_revision: options.agnusRevision,
+      denise_revision: options.deniseRevision,
       cpu_revision: options.cpuRevision
         ? cpuRevision[options.cpuRevision]
         : undefined,
-      cpu_overclocking: vamiga?.cpuSpeed ? cpuSpeed[vamiga.cpuSpeed] : undefined,
+      cpu_overclocking: options.cpuSpeed ? cpuSpeed[options.cpuSpeed] : undefined,
       chip_ram: options.chipRam ? chipRam[options.chipRam] : undefined,
       slow_ram: options.slowRam ? slowRam[options.slowRam] : undefined,
       fast_ram: options.fastRam ? fastRam[options.fastRam] : undefined,
-      blitter_accuracy: vamiga?.blitterAccuracy,
-      floppy_drive_count: vamiga?.floppyDriveCount,
-      drive_speed: vamiga?.driveSpeed,
+      blitter_accuracy: options.blitterAccuracy,
+      floppy_drive_count: options.floppyDriveCount,
+      drive_speed: options.driveSpeed,
       url: options.programPath
         ? this.absolutePathToWebviewUri(options.programPath).toString()
         : undefined,
-      kickstart_rom_url: options.kickstartRomPath
-        ? this.absolutePathToDataUri(options.kickstartRomPath)
+      kickstart_rom_url: options.kickstartRom
+        ? this.absolutePathToDataUri(options.kickstartRom)
         : undefined,
-      kickstart_ext_url: options.kickstartExtPath
-        ? this.absolutePathToDataUri(options.kickstartExtPath)
+      kickstart_ext_url: options.kickstartExt
+        ? this.absolutePathToDataUri(options.kickstartExt)
         : undefined,
     };
     return params;

@@ -28,18 +28,19 @@ export function activate(context: vscode.ExtensionContext) {
     puaeEmulator,
   );
 
-  // Register the debug adapter
+  // Register the debug adapters
   context.subscriptions.push(
     vscode.debug.registerDebugAdapterDescriptorFactory("vamiga", {
-      createDebugAdapterDescriptor(
-        _session: vscode.DebugSession,
-      ): vscode.ProviderResult<vscode.DebugAdapterDescriptor> {
-        const backend =
-          _session.configuration.emulatorBackend === "puae"
-            ? puaeEmulator
-            : vAmiga;
+      createDebugAdapterDescriptor(): vscode.ProviderResult<vscode.DebugAdapterDescriptor> {
         return new vscode.DebugAdapterInlineImplementation(
-          new VamigaDebugAdapter(backend),
+          new VamigaDebugAdapter(vAmiga),
+        );
+      },
+    }),
+    vscode.debug.registerDebugAdapterDescriptorFactory("puae", {
+      createDebugAdapterDescriptor(): vscode.ProviderResult<vscode.DebugAdapterDescriptor> {
+        return new vscode.DebugAdapterInlineImplementation(
+          new VamigaDebugAdapter(puaeEmulator),
         );
       },
     }),

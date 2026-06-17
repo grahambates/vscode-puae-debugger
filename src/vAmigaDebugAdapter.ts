@@ -38,7 +38,6 @@ import {
   EmulatorStateMessage,
   StopMessage,
   isExecReadyMessage,
-  OpenOptions,
 } from "./vAmiga";
 import { Emulator } from "./emulator";
 import { Hunk, parseHunks } from "./amigaHunkParser";
@@ -79,13 +78,14 @@ interface LaunchRequestArguments extends DebugProtocol.LaunchRequestArguments {
   trace?: boolean;
   /** Inject program directly into memory */
   fastLoad?: boolean;
-  /** Options to pass when opening vAmiga */
-  emulatorOptions?: Exclude<OpenOptions, "programPath">;
-  /**
-   * Emulator backend to debug against. Defaults to "vamiga". The "puae"
-   * (PUAE/ami9000 wasm) backend ignores `emulatorOptions.vamiga`.
-   */
-  emulatorBackend?: "vamiga" | "puae";
+  /** Path to the Kickstart ROM file */
+  kickstartRom?: string;
+  /** Path to the extended Kickstart ROM file (vAmiga only) */
+  kickstartExt?: string;
+  /** Path to a .uae config file loaded as the base configuration (PUAE only) */
+  emulatorConfigFile?: string;
+  /** Options to pass when opening the emulator */
+  emulatorOptions?: Record<string, unknown>;
 }
 
 /**
@@ -333,15 +333,30 @@ export class VamigaDebugAdapter extends LoggingDebugSession {
     try {
       logger.log(`Starting emulator with program ${this.programPath}`);
 
+      // Backward compat: kickstartRomPath/kickstartExtPath inside emulatorOptions
+      const kickstartRom =
+        args.kickstartRom ??
+        (args.emulatorOptions?.kickstartRomPath as string | undefined);
+      const kickstartExt =
+        args.kickstartExt ??
+        (args.emulatorOptions?.kickstartExtPath as string | undefined);
+
       if (this.fastLoad) {
         // Use fast loading - inject program directly into memory
         logger.log("Using fast memory injection mode");
-        // Start emulator with no program
-        this.vAmiga.open(args.emulatorOptions);
+        this.vAmiga.open({
+          kickstartRom,
+          kickstartExt,
+          emulatorConfigFile: args.emulatorConfigFile,
+          ...args.emulatorOptions,
+        });
       } else {
         // Traditional loading via floppy disk emulation
         this.vAmiga.open({
           programPath: this.programPath,
+          kickstartRom,
+          kickstartExt,
+          emulatorConfigFile: args.emulatorConfigFile,
           ...args.emulatorOptions,
         });
       }

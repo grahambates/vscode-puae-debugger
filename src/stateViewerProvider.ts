@@ -36,7 +36,7 @@ export class StateViewerProvider {
   ) {
     // Listen for emulator state changes to auto-refresh panel. Both
     // backends are wired up since the active one depends on the debug
-    // session's `emulatorBackend` (see `emulator` getter below) and may not
+    // session's type (see `emulator` getter below) and may not
     // be known yet when this provider is constructed.
     const onMessage = (message: EmulatorMessage) => {
       if (!isEmulatorStateMessage(message)) {

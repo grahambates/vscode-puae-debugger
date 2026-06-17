@@ -6,7 +6,6 @@ import {
   Disassembly,
   EmulatorMessage,
   MemoryInfo,
-  OpenOptions,
   RegisterSetStatus,
 } from "./vAmiga";
 
@@ -21,7 +20,7 @@ export interface Emulator {
   /**
    * Opens the emulator webview panel
    */
-  open(options?: OpenOptions): void;
+  open(options?: Record<string, unknown>): void;
 
   /**
    * Brings the emulator webview panel to the foreground

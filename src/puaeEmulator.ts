@@ -11,7 +11,6 @@ import {
   Disassembly,
   EmulatorMessage,
   MemoryInfo,
-  OpenOptions,
   RegisterSetStatus,
   isValidMemoryAddress,
   getMemoryRegionForAddress,
@@ -31,92 +30,42 @@ interface PendingRpc {
  * with manual breakpoint/memory/watchpoint/disassembly test UI, for
  * development outside the extension — not used by `getHtmlForWebview`.
  *
- * `OpenOptions` support: `kickstartRomPath` is REQUIRED — `getHtmlForWebview`
- * throws if it isn't set. No Kickstart ROM is bundled with this extension
- * (Kickstart ROMs are copyrighted by Cloanto/Amiga Inc.), and the embedded
- * AROS replacement ROM (`kickstart_rom_file=:AROS`) isn't currently usable as
- * a fastLoad target — `exec.library`'s memory list isn't initialized the way
- * `AmigaMemoryMapper` expects within any reasonable warm-up window.
- * `kickstartExtPath` and `emulatorOptions.vamiga` (vAmiga-only hardware/
- * display options — see `VamigaOptions`) are ignored, with a `console.warn`
- * listing any that were set.
+ * `emulatorOptions` is a flat object of raw WinUAE-format `.uae` key=value
+ * pairs (e.g. `chipmem_size`, `cpu_model`, `chipset`). Two keys are handled
+ * specially by this class rather than written verbatim to the UAE config:
+ *  - `kickstartRom` (top-level, optional): host filesystem path to the
+ *    Kickstart ROM. The file is read on the host and embedded as a data URI
+ *    in the webview HTML. If omitted and `fastLoad` is false, the bundled
+ *    AROS ROM is used. If omitted with `fastLoad: true`, an error is thrown
+ *    (AROS is incompatible with fast loading).
+ *  - `programPath` (internal, added by the debug adapter): host path to the
+ *    Amiga executable. The file is base64-injected as `programB64` and
+ *    `puae_app.js` writes it into MEMFS, mounted as a bootable DH0: hard
+ *    disk via `filesystem=rw,dh0:/uae_system/dh0`.
  *
- * `chipRam`/`slowRam`/`fastRam`/`cpuRevision`, `configFilePath`,
- * `emulatorOptions.puae` and `programPath` ARE honored, via
- * `buildExtraConfig()` writing a `.uae`-format `puae_libretro_global.uae`
- * file into the wasm MEMFS before boot — `retro_create_config()` appends its
- * lines to the generated config with last-line-wins precedence, so:
- *  - `configFilePath` (if set) provides the base config (lowest precedence).
- *    This may itself be a full preset (e.g. a `quickstart=A1200,1` line),
- *    which `chipRam`/`slowRam`/`fastRam`/`cpuRevision` below can selectively
- *    override.
- *  - `emulatorOptions.puae` (raw `key=value` pairs) overrides the base
- *    config, but is itself overridden by `chipRam`/`slowRam`/`fastRam`/
- *    `cpuRevision` below.
- *  - `chipRam`/`slowRam`/`fastRam`/`cpuRevision` (highest precedence) map to
- *    `chipmem_size`/`bogomem_size`/`fastmem_size`/`cpu_model` and override
- *    everything above. `fastRam: "256k"`/`"512k"` round up to 1MB (PUAE's
- *    `fastmem_size` is in 1MB units). `cpuRevision` maps directly to
- *    `cpu_model` for `"68000"`/`"68010"`/`"68020"`/`"68030"`/`"68040"`/
- *    `"68060"` (a real CPU of that model, with MMU/FPU where applicable);
- *    `"fake_68030"` (vAmiga's pipeline-only approximation) is not supported
- *    and throws.
- *  - `programPath` (non-fastLoad/`dos.library`-dependent programs): the exe
- *    is read and base64-injected as `programB64`; `puae_app.js` writes it
- *    into `/uae_system/dh0/file` plus `/uae_system/dh0/s/startup-sequence`
- *    (containing `"file"`) in the MEMFS, and a `filesystem=rw,dh0:/uae_system/dh0`
- *    line mounts that directory as a bootable DH0: hard disk (AmigaOS's
- *    `uaehf.device` autoconfigures it — no ADF/bootblock/OFS image needed).
- *    The render loop then polls for the program's CLI process via an
- *    AllocMem breakpoint (`tryExec`/`getCurrentProcess` in `puae_rpc.js`,
- *    ported from `vAmiga_ui.js`) and posts `{type:'attached', segments}` once
- *    found.
+ * All other keys are written to `puae_libretro_global.uae` (last-line-wins).
+ * Four defaults are always prepended: `cpu_compatible`, `cpu_cycle_exact`,
+ * `cpu_memory_cycle_exact`, `blitter_cycle_exact` (all `true`) — override
+ * by specifying the same key in `emulatorOptions`.
  *
- * Documented gaps vs. `VAmiga` (see `puae_rpc.js` for the implementation of
- * each):
+ * Documented gaps vs. `VAmiga` (see `puae_rpc.js` for the implementation):
  *  - `getCpuInfo()`'s isp/msp/vbr/irc/sfc/dfc/cacr/caar fields are always
- *    "0x00000000" — `e9k_debug_read_regs` doesn't expose them (usp is real).
- *  - `setRegister()`/`jump()` only support d0-d7/a0-a7/sr/pc/usp; other
- *    names reject with an error.
- *  - `getAllCustomRegisters()` covers the genuinely-readable "...R" registers
- *    (DMACON, INTENA, etc.) plus BPLCON0-3/DIWSTRT-STOP/DDFSTRT-STOP/
- *    COLOR00-31 (write-only on real hardware, exposed via a dedicated wasm
- *    export). Other write-only registers (sprite/bitplane/audio pointers,
- *    COP1LC/COP2LC, etc.) aren't catalogued yet (writes via
- *    `pokeCustom16/32` work).
- *  - `getCpuTrace()` returns up to 256 most-recently-executed instructions
- *    (pc/instruction/flags/length) from an always-on ring buffer;
- *    `enableCpuLogging(false)` pauses recording.
- *  - `stepBack()`/`continueReverse()` restore from an in-memory ring buffer
- *    of up to `MAX_SNAPSHOT_HISTORY` (puae_rpc.js) full-state snapshots
- *    (`retro_serialize`/`retro_unserialize`, the same mechanism RetroArch
- *    uses for "rewind"), captured before each run/stepInto/eof/eol. Once
- *    that history is exhausted, `stepBack()` resolves `false` and
- *    `continueReverse()` lands at the oldest retained snapshot. Stepping
- *    back through a long free-running `continue` to an arbitrary
- *    instruction (not just the pre-`continue` state) isn't supported.
- *  - Breakpoint/watchpoint `ignores` counts are not supported; a non-zero
- *    count is logged as a warning and otherwise ignored.
+ *    "0x00000000".
+ *  - `setRegister()`/`jump()` only support d0-d7/a0-a7/sr/pc/usp.
+ *  - `getCpuTrace()` returns up to 256 most-recently-executed instructions.
+ *  - `stepBack()`/`continueReverse()` use a ring buffer of full-state
+ *    snapshots (`retro_serialize`/`retro_unserialize`).
+ *  - Breakpoint `ignores` counts are not supported.
  *
- * Session restart / panel reuse: if `open()` is called while a panel from a
- * previous debug session is still open, it is reused as-is — `open()` sends
- * a "load" command (puae_rpc.js) which hard-resets the emulated machine
- * (`wasm_reset()`/`uae_reset(1,0)`, reboots Kickstart with RAM cleared) and
- * re-runs the boot warm-up, then re-signals exec-ready so the debug adapter
- * re-runs fastLoad injection for the new program. This is much cheaper than
- * re-instantiating the wasm module/webview, but it means ROM/config-affecting
- * `OpenOptions` (`kickstartRomPath`, `configFilePath`, `chipRam`/`slowRam`/
- * `fastRam`/`cpuRevision`, `emulatorOptions.puae`, `programPath`) from the
- * FIRST session remain in effect for reused panels — changing them requires
- * closing the panel first. For `programPath` specifically, "load" doesn't
- * rewrite `/uae_system/dh0` or re-run `retro_load_game`'s autoconfig, so a
- * new program won't be picked up by a reused panel even if the file at the
- * original `programPath` is overwritten on disk.
+ * Session restart / panel reuse: `open()` while a panel is already open sends
+ * a "load" command (hard reset + warm-up) rather than re-instantiating the
+ * wasm module. ROM/config options from the FIRST session remain in effect for
+ * reused panels — changing them requires closing the panel first.
  */
 export class PuaeEmulator implements Emulator {
   public static readonly viewType = "vamiga-debugger.puaeWebview";
   private panel?: vscode.WebviewPanel;
-  private openOptions?: OpenOptions;
+  private openOptions?: Record<string, unknown>;
   private pendingRpcs = new Map<string, PendingRpc>();
   private messageListeners: Set<(message: EmulatorMessage) => void> = new Set();
 
@@ -129,10 +78,10 @@ export class PuaeEmulator implements Emulator {
   /**
    * Opens the PUAE emulator webview panel.
    *
-   * `OpenOptions.kickstartRomPath` is required (see class doc comment) —
-   * `getHtmlForWebview` throws if it isn't set.
+   * If `kickstartRom` is not set, AROS is used as the default ROM for
+   * non-fastLoad launches; fastLoad without an explicit ROM throws.
    */
-  public open(options?: OpenOptions): void {
+  public open(options?: Record<string, unknown>): void {
     this.openOptions = options;
     if (this.panel) {
       this.panel.reveal();
@@ -556,66 +505,11 @@ export class PuaeEmulator implements Emulator {
   }
 
   /**
-   * Logs a warning listing any `OpenOptions` fields that were set but are
-   * ignored by this backend — see the class doc comment for the
-   * documented-gaps rationale.
-   */
-  private warnIgnoredOpenOptions(): void {
-    if (!this.openOptions) {
-      return;
-    }
-    const ignoredKeys: (keyof OpenOptions)[] = ["kickstartExtPath"];
-    const set = ignoredKeys.filter((key) => this.openOptions?.[key] !== undefined);
-    if (set.length > 0) {
-      console.warn(
-        `PuaeEmulator: ignoring unsupported emulatorOptions: ${set.join(", ")}`,
-      );
-    }
-    const vamiga = this.openOptions.vamiga;
-    if (vamiga && Object.values(vamiga).some((value) => value !== undefined)) {
-      console.warn(
-        "PuaeEmulator: ignoring vamiga options (vAmiga-specific options, not applicable to PUAE)",
-      );
-    }
-  }
-
-  // .uae `chipmem_size`/`bogomem_size`/`fastmem_size`/`cpu_model` values for
-  // the corresponding OpenOptions enums. See class doc comment for caveats.
-  private static readonly CHIP_RAM_CONFIG: Record<string, number> = {
-    "256k": 0,
-    "512k": 1,
-    "1M": 2,
-    "2M": 4,
-  };
-  private static readonly SLOW_RAM_CONFIG: Record<string, number> = {
-    "0": 0,
-    "256k": 1,
-    "512k": 2,
-  };
-  private static readonly FAST_RAM_CONFIG: Record<string, number> = {
-    "0": 0,
-    "256k": 1,
-    "512k": 1,
-    "1M": 1,
-    "2M": 2,
-    "8M": 8,
-  };
-  private static readonly CPU_MODEL_CONFIG: Record<string, number> = {
-    "68000": 68000,
-    "68010": 68010,
-    "68020": 68020,
-    "68030": 68030,
-    "68040": 68040,
-    "68060": 68060,
-  };
-
-  /**
-   * Builds the `.uae`-format config text to write to
-   * `/uae_system/puae_libretro_global.uae` before boot, layering (in
-   * increasing precedence, later lines win — see class doc comment):
-   * `configFilePath` content, then mapped `chipRam`/`slowRam`/`fastRam`/
-   * `cpuRevision`, then raw `emulatorOptions.puae` overrides. Returns ""
-   * if there's nothing to write.
+   * Builds the `.uae`-format config text to inject before boot.
+   * Layers in order (later lines win):
+   *  1. Four cycle-exact defaults
+   *  2. emulatorConfigFile contents (if set)
+   *  3. emulatorOptions key=value pairs
    */
   private buildExtraConfig(): string {
     const options = this.openOptions;
@@ -626,41 +520,26 @@ export class PuaeEmulator implements Emulator {
       "blitter_cycle_exact=true",
     ];
 
-    if (options?.configFilePath) {
-      if (!existsSync(options.configFilePath)) {
-        throw new Error(`Config file not found: ${options.configFilePath}`);
+    const configFile = options?.emulatorConfigFile as string | undefined;
+    if (configFile) {
+      if (!existsSync(configFile)) {
+        throw new Error(`emulatorConfigFile not found: ${configFile}`);
       }
-      lines.push(readFileSync(options.configFilePath, "utf-8").trimEnd());
+      lines.push(readFileSync(configFile, "utf-8").trimEnd());
     }
-    for (const [key, value] of Object.entries(options?.puae ?? {})) {
+
+    for (const [key, value] of Object.entries(options ?? {})) {
+      if (key === "programPath" || key === "kickstartRom" || key === "emulatorConfigFile") {
+        continue;
+      }
       lines.push(`${key}=${value}`);
     }
-    if (options?.chipRam) {
-      lines.push(`chipmem_size=${PuaeEmulator.CHIP_RAM_CONFIG[options.chipRam]}`);
-    }
-    if (options?.slowRam) {
-      lines.push(`bogomem_size=${PuaeEmulator.SLOW_RAM_CONFIG[options.slowRam]}`);
-    }
-    if (options?.fastRam) {
-      lines.push(`fastmem_size=${PuaeEmulator.FAST_RAM_CONFIG[options.fastRam]}`);
-    }
-    if (options?.cpuRevision) {
-      if (options.cpuRevision === "fake_68030") {
-        throw new Error(
-          `PUAE doesn't support vAmiga's "fake_68030" CPU model — use "68030", ` +
-            `"68040", or "68060" for a real 68030+ CPU, or emulatorBackend: "vamiga".`,
-        );
-      }
-      lines.push(`cpu_model=${PuaeEmulator.CPU_MODEL_CONFIG[options.cpuRevision]}`);
-    }
+
     if (options?.programPath) {
-      // Mount the directory puae_app.js populates (program + s/startup-sequence)
-      // as a bootable DH0: hard disk — see PuaeEmulator.getHtmlForWebview's
-      // programB64 injection and the class doc comment.
       lines.push("filesystem=rw,dh0:/uae_system/dh0");
     }
 
-    return lines.length > 0 ? lines.join("\n") + "\n" : "";
+    return lines.join("\n") + "\n";
   }
 
   private getHtmlForWebview(webview: vscode.Webview, puaeDir: vscode.Uri): string {
@@ -673,21 +552,24 @@ export class PuaeEmulator implements Emulator {
     const workletUri = uri("puae_audioprocessor.js");
     const appUri = uri("puae_app.js");
 
-    this.warnIgnoredOpenOptions();
-
-    if (!this.openOptions?.kickstartRomPath) {
+    const kickstartPath = this.openOptions?.kickstartRom as string | undefined;
+    let romData: Buffer;
+    if (kickstartPath) {
+      if (!existsSync(kickstartPath)) {
+        throw new Error(`Kickstart ROM file not found: ${kickstartPath}`);
+      }
+      romData = readFileSync(kickstartPath);
+    } else if (this.openOptions?.programPath) {
+      // Non-fastLoad mode: use the bundled AROS ROM as default
+      const arosPath = join(this.extensionUri.fsPath, "vamiga", "roms", "aros-rom-20250219.bin");
+      romData = readFileSync(arosPath);
+    } else {
       throw new Error(
-        "PUAE requires emulatorOptions/OpenOptions.kickstartRomPath to be set " +
-          "to a Kickstart ROM file — no ROM is bundled with this extension " +
-          "(Kickstart ROMs are copyrighted by Cloanto/Amiga Inc.).",
+        "PUAE with fast loading requires an explicit kickstartRom — " +
+          "AROS is not compatible with fast loading. " +
+          "Set kickstartRom to a Kickstart ROM file path, or set fastLoad: false.",
       );
     }
-    if (!existsSync(this.openOptions.kickstartRomPath)) {
-      throw new Error(
-        `Kickstart ROM file not found: ${this.openOptions.kickstartRomPath}`,
-      );
-    }
-    const romData = readFileSync(this.openOptions.kickstartRomPath);
     const romDataUri = `data:application/octet-stream;base64,${romData.toString("base64")}`;
 
     const extraConfig = this.buildExtraConfig();
@@ -696,11 +578,12 @@ export class PuaeEmulator implements Emulator {
       : "";
 
     let programB64 = "";
-    if (this.openOptions.programPath) {
-      if (!existsSync(this.openOptions.programPath)) {
-        throw new Error(`Program file not found: ${this.openOptions.programPath}`);
+    const programPath = this.openOptions?.programPath as string | undefined;
+    if (programPath) {
+      if (!existsSync(programPath)) {
+        throw new Error(`Program file not found: ${programPath}`);
       }
-      programB64 = readFileSync(this.openOptions.programPath).toString("base64");
+      programB64 = readFileSync(programPath).toString("base64");
     }
 
     // CSP: scripts from webview resource scheme, inline JS (incl. the page's
