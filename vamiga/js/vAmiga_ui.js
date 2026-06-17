@@ -2577,6 +2577,82 @@ postMessage({ type: 'ready' });
         }
     });
 
+    //A small message pill at the top-center of the screen that fades in/out (0.2s). Shared by
+    //the audio-unlock hint and the mouse-capture hint. pointer-events:none — purely visual, it
+    //never intercepts mouse/clicks. opts.title sets the tooltip; opts.fadeAfter (ms) auto-fades
+    //it back out while still shown (e.g. the capture hint stops nagging after a few seconds).
+    //The pending fade/hide timer is parked on the element so each pill manages its own.
+    function show_overlay_message(id, html, opts){
+        opts = opts || {};
+        let el = document.getElementById(id);
+        if(!el){
+            el = document.createElement('div');
+            el.id = id;
+            el.style.cssText = 'position:fixed;top:9px;left:50%;transform:translateX(-50%);'
+                + 'z-index:3001;pointer-events:none;user-select:none;white-space:nowrap;'
+                + 'padding:3px 12px;border-radius:10px;font-family:sans-serif;font-size:15px;'
+                + 'color:#fff;background:rgba(0,0,0,0.55);opacity:0;transition:opacity 0.2s ease';
+            document.body.appendChild(el);
+        }
+        if(el._fadeTimer){ clearTimeout(el._fadeTimer); el._fadeTimer = 0; }
+        el.innerHTML = html;
+        el.title = opts.title || '';
+        //restart the fade-in from 0 (transition off + reflow) so it always replays, even if the
+        //pill was still visible from a previous show
+        el.style.display = 'block';
+        el.style.transition = 'none';
+        el.style.opacity = '0';
+        void el.offsetWidth;
+        el.style.transition = 'opacity 0.2s ease';
+        el.style.opacity = '1';
+        if(opts.fadeAfter)
+            el._fadeTimer = setTimeout(()=>{ el.style.opacity = '0'; }, opts.fadeAfter);
+    }
+    function hide_overlay_message(id){
+        let el = document.getElementById(id);
+        if(!el) return;
+        if(el._fadeTimer){ clearTimeout(el._fadeTimer); el._fadeTimer = 0; }
+        el.style.transition = 'opacity 0.2s ease';
+        el.style.opacity = '0';
+        el._fadeTimer = setTimeout(()=>{ el.style.display = 'none'; }, 200);
+    }
+
+    //While Web Audio is still suspended (browsers/VS Code webviews need one user gesture to
+    //start it) we put a full-screen, transparent click-catcher over the emulator. The FIRST
+    //click then lands on this overlay instead of the canvas — and a click on the canvas is
+    //what triggers mouse capture, so routing it here enables audio WITHOUT capturing. The
+    //click bubbles to the document 'click' unlock handler (which starts audio); the overlay
+    //then hides and subsequent canvas clicks capture normally. A small hint pill sits on top.
+    show_audio_overlay = function(visible){
+        let el = document.getElementById('audio_overlay');
+        if(!el){
+            el = document.createElement('div');
+            el.id = 'audio_overlay';
+            //full-screen, invisible catcher (above the canvas; below could let the canvas get the click)
+            el.style.cssText = 'position:fixed;top:0;left:0;width:100vw;height:100vh;'
+                + 'z-index:3000;background:transparent;cursor:pointer;user-select:none;'
+                + 'pointer-events:auto;display:none';
+            document.body.appendChild(el);
+        }
+        el.style.display = visible ? 'block' : 'none';
+        if(visible)
+            show_overlay_message('audio_message', '&#128264; Click to enable audio',
+                {title:'Web Audio needs one click to start (browser autoplay policy)'});
+        else
+            hide_overlay_message('audio_message');
+    }
+
+    //shown while the mouse is captured (pointer-locked) to tell the user how to get the cursor
+    //back; auto-fades 5s after capture so it doesn't linger over the running demo.
+    show_capture_overlay = function(visible){
+        if(visible)
+            show_overlay_message('capture_overlay',
+                '&#128433;&#65039; Mouse captured - press the middle mouse button or Esc to release',
+                {fadeAfter:5000});
+        else
+            hide_overlay_message('capture_overlay');
+    }
+
     add_unlock_user_action = function(){
         //in case we did go suspended reinstall the unlock events
         document.removeEventListener('click',click_unlock_WebAudio);
@@ -2586,11 +2662,17 @@ postMessage({ type: 'ready' });
         let canvas=document.getElementById('canvas');
         canvas.removeEventListener('touchstart',touch_unlock_WebAudio);
         canvas.addEventListener('touchstart',touch_unlock_WebAudio,false);
+
+        //only prompt before the very first unlock; once audio has run, suspend/resume
+        //(e.g. on a breakpoint pause) needs no further gesture, so don't nag again.
+        show_audio_overlay(!audio_connected);
     }
     remove_unlock_user_action = function(){
         //if it runs we dont need the unlock handlers, has no effect when handler already removed
         document.removeEventListener('click',click_unlock_WebAudio);
         document.getElementById('canvas').removeEventListener('touchstart',touch_unlock_WebAudio);
+
+        show_audio_overlay(false);
     }
 
     audioContext.onstatechange = () => {
@@ -3069,6 +3151,7 @@ postMessage({ type: 'ready' });
             document.addEventListener("mousemove", updatePosition, false);
             document.addEventListener("mousedown", mouseDown, false);
             document.addEventListener("mouseup", mouseUp, false);
+            show_capture_overlay(true);
 
         } else {
 //            console.log('The pointer lock status is now unlocked');
@@ -3077,6 +3160,7 @@ postMessage({ type: 'ready' });
             document.removeEventListener("mouseup", mouseUp, false);
 
             has_pointer_lock=false;
+            show_capture_overlay(false);
         }
     }
     var mouse_port=1;
@@ -3102,9 +3186,14 @@ postMessage({ type: 'ready' });
         Module._wasm_mouse(mouse_port,movementX,movementY);
     }
     function mouseDown(e) {
+        if(e.which === 2) { // middle button releases the mouse capture (like WinUAE)
+            document.exitPointerLock();
+            return;
+        }
         Module._wasm_mouse_button(mouse_port,e.which, 1/* down */);
     }
     function mouseUp(e) {
+        if(e.which === 2) return; // middle button is capture-release, not an Amiga button
         Module._wasm_mouse_button(mouse_port,e.which, 0/* up */);
     }
 

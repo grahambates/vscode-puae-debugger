@@ -152,7 +152,7 @@ export class StackManager {
         foundSource = true;
       } else {
         if (foundSource && addr > 0x00e00000 && addr < 0x01000000) break;
-        const f = new StackFrame(frameId, formatHex(addr));
+        const f = new StackFrame(frameId, formatAddress(addr, this.sourceMap));
         f.instructionPointerReference = formatHex(addr);
         allFrames.push(f);
         frameId++;

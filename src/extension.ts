@@ -4,6 +4,7 @@ import { VAmiga } from "./vAmiga";
 import { MemoryViewerProvider } from "./memoryViewerProvider";
 import { StateViewerProvider } from "./stateViewerProvider";
 import { PuaeEmulator } from "./puaeEmulator";
+import { expressionRangeAt } from "./cExpressionEvaluator";
 
 /**
  * Activates the VAmiga debugger VS Code extension.
@@ -160,6 +161,20 @@ export function activate(context: vscode.ExtensionContext) {
     }),
   );
 
+  // Widen the hover expression for C/C++ so compound navigation expressions evaluate. By default
+  // VS Code only sends the single identifier under the cursor; this returns the member/arrow/index
+  // chain truncated at the hovered token (matching VS Code's TypeScript behaviour) - hovering
+  // `SysBase` in `SysBase->ColdCapture` evaluates `SysBase`, hovering `ColdCapture` evaluates the
+  // whole `SysBase->ColdCapture`. See `expressionRangeAt` for the exact rule. Leading `*`/`&` are
+  // intentionally not auto-captured to avoid surprising deref/address-of on hover - they still work
+  // when typed in the Watch panel or REPL.
+  context.subscriptions.push(
+    vscode.languages.registerEvaluatableExpressionProvider(
+      [{ language: "c" }, { language: "cpp" }],
+      { provideEvaluatableExpression },
+    ),
+  );
+
   // Clean up viewers on deactivation
   context.subscriptions.push({
     dispose: () => {
@@ -168,6 +183,22 @@ export function activate(context: vscode.ExtensionContext) {
       puaeEmulator.dispose();
     },
   });
+}
+
+/**
+ * Returns the EvaluatableExpression for a hover position: the navigation chain truncated at the
+ * token under the cursor (see `expressionRangeAt`), or undefined to let VS Code fall back to its
+ * default word range.
+ */
+export function provideEvaluatableExpression(
+  document: vscode.TextDocument,
+  position: vscode.Position,
+): vscode.EvaluatableExpression | undefined {
+  const line = document.lineAt(position.line).text;
+  const found = expressionRangeAt(line, position.character);
+  if (!found) return undefined;
+  const range = new vscode.Range(position.line, found.start, position.line, found.end);
+  return new vscode.EvaluatableExpression(range, found.text);
 }
 
 /**

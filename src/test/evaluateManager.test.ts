@@ -460,6 +460,152 @@ describe("EvaluateManager - Comprehensive Tests", () => {
     });
   });
 
+  describe("C/C++ expression evaluation (delegates to CExpressionEvaluator)", () => {
+    it("returns the DWARF result (incl. variablesReference) when a name resolves", async () => {
+      mockVariablesManager.resolveNameToLValue.resolves({
+        address: 0x3000,
+        type: { kind: "primitive", typeName: "int", byteSize: 4 },
+        typeName: "int",
+      });
+      mockVariablesManager.renderLValue.resolves({
+        value: "0x0000002a | 42",
+        variablesReference: 0,
+      });
+
+      const result = await evaluateManager.evaluateFormatted(
+        { expression: "count", context: "hover" },
+        0x1000,
+        null,
+      );
+
+      // hover folds the type into the value string (microsoft/vscode#244477 workaround)
+      assert.strictEqual(result.result, "(int) 0x0000002a | 42");
+      assert.strictEqual(result.type, "int");
+      assert.strictEqual(result.memoryReference, "0x00003000");
+      assert.strictEqual(result.variablesReference, 0);
+    });
+
+    it("does NOT fold the type into the value for non-hover contexts (watch)", async () => {
+      mockVariablesManager.resolveNameToLValue.resolves({
+        address: 0x3000,
+        type: { kind: "primitive", typeName: "int", byteSize: 4 },
+        typeName: "int",
+      });
+      mockVariablesManager.renderLValue.resolves({
+        value: "0x0000002a | 42",
+        variablesReference: 0,
+      });
+
+      const result = await evaluateManager.evaluateFormatted(
+        { expression: "count", context: "watch" },
+        0x1000,
+        null,
+      );
+
+      assert.strictEqual(result.result, "0x0000002a | 42");
+      assert.strictEqual(result.type, "int");
+    });
+
+    it("passes an expandable variablesReference through for struct/array results", async () => {
+      mockVariablesManager.resolveNameToLValue.resolves({
+        address: 0x2050,
+        type: { kind: "struct", typeName: "struct Struct", byteSize: 7, getFields: () => [] },
+        typeName: "struct Struct",
+      });
+      mockVariablesManager.renderLValue.resolves({
+        value: "0x00002050",
+        variablesReference: 99,
+      });
+
+      const result = await evaluateManager.evaluateFormatted(
+        { expression: "s", context: "hover" },
+        0x1000,
+        null,
+      );
+
+      assert.strictEqual(result.variablesReference, 99);
+    });
+
+    it("forwards the trimmed expression and pc/regs to the resolver", async () => {
+      const regs = new Map<number, number>([[13, 0x4000]]);
+      mockVariablesManager.resolveNameToLValue.resolves({
+        address: 0x1,
+        type: { kind: "primitive", typeName: "int", byteSize: 4 },
+        typeName: "int",
+      });
+      mockVariablesManager.renderLValue.resolves({ value: "x", variablesReference: 0 });
+
+      await evaluateManager.evaluateFormatted(
+        { expression: "  count  ", context: "hover" },
+        0x1234,
+        regs,
+      );
+
+      assert.ok(mockVariablesManager.resolveNameToLValue.calledOnceWith("count", 0x1234, regs));
+    });
+
+    it("falls back to the assembly evaluate path when the expression is not a resolvable C name", async () => {
+      mockVariablesManager.resolveNameToLValue.resolves(undefined);
+      mockVariablesManager.getFlatVariables.resolves({ d0: 0x42 });
+      mockVAmiga.getCpuInfo.resolves(createMockCpuInfo({ d0: "0x42" }));
+
+      const result = await evaluateManager.evaluateFormatted({ expression: "d0" });
+
+      assert.strictEqual(result.result, "0x00000042 | 66 | 0b1000010");
+    });
+
+    it("falls back to the assembly path for arithmetic expressions (not C navigation)", async () => {
+      mockVariablesManager.getFlatVariables.resolves({ d0: 10, d1: 5 });
+
+      const result = await evaluateManager.evaluateFormatted({ expression: "d0 + d1" });
+
+      assert.strictEqual(result.result, "0xf | 15 | 0b1111");
+    });
+  });
+
+  describe("setExpression (value editing)", () => {
+    it("writes a C lvalue to memory and returns the re-rendered value", async () => {
+      mockVariablesManager.resolveNameToLValue.resolves({
+        address: 0x3000,
+        type: { kind: "primitive", typeName: "int", byteSize: 4 },
+        typeName: "int",
+      });
+      mockVariablesManager.writeScalar.resolves("0x0000007b | 123");
+      mockVariablesManager.renderLValue.resolves({ value: "0x0000007b | 123", variablesReference: 0 });
+
+      const body = await evaluateManager.setExpression("count", "123", 0x1000, null);
+
+      assert.ok(mockVariablesManager.writeScalar.calledOnceWith(0x3000, sinon.match.any, 123));
+      assert.strictEqual(body.value, "0x0000007b | 123");
+      assert.strictEqual(body.type, "int");
+      assert.strictEqual(body.memoryReference, "0x00003000");
+      assert.strictEqual(body.variablesReference, 0);
+    });
+
+    it("falls back to writing a CPU register via VariablesManager", async () => {
+      mockVariablesManager.resolveNameToLValue.resolves(undefined);
+      mockVAmiga.getCpuInfo.resolves(createMockCpuInfo({ d0: "0x0" }));
+      mockVariablesManager.writeRegister.resolves("0x0000002a | 42");
+
+      const body = await evaluateManager.setExpression("d0", "42");
+
+      assert.ok(mockVariablesManager.writeRegister.calledWith("d0", 42));
+      assert.strictEqual(body.value, "0x0000002a | 42");
+    });
+
+    it("throws for an invalid (non-numeric) value", async () => {
+      await assert.rejects(() => evaluateManager.setExpression("count", "abc", 0x1000, null));
+    });
+
+    it("throws when the expression is not assignable", async () => {
+      mockVariablesManager.resolveNameToLValue.resolves(undefined);
+      mockVAmiga.getCpuInfo.resolves(createMockCpuInfo({}));
+      mockVAmiga.getAllCustomRegisters.resolves({});
+
+      await assert.rejects(() => evaluateManager.setExpression("nope", "1", 0x1000, null));
+    });
+  });
+
   describe("Error Handling", () => {
     it("should handle invalid variable references", async () => {
       mockVariablesManager.getFlatVariables.resolves({});

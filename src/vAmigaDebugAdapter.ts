@@ -47,6 +47,7 @@ import { LoadedProgram } from "./amigaMemoryMapper";
 import { sourceMapFromDwarf } from "./dwarfSourceMap";
 import { sourceMapFromHunks } from "./amigaHunkSourceMap";
 import { SourceMap } from "./sourceMap";
+import { kickstartSymbolModule, KickstartSymbolModule } from "./kickstart";
 import { formatHex } from "./numbers";
 import {
   allFunctions,
@@ -184,6 +185,8 @@ export class VamigaDebugAdapter extends LoggingDebugSession {
   private hunks: Hunk[] = [];
   private dwarfData?: DWARFData;
   private sourceMap?: SourceMap;
+  // Resolved Kickstart ROM symbols (if the loaded ROM matched), merged into the source map on attach.
+  private kickstartSymbols?: KickstartSymbolModule;
   private exceptionInstruction: {
     address: number;
     isSupervisor: boolean;
@@ -258,6 +261,7 @@ export class VamigaDebugAdapter extends LoggingDebugSession {
     response.body = response.body || {};
     response.body.supportsConfigurationDoneRequest = true;
     response.body.supportsSetVariable = true;
+    response.body.supportsSetExpression = true;
     response.body.supportsReadMemoryRequest = true;
     response.body.supportsWriteMemoryRequest = true;
     response.body.supportsDisassembleRequest = true;
@@ -332,6 +336,32 @@ export class VamigaDebugAdapter extends LoggingDebugSession {
         "error reading debug symbols",
         err,
       );
+    }
+
+    // Load Kickstart ROM symbols if the configured ROM is one we have symbols for.
+    // Best-effort: a missing/unreadable/unknown ROM must not abort the launch.
+    const kickstartRomPath = args.kickstartRom ?? args.emulatorOptions?.kickstartRomPath;
+    if (kickstartRomPath) {
+      try {
+        const romBuffer = await readFile(kickstartRomPath as string);
+        this.kickstartSymbols = kickstartSymbolModule(romBuffer);
+        if (this.kickstartSymbols) {
+          const symbolCount = Object.keys(this.kickstartSymbols.symbols).length;
+          this.sendEvent(
+            new OutputEvent(
+              `Loaded symbols for ${this.kickstartSymbols.name}\n`,
+            ),
+          );
+          logger.log(
+            `Loaded ${symbolCount} Kickstart symbols ` +
+              `(${this.kickstartSymbols.name}) at base 0x${this.kickstartSymbols.base.toString(16)}`,
+          );
+        } else {
+          logger.log(`No Kickstart symbols available for ROM ${kickstartRomPath}`);
+        }
+      } catch (err) {
+        logger.warn(`Could not read Kickstart ROM for symbols: ${this.errorString(err)}`);
+      }
     }
 
     try {
@@ -533,6 +563,38 @@ export class VamigaDebugAdapter extends LoggingDebugSession {
         response,
         ErrorCode.VARIABLE_UPDATE_ERROR,
         `Error updating variable`,
+        err,
+      );
+    }
+  }
+
+  protected async setExpressionRequest(
+    response: DebugProtocol.SetExpressionResponse,
+    args: DebugProtocol.SetExpressionArguments,
+  ): Promise<void> {
+    try {
+      // Resolve the frame's pc and register snapshot (same as evaluateRequest) so the C/C++
+      // expression evaluator can locate locals for the write target.
+      const pc =
+        args.frameId !== undefined
+          ? (this.frameIdToPc.get(args.frameId) ?? null)
+          : null;
+      const regs =
+        args.frameId !== undefined
+          ? (this.stackManager?.getFrameRegs(args.frameId) ?? null)
+          : null;
+      response.body = await this.getEvaluateManager().setExpression(
+        args.expression,
+        args.value,
+        pc,
+        regs,
+      );
+      this.sendResponse(response);
+    } catch (err) {
+      this.sendError(
+        response,
+        ErrorCode.VARIABLE_UPDATE_ERROR,
+        `Error setting '${args.expression}'`,
         err,
       );
     }
@@ -856,7 +918,21 @@ export class VamigaDebugAdapter extends LoggingDebugSession {
     }
 
     try {
-      response.body = await this.getEvaluateManager().evaluateFormatted(args);
+      // Resolve the hovered/evaluated frame's pc and register snapshot (same as scopesRequest) so
+      // the evaluate path can look up C/C++ locals/globals by name.
+      const pc =
+        args.frameId !== undefined
+          ? (this.frameIdToPc.get(args.frameId) ?? null)
+          : null;
+      const regs =
+        args.frameId !== undefined
+          ? (this.stackManager?.getFrameRegs(args.frameId) ?? null)
+          : null;
+      response.body = await this.getEvaluateManager().evaluateFormatted(
+        args,
+        pc,
+        regs,
+      );
       this.sendResponse(response);
     } catch (err) {
       this.sendError(
@@ -1142,6 +1218,14 @@ export class VamigaDebugAdapter extends LoggingDebugSession {
         this.sourceMap = sourceMapFromHunks(this.hunks, offsets);
       } else {
         throw new Error("No debug symbols");
+      }
+
+      // Merge Kickstart ROM symbols (if resolved) so OS calls show names in stack/disassembly.
+      if (this.kickstartSymbols) {
+        this.sourceMap.addSymbolModule(
+          this.kickstartSymbols.segment,
+          this.kickstartSymbols.symbols,
+        );
       }
 
       // Initialize specialized manager classes for debugging functionality:

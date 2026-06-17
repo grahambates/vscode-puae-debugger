@@ -19,6 +19,7 @@ import { CpuTraceItem } from "./vAmiga";
 import { SourceMap } from "./sourceMap";
 import { VariablesManager } from "./variablesManager";
 import { DisassemblyManager } from "./disassemblyManager";
+import { CExpressionEvaluator } from "./cExpressionEvaluator";
 
 /**
  * Result of evaluating an expression in the debug context.
@@ -142,6 +143,7 @@ const asyncFunctions = Object.keys(requiredArgs);
  */
 export class EvaluateManager {
   private parser: Parser;
+  private cExpr: CExpressionEvaluator;
 
   /**
    * Creates a new EvaluateManager instance.
@@ -166,6 +168,7 @@ export class EvaluateManager {
       i16,
       i8,
     };
+    this.cExpr = new CExpressionEvaluator(vAmiga, sourceMap, variablesManager);
   }
 
   /**
@@ -261,14 +264,31 @@ export class EvaluateManager {
    * @param args Evaluation request arguments from DAP
    * @returns Formatted evaluation response for DAP
    */
-  public async evaluateFormatted({
-    expression,
-    context,
-    source,
-    line,
-  }: DebugProtocol.EvaluateRequest["arguments"]): Promise<
-    DebugProtocol.EvaluateResponse["body"]
-  > {
+  public async evaluateFormatted(
+    {
+      expression,
+      context,
+      source,
+      line,
+    }: DebugProtocol.EvaluateRequest["arguments"],
+    pc: number | null = null,
+    regs: Map<number, number> | null = null,
+  ): Promise<DebugProtocol.EvaluateResponse["body"]> {
+    // C/C++ DWARF path: evaluate a compound C navigation expression (names, `.` `->` `[]` `*` `&`),
+    // reusing the exact formatting from the Locals/Globals views. Kept strictly separate from the
+    // assembly evaluate path below - on a miss (not a resolvable C expression) we fall through to the
+    // unchanged register/symbol/expression handling.
+    const cResult = await this.cExpr.evaluateToBody(expression.trim(), pc, regs);
+    if (cResult) {
+      // VS Code shows the DAP `type` field in the Variables/Watch views, but not on the top-level
+      // hovered item (microsoft/vscode#244477). For hover, fold the type into the value string so it
+      // is visible; other contexts (watch has a type column, repl) keep the value clean.
+      if (context === "hover" && cResult.type) {
+        return { ...cResult, result: `(${cResult.type}) ${cResult.result}` };
+      }
+      return cResult;
+    }
+
     const {
       value,
       memoryReference,
@@ -326,6 +346,59 @@ export class EvaluateManager {
       memoryReference,
       variablesReference: 0,
     };
+  }
+
+  /**
+   * Assigns a new value to an expression (DAP setExpression — the Watch panel "Set Value").
+   *
+   * Mirrors evaluateFormatted's try-C-then-assembly structure: first resolve the expression to a
+   * writable C/C++ lvalue and poke memory; otherwise fall back to a CPU/custom register write. The
+   * value string is parsed with the same `Number(...)` used by register editing (decimal / 0x).
+   * Throws if the value is not numeric or the expression is not assignable.
+   *
+   * @param expression The lvalue expression to assign to
+   * @param valueStr The new value as typed by the user (decimal or 0x hex)
+   * @param pc Program counter of the frame (for local resolution), or null
+   * @param regs Frame register snapshot, or null for live CPU state
+   */
+  public async setExpression(
+    expression: string,
+    valueStr: string,
+    pc: number | null = null,
+    regs: Map<number, number> | null = null,
+  ): Promise<DebugProtocol.SetExpressionResponse["body"]> {
+    const numericValue = Number(valueStr);
+    if (Number.isNaN(numericValue)) {
+      throw new Error(`Invalid value: '${valueStr}'`);
+    }
+    const expr = expression.trim();
+
+    // C/C++ path: write to a navigated lvalue's memory.
+    const lvalue = await this.cExpr.evaluateToLValue(expr, pc, regs);
+    if (lvalue) {
+      await this.variablesManager.writeScalar(lvalue.address, lvalue.type, numericValue);
+      const { value, variablesReference } = await this.variablesManager.renderLValue(
+        lvalue.address,
+        lvalue.type,
+      );
+      return {
+        value,
+        type: lvalue.type.typeName,
+        memoryReference: formatHex(lvalue.address),
+        variablesReference,
+      };
+    }
+
+    // Assembly fallback: CPU or custom register by name — delegate the write to VariablesManager
+    // (single source of truth for register writes).
+    const cpuInfo = await this.vAmiga.getCpuInfo();
+    const customRegs = await this.vAmiga.getAllCustomRegisters();
+    if (expr in cpuInfo || expr in customRegs) {
+      const value = await this.variablesManager.writeRegister(expr, numericValue);
+      return { value, variablesReference: 0 };
+    }
+
+    throw new Error(`Cannot assign to '${expression}'`);
   }
 
   private formatDataRegister(

@@ -1054,12 +1054,12 @@ export function parseDwarf(elfBuffer: Buffer): DWARFData {
         attr.value = { raw, ops };
       }
 
-      // Resolve DW_AT_type references (DW_FORM_ref* forms) into an
-      // object containing the absolute reference offset. The numeric value
-      // encoded in the DIE is an offset relative to the start of the
-      // compilation unit; expose it as `{ ref: absoluteOffset }` so callers
-      // can later locate the referenced DIE.
-      if ((attr.name === DW_AT.type || attr.name === DW_AT.abstract_origin) && typeof attr.value === 'number') {
+      // Resolve DIE-reference attributes (DW_AT_type, DW_AT_abstract_origin,
+      // DW_AT_specification; DW_FORM_ref* forms) into an object containing the
+      // absolute reference offset. The numeric value encoded in the DIE is an
+      // offset relative to the start of the compilation unit; expose it as
+      // `{ ref: absoluteOffset }` so callers can later locate the referenced DIE.
+      if ((attr.name === DW_AT.type || attr.name === DW_AT.abstract_origin || attr.name === DW_AT.specification) && typeof attr.value === 'number') {
         const rel = attr.value as number;
         const absolute = cuStartOffset + rel;
         attr.value = { ref: absolute };
