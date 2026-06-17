@@ -33,7 +33,7 @@
         "command": "vamiga-debugger.stepBackFrame",
         "title": "Start of Frame",
         "icon": "$(run-above)",
-        "enablement": "debugType == 'puae' && debugState == 'stopped'"
+        "enablement": "(debugType == 'vamiga' || debugType == 'puae') && debugState == 'stopped'"
       },
       {
         "command": "vamiga-debugger.eof",
@@ -84,7 +84,7 @@
       "debug/toolBar": [
         {
           "command": "vamiga-debugger.stepBackFrame",
-          "when": "debugType == 'puae'",
+          "when": "debugType == 'vamiga' || debugType == 'puae'",
           "group": "navigation@50"
         },
         {

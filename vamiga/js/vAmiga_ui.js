@@ -2006,6 +2006,10 @@ function InitWrappers() {
 
     const replayInstructionsVideo = (count) => {
         Module._wasm_replay_instructions_video(Number(count));
+        if (current_renderer === "gpu shader")
+            render_canvas_gl(0);
+        else
+            render_canvas(0);
     };
 
     const replayScan = (count) => {

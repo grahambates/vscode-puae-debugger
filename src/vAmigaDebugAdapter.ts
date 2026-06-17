@@ -209,6 +209,10 @@ export class VamigaDebugAdapter extends LoggingDebugSession {
     return this.vAmiga;
   }
 
+  public notifySteppedBack(): void {
+    this.sendEvent(new StoppedEvent("step", VamigaDebugAdapter.THREAD_ID));
+  }
+
   /**
    * Creates a new VamigaDebugAdapter instance.
    *
