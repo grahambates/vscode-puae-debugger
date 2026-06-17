@@ -93,11 +93,17 @@ export async function main(config = {}) {
   const M = await createPuaeModule(wasmLocateFile ? { locateFile: wasmLocateFile } : undefined);
   log('Module ready — fetching ROM…');
 
-  // Write Kickstart ROM into the virtual filesystem.
-  const romData = await fetchBytes(romUrl);
   M.FS.mkdir('/uae_system');
-  M.FS.writeFile('/uae_system/kick34005.A500', romData);
-  log(`ROM: ${romData.length} bytes → /uae_system/kick34005.A500`);
+  // Write Kickstart ROM into the virtual filesystem.
+  // When romUrl is empty, skip this — frontend_shim detects the missing file
+  // and tells PUAE to use its built-in AROS ROM instead.
+  if (romUrl) {
+    const romData = await fetchBytes(romUrl);
+    M.FS.writeFile('/uae_system/kick34005.A500', romData);
+    log(`ROM: ${romData.length} bytes → /uae_system/kick34005.A500`);
+  } else {
+    log('No ROM provided — using built-in AROS ROM');
+  }
 
   // Extra PUAE config (.uae key=value lines), built by
   // PuaeEmulator.getHtmlForWebview from OpenOptions.configFilePath,

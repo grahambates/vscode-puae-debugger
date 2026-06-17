@@ -439,7 +439,7 @@ export class PuaeEmulator implements Emulator {
 
     this.panel = vscode.window.createWebviewPanel(
       PuaeEmulator.viewType,
-      "vAmiga (PUAE)",
+      "PUAE",
       {
         viewColumn: column,
         preserveFocus: true,
@@ -553,24 +553,22 @@ export class PuaeEmulator implements Emulator {
     const appUri = uri("puae_app.js");
 
     const kickstartPath = this.openOptions?.kickstartRom as string | undefined;
-    let romData: Buffer;
+    let romDataUri = "";
     if (kickstartPath) {
       if (!existsSync(kickstartPath)) {
         throw new Error(`Kickstart ROM file not found: ${kickstartPath}`);
       }
-      romData = readFileSync(kickstartPath);
-    } else if (this.openOptions?.programPath) {
-      // Non-fastLoad mode: use the bundled AROS ROM as default
-      const arosPath = join(this.extensionUri.fsPath, "vamiga", "roms", "aros-rom-20250219.bin");
-      romData = readFileSync(arosPath);
-    } else {
+      const romData = readFileSync(kickstartPath);
+      romDataUri = `data:application/octet-stream;base64,${romData.toString("base64")}`;
+    } else if (!this.openOptions?.programPath) {
       throw new Error(
         "PUAE with fast loading requires an explicit kickstartRom — " +
           "AROS is not compatible with fast loading. " +
           "Set kickstartRom to a Kickstart ROM file path, or set fastLoad: false.",
       );
     }
-    const romDataUri = `data:application/octet-stream;base64,${romData.toString("base64")}`;
+    // romDataUri is empty when no kickstartRom is set — puae_app.js skips
+    // writing the ROM file, and frontend_shim falls back to built-in AROS.
 
     const extraConfig = this.buildExtraConfig();
     const extraConfigB64 = extraConfig

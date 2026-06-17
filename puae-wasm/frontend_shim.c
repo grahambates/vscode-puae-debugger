@@ -12,6 +12,7 @@
 #include <stdint.h>
 #include <string.h>
 #include <stdbool.h>
+#include <unistd.h>
 #include <emscripten.h>
 #include "libretro.h"
 #include "e9k_debug.h"
@@ -221,7 +222,13 @@ static bool shim_environment(unsigned cmd, void *data) {
         case RETRO_ENVIRONMENT_GET_VARIABLE: {
             struct retro_variable *var = (struct retro_variable *)data;
             if (var->key) {
-                if (strcmp(var->key, "puae_kickstart")     == 0) { var->value = "kick34005.A500"; return true; }
+                if (strcmp(var->key, "puae_kickstart")     == 0) {
+                    // Use the built-in AROS ROM when no kickstart file has been
+                    // provided (puae_app.js skips writing the file in that case).
+                    var->value = (access("/uae_system/kick34005.A500", F_OK) == 0)
+                        ? "kick34005.A500" : "aros";
+                    return true;
+                }
                 if (strcmp(var->key, "puae_model")         == 0) { var->value = "A500";           return true; }
                 if (strcmp(var->key, "puae_model_fd")      == 0) { var->value = "A500";           return true; }
                 if (strcmp(var->key, "puae_video_resolution")== 0) { var->value = "hires";        return true; }
