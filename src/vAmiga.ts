@@ -381,6 +381,7 @@ const defaultOptions: Partial<OpenOptions> = {
 export class VAmiga implements Emulator {
   public static readonly viewType = "vamiga-debugger.webview";
   private panel?: vscode.WebviewPanel;
+  private panelOptions?: OpenOptions;
   private pendingRpcs = new Map<
     string,
     {
@@ -407,10 +408,20 @@ export class VAmiga implements Emulator {
     };
     if (!this.panel) {
       return this.initPanel(optionsWithDefaults);
-    } else {
+    }
+    if (this.optionsMatchPanel(optionsWithDefaults)) {
       const callParams = this.optionsToCallParams(optionsWithDefaults);
       this.sendCommand("load", callParams);
+    } else {
+      this.panel.dispose();
+      this.initPanel(optionsWithDefaults);
     }
+  }
+
+  private optionsMatchPanel(options: OpenOptions): boolean {
+    const normalise = (o?: OpenOptions) =>
+      JSON.stringify(o, Object.keys(o ?? {}).sort() as (keyof OpenOptions)[]);
+    return normalise(options) === normalise(this.panelOptions);
   }
 
   /**
@@ -908,10 +919,12 @@ export class VAmiga implements Emulator {
 
     const callParams = this.optionsToCallParams(options);
     this.panel.webview.html = this.getHtmlForWebview(callParams);
+    this.panelOptions = options;
 
     // Handle webview lifecycle
     this.panel.onDidDispose(() => {
       this.panel = undefined;
+      this.panelOptions = undefined;
     });
 
     // Set up RPC response handler and message delegation

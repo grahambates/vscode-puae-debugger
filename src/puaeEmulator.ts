@@ -66,6 +66,9 @@ export class PuaeEmulator implements Emulator {
   public static readonly viewType = "vamiga-debugger.puaeWebview";
   private panel?: vscode.WebviewPanel;
   private openOptions?: Record<string, unknown>;
+  // Options that were used to generate the current panel's HTML — used to
+  // detect when a config change requires a full panel reinitialisation.
+  private panelOptions?: Record<string, unknown>;
   private pendingRpcs = new Map<string, PendingRpc>();
   private messageListeners: Set<(message: EmulatorMessage) => void> = new Set();
 
@@ -84,18 +87,28 @@ export class PuaeEmulator implements Emulator {
   public open(options?: Record<string, unknown>): void {
     this.openOptions = options;
     if (this.panel) {
-      this.panel.reveal();
-      // Reuse the already-booted webview for the new session: hard-reset the
-      // emulated machine and re-run the boot warm-up (puae_rpc.js's "load"
-      // command), which re-signals exec-ready so the debug adapter re-runs
-      // fastLoad injection for the new program — avoids re-instantiating the
-      // wasm module/webview, which is what made restart slow/broken before.
-      this.invalidateCache();
-      this.memoryInfo = undefined;
-      this.sendCommand("load");
+      if (this.optionsMatchPanel(options)) {
+        // Same config as the running panel: fast path — hard-reset the emulated
+        // machine and re-run the boot warm-up without reloading the webview.
+        this.panel.reveal();
+        this.invalidateCache();
+        this.memoryInfo = undefined;
+        this.sendCommand("load");
+      } else {
+        // Config changed: dispose the old panel and create a fresh one so the
+        // new ROM / UAE config / program is picked up from the updated HTML.
+        this.panel.dispose();
+        this.initPanel();
+      }
       return;
     }
     this.initPanel();
+  }
+
+  private optionsMatchPanel(options?: Record<string, unknown>): boolean {
+    const normalise = (o?: Record<string, unknown>) =>
+      JSON.stringify(o, Object.keys(o ?? {}).sort());
+    return normalise(options) === normalise(this.panelOptions);
   }
 
   /**
@@ -452,9 +465,11 @@ export class PuaeEmulator implements Emulator {
     );
 
     this.panel.webview.html = this.getHtmlForWebview(this.panel.webview, puaeDir);
+    this.panelOptions = this.openOptions;
 
     this.panel.onDidDispose(() => {
       this.panel = undefined;
+      this.panelOptions = undefined;
     });
 
     this.panel.webview.onDidReceiveMessage((message) => {
