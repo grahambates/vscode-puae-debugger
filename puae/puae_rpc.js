@@ -47,13 +47,6 @@ const MEM_SRC_CHIP = 1;
 const MEM_SRC_CHIP_MIRROR = 2;
 const MEM_SRC_NONE = 0;
 
-// Post-(re)boot warm-up tick count: enough frames for Kickstart to clear the
-// CIA-A OVL bit and for exec.library to finish initialising its memory-list
-// allocator (needed by AmigaMemoryMapper for fastLoad program injection) —
-// see index.html's initial boot for the original derivation. Re-used by the
-// "load" command below to bring a hard-reset machine back to the same
-// "exec ready" state without re-instantiating the wasm module or webview.
-export const WARM_UP_TICKS = 200;
 
 function hex(value, digits = 8) {
   return "0x" + (value >>> 0).toString(16).padStart(digits, "0");
@@ -166,28 +159,34 @@ function replayScanFrame(M, count) {
   return match === REPLAY_SCAN_NO_MATCH ? null : match;
 }
 
-// Port of vAmiga_ui.js's tryExec (lines ~1936-1971), minus the fastLoad/
-// snapshot branch (not applicable to PUAE, which has no snapshot API). Once
-// exec.library + graphics.library are initialized and the CPU isn't in
-// supervisor mode, arms a breakpoint on AllocMem's LVO (-198 from ExecBase)
-// so getCurrentProcess() can be polled on each hit. Called every frame from
-// puae_app.js's frame() until it returns {ready: true}.
-export function tryExec(M) {
+// Pure predicate: exec.library's AllocMem LVO is a jmp instruction, GfxBase
+// is set, and the CPU is out of supervisor mode — the same three checks
+// vAmiga_ui.js's tryExec uses. No side effects; safe to call in a tight loop.
+export function isExecReady(M) {
   const execBase = peekMem(M, 4, 4);
   const allocMemAddr = (execBase - 198) >>> 0;
   const gfxBaseAddr = (execBase + 156) >>> 0;
   const regs = readRegs(M);
   const isSupervisor = (regs[16] & 0x2000) !== 0; // SR bit 13
-  if (
+  return (
     allocMemAddr > 0 &&
     peekMem(M, allocMemAddr, 2) === 0x4ef9 && // jmp instruction
     peekMem(M, gfxBaseAddr, 4) !== 0 && // GfxBase set
     !isSupervisor
-  ) {
-    M._wasm_add_breakpoint(allocMemAddr);
-    return { ready: true, allocMemAddr };
-  }
-  return { ready: false };
+  );
+}
+
+// Port of vAmiga_ui.js's tryExec (non-fastLoad branch). Once isExecReady(),
+// arms a breakpoint on AllocMem's LVO (-198 from ExecBase) so
+// getCurrentProcess() can be polled on each hit. Called every frame from
+// puae_app.js's frame() (non-fastLoad/programB64 path) until it returns
+// {ready: true}.
+export function tryExec(M) {
+  if (!isExecReady(M)) return { ready: false };
+  const execBase = peekMem(M, 4, 4);
+  const allocMemAddr = (execBase - 198) >>> 0;
+  M._wasm_add_breakpoint(allocMemAddr);
+  return { ready: true, allocMemAddr };
 }
 
 // Port of vAmiga's wasm_get_current_process() (main.cpp ~4106-4203). Walks
@@ -809,7 +808,10 @@ export function setupRpcDispatcher(M, postMessage) {
         // actioned (custom_reset, m68k_reset2, memory_clear) on the second —
         // a couple of extra ticks give margin (see test_reset.mjs).
         for (let i = 0; i < 4; i++) M._wasm_tick();
-        for (let i = 0; i < WARM_UP_TICKS; i++) M._wasm_tick();
+        // Tick until AmigaOS is ready rather than a fixed count — mirrors
+        // vAmiga_ui.js's tryExec condition. 1000 ticks (~20 PAL seconds) is
+        // a generous safety ceiling that should never be reached in practice.
+        for (let i = 0; !isExecReady(M) && i < 1000; i++) M._wasm_tick();
         // Snapshots captured before the reset reference the previous
         // program's RAM/state — restoring them now would be confusing/
         // incorrect, so drop them.

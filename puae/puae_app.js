@@ -4,7 +4,7 @@
 // lives in debug.html instead — main() only assumes #screen exists;
 // #status is optional (used for boot/fps diagnostics if present).
 
-import { setupRpcDispatcher, getCurrentStopMessage, tryExec, getCurrentProcess, WARM_UP_TICKS } from './puae_rpc.js';
+import { setupRpcDispatcher, getCurrentStopMessage, tryExec, getCurrentProcess, isExecReady } from './puae_rpc.js';
 
 // The Amiga's PAL frame rate — both the render loop's due-frames accounting
 // and its driving tick-worker interval are derived from this.
@@ -135,23 +135,18 @@ export async function main(config = {}) {
   if (!ok) { log('wasm_boot FAILED — check console'); return; }
 
   if (!programB64) {
-    // Warm-up: run enough frames for Kickstart to clear the CIA-A OVL bit
-    // (chip-RAM writes via e9k_debug_write_memory don't persist before this —
-    // proven to need ~150 ticks, see puae-wasm/test_g1.mjs) and for
-    // exec.library to finish initialising its memory-list allocator (needed
-    // by AmigaMemoryMapper for fastLoad program injection). WARM_UP_TICKS
-    // (200) gives margin over the 150-tick threshold. This redefines
-    // `exec-ready` for PUAE from "wasm module + RPC bridge ready" to "AmigaOS
-    // booted enough for fastLoad memory injection" — the PUAE equivalent of
-    // VAmiga's pre-booted-snapshot fastLoad path. puae_rpc.js's "load" command
-    // re-runs this same warm-up after a wasm_reset() to reuse this module +
-    // webview for a new debug session.
+    // Warm-up: tick until AmigaOS is ready for fastLoad memory injection —
+    // mirrors vAmiga_ui.js's tryExec condition (AllocMem LVO is jmp, GfxBase
+    // set, CPU out of supervisor mode). 1000 ticks is a generous safety
+    // ceiling. Kickstart needs ~150 ticks to clear CIA-A OVL and initialise
+    // exec.library's allocator (see puae-wasm/test_g1.mjs). Stopping exactly
+    // when ready is faster and more robust than a fixed count.
     //
     // For non-fastLoad (programB64 set), this warm-up is skipped — the render
     // loop runs from frame 0 so tryExec/getCurrentProcess polling (below) can
     // observe AmigaOS booting from DH0: and running the startup-sequence.
-    log(`Warming up (${WARM_UP_TICKS} frames)…`);
-    for (let i = 0; i < WARM_UP_TICKS; i++) M._wasm_tick();
+    log('Waiting for exec.library to initialise…');
+    for (let i = 0; !isExecReady(M) && i < 1000; i++) M._wasm_tick();
   }
 
   // -------- audio setup --------
