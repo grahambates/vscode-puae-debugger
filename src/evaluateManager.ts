@@ -130,6 +130,7 @@ const requiredArgs: Record<
 };
 
 const asyncFunctions = Object.keys(requiredArgs);
+const asyncFunctionPatterns = asyncFunctions.map((fn) => new RegExp(`\\b${fn}\\b`));
 
 /**
  * Manages expression evaluation for the debug adapter.
@@ -563,8 +564,8 @@ export class EvaluateManager {
     variables: Record<string, number>,
   ): Promise<any | MemoryArrayValue | DisassemblyValue | CpuTraceValue> {
     // Check if expression contains async functions
-    const hasAsyncFunctions = asyncFunctions.some((fn) =>
-      expression.includes(fn),
+    const hasAsyncFunctions = asyncFunctionPatterns.some((re) =>
+      re.test(expression),
     );
 
     if (!hasAsyncFunctions) {
@@ -654,8 +655,8 @@ export class EvaluateManager {
 
       if (parenCount === 0) {
         // Check if this call's arguments contain any async functions
-        const hasNestedAsync = asyncFunctions.some((fn) =>
-          argsStr.includes(fn),
+        const hasNestedAsync = asyncFunctionPatterns.some((re) =>
+          re.test(argsStr),
         );
 
         if (!hasNestedAsync) {
