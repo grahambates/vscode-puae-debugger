@@ -362,7 +362,7 @@ export class BreakpointManager {
    * @param reason Description of why the breakpoint was set (e.g., "step", "entry")
    */
   public setTmpBreakpoint(address: number, reason: string): void {
-    const existing = this.findSourceBreakpoint(address);
+    const existing = this.findUserBreakpointAt(address);
     if (existing) {
       logger.log(`Breakpoint already exists at ${formatHex(address)}`);
       return;
@@ -415,14 +415,23 @@ export class BreakpointManager {
         (bp) => bp.address === message.payload.pc,
       );
       if (tmpMatch) {
-        // Client doesn't know about tmp breakpoints - don't set hitBreakpointIds
         logger.log(
           `Matched tmp breakpoint at ${formatHex(message.payload.pc)}`,
         );
-        this.vAmiga.removeBreakpoint(tmpMatch.address);
         this.tmpBreakpoints = this.tmpBreakpoints.filter(
           (bp) => bp.address !== message.payload.pc,
         );
+        // If a user breakpoint also lives at this address (set after the tmp),
+        // keep the hardware breakpoint and report the user's BP instead.
+        const userBp = this.findUserBreakpointAt(tmpMatch.address);
+        if (userBp) {
+          const isInstruction = this.instructionBreakpoints.includes(userBp);
+          return {
+            reason: isInstruction ? "instruction breakpoint" : "breakpoint",
+            hitBreakpointIds: [userBp.id],
+          };
+        }
+        this.vAmiga.removeBreakpoint(tmpMatch.address);
         return {
           reason: tmpMatch.reason,
         };
@@ -527,5 +536,17 @@ export class BreakpointManager {
       }
     }
     return undefined;
+  }
+
+  /**
+   * Returns the first user-set breakpoint (source, instruction, or function)
+   * at the given address, or undefined if none exists.
+   */
+  private findUserBreakpointAt(address: number): BreakpointRef | undefined {
+    return (
+      this.findSourceBreakpoint(address) ??
+      this.instructionBreakpoints.find((bp) => bp.address === address) ??
+      this.functionBreakpoints.find((bp) => bp.address === address)
+    );
   }
 }
