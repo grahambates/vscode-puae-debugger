@@ -118,6 +118,19 @@ export class SourceMap {
     return this.globalVars;
   }
 
+  /**
+   * Merge an additional set of named symbols covering an extra memory region (e.g. Kickstart ROM).
+   *
+   * Adds the segment so address lookups (findSymbolOffset / lookupAddress) recognise the region,
+   * and merges the symbols into the symbol table. No source-line (locationsByAddress) entries are
+   * added: these symbols have names but no source. getSymbolLengths() derives sizes from address
+   * ordering, so no sizes are needed here.
+   */
+  public addSymbolModule(segment: Segment, symbols: Record<string, number>): void {
+    this.segments.push(segment);
+    Object.assign(this.symbols, symbols);
+  }
+
   public getSourceFiles(): string[] {
     return Array.from(this.sources.values());
   }
