@@ -2,8 +2,7 @@
 import * as vscode from "vscode";
 import { existsSync, readFileSync } from "fs";
 import { dirname, join } from "path";
-import { u32, u16, u8 } from "./numbers";
-import { Emulator } from "./emulator";
+import { WebviewEmulator } from "./webviewEmulator";
 
 export interface CpuInfo {
   pc: string;
@@ -378,25 +377,11 @@ const defaultOptions: Partial<OpenOptions> = {
   enableMouse: true,
 };
 
-export class VAmiga implements Emulator {
+export class VAmiga extends WebviewEmulator {
   public static readonly viewType = "vamiga-debugger.webview";
-  private panel?: vscode.WebviewPanel;
+  // Options used to generate the current panel; compared against new open
+  // options to decide between a "load" reuse and a full panel recreation.
   private panelOptions?: OpenOptions;
-  private pendingRpcs = new Map<
-    string,
-    {
-      resolve: (result: any) => void;
-      reject: (err: Error) => void;
-      timeout: NodeJS.Timeout;
-    }
-  >();
-  private messageListeners: Set<(message: EmulatorMessage) => void> = new Set();
-
-  memoryInfo?: MemoryInfo;
-  cpuInfo?: CpuInfo;
-  customRegisters?: CustomRegisters;
-
-  constructor(private readonly extensionUri: vscode.Uri) {}
 
   /**
    * Opens the VAmiga emulator webview panel
@@ -409,7 +394,7 @@ export class VAmiga implements Emulator {
     if (!this.panel) {
       return this.initPanel(optionsWithDefaults);
     }
-    if (this.optionsMatchPanel(optionsWithDefaults)) {
+    if (this.optionsMatch(optionsWithDefaults, this.panelOptions)) {
       const callParams = this.optionsToCallParams(optionsWithDefaults);
       this.sendCommand("load", callParams);
     } else {
@@ -418,454 +403,13 @@ export class VAmiga implements Emulator {
     }
   }
 
-  private optionsMatchPanel(options: OpenOptions): boolean {
-    const normalise = (o?: OpenOptions) =>
-      JSON.stringify(o, Object.keys(o ?? {}).sort() as (keyof OpenOptions)[]);
-    return normalise(options) === normalise(this.panelOptions);
-  }
-
   /**
-   * Brings the VAmiga webview panel to the foreground
-   */
-  public reveal(): void {
-    this.panel?.reveal();
-  }
-
-  /**
-   * Registers a listener for emulator messages
-   * Unlike the panel's onDidReceiveMessage, this works even when panel is not yet open
-   * @param callback Function to call when messages are received
-   * @returns Disposable to unregister the listener
-   */
-  public onDidReceiveMessage(
-    callback: (message: EmulatorMessage) => void,
-  ): vscode.Disposable {
-    this.messageListeners.add(callback);
-    return {
-      dispose: () => {
-        this.messageListeners.delete(callback);
-      },
-    };
-  }
-
-  /**
-   * Notifies all registered message listeners
-   * @param message The emulator message to broadcast
-   */
-  private notifyMessageListeners(message: EmulatorMessage): void {
-    for (const listener of this.messageListeners) {
-      try {
-        listener(message);
-      } catch (error) {
-        console.error("Error in message listener:", error);
-      }
-    }
-  }
-
-  public onDidDispose(callback: () => void): vscode.Disposable | undefined {
-    return this.panel?.onDidDispose(callback);
-  }
-
-  /**
-   * Sends a one-way command to the VAmiga emulator (no response expected)
-   * @param command Command name to send
-   * @param args Optional command arguments
-   */
-  public sendCommand<A = any>(command: string, args?: A): void {
-    if (this.panel) {
-      this.panel.webview.postMessage({ command, args });
-    } else {
-      vscode.window.showErrorMessage("Emulator panel is not open");
-    }
-  }
-
-  /**
-   * Atomically cleans up a pending RPC and returns its handlers if found.
-   * Prevents race conditions between timeout and response handling.
-   * @param rpcId The RPC ID to clean up
-   * @returns The pending RPC handlers, or null if already cleaned up
-   */
-  private cleanupPendingRpc(rpcId: string): {
-    resolve: (result: any) => void;
-    reject: (err: Error) => void;
-    timeout: NodeJS.Timeout;
-  } | null {
-    const pending = this.pendingRpcs.get(rpcId);
-    if (!pending) return null; // Already cleaned up
-
-    this.pendingRpcs.delete(rpcId);
-    clearTimeout(pending.timeout);
-    return pending;
-  }
-
-  /**
-   * Sends an RPC command to the VAmiga emulator and waits for a response
-   * @param command RPC command name
-   * @param args Optional command arguments
-   * @param timeoutMs Timeout in milliseconds (default: 5000)
-   * @returns Promise that resolves with the command response
-   * @throws Error on timeout or if webview is not open
-   */
-  public async sendRpcCommand<T = any, A = any>(
-    command: string,
-    args?: A,
-    timeoutMs = 5000,
-  ): Promise<T> {
-    return new Promise<T>((resolve, reject) => {
-      if (!this.panel) {
-        reject(new Error("Emulator panel is not open"));
-        return;
-      }
-
-      const id = Math.random().toString(36).substring(2, 15);
-      const timeout = setTimeout(() => {
-        const pending = this.cleanupPendingRpc(id);
-        if (pending) {
-          pending.reject(
-            new Error(`RPC timeout after ${timeoutMs}ms: ${command}`),
-          );
-        }
-      }, timeoutMs);
-
-      this.pendingRpcs.set(id, { resolve, reject, timeout });
-      this.panel.webview.postMessage({
-        command,
-        args: { ...args, _rpcId: id },
-      });
-    });
-  }
-
-  public dispose(): void {
-    // Clean up any pending RPCs
-    for (const [_, pending] of this.pendingRpcs) {
-      clearTimeout(pending.timeout);
-      pending.reject(new Error("Webview disposed"));
-    }
-    this.pendingRpcs.clear();
-
-    this.panel?.dispose();
-  }
-
-  // Wasm commands:
-
-  /**
-   * Pause the emulator
-   */
-  public pause(): void {
-    this.invalidateCache();
-    this.sendCommand("pause");
-  }
-
-  /**
-   * Resume running the emulator
-   */
-  public run(): void {
-    this.invalidateCache();
-    this.sendCommand("run");
-  }
-
-  /**
-   * Sets a breakpoint at the specified memory address
-   * @param address Memory address for the breakpoint
-   * @param ignores Number of times to ignore the breakpoint before stopping
-   */
-  public setBreakpoint(address: number, ignores = 0): void {
-    this.sendCommand("setBreakpoint", { address, ignores });
-  }
-
-  /**
-   * Removes a breakpoint at the specified memory address
-   * @param address Memory address of the breakpoint to remove
-   */
-  public removeBreakpoint(address: number): void {
-    this.sendCommand("removeBreakpoint", { address });
-  }
-
-  /**
-   * Sets a watchpoint at the specified memory address
-   * @param address Memory address for the watchpoint
-   * @param ignores Number of times to ignore the watchpoint before stopping
-   */
-  public setWatchpoint(address: number, ignores = 0): void {
-    this.sendCommand("setWatchpoint", { address, ignores });
-  }
-
-  /**
-   * Removes a watchpoint at the specified memory address
-   * @param address Memory address of the watchpoint to remove
-   */
-  public removeWatchpoint(address: number): void {
-    this.sendCommand("removeWatchpoint", { address });
-  }
-
-  /**
-   * Sets a catchpoint for the specified exception vector
-   * @param vector Exception vector number (e.g. 2 for bus error)
-   * @param ignores Number of times to ignore the exception before stopping
-   */
-  public setCatchpoint(vector: number, ignores = 0): void {
-    this.sendCommand("setCatchpoint", { vector, ignores });
-  }
-
-  /**
-   * Removes a catchpoint for the specified exception vector
-   * @param vector Exception vector number to remove
-   */
-  public removeCatchpoint(vector: number): void {
-    this.sendCommand("removeCatchpoint", { vector });
-  }
-
-  /**
-   * Stop on next executed instruction
-   */
-  public stepInto(): void {
-    this.invalidateCache();
-    this.sendCommand("stepInto");
-  }
-
-  /**
-   * Restore previous stopped state
-   */
-  public async stepBack(): Promise<boolean> {
-    this.invalidateCache();
-    return this.sendRpcCommand("stepBack");
-  }
-
-  /**
-   * Continue stepping back until breakpoint, or start of history
-   */
-  public async continueReverse(): Promise<boolean> {
-    this.invalidateCache();
-    return this.sendRpcCommand("continueReverse");
-  }
-
-  public async stepBackFrame(): Promise<boolean> {
-    this.invalidateCache();
-    const res = await this.sendRpcCommand("stepBackFrame");
-    return !!res;
-  }
-
-  /**
-   * Run to end of frame
-   */
-  public eof(): void {
-    this.invalidateCache();
-    this.sendCommand("eof");
-  }
-
-  /**
-   * Run to end of line
-   */
-  public eol(): void {
-    this.invalidateCache();
-    this.sendCommand("eol");
-  }
-
-  /**
-   * Enables/disables CPU instruction logging
-   * @param enabled True to enable logging, false to disable
-   */
-  public enableCpuLogging(enabled: boolean): void {
-    this.sendCommand("enableCpuLogging", { enabled });
-  }
-
-  /**
-   * Get CPU instruction trace log
-   * @returns Promise resolving to array of CPU trace items
+   * vAmiga's getCpuTrace RPC returns the trace wrapped as `{ trace }`; unwrap
+   * it (the base class default returns the response as-is).
    */
   public async getCpuTrace(count = 256): Promise<CpuTraceItem[]> {
     const res = await this.sendRpcCommand("getCpuTrace", { count });
     return res.trace;
-  }
-
-  /**
-   * Gets the current CPU state including registers and flags
-   * @returns Promise resolving to CPU information
-   */
-  public async getCpuInfo(): Promise<CpuInfo> {
-    if (!this.cpuInfo) {
-      this.cpuInfo = await this.sendRpcCommand("getCpuInfo");
-    }
-    return this.cpuInfo;
-  }
-
-  /**
-   * Gets the memory information from emulator
-   * @returns Promise resolving to memory information
-   */
-  public async getMemoryInfo(): Promise<MemoryInfo> {
-    return this.sendRpcCommand("getMemoryInfo");
-  }
-
-  /**
-   * Gets all custom chip registers (e.g. DMACON, INTENA, etc.)
-   * @returns Promise resolving to custom register values
-   */
-  public async getAllCustomRegisters(): Promise<CustomRegisters> {
-    if (!this.customRegisters) {
-      this.customRegisters = await this.sendRpcCommand("getAllCustomRegisters");
-    }
-    return this.customRegisters;
-  }
-
-  /**
-   * Sets a CPU register to the specified value
-   * @param name Register name (e.g. 'pc', 'd0', 'a7')
-   * @param value New register value
-   * @returns Promise resolving to set status
-   */
-  public async setRegister(
-    name: string,
-    value: number,
-  ): Promise<RegisterSetStatus> {
-    this.cpuInfo = undefined; // Clear cache
-    return this.sendRpcCommand("setRegister", { name, value });
-  }
-
-  /**
-   * Sets a custom chip register to the specified 16 bit value
-   * @param address Register address (e.g. 0xdff180)
-   * @param value New register value
-   * @returns Promise resolving to set status
-   */
-  public async pokeCustom16(
-    address: number,
-    value: number,
-  ): Promise<RegisterSetStatus> {
-    this.customRegisters = undefined; // Clear cache
-    return this.sendRpcCommand("pokeCustom16", { address, value });
-  }
-  /**
-   * Sets a custom chip register to the specified 32 bit value
-   * @param address Register address (e.g. 0xdff180)
-   * @param value New register value
-   * @returns Promise resolving to set status
-   */
-  public async pokeCustom32(
-    address: number,
-    value: number,
-  ): Promise<RegisterSetStatus> {
-    this.customRegisters = undefined; // Clear cache
-    return this.sendRpcCommand("pokeCustom32", { address, value });
-  }
-
-  /**
-   * Reads memory from the specified address
-   * @param address Starting memory address
-   * @param count Number of bytes to read
-   * @returns Promise resolving to memory data (Buffer)
-   */
-  public async readMemory(address: number, count: number): Promise<Buffer> {
-    const res = await this.sendRpcCommand("readMemory", { address, count });
-    return Buffer.from(res.data);
-  }
-
-  /**
-   * Writes memory at the specified address
-   * @param address Starting memory address
-   * @param data Data buffer to write
-   */
-  public async writeMemory(address: number, data: Buffer): Promise<void> {
-    return this.sendRpcCommand("writeMemory", {
-      address,
-      data: new Uint8Array(data),
-    });
-  }
-
-  /**
-   * Reads longword at specified address
-   * @param address Starting memory address
-   * @returns Promise resolving to unsigned read result
-   */
-  public async peek32(address: number): Promise<number> {
-    const res = await this.sendRpcCommand("peek32", { address });
-    // Use unsigned shift to preserve sign
-    return res >>> 0;
-  }
-
-  /**
-   * Reads word at specified address
-   * @param address Starting memory address
-   * @returns Promise resolving to unsigned read result
-   */
-  public async peek16(address: number): Promise<number> {
-    return this.sendRpcCommand("peek16", { address });
-  }
-
-  /**
-   * Reads byte at specified address
-   * @param address Starting memory address
-   * @returns Promise resolving to unsigned read result
-   */
-  public async peek8(address: number): Promise<number> {
-    return this.sendRpcCommand("peek8", { address });
-  }
-
-  /**
-   * Writes longword at the specified address
-   * @param address Starting memory address
-   * @param value numeric value to write
-   */
-  public async poke32(address: number, value: number): Promise<void> {
-    return await this.sendRpcCommand("poke32", { address, value: u32(value) });
-  }
-
-  /**
-   * Writes word at the specified address
-   * @param address Starting memory address
-   * @param value numeric value to write
-   */
-  public async poke16(address: number, value: number): Promise<void> {
-    return this.sendRpcCommand("poke16", { address, value: u16(value) });
-  }
-
-  /**
-   * Writes byte at the specified address
-   * @param address Starting memory address
-   * @param value numeric value to write
-   */
-  public async poke8(address: number, value: number): Promise<void> {
-    return this.sendRpcCommand("poke8", { address, value: u8(value) });
-  }
-
-  /**
-   * Jump CPU to specified address
-   * @param address Starting memory address
-   */
-  public async jump(address: number): Promise<void> {
-    this.invalidateCache();
-    return this.sendRpcCommand("jump", { address });
-  }
-
-  /**
-   * Disassembles CPU instructions starting at the specified address
-   * @param address Starting memory address
-   * @param count Number of instructions to disassemble
-   * @returns Promise resolving to disassembly result
-   */
-  public async disassemble(
-    address: number,
-    count: number,
-  ): Promise<Disassembly> {
-    return this.sendRpcCommand("disassemble", { address, count });
-  }
-
-  public getCachedMemoryInfo(): MemoryInfo | undefined {
-    return this.memoryInfo;
-  }
-
-  public isValidAddress(address: number): boolean {
-    return isValidMemoryAddress(this.memoryInfo, address);
-  }
-
-  /**
-   * Get the contiguous memory region bounds for a given address
-   * Returns the start and end addresses of the continuous block of the same memory type
-   */
-  public getMemoryRegion(
-    address: number,
-  ): { start: number; end: number } | null {
-    return getMemoryRegionForAddress(this.memoryInfo, address);
   }
 
   // Helper methods:
@@ -927,53 +471,10 @@ export class VAmiga implements Emulator {
       this.panelOptions = undefined;
     });
 
-    // Set up RPC response handler and message delegation
-    this.panel.webview.onDidReceiveMessage((message) => {
-      if (message.type === "rpcResponse") {
-        const pending = this.cleanupPendingRpc(message.id);
-        if (pending) {
-          if (message.result?.error) {
-            pending.reject(new Error(message.result.error));
-          } else {
-            pending.resolve(message.result);
-          }
-        }
-      } else if (message.type === "exec-ready") {
-        // Only need to fetch memory info once on load
-        this.getMemoryInfo()
-          .then((memoryInfo) => {
-            this.memoryInfo = memoryInfo;
-          })
-          .catch((error) => {
-            console.error("Failed to fetch memory info on exec-ready:", error);
-          });
-      }
-
-      // Notify all registered listeners about this message
-      this.notifyMessageListeners(message);
-    });
-  }
-
-  private getConfiguredViewColumn(): vscode.ViewColumn {
-    const config = vscode.workspace.getConfiguration("vamiga-debugger");
-    const setting = config.get<string>("defaultViewColumn", "beside");
-
-    switch (setting) {
-      case "one":
-        return vscode.ViewColumn.One;
-      case "two":
-        return vscode.ViewColumn.Two;
-      case "three":
-        return vscode.ViewColumn.Three;
-      case "beside":
-        return vscode.ViewColumn.Beside;
-      case "active":
-        return (
-          vscode.window.activeTextEditor?.viewColumn || vscode.ViewColumn.One
-        );
-      default:
-        return vscode.ViewColumn.Beside;
-    }
+    // Set up RPC response handler and message delegation (shared base logic)
+    this.panel.webview.onDidReceiveMessage((message) =>
+      this.handlePanelMessage(message),
+    );
   }
 
   private absolutePathToWebviewUri(absolutePath: string): vscode.Uri {
@@ -1070,10 +571,5 @@ export class VAmiga implements Emulator {
       kickstart_ext_url: extUrl,
     };
     return params;
-  }
-
-  private invalidateCache() {
-    this.cpuInfo = undefined;
-    this.customRegisters = undefined;
   }
 }
