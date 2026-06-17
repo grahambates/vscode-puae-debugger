@@ -108,11 +108,7 @@ export abstract class WebviewEmulator implements Emulator {
    * @param args Optional command arguments
    */
   public sendCommand<A = any>(command: string, args?: A): void {
-    if (this.panel) {
-      this.panel.webview.postMessage({ command, args });
-    } else {
-      vscode.window.showErrorMessage("Emulator panel is not open");
-    }
+    this.panel?.webview.postMessage({ command, args });
   }
 
   /**

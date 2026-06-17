@@ -395,6 +395,9 @@ export class VAmiga extends WebviewEmulator {
       return this.initPanel(optionsWithDefaults);
     }
     if (this.optionsMatch(optionsWithDefaults, this.panelOptions)) {
+      this.panel.reveal();
+      this.invalidateCache();
+      this.memoryInfo = undefined;
       const callParams = this.optionsToCallParams(optionsWithDefaults);
       this.sendCommand("load", callParams);
     } else {
