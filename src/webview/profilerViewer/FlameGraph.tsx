@@ -22,6 +22,8 @@ import { MiddleOut } from "./MiddleOut";
 // centred on the cursor (shift = pan), a synced scrollbar pans, double-click / Enter
 // zooms the focused box, arrows navigate, Esc resets, Ctrl/Cmd+click jumps to source.
 
+const isMac = navigator.platform.toLowerCase().includes("mac");
+
 const ROW_H = 18;
 const TIMELINE_H = 18;
 const DMA_BAND_H = 18; // height of the DMA channel line above the CPU rows
@@ -898,7 +900,9 @@ export function FlameGraph({
               </>
             )}
           </div>
-          {hoverLoc.callFrame.url && <div className="tt-hint">Ctrl+Click to open source</div>}
+          {hoverLoc.callFrame.url && (
+            <div className="tt-hint">{isMac ? "Cmd" : "Ctrl"}+Click to open source</div>
+          )}
         </Tooltip>
       )}
       {dmaHover && dmaInfo?.style && (
