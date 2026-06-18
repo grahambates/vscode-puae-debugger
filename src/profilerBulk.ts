@@ -36,11 +36,16 @@ export function packBulk(raw: RawCapture): Uint8Array | undefined {
 }
 
 export function unpackBulk(buf: ArrayBuffer): { dma?: IDmaModel; dmaSnapshot?: DmaSnapshot } {
+  // Validate before slicing: a truncated/corrupt buffer must not throw a raw RangeError
+  // (or read past the end) deeper in the typed-array constructors below.
+  if (buf.byteLength < HEADER) throw new Error(`unpackBulk: buffer too small (${buf.byteLength} < ${HEADER} byte header)`);
   const dv = new DataView(buf);
   const gridLen = dv.getUint32(0, true);
   const chipLen = dv.getUint32(4, true);
   const slowLen = dv.getUint32(8, true);
   const customLen = dv.getUint32(12, true);
+  const need = HEADER + gridLen + chipLen + slowLen + customLen;
+  if (need > buf.byteLength) throw new Error(`unpackBulk: section lengths (${need}) exceed buffer (${buf.byteLength})`);
   let off = HEADER;
   const grid = new Uint8Array(buf, off, gridLen); off += gridLen;
   const chip = new Uint8Array(buf, off, chipLen); off += chipLen;

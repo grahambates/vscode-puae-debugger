@@ -119,6 +119,11 @@ export function decodeCapture(file: Uint8Array): DecodedCapture {
 
   const manifestLen = container.readUInt32LE(MAGIC.length);
   const manifestStart = MAGIC.length + 4;
+  // Bounds-check before slicing: a truncated/corrupt file must fail with a clear message
+  // rather than an out-of-range read or a giant allocation.
+  if (manifestStart + manifestLen > container.length) {
+    throw new Error(`.vamigaprofile manifest length ${manifestLen} exceeds container (${container.length} bytes)`);
+  }
   const manifest = JSON.parse(container.toString("utf8", manifestStart, manifestStart + manifestLen)) as ProfileManifest;
   if (manifest.version !== FORMAT_VERSION) {
     throw new Error(`Unsupported .vamigaprofile version ${manifest.version} (expected ${FORMAT_VERSION})`);
@@ -134,6 +139,9 @@ export function decodeCapture(file: Uint8Array): DecodedCapture {
     const s = manifest.sections.find((x) => x.name === name);
     if (!s) return undefined;
     const start = blobStart + s.offset;
+    if (s.offset < 0 || s.length < 0 || start + s.length > container.length) {
+      throw new Error(`.vamigaprofile section '${name}' is out of bounds (offset ${s.offset}, length ${s.length}, container ${container.length})`);
+    }
     return new Uint8Array(container.subarray(start, start + s.length));
   };
 

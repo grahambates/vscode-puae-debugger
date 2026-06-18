@@ -192,8 +192,9 @@ export interface ReadyMessage {
 export interface CaptureMessage {
   command: "capture";
 }
-// Ctrl/Cmd+click on a box: jump to its source (line is 1-based as carried in the
-// model's CallFrame). `toSide` opens beside (Alt held).
+// Ctrl/Cmd+click on a box: jump to its source. `line` here is 1-based — the model's
+// CallFrame.lineNumber is 0-based, and the webview adds 1 before sending this message.
+// `toSide` opens beside (Alt held).
 export interface OpenDocumentMessage {
   command: "openDocument";
   file: string;

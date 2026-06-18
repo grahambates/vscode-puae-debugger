@@ -2315,9 +2315,14 @@ postMessage({ type: 'ready' });
     // the program text range it covers.
     wasm_profile_set_unwind = function (buffer, startAddr, endAddr) {
         const ptr = Module._malloc(buffer.length);
-        Module.HEAPU8.set(buffer, ptr);
-        const ok = Module._wasm_profile_set_unwind(ptr, buffer.length, startAddr, endAddr);
-        Module._free(ptr);
+        let ok;
+        // try/finally so the malloc'd buffer is freed even if HEAPU8.set or the wasm call throws.
+        try {
+            Module.HEAPU8.set(buffer, ptr);
+            ok = Module._wasm_profile_set_unwind(ptr, buffer.length, startAddr, endAddr);
+        } finally {
+            Module._free(ptr);
+        }
         if (!ok) {
             throw new Error('wasm_profile_set_unwind failed');
         }

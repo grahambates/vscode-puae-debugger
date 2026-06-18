@@ -208,7 +208,7 @@ function Tooltip({
 
 const locText = (loc: ILocation): string | undefined =>
   loc.callFrame.url
-    ? `${loc.callFrame.url}${loc.callFrame.lineNumber >= 0 ? `:${loc.callFrame.lineNumber}` : ""}`
+    ? `${loc.callFrame.url}${loc.callFrame.lineNumber >= 0 ? `:${loc.callFrame.lineNumber + 1}` : ""}`
     : undefined;
 
 export function FlameGraph({
@@ -734,7 +734,8 @@ export function FlameGraph({
       setFocused(hovered.box);
       const loc = hovered.box.loc;
       if ((e.ctrlKey || e.metaKey) && loc.callFrame.url) {
-        onOpenSource(loc.callFrame.url, loc.callFrame.lineNumber, e.altKey);
+        // lineNumber is 0-based; openProfilerSource expects 1-based. Normalize unknown (-1) to 1.
+        onOpenSource(loc.callFrame.url, loc.callFrame.lineNumber >= 0 ? loc.callFrame.lineNumber + 1 : 1, e.altKey);
       }
     }
     setDrag(undefined);

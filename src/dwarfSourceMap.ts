@@ -371,7 +371,16 @@ function* iterDebugRnglists(
   isLittleEndian: boolean,
 ): Generator<{ low: number; high: number }> {
   const view = new DataView(rnglists.buffer, rnglists.byteOffset, rnglists.byteLength);
-  const readAddr = (off: number): number => view.getUint32(off, isLittleEndian);
+  // Mirror iterDebugRanges: addresses are addressSize-wide, so decode 8-byte addrs when present
+  // rather than always reading 32 bits (which would misdecode a DWARF64/64-bit-address section).
+  const readAddr = (off: number): number => {
+    if (addressSize === 8) {
+      const lo = view.getUint32(off, isLittleEndian);
+      const hi = view.getUint32(off + 4, isLittleEndian);
+      return isLittleEndian ? lo + hi * 0x100000000 : hi + lo * 0x100000000;
+    }
+    return view.getUint32(off, isLittleEndian);
+  };
   let base = cuBasePc;
   let off = listOffset;
   while (off < rnglists.byteLength) {

@@ -230,12 +230,14 @@ function TimeViewHeader({
   return (
     <div className="tv-row tv-header">
       <div
+        id="tv-self-header"
         className={"tv-duration tv-heading" + (sortFn === SortFn.Self ? " tv-sorted" : "")}
         onClick={() => onChangeSort(sortFn === SortFn.Self ? SortFn.Agg : SortFn.Self)}
       >
         {sortFn === SortFn.Self && <span className="codicon codicon-chevron-down" />}Self {dataName(displayUnit)}
       </div>
       <div
+        id="tv-total-header"
         className={"tv-duration tv-heading" + (sortFn === SortFn.Agg ? " tv-sorted" : "")}
         onClick={() => onChangeSort(sortFn === SortFn.Agg ? SortFn.Self : SortFn.Agg)}
       >
@@ -264,7 +266,8 @@ function TimeViewRow({
 
   const onClickFile = (e: React.MouseEvent) => {
     e.preventDefault();
-    if (node.callFrame.url) onOpenSource(node.callFrame.url, node.callFrame.lineNumber + 1, e.altKey);
+    // lineNumber is 0-based; openProfilerSource expects 1-based. Normalize unknown (-1) to 1.
+    if (node.callFrame.url) onOpenSource(node.callFrame.url, node.callFrame.lineNumber >= 0 ? node.callFrame.lineNumber + 1 : 1, e.altKey);
   };
 
   const onToggleExpand = (e: React.MouseEvent) => {

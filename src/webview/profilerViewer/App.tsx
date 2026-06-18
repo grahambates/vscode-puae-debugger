@@ -164,7 +164,17 @@ export function App() {
           <TimeView data={dataTable} filter={filter} displayUnit={unit} timing={timing} onOpenSource={openSource} />
         </div>
       ) : (
-        !error && <div className="hint">{"Click \"Capture frame\" to profile one frame of CPU execution."}</div>
+        !error && (
+          <div className="hint">
+            {busy
+              ? mode === "file"
+                ? "Loading profile…"
+                : "Capturing one frame of CPU execution…"
+              : mode === "file"
+                ? "No profile loaded."
+                : "Click \"Capture frame\" to profile one frame of CPU execution."}
+          </div>
+        )
       )}
     </div>
   );
