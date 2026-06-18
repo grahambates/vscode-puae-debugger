@@ -3,6 +3,8 @@ import { VamigaDebugAdapter } from "./vAmigaDebugAdapter";
 import { VAmiga } from "./vAmiga";
 import { MemoryViewerProvider } from "./memoryViewerProvider";
 import { StateViewerProvider } from "./stateViewerProvider";
+import { ProfilerViewerProvider } from "./profilerViewerProvider";
+import { ProfileEditorProvider } from "./profileEditorProvider";
 import { expressionRangeAt } from "./cExpressionEvaluator";
 
 /**
@@ -18,6 +20,9 @@ export function activate(context: vscode.ExtensionContext) {
   const vAmiga = new VAmiga(context.extensionUri);
   const memoryViewer = new MemoryViewerProvider(context.extensionUri, vAmiga);
   const stateViewer = new StateViewerProvider(context.extensionUri, vAmiga);
+  // Writable, webview-fetchable scratch dir for the profiler's bulk capture blobs.
+  const profilerStorage = context.globalStorageUri;
+  const profilerViewer = new ProfilerViewerProvider(context.extensionUri, profilerStorage, vAmiga);
 
   // Register the debug adapter
   context.subscriptions.push(
@@ -120,6 +125,31 @@ export function activate(context: vscode.ExtensionContext) {
     ),
   );
 
+  // Register CPU profiler command
+  context.subscriptions.push(
+    vscode.commands.registerCommand(
+      "vamiga-debugger.openProfiler",
+      async () => {
+        try {
+          await profilerViewer.show();
+        } catch (error) {
+          vscode.window.showErrorMessage(
+            `Failed to open CPU profiler: ${error instanceof Error ? error.message : String(error)}`,
+          );
+        }
+      },
+    ),
+  );
+
+  // Register the read-only editor for .vamigaprofile files (opens the profiler webview).
+  context.subscriptions.push(
+    vscode.window.registerCustomEditorProvider(
+      ProfileEditorProvider.viewType,
+      new ProfileEditorProvider(context.extensionUri, profilerStorage),
+      { webviewOptions: { retainContextWhenHidden: true }, supportsMultipleEditorsPerDocument: false },
+    ),
+  );
+
   // Widen the hover expression for C/C++ so compound navigation expressions evaluate. By default
   // VS Code only sends the single identifier under the cursor; this returns the member/arrow/index
   // chain truncated at the hovered token (matching VS Code's TypeScript behaviour) - hovering
@@ -139,6 +169,7 @@ export function activate(context: vscode.ExtensionContext) {
     dispose: () => {
       memoryViewer.dispose();
       stateViewer.dispose();
+      profilerViewer.dispose();
     },
   });
 }

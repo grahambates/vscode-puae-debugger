@@ -1,9 +1,14 @@
 import * as assert from "assert";
 import * as crypto from "crypto";
-import { kickstartSymbolModule } from "../kickstart";
+import { readFileSync } from "fs";
+import * as path from "path";
+import { kickstartSymbolModule, kickstartSymbolModuleBySha1 } from "../kickstart";
 import { kickstartRoms } from "../kickstartSymbols";
 import { SourceMap, Segment } from "../sourceMap";
 import { MemoryType } from "../amigaHunkParser";
+import { parseDwarf } from "../dwarfParser";
+import { buildSourceMapFromBundle } from "../profileLoader";
+import type { ProfileManifest } from "../vamigaProfile";
 
 describe("Kickstart symbols", () => {
   describe("generated data module", () => {
@@ -100,6 +105,48 @@ describe("Kickstart symbols", () => {
     });
   });
 
+  describe("kickstartSymbolModuleBySha1", () => {
+    // Same synthetic-ROM injection as above, but the reconstruction takes the sha1 alone (no ROM
+    // bytes) — the size/base come from the table entry. This is the saved-.vamigaprofile path.
+    const injected: string[] = [];
+    function registerSyntheticRom(size: number, symbols: [string, number][]): string {
+      const buffer = Buffer.alloc(size);
+      buffer.write(`synthetic-bysha1-${size}-${symbols.length}`);
+      const sha1 = crypto.createHash("sha1").update(buffer).digest("hex");
+      kickstartRoms[sha1] = { name: "Synthetic ROM", size, symbols };
+      injected.push(sha1);
+      return sha1;
+    }
+    afterEach(() => {
+      for (const sha1 of injected) delete kickstartRoms[sha1];
+      injected.length = 0;
+    });
+
+    it("returns undefined for an unknown and the empty-sentinel sha1", () => {
+      assert.strictEqual(kickstartSymbolModuleBySha1("not-a-known-sha1"), undefined);
+      assert.strictEqual(kickstartSymbolModuleBySha1(""), undefined);
+    });
+
+    it("reconstructs the same module as kickstartSymbolModule, from the sha1 alone", () => {
+      const sha1 = registerSyntheticRom(256 * 1024, [
+        ["OpenLibrary", 0x1474],
+        ["CloseLibrary", 0x1480],
+      ]);
+      const mod = kickstartSymbolModuleBySha1(sha1);
+      assert.ok(mod);
+      assert.strictEqual(mod!.sha1, sha1);
+      assert.strictEqual(mod!.base, 0xfc0000);
+      assert.strictEqual(mod!.symbols["OpenLibrary"], 0xfc1474);
+      assert.strictEqual(mod!.symbols["CloseLibrary"], 0xfc1480);
+      assert.deepStrictEqual(mod!.segment, {
+        name: "kickstart",
+        address: 0xfc0000,
+        size: 256 * 1024,
+        memType: MemoryType.ANY,
+      });
+    });
+  });
+
   describe("SourceMap.addSymbolModule", () => {
     it("merges ROM symbols so findSymbolOffset resolves ROM addresses", () => {
       const segments: Segment[] = [
@@ -139,6 +186,46 @@ describe("Kickstart symbols", () => {
         symbol: "OpenLibrary",
         offset: 4,
       });
+    });
+  });
+
+  describe("buildSourceMapFromBundle re-merges Kickstart symbols (saved profile)", () => {
+    // A real ELF fixture stands in for the embedded program; the manifest carries a ROM sha1.
+    const ELF = readFileSync(path.join(__dirname, "fixtures/amigaPrograms/c_prog.elf"));
+    const sectionCount = parseDwarf(ELF).sections.size;
+    const ROM_ADDR = 0xfc1474 + 8; // OpenLibrary+8 in a 256K ROM mapped at 0xFC0000
+
+    function manifest(sha1: string): ProfileManifest {
+      return {
+        version: 1,
+        program: { elfEmbedded: true },
+        meta: { frameCycles: 0, isPAL: true, start: 0, end: 0, total: 0, inRange: 0 },
+        relocation: { segmentOffsets: new Array(sectionCount).fill(0), baseDir: "" },
+        kickstart: { sha1, name: "" },
+        sections: [],
+      };
+    }
+
+    let romSha1: string;
+    beforeEach(() => {
+      const buffer = Buffer.alloc(256 * 1024);
+      buffer.write("loader-synthetic-rom");
+      romSha1 = crypto.createHash("sha1").update(buffer).digest("hex");
+      kickstartRoms[romSha1] = { name: "Synthetic ROM", size: 256 * 1024, symbols: [["OpenLibrary", 0x1474]] };
+    });
+    afterEach(() => delete kickstartRoms[romSha1]);
+
+    it("resolves a ROM address to its symbol when the manifest carries a known sha1", () => {
+      const sourceMap = buildSourceMapFromBundle(ELF, manifest(romSha1));
+      assert.deepStrictEqual(sourceMap.findSymbolOffset(ROM_ADDR), {
+        symbol: "OpenLibrary",
+        offset: 8,
+      });
+    });
+
+    it("leaves ROM addresses unresolved for the empty-sentinel sha1 (no ROM info)", () => {
+      const sourceMap = buildSourceMapFromBundle(ELF, manifest(""));
+      assert.strictEqual(sourceMap.findSymbolOffset(ROM_ADDR), undefined);
     });
   });
 });

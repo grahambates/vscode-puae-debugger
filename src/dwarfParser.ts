@@ -178,6 +178,7 @@ export interface DWARFData {
   lineNumberPrograms: LineNumberProgram[];
   debugStrings: Uint8Array | undefined;
   debugRanges: Uint8Array | undefined;
+  debugRnglists: Uint8Array | undefined; // DWARF5 .debug_rnglists (DW_RLE range lists)
   debugFrame: DebugFrame | undefined;
   abbreviationTables: Map<number, AbbreviationEntry[]>;
   elfSymbols: ELFSymbol[];
@@ -375,6 +376,7 @@ export const DW_AT = {
   specification: 0x47,
   static_link: 0x48,
   type: 0x49,
+  linkage_name: 0x6e,
   use_location: 0x4a,
   variable_parameter: 0x4b,
   virtuality: 0x4c,
@@ -490,17 +492,64 @@ export const DW_OP = {
   const4s: 0x0d,
   const8u: 0x0e,
   const8s: 0x0f,
-  dup: 0x10,
-  drop: 0x11,
-  over: 0x12,
-  pick: 0x13,
-  swap: 0x14,
-  rot: 0x15,
-  xderef: 0x16,
+  constu: 0x10,
+  consts: 0x11,
+  dup: 0x12,
+  drop: 0x13,
+  over: 0x14,
+  pick: 0x15,
+  swap: 0x16,
+  rot: 0x17,
+  xderef: 0x18,
+  abs: 0x19,
+  and: 0x1a,
+  div: 0x1b,
+  minus: 0x1c,
+  mod: 0x1d,
+  mul: 0x1e,
+  neg: 0x1f,
+  not: 0x20,
+  or: 0x21,
+  plus: 0x22,
+  plus_uconst: 0x23,
+  shl: 0x24,
+  shr: 0x25,
+  shra: 0x26,
+  xor: 0x27,
+  bra: 0x28,
+  eq: 0x29,
+  ge: 0x2a,
+  gt: 0x2b,
+  le: 0x2c,
+  lt: 0x2d,
+  ne: 0x2e,
+  skip: 0x2f,
+  lit0: 0x30,
+  lit31: 0x4f,
+  reg0: 0x50,
+  reg31: 0x6f,
   breg0: 0x70,
   breg31: 0x8f,
+  regx: 0x90,
   fbreg: 0x91,
+  bregx: 0x92,
+  piece: 0x93,
+  deref_size: 0x94,
+  xderef_size: 0x95,
+  nop: 0x96,
+  push_object_address: 0x97,
+  call2: 0x98,
+  call4: 0x99,
+  call_ref: 0x9a,
+  form_tls_address: 0x9b,
   call_frame_cfa: 0x9c,
+  bit_piece: 0x9d,
+  implicit_value: 0x9e,
+  stack_value: 0x9f,
+  implicit_pointer: 0xa0,
+  addrx: 0xa1,
+  constx: 0xa2,
+  entry_value: 0xa3,
 } as const;
 
 export const DW_LNS = {
@@ -757,7 +806,10 @@ export function parseDwarf(elfBuffer: Buffer): DWARFData {
   const lineNumberPrograms: LineNumberProgram[] = [];
   let debugStrings: Uint8Array | undefined;
   let debugRanges: Uint8Array | undefined;
+  let debugRnglists: Uint8Array | undefined;
   let debugFrame: DebugFrame | undefined;
+  // File offset of .debug_info; DW_FORM_ref_addr values are relative to this (not the CU).
+  let debugInfoSectionOffset = 0;
   const abbreviationTables = new Map<number, AbbreviationEntry[]>();
   const elfSymbols: ELFSymbol[] = [];
 
@@ -921,64 +973,89 @@ export function parseDwarf(elfBuffer: Buffer): DWARFData {
   function parseLocationExpressionAt(baseOffset: number, length: number, addressSize: number) {
     const ops: Array<any> = [];
     let i = 0;
+    // Operand readers that advance the cursor `i`. DWARF location expressions are a byte
+    // stream, so every opcode MUST consume exactly its operand bytes — otherwise the next
+    // opcode is read mid-operand and the rest of the expression is garbage.
+    const u8 = () => { const v = view.getUint8(baseOffset + i); i += 1; return v; };
+    const i8 = () => { const v = view.getInt8(baseOffset + i); i += 1; return v; };
+    const u16 = () => { const v = view.getUint16(baseOffset + i, isLittleEndian); i += 2; return v; };
+    const i16 = () => { const v = view.getInt16(baseOffset + i, isLittleEndian); i += 2; return v; };
+    const u32 = () => { const v = view.getUint32(baseOffset + i, isLittleEndian) >>> 0; i += 4; return v; };
+    const i32 = () => { const v = view.getInt32(baseOffset + i, isLittleEndian); i += 4; return v; };
+    const u64 = () => { const v = readUInt64(baseOffset + i); i += 8; return v; };
+    const uleb = () => { const r = readULEB128(baseOffset + i); i += r.size; return r.value; };
+    const sleb = () => { const r = readSLEB128(baseOffset + i); i += r.size; return r.value; };
     while (i < length) {
       const op = view.getUint8(baseOffset + i);
       i++;
-      // DW_OP_breg0..DW_OP_breg31 => 0x70..0x8f
-      if (op === DW_OP.addr) {
-        const addr = addressSize === 8 ? readUInt64(baseOffset + i) : readUInt32(baseOffset + i);
-        i += addressSize;
-        // Keep numeric address values in the parser; formatting to hex is
-        // handled by the dump/display functions only.
-        const rawAddr = addressSize === 8 ? addr : (addr >>> 0);
-        ops.push({ op: 'DW_OP_addr', value: rawAddr });
-      } else if (op >= DW_OP.breg0 && op <= DW_OP.breg31) {
-        const reg = op - DW_OP.breg0;
-        const sleb = readSLEB128(baseOffset + i);
-        i += sleb.size;
-        ops.push({ op: `DW_OP_breg${reg}`, reg, value: sleb.value });
-      } else if (op === DW_OP.fbreg) {
-        const sleb = readSLEB128(baseOffset + i);
-        i += sleb.size;
-        ops.push({ op: 'DW_OP_fbreg', value: sleb.value });
-      } else if (op === DW_OP.call_frame_cfa) {
-        ops.push({ op: 'DW_OP_call_frame_cfa' });
+      const label = "DW_OP_0x" + op.toString(16); // generic name for ops consumers don't read
+      if (op >= DW_OP.breg0 && op <= DW_OP.breg31) {
+        ops.push({ op: `DW_OP_breg${op - DW_OP.breg0}`, reg: op - DW_OP.breg0, value: sleb() });
+      } else if (op >= DW_OP.reg0 && op <= DW_OP.reg31) {
+        ops.push({ op: `DW_OP_reg${op - DW_OP.reg0}`, reg: op - DW_OP.reg0 });
+      } else if (op >= DW_OP.lit0 && op <= DW_OP.lit31) {
+        ops.push({ op: `DW_OP_lit${op - DW_OP.lit0}`, value: op - DW_OP.lit0 });
       } else {
-        // Unknown or unimplemented op: try to decode common immediate sizes
-        // Handle simple consts: DW_OP_const1u (0x08), const1s (0x09), const2u (0x0a), const2s (0x0b), const4u (0x0c), const4s (0x0d), const8u (0x0e), const8s (0x0f)
         switch (op) {
-          case DW_OP.const1u: // const1u
-            ops.push({ op: 'DW_OP_const1u', value: view.getUint8(baseOffset + i) });
-            i += 1;
-            break;
-          case DW_OP.const1s: // const1s
-            ops.push({ op: 'DW_OP_const1s', value: view.getInt8(baseOffset + i) });
-            i += 1;
-            break;
-          case DW_OP.const2u: // const2u
-            ops.push({ op: 'DW_OP_const2u', value: view.getUint16(baseOffset + i, isLittleEndian) });
-            i += 2;
-            break;
-          case DW_OP.const2s: // const2s
-            ops.push({ op: 'DW_OP_const2s', value: view.getInt16(baseOffset + i, isLittleEndian) });
-            i += 2;
-            break;
-          case DW_OP.const4u: // const4u
-            ops.push({ op: 'DW_OP_const4u', value: view.getUint32(baseOffset + i, isLittleEndian) >>> 0 });
-            i += 4;
-            break;
-          case DW_OP.dup: // dup, no operand
-          case DW_OP.drop:
-          case DW_OP.over:
-          case DW_OP.pick:
-          case DW_OP.swap:
-          case DW_OP.rot:
-          case DW_OP.xderef:
-            ops.push({ op: `DW_OP_0x${op.toString(16)}` });
-            break;
+          // Operands the rest of the toolchain reads (resolveLocation / getFrameBase) —
+          // keep these exact op names. Addresses stay numeric; hex is for display only.
+          case DW_OP.addr: ops.push({ op: 'DW_OP_addr', value: addressSize === 8 ? u64() : u32() }); break;
+          case DW_OP.fbreg: ops.push({ op: 'DW_OP_fbreg', value: sleb() }); break;
+          case DW_OP.call_frame_cfa: ops.push({ op: 'DW_OP_call_frame_cfa' }); break;
+
+          // No operand (stack / arithmetic / comparison / value ops).
+          case DW_OP.deref: case DW_OP.dup: case DW_OP.drop: case DW_OP.over:
+          case DW_OP.swap: case DW_OP.rot: case DW_OP.xderef: case DW_OP.abs:
+          case DW_OP.and: case DW_OP.div: case DW_OP.minus: case DW_OP.mod:
+          case DW_OP.mul: case DW_OP.neg: case DW_OP.not: case DW_OP.or:
+          case DW_OP.plus: case DW_OP.shl: case DW_OP.shr: case DW_OP.shra:
+          case DW_OP.xor: case DW_OP.eq: case DW_OP.ge: case DW_OP.gt:
+          case DW_OP.le: case DW_OP.lt: case DW_OP.ne: case DW_OP.nop:
+          case DW_OP.push_object_address: case DW_OP.form_tls_address:
+          case DW_OP.stack_value:
+            ops.push({ op: label }); break;
+
+          // ULEB operand.
+          case DW_OP.constu: ops.push({ op: 'DW_OP_constu', value: uleb() }); break;
+          case DW_OP.plus_uconst: ops.push({ op: 'DW_OP_plus_uconst', value: uleb() }); break;
+          case DW_OP.regx: ops.push({ op: 'DW_OP_regx', reg: uleb() }); break;
+          case DW_OP.piece: ops.push({ op: 'DW_OP_piece', value: uleb() }); break;
+          case DW_OP.addrx: ops.push({ op: 'DW_OP_addrx', value: uleb() }); break;
+          case DW_OP.constx: ops.push({ op: 'DW_OP_constx', value: uleb() }); break;
+
+          // SLEB operand.
+          case DW_OP.consts: ops.push({ op: 'DW_OP_consts', value: sleb() }); break;
+
+          // Fixed-width operands.
+          case DW_OP.const1u: ops.push({ op: 'DW_OP_const1u', value: u8() }); break;
+          case DW_OP.const1s: ops.push({ op: 'DW_OP_const1s', value: i8() }); break;
+          case DW_OP.pick: ops.push({ op: 'DW_OP_pick', value: u8() }); break;
+          case DW_OP.deref_size: ops.push({ op: 'DW_OP_deref_size', value: u8() }); break;
+          case DW_OP.xderef_size: ops.push({ op: 'DW_OP_xderef_size', value: u8() }); break;
+          case DW_OP.const2u: ops.push({ op: 'DW_OP_const2u', value: u16() }); break;
+          case DW_OP.const2s: ops.push({ op: 'DW_OP_const2s', value: i16() }); break;
+          case DW_OP.bra: ops.push({ op: 'DW_OP_bra', value: i16() }); break;
+          case DW_OP.skip: ops.push({ op: 'DW_OP_skip', value: i16() }); break;
+          case DW_OP.call2: ops.push({ op: label, value: u16() }); break;
+          case DW_OP.const4u: ops.push({ op: 'DW_OP_const4u', value: u32() }); break;
+          case DW_OP.const4s: ops.push({ op: 'DW_OP_const4s', value: i32() }); break;
+          case DW_OP.call4: case DW_OP.call_ref: ops.push({ op: label, value: u32() }); break;
+          case DW_OP.const8u: case DW_OP.const8s: ops.push({ op: label, value: u64() }); break;
+
+          // ULEB + (SLEB | ULEB).
+          case DW_OP.bregx: ops.push({ op: 'DW_OP_bregx', reg: uleb(), value: sleb() }); break;
+          case DW_OP.bit_piece: ops.push({ op: 'DW_OP_bit_piece', value: uleb(), value2: uleb() }); break;
+
+          // ULEB length-prefixed sub-block (skip its body).
+          case DW_OP.implicit_value: case DW_OP.entry_value: { i += uleb(); ops.push({ op: label }); break; }
+
+          // 4-byte DIE reference (32-bit DWARF offset) + SLEB.
+          case DW_OP.implicit_pointer: { i += 4; ops.push({ op: label, value: sleb() }); break; }
+
           default:
-            ops.push({ op: `DW_OP_unknown_0x${op.toString(16)}` });
-            break;
+            // Operand size unknown → can't advance past this op, so the rest of the
+            // expression would parse as garbage. Fail loud; add the op above when hit.
+            throw new Error("DWARF parsing error: unimplemented DW_OP 0x" + op.toString(16) + " in location expression");
         }
       }
     }
@@ -1055,13 +1132,13 @@ export function parseDwarf(elfBuffer: Buffer): DWARFData {
       }
 
       // Resolve DIE-reference attributes (DW_AT_type, DW_AT_abstract_origin,
-      // DW_AT_specification; DW_FORM_ref* forms) into an object containing the
-      // absolute reference offset. The numeric value encoded in the DIE is an
-      // offset relative to the start of the compilation unit; expose it as
-      // `{ ref: absoluteOffset }` so callers can later locate the referenced DIE.
+      // DW_AT_specification) into an object holding the absolute file offset of the
+      // target DIE, exposed as `{ ref: absoluteOffset }` so callers can locate it.
+      // CU-relative forms (DW_FORM_ref4 etc.) are relative to the CU header; the
+      // cross-CU form DW_FORM_ref_addr is relative to the .debug_info section start.
       if ((attr.name === DW_AT.type || attr.name === DW_AT.abstract_origin || attr.name === DW_AT.specification) && typeof attr.value === 'number') {
         const rel = attr.value as number;
-        const absolute = cuStartOffset + rel;
+        const absolute = (attr.form === DW_FORM.ref_addr ? debugInfoSectionOffset : cuStartOffset) + rel;
         attr.value = { ref: absolute };
       }
     }
@@ -1644,7 +1721,11 @@ export function parseDwarf(elfBuffer: Buffer): DWARFData {
           case DW_CFA.offset_extended_sf: { const r = readULEB128(offset); offset += r.size; const o = readSLEB128(offset); offset += o.size; instructions.push({ op: DW_CFA.offset_extended_sf, reg: r.value, factoredOffset: o.value }); break; }
           case DW_CFA.def_cfa_sf: { const r = readULEB128(offset); offset += r.size; const o = readSLEB128(offset); offset += o.size; instructions.push({ op: DW_CFA.def_cfa_sf, reg: r.value, factoredOffset: o.value }); break; }
           case DW_CFA.def_cfa_offset_sf: { const o = readSLEB128(offset); offset += o.size; instructions.push({ op: DW_CFA.def_cfa_offset_sf, factoredOffset: o.value }); break; }
-          default: instructions.push({ op: byte }); break;
+          default:
+            // Unknown CFA opcode: its operand size is unknown, so continuing would
+            // desync the CFA program and corrupt unwind info (which the profiler relies
+            // on). Fail loud; implement the opcode here when one actually shows up.
+            throw new Error("DWARF parsing error: unimplemented DW_CFA opcode 0x" + byte.toString(16) + " in .debug_frame");
         }
       }
     }
@@ -1731,6 +1812,7 @@ export function parseDwarf(elfBuffer: Buffer): DWARFData {
   if (sections.has(".debug_info")) {
     const section = sections.get(".debug_info");
     if (section) {
+      debugInfoSectionOffset = section.offset;
       let offset = section.offset;
       const endOffset = section.offset + section.size;
 
@@ -1738,6 +1820,30 @@ export function parseDwarf(elfBuffer: Buffer): DWARFData {
         const cu = parseCompilationUnit(offset);
         compilationUnits.push(cu);
         offset += cu.length + (is64bit ? 12 : 4);
+      }
+
+      // Second pass: resolve cross-CU references (DW_FORM_ref_addr points into another
+      // CU, e.g. an inlined function's abstract instance defined in a different unit).
+      // The per-CU pass only links intra-CU refs; fill the rest from a global DIE map.
+      const globalDieMap = new Map<number, DebugInfoEntry>();
+      for (const cu of compilationUnits) {
+        if (cu.dieMap) for (const [k, v] of cu.dieMap) globalDieMap.set(k, v);
+      }
+      for (const cu of compilationUnits) {
+        for (const root of cu.dies) {
+          const stack: DebugInfoEntry[] = [root];
+          while (stack.length) {
+            const entry = stack.pop()!;
+            for (const attr of entry.attributes) {
+              const val = attr.value as { ref?: number; die?: DebugInfoEntry } | undefined;
+              if (val && typeof val === 'object' && 'ref' in val && !val.die) {
+                const target = globalDieMap.get(val.ref!);
+                if (target) val.die = target;
+              }
+            }
+            for (const child of entry.children) stack.push(child);
+          }
+        }
       }
     }
   }
@@ -1782,6 +1888,18 @@ export function parseDwarf(elfBuffer: Buffer): DWARFData {
     }
   }
 
+  // Parse .debug_rnglists section (DWARF5 replacement for .debug_ranges)
+  if (sections.has(".debug_rnglists")) {
+    const section = sections.get(".debug_rnglists");
+    if (section) {
+      debugRnglists = new Uint8Array(
+        elfBuffer.buffer,
+        elfBuffer.byteOffset + section.offset,
+        section.size,
+      );
+    }
+  }
+
   // Parse .debug_frame section
   if (sections.has(".debug_frame")) {
     const section = sections.get(".debug_frame");
@@ -1799,6 +1917,7 @@ export function parseDwarf(elfBuffer: Buffer): DWARFData {
     lineNumberPrograms,
     debugStrings,
     debugRanges,
+    debugRnglists,
     debugFrame,
     abbreviationTables,
     elfSymbols,
@@ -1887,6 +2006,125 @@ export function evaluateCfaAtPc(
   apply(fde.instructions, pc);
 
   return { reg: cfaReg, offset: cfaOffset };
+}
+
+// A contiguous [startPc, endPc) range of code over which the unwind state is
+// constant. CFA = register[cfaReg] + cfaOffset; raOffset / r13Offset are the
+// CFA-relative byte offsets where the return address / A5 are saved (omitted when
+// the column has no CFA-offset rule, e.g. a leaf frame or a frame that never saves A5).
+export interface UnwindRow {
+  startPc: number;
+  endPc: number;
+  cfaReg: number;
+  cfaOffset: number;
+  raOffset?: number;
+  r13Offset?: number;
+}
+
+// Generate the unwind rows for one FDE in a single forward pass over its CFA
+// program. The unwind state is a step function that only changes at advance_loc /
+// set_loc boundaries, so we emit one row per constant-state range — far cheaper
+// than replaying the program for every individual PC.
+function fdeUnwindRows(fde: DebugFrameFDE): UnwindRow[] {
+  const { codeAlignFactor, dataAlignFactor, returnAddressColumn } = fde.cie;
+  const A5_COLUMN = 13; // m68k DWARF: regs 0-7 = D0-D7, 8-15 = A0-A7, so A5 = 13
+
+  // A register's unwind rule. `offset` is the byte offset from CFA where the saved
+  // value lives; `other` means a non-CFA-offset rule (saved in a register, unchanged,
+  // or undefined) which we cannot express as a CFA offset.
+  type RegRule = { kind: "offset"; offset: number } | { kind: "other" };
+
+  let cfaReg = 0;
+  let cfaOffset = 0;
+  let rules = new Map<number, RegRule>();
+  let initialRules = new Map<number, RegRule>(); // snapshot after CIE, for DW_CFA.restore
+  const stateStack: Map<number, RegRule>[] = [];
+
+  // Apply one state-changing (non-location) instruction.
+  const applyState = (instr: CfaInstruction): void => {
+    switch (instr.op) {
+      case DW_CFA.def_cfa:           cfaReg = instr.reg ?? cfaReg; cfaOffset = instr.offset ?? 0; break;
+      case DW_CFA.def_cfa_register:  cfaReg = instr.reg ?? cfaReg; break;
+      case DW_CFA.def_cfa_offset:    cfaOffset = instr.offset ?? 0; break;
+      case DW_CFA.def_cfa_sf:        cfaReg = instr.reg ?? cfaReg; cfaOffset = (instr.factoredOffset ?? 0) * dataAlignFactor; break;
+      case DW_CFA.def_cfa_offset_sf: cfaOffset = (instr.factoredOffset ?? 0) * dataAlignFactor; break;
+      // Register save rules — only the CFA-offset forms give us a usable offset.
+      case DW_CFA.offset:
+      case DW_CFA.offset_extended:
+      case DW_CFA.offset_extended_sf:
+        if (instr.reg !== undefined) rules.set(instr.reg, { kind: "offset", offset: (instr.factoredOffset ?? 0) * dataAlignFactor });
+        break;
+      case DW_CFA.register:
+      case DW_CFA.same_value:
+      case DW_CFA.undefined:
+      case DW_CFA.expression:
+        if (instr.reg !== undefined) rules.set(instr.reg, { kind: "other" });
+        break;
+      case DW_CFA.restore:
+      case DW_CFA.restore_extended:
+        if (instr.reg !== undefined) {
+          const init = initialRules.get(instr.reg);
+          if (init) rules.set(instr.reg, init); else rules.delete(instr.reg);
+        }
+        break;
+      case DW_CFA.remember_state: stateStack.push(new Map(rules)); break;
+      case DW_CFA.restore_state:  if (stateStack.length) rules = stateStack.pop()!; break;
+    }
+  };
+
+  const snapshot = (startPc: number, endPc: number): UnwindRow => {
+    const row: UnwindRow = { startPc, endPc, cfaReg, cfaOffset };
+    const ra = rules.get(returnAddressColumn);
+    if (ra?.kind === "offset") row.raOffset = ra.offset;
+    const a5 = rules.get(A5_COLUMN);
+    if (a5?.kind === "offset") row.r13Offset = a5.offset;
+    return row;
+  };
+
+  // CIE initial instructions establish the base state (in practice they carry no
+  // location advance; any would just be part of the initial state).
+  for (const instr of fde.cie.initialInstructions) applyState(instr);
+  initialRules = new Map(rules);
+
+  const rows: UnwindRow[] = [];
+  const end = fde.pcStart + fde.pcRange;
+  let loc = fde.pcStart;
+  let rowStart = loc;
+
+  for (const instr of fde.instructions) {
+    let newLoc: number | undefined;
+    switch (instr.op) {
+      case DW_CFA.advance_loc:
+      case DW_CFA.advance_loc1:
+      case DW_CFA.advance_loc2:
+      case DW_CFA.advance_loc4: newLoc = loc + (instr.delta ?? 0) * codeAlignFactor; break;
+      case DW_CFA.set_loc:      newLoc = instr.address ?? loc; break;
+    }
+    if (newLoc !== undefined) {
+      // The state accumulated so far applies to [rowStart, newLoc).
+      if (newLoc > rowStart) rows.push(snapshot(rowStart, newLoc));
+      rowStart = newLoc;
+      loc = newLoc;
+    } else {
+      applyState(instr);
+    }
+  }
+  if (end > rowStart) rows.push(snapshot(rowStart, end));
+  return rows;
+}
+
+/**
+ * Build unwind rows for the whole program (every FDE), each a [startPc, endPc)
+ * range of constant unwind state. This is the bulk form used to build the
+ * CPU-profiler unwind table; see `src/unwindTable.ts`. The profiler needs
+ * the whole table, so there is intentionally no per-PC point-query variant.
+ */
+export function evaluateUnwindRows(debugFrame: DebugFrame): UnwindRow[] {
+  const rows: UnwindRow[] = [];
+  for (const fde of debugFrame.fdes) {
+    for (const row of fdeUnwindRows(fde)) rows.push(row);
+  }
+  return rows;
 }
 
 export function formatSectionFlags(flags: ELFSectionFlags): string {

@@ -483,3 +483,28 @@ describe('special names (typeinfo, vtable, etc.)', () => {
   it('handles typeinfo name for complex type', () => { expect(demangle("_ZTSN11myNamespace12MyCustomTypeE")).toBe("typeinfo name for myNamespace::MyCustomType"); });
   it('handles guard variable for namespaced static', () => { expect(demangle("_ZGVN4test10staticDataE")).toBe("guard variable for test::staticData"); });
 });
+
+// Internal-linkage (static) functions: GCC prefixes the name with 'L' after _Z.
+// Regression for an OOM/hang: a static function whose name ends in digits (e.g.
+// `Wait10`) used to desync the parser into a non-terminating, memory-exhausting
+// loop (seen via parseELFSymbols at launch on a fixture with `static void Wait10()`).
+describe('internal linkage (static) functions', () => {
+  it('demangles a static function (Wait10 — the OOM regression)', () => {
+    expect(demangle("_ZL6Wait10v")).toBe("Wait10()");
+  });
+  it('demangles static functions whose names end in digits', () => {
+    expect(demangle("_ZL6Wait11v")).toBe("Wait11()");
+    expect(demangle("_ZL6Wait12v")).toBe("Wait12()");
+    expect(demangle("_ZL6Wait13v")).toBe("Wait13()");
+  });
+  it('demangles a static function with a parameter', () => {
+    expect(demangle("_ZL3fooi")).toBe("foo(int)");
+  });
+  it('terminates (no hang) on adversarial digit-heavy manglings', () => {
+    // These must simply return a string rather than looping forever; exact output
+    // is "garbage in, garbage out" but the call must complete.
+    for (const sym of ["_ZL9Wait99999v", "_Z1f99999999999", "_ZL10Counter1234i"]) {
+      expect(typeof demangle(sym)).toBe("string");
+    }
+  });
+});

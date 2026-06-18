@@ -67,7 +67,8 @@ async function main() {
   const webviewCtx = await esbuild.context({
     entryPoints: [
       'src/webview/memoryViewer/main.tsx',
-      'src/webview/stateViewer/main.tsx'
+      'src/webview/stateViewer/main.tsx',
+      'src/webview/profilerViewer/main.tsx'
     ],
     bundle: true,
     format: 'iife',

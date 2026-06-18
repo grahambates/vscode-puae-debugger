@@ -27,6 +27,18 @@
   ],
   "main": "./out/extension.js",
   "contributes": {
+    "customEditors": [
+      {
+        "viewType": "vamiga-debugger.profileEditor",
+        "displayName": "vAmiga Profile",
+        "selector": [
+          {
+            "filenamePattern": "*.vamigaprofile"
+          }
+        ],
+        "priority": "default"
+      }
+    ],
     "commands": [
       {
         "command": "vamiga-debugger.eof",
@@ -53,6 +65,11 @@
         "command": "vamiga-debugger.openStateViewer",
         "title": "VAmiga: Open State Viewer",
         "icon": "$(symbol-misc)"
+      },
+      {
+        "command": "vamiga-debugger.openProfiler",
+        "title": "VAmiga: Open CPU Profiler",
+        "icon": "$(dashboard)"
       }
     ],
     "menus": {
@@ -67,6 +84,10 @@
         },
         {
           "command": "vamiga-debugger.openStateViewer",
+          "when": "debugType == 'vamiga'"
+        },
+        {
+          "command": "vamiga-debugger.openProfiler",
           "when": "debugType == 'vamiga'"
         }
       ],
@@ -90,6 +111,11 @@
           "command": "vamiga-debugger.openStateViewer",
           "when": "debugType == 'vamiga'",
           "group": "navigation@54"
+        },
+        {
+          "command": "vamiga-debugger.openProfiler",
+          "when": "debugType == 'vamiga'",
+          "group": "navigation@54.5"
         }
       ],
       "debug/variables/context": [
@@ -429,8 +455,10 @@
     "downshift": "^9.0.10",
     "expr-eval": "^2.0.2",
     "m68kdecode": "^1.1.4",
+    "markdown-to-jsx": "^9.8.2",
     "react": "^19.2.0",
-    "react-dom": "^19.2.0"
+    "react-dom": "^19.2.0",
+    "react-window": "^2.2.7"
   },
   "devDependencies": {
     "@eslint/js": "^9.36.0",
