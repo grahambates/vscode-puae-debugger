@@ -795,10 +795,13 @@ export function FlameGraph({
     : 8;
   // DMA band hover info — mirrors the old extension's DMA tooltip: channel, symbolized
   // Address (call-stack for code) or custom Register name, sized Data, R/W + size, and the
-  // raster Line / Color Clock decoded from the slot index.
-  const dmaInfo = (() => {
-    if (!dmaHover || !dma) return undefined;
-    const slot = dmaHover.slot;
+  // raster Line / Color Clock decoded from the slot index. Recomputed only when the hovered
+  // slot changes (not on every pointer move within the same slot) — it replays DMACON state
+  // from the start of the frame, so it isn't free.
+  const dmaHoverSlot = dmaHover?.slot;
+  const dmaInfo = useMemo(() => {
+    if (dmaHoverSlot === undefined || !dma) return undefined;
+    const slot = dmaHoverSlot;
     const owner = dma.owner[slot];
     const flags = dma.flags[slot];
     const addr = dma.addr[slot] >>> 0;
@@ -840,7 +843,7 @@ export function FlameGraph({
       // CPU call stack at this instant (outer→leaf), from the flame columns at this x.
       callStack: stackAtX((slot + 0.5) / dmaSlots),
     };
-  })();
+  }, [dmaHoverSlot, dma, model, symbolize, stackAtX, dmaSlots]);
 
   // Blit band hover info — the old extension's blitter tooltip: size, BLTCON chips, minterm
   // (hex + boolean expression + the 8 LF bits), per-channel source/destination (symbolized
