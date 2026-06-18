@@ -141,8 +141,23 @@ export class SourceMap {
     return this.segments;
   }
 
-  public getSymbols(): Record<string, number> {
-    return this.symbols;
+  /**
+   * The raw name -> address symbol table.
+   *
+   * @param excludeLocal Skip vasm-style local labels (leading `.`, e.g. macro-internal
+   * branch targets like `.\@`). Callers that want one entry per real routine — not one
+   * per internal branch/loop target — should pass `true` (e.g. the profiler's symbol
+   * list, so it agrees with the flame graph's function attribution). Callers showing the
+   * precise nearest label for an address (e.g. register/memory display) should leave it
+   * `false`.
+   */
+  public getSymbols(excludeLocal = false): Record<string, number> {
+    if (!excludeLocal) return this.symbols;
+    const filtered: Record<string, number> = {};
+    for (const name in this.symbols) {
+      if (!name.startsWith(".")) filtered[name] = this.symbols[name];
+    }
+    return filtered;
   }
 
   public lookupAddress(address: number): Location | undefined {
@@ -256,16 +271,19 @@ export class SourceMap {
    * Of course this doesn't guarantee all this code/data is actually related to the label,
    * if there's other unlabelled code/data, but it's the best we can do.
    *
+   * @param excludeLocal Skip vasm-style local labels (see `getSymbols`). A routine's length
+   * then extends past any internal local labels instead of stopping at the first one.
    * @returns length in bytes for each symbol name as an object
    */
-  public getSymbolLengths(): Record<string, number> | undefined {
+  public getSymbolLengths(excludeLocal = false): Record<string, number> | undefined {
+    const symbols = this.getSymbols(excludeLocal);
     const symbolLengths: Record<string, number> = {};
     let prevSymbolName: string | undefined;
     let prevSymbolSegment: Segment | undefined;
     let prevSymbolAddress: number | undefined;
 
-    for (const symbolName in this.symbols) {
-      const symbolAddress = this.symbols[symbolName];
+    for (const symbolName in symbols) {
+      const symbolAddress = symbols[symbolName];
       const symbolSegment = this.findSegmentForAddress(symbolAddress);
 
       // Calculate length of previous symbol now that we have the current symbol's info

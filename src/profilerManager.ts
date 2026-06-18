@@ -14,9 +14,13 @@ export type { ProfileFrame, IProfileModel };
 
 // Flatten the source map's symbols into the address-sorted {address,name,size} list the
 // webview symbolizer consumes. Sizes come from getSymbolLengths (clamped to segment end).
+// excludeLocal=true so this agrees with the flame graph's function attribution (symbolicate/
+// expandPc also pass excludeLocal=true) — otherwise a vasm local label (e.g. a macro's `.\@`
+// branch target) would split a routine's symbol-list entry at the label instead of the
+// webview resolving addresses past it back to the enclosing routine.
 function buildSymbolList(sourceMap: SourceMap): ISymbol[] {
-  const addrs = sourceMap.getSymbols(); // name -> address
-  const sizes = sourceMap.getSymbolLengths() ?? {}; // name -> size
+  const addrs = sourceMap.getSymbols(true); // name -> address
+  const sizes = sourceMap.getSymbolLengths(true) ?? {}; // name -> size
   const out: ISymbol[] = [];
   for (const name in addrs) {
     out.push({ address: addrs[name], name, size: sizes[name] ?? 0 });
@@ -60,7 +64,7 @@ const KICKSTART_ROM_END = 0x1000000;
 export function syntheticLabel(pc: number, sourceMap: SourceMap): string | undefined {
   if (pc === IRQ_MARKER) return "[IRQ]";
   if (pc >= KICKSTART_ROM_START && pc < KICKSTART_ROM_END) {
-    const sym = sourceMap.findSymbolOffset(pc);
+    const sym = sourceMap.findSymbolOffset(pc, true);
     return sym ? `[Kick] ${sym.symbol}` : "[Kickstart]";
   }
   if (sourceMap.findSegmentForAddress(pc)) return undefined;

@@ -220,6 +220,56 @@ describe("SourceMap Tests", () => {
       assert.strictEqual(offset.offset, 0x50);
     });
 
+    it("excludeLocal skips vasm-style local labels (leading dot) from getSymbols", () => {
+      const map = new SourceMap(
+        testSegments,
+        testSources,
+        { ...testSymbols, ".loop": 0x1110 },
+        testLocations,
+      );
+      assert.ok(".loop" in map.getSymbols());
+      assert.ok(!(".loop" in map.getSymbols(true)));
+      assert.ok("sub1" in map.getSymbols(true));
+    });
+
+    it("excludeLocal makes a routine's length span past its internal local labels", () => {
+      // sub1 contains a local label (e.g. a macro's internal loop target, like BLIT_WAIT's
+      // `.\@`) partway through it. Without excludeLocal, sub1's computed length stops at the
+      // local label instead of extending to sub2 - the bug that split the flame graph and
+      // made the webview symbolizer disagree with it.
+      // getSymbolLengths assumes address-ordered iteration, so insert ".loop" between sub1
+      // and sub2 to match the object's key insertion order.
+      const map = new SourceMap(
+        testSegments,
+        testSources,
+        { main: 0x1000, sub1: 0x1100, ".loop": 0x1110, sub2: 0x1200, data_start: 0x2000, buffer: 0x2100 },
+        testLocations,
+      );
+      const lengthsWithLocal = map.getSymbolLengths();
+      assert.strictEqual(lengthsWithLocal?.sub1, 0x10); // truncated at .loop
+
+      const lengthsExcludingLocal = map.getSymbolLengths(true);
+      assert.strictEqual(lengthsExcludingLocal?.sub1, 0x100); // spans to sub2, as before
+      assert.ok(!lengthsExcludingLocal || !(".loop" in lengthsExcludingLocal));
+    });
+
+    it("excludeLocal in findSymbolOffset resolves an address inside a local label's range back to the enclosing routine", () => {
+      const map = new SourceMap(
+        testSegments,
+        testSources,
+        { ...testSymbols, ".loop": 0x1110 },
+        testLocations,
+      );
+      // Without excludeLocal, the nearest preceding symbol for 0x1115 is the local label.
+      const withLocal = map.findSymbolOffset(0x1115);
+      assert.strictEqual(withLocal?.symbol, ".loop");
+
+      // With excludeLocal, it resolves to the enclosing routine instead.
+      const withoutLocal = map.findSymbolOffset(0x1115, true);
+      assert.strictEqual(withoutLocal?.symbol, "sub1");
+      assert.strictEqual(withoutLocal?.offset, 0x15);
+    });
+
     it("should prefer the nearest symbol when symbols are packed adjacently", () => {
       // Simulates packed data variables: int (4 bytes) then short (2 bytes) then char (1 byte)
       const packedMap = new SourceMap(
