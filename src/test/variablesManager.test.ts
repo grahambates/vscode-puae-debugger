@@ -592,6 +592,26 @@ describe("VariablesManager - Comprehensive Tests", () => {
       const res = await variablesManager.resolveNameToLValue('nope', 0x1000, null);
       assert.strictEqual(res, undefined);
     });
+
+    it("does NOT fall through to a same-named global when the matched local isn't addressable", async () => {
+      // A local 'x' matches by name but its location can't be resolved to an address here
+      // (e.g. a 'cfa' location with no CFI for this pc). It must shadow the global -
+      // never silently resolve to the global's address instead.
+      mockSourceMap.getLocalsForPc.returns([{
+        name: 'x', typeName: 'int', byteSize: 4,
+        location: { kind: 'cfa', offset: 4 },
+        typeDescriptor: { kind: 'primitive', typeName: 'int', byteSize: 4 },
+      }]);
+      mockSourceMap.getCfaForPc.returns(undefined); // no CFI -> locationToAddress returns undefined
+      mockSourceMap.getGlobalVariables.returns([{
+        name: 'x', typeName: 'int', byteSize: 4,
+        location: { kind: 'addr', address: 0x2040 },
+        typeDescriptor: { kind: 'primitive', typeName: 'int', byteSize: 4 },
+      }]);
+
+      const res = await variablesManager.resolveNameToLValue('x', 0x1000, null);
+      assert.strictEqual(res, undefined, 'Expected no result, not the global address');
+    });
   });
 
   describe("value editing (writeScalar / setVariable / read-only hints)", () => {
