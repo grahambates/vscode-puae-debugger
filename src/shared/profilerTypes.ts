@@ -1,31 +1,13 @@
 // Shared data + message contract between the extension (profilerViewerProvider /
 // profilerManager) and the profiler webview. Keep this free of node/vscode imports.
 
-// --- aggregated merged call tree (kept for a possible function-table view) ------
-
-// A symbolicated code location, interned and referenced by index from the tree.
+// A symbolicated code location returned by expandPc, one per logical call frame
+// (physical function + any DWARF inlines) for a given PC.
 export interface ProfileFrame {
   func: string;
   file?: string;
   line?: number;
   address: number;
-}
-
-// A node in the aggregated call tree. `frame` indexes ProfileResult.uniqueFrames
-// (-1 for the synthetic root). `self` = cycles where this node was the leaf;
-// `total` = cycles for all samples passing through it.
-export interface CallTreeNode {
-  frame: number;
-  self: number;
-  total: number;
-  children: CallTreeNode[];
-}
-
-export interface ProfileResult {
-  uniqueFrames: ProfileFrame[];
-  root: CallTreeNode;
-  totalCycles: number;
-  sampleCount: number;
 }
 
 // --- time-ordered profile model (what the flame chart renders) ------------------

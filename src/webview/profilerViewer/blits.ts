@@ -23,6 +23,7 @@
 // are rewritten right before BLTSIZE, so this rarely bites (same gap noted in reconstruct.ts).
 
 import { IDmaModel, BusOwner, DMA_WRITE, dmaIsCustomReg, DMA_HPOS } from "../../shared/profilerTypes";
+import { CUSTOM_REGISTER_OFFSETS } from "../shared/customRegisters";
 import { BLTCON0Flags, BLTCON1Flags, BlitOp } from "./blitMinterm";
 
 export enum BlitMode {
@@ -55,15 +56,10 @@ export interface BlitResult {
   fastBlitter: boolean;
 }
 
-// Register offsets from $DFF000 (low byte of the custom address). No BLTDDAT: there is no
-// readable D-data register (0x76 is SPRHDAT) and the D channel never shows a literal.
-const R = {
-  BLTCON0: 0x040, BLTCON1: 0x042, BLTAFWM: 0x044, BLTALWM: 0x046,
-  BLTCPTH: 0x048, BLTBPTH: 0x04c, BLTAPTH: 0x050, BLTDPTH: 0x054,
-  BLTSIZE: 0x058, BLTSIZV: 0x05c, BLTSIZH: 0x05e,
-  BLTCMOD: 0x060, BLTBMOD: 0x062, BLTAMOD: 0x064, BLTDMOD: 0x066,
-  BLTCDAT: 0x070, BLTBDAT: 0x072, BLTADAT: 0x074,
-};
+// Register offsets from $DFF000 (low byte of the custom address), from the shared canonical
+// table. No BLTDDAT: there is no readable D-data register (0x76 is SPRHDAT) and the D channel
+// never shows a literal.
+const R = CUSTOM_REGISTER_OFFSETS;
 // Channel order A,B,C,D for the pointer/modulo register triples and the USEx enables; DAT is
 // A,B,C only (D has no data register).
 const PTH = [R.BLTAPTH, R.BLTBPTH, R.BLTCPTH, R.BLTDPTH];
