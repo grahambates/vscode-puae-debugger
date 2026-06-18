@@ -1,6 +1,8 @@
 import { MemoryType } from "./amigaHunkParser";
 import { normalize } from "path";
-import { DebugFrame, evaluateCfaAtPc } from "./dwarfParser";
+import { DebugFrame, evaluateCfaAtPc, evaluateUnwindRows, UnwindRow } from "./dwarfParser";
+
+export type { UnwindRow };
 
 export interface InlineFrame {
   name: string;
@@ -139,8 +141,23 @@ export class SourceMap {
     return this.segments;
   }
 
-  public getSymbols(): Record<string, number> {
-    return this.symbols;
+  /**
+   * The raw name -> address symbol table.
+   *
+   * @param excludeLocal Skip vasm-style local labels (leading `.`, e.g. macro-internal
+   * branch targets like `.\@`). Callers that want one entry per real routine — not one
+   * per internal branch/loop target — should pass `true` (e.g. the profiler's symbol
+   * list, so it agrees with the flame graph's function attribution). Callers showing the
+   * precise nearest label for an address (e.g. register/memory display) should leave it
+   * `false`.
+   */
+  public getSymbols(excludeLocal = false): Record<string, number> {
+    if (!excludeLocal) return this.symbols;
+    const filtered: Record<string, number> = {};
+    for (const name in this.symbols) {
+      if (!name.startsWith(".")) filtered[name] = this.symbols[name];
+    }
+    return filtered;
   }
 
   public lookupAddress(address: number): Location | undefined {
@@ -207,6 +224,14 @@ export class SourceMap {
     return evaluateCfaAtPc(pc, this.debugFrame);
   }
 
+  // All unwind rows for the program ([startPc, endPc) ranges of constant unwind
+  // state) derived from DWARF .debug_frame. The CPU profiler builds its whole
+  // unwind table from these (see src/unwindTable.ts).
+  public getUnwindRows(): UnwindRow[] {
+    if (!this.debugFrame) return [];
+    return evaluateUnwindRows(this.debugFrame);
+  }
+
   // Returns inline frames for the given PC, ordered innermost-first (deepest nesting first).
   public getInlineFramesForPc(pc: number): InlineFrame[] {
     return this.inlineTable
@@ -246,16 +271,19 @@ export class SourceMap {
    * Of course this doesn't guarantee all this code/data is actually related to the label,
    * if there's other unlabelled code/data, but it's the best we can do.
    *
+   * @param excludeLocal Skip vasm-style local labels (see `getSymbols`). A routine's length
+   * then extends past any internal local labels instead of stopping at the first one.
    * @returns length in bytes for each symbol name as an object
    */
-  public getSymbolLengths(): Record<string, number> | undefined {
+  public getSymbolLengths(excludeLocal = false): Record<string, number> | undefined {
+    const symbols = this.getSymbols(excludeLocal);
     const symbolLengths: Record<string, number> = {};
     let prevSymbolName: string | undefined;
     let prevSymbolSegment: Segment | undefined;
     let prevSymbolAddress: number | undefined;
 
-    for (const symbolName in this.symbols) {
-      const symbolAddress = this.symbols[symbolName];
+    for (const symbolName in symbols) {
+      const symbolAddress = symbols[symbolName];
       const symbolSegment = this.findSegmentForAddress(symbolAddress);
 
       // Calculate length of previous symbol now that we have the current symbol's info
@@ -285,12 +313,16 @@ export class SourceMap {
   }
 
   /**
-   * Find the offset from the previous label in source for a given address
+   * Find the offset from the previous label in source for a given address.
    *
    * @param address
+   * @param excludeLocal Skip vasm-style local labels (leading `.`, e.g. macro-internal
+   * branch targets like `.\@`) so the result names the enclosing routine instead of an
+   * internal label. Used by the profiler, where every local label would otherwise look
+   * like a distinct function.
    * @returns
    */
-  public findSymbolOffset(address: number): SymbolOffset | undefined {
+  public findSymbolOffset(address: number, excludeLocal = false): SymbolOffset | undefined {
     // Find which segment (if any) address is in
     const currentSegment = this.findSegmentForAddress(address);
     // Only care about addresses in our source map
@@ -300,6 +332,7 @@ export class SourceMap {
 
     let ret: SymbolOffset | undefined;
     for (const symbol in this.symbols) {
+      if (excludeLocal && symbol.startsWith(".")) continue;
       const symAddr = this.symbols[symbol];
       const offset = address - symAddr;
       if (

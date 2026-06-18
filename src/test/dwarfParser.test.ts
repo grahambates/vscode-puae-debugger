@@ -196,8 +196,8 @@ describe('dwarfParser', () => {
     expect(artificialFiles.length).toBeGreaterThan(0);
   });
 
-  it('should get DIEs from simple_c.elf', () => {
-    const testFile = path.join(__dirname, 'fixtures/amigaPrograms/simple_c/simple_c.elf');
+  it('should get DIEs from 01_inline/simple_c.elf', () => {
+    const testFile = path.join(__dirname, 'fixtures/amigaPrograms/simple_c/01_inline/simple_c.elf');
     const buffer = readFileSync(testFile);
 
     const result = parseDwarf(buffer);

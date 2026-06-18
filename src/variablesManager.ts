@@ -567,15 +567,18 @@ export class VariablesManager {
   ): Promise<{ address: number; type: TypeDescriptor; typeName: string } | undefined> {
     if (!this.sourceMap) return undefined;
 
-    // Locals first - scoped to the hovered frame's pc
+    // Locals first - scoped to the hovered frame's pc. A name match here shadows any
+    // same-named global even if it isn't currently addressable (e.g. register-resident,
+    // or a 'cfa' location with no CFI for this pc) — return undefined rather than falling
+    // through to the global below, which would silently target the wrong storage.
     if (pc !== null) {
       const local = this.sourceMap.getLocalsForPc(pc).find((v) => v.name === name);
       if (local) {
         const cpuInfo = await this.vAmiga.getCpuInfo();
         const address = this.locationToAddress(local.location, cpuInfo, pc, regs);
-        if (address !== undefined) {
-          return { address, type: local.typeDescriptor, typeName: local.typeName };
-        }
+        return address !== undefined
+          ? { address, type: local.typeDescriptor, typeName: local.typeName }
+          : undefined;
       }
     }
 

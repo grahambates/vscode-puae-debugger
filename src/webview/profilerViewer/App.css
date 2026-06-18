@@ -1,0 +1,500 @@
+body {
+  margin: 0;
+  padding: 0;
+  font-family: var(--vscode-font-family);
+  color: var(--vscode-foreground);
+}
+
+.profiler {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+}
+
+.toolbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--vscode-panel-border);
+}
+
+.toolbar button {
+  background: var(--vscode-button-background);
+  color: var(--vscode-button-foreground);
+  border: none;
+  padding: 4px 10px;
+  cursor: pointer;
+  border-radius: 2px;
+}
+
+.toolbar button:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+/* Fixed width so the capture button doesn't resize when its label toggles between
+   "Capture frame" and "Capturing…" (sized for the wider label). */
+.toolbar .capture-btn {
+  min-width: 9em;
+  text-align: center;
+}
+
+.error {
+  margin: 8px 10px;
+  padding: 6px 10px;
+  background: var(--vscode-inputValidation-errorBackground);
+  border: 1px solid var(--vscode-inputValidation-errorBorder);
+  color: var(--vscode-foreground);
+}
+
+.hint {
+  margin: 20px;
+  color: var(--vscode-descriptionForeground);
+}
+
+/* Split layout: flame chart above, time view below */
+.split-pane {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.split-divider {
+  flex: 0 0 1px;
+  background: var(--vscode-panel-border);
+}
+
+.flame {
+  position: relative;
+  /* Height is set inline to the (capped) call-stack depth; don't grow/shrink off that. The
+     max-height caps it at ~70% of the split-pane so a deep stack can't squeeze the TimeView out
+     (the canvas-wrap then scrolls). */
+  flex: 0 0 auto;
+  max-height: 70%;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  min-height: 0;
+}
+
+.flame .canvas-wrap {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+
+.flame canvas {
+  display: block;
+}
+
+/* Horizontal pan scrollbar synced to the zoom (child width = canvasWidth / range). */
+.flame .hscroll {
+  flex: 0 0 auto;
+  overflow-x: scroll;
+  overflow-y: hidden;
+  height: 14px;
+}
+
+.flame .hscroll > div {
+  height: 1px;
+}
+
+.toolbar .filter-box {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.toolbar .filter {
+  flex: 1;
+  min-width: 0;
+  background: var(--vscode-input-background);
+  color: var(--vscode-input-foreground);
+  border: 1px solid var(--vscode-input-border, transparent);
+  padding: 3px 6px;
+  border-radius: 2px;
+}
+
+.toolbar .filter::placeholder {
+  color: var(--vscode-input-placeholderForeground);
+}
+
+.toolbar .toggle {
+  background: transparent;
+  color: var(--vscode-foreground);
+  border: 1px solid transparent;
+  padding: 2px 5px;
+  border-radius: 3px;
+  cursor: pointer;
+  font: 600 11px monospace;
+  line-height: 1;
+}
+
+.toolbar .toggle:hover {
+  background: var(--vscode-toolbar-hoverBackground);
+}
+
+.toolbar .toggle.active {
+  background: var(--vscode-inputOption-activeBackground);
+  border-color: var(--vscode-inputOption-activeBorder);
+  color: var(--vscode-inputOption-activeForeground);
+}
+
+.toolbar .unit {
+  background: var(--vscode-dropdown-background);
+  color: var(--vscode-dropdown-foreground);
+  border: 1px solid var(--vscode-dropdown-border);
+  padding: 3px 6px;
+  border-radius: 2px;
+}
+
+.tooltip {
+  position: fixed;
+  z-index: 10;
+  pointer-events: none;
+  max-width: 480px;
+  padding: 5px 8px;
+  font-size: 12px;
+  background: var(--vscode-editorHoverWidget-background);
+  color: var(--vscode-editorHoverWidget-foreground);
+  border: 1px solid var(--vscode-editorHoverWidget-border);
+  border-radius: 3px;
+  white-space: nowrap;
+}
+
+.tooltip .tt-func {
+  font-weight: bold;
+}
+
+.tooltip .tt-loc {
+  color: var(--vscode-descriptionForeground);
+  margin-bottom: 3px;
+}
+
+/* Middle-ellipsis for file paths (ported from the old middleOutCompression.module.css). */
+.tooltip .middle-out {
+  display: block;
+  max-width: 440px;
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+.tooltip .middle-out span {
+  display: inline-block;
+  vertical-align: bottom;
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+.tooltip .middle-out span:first-child {
+  text-overflow: ellipsis;
+}
+
+.tooltip .middle-out span:last-child {
+  direction: rtl;
+}
+
+/* DMA address / call-stack value: allow it to wrap and break instead of overflowing. */
+.tooltip .tt-addr {
+  word-break: break-word;
+}
+
+.tooltip .tt-hint {
+  margin-top: 4px;
+  color: var(--vscode-descriptionForeground);
+  font-size: 11px;
+}
+
+/* Shared tooltip body: a 2-column definition grid (bold label left, value right), one entry per
+   row, mirroring the old extension. Used by the call-stack, DMA and blitter tooltips. Chips,
+   Shift/Modulo, and FWM/LWM all flow inline in the value column. */
+.blit-tip {
+  max-width: 600px;
+  white-space: normal;
+}
+
+.tip-grid {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 2px 14px;
+  align-items: baseline;
+  margin-top: 3px;
+  font-variant-numeric: tabular-nums;
+}
+
+.tip-grid > .tip-label {
+  font-weight: bold;
+  white-space: nowrap;
+  color: var(--vscode-foreground);
+}
+
+.tip-grid > .bt-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px;
+  align-items: baseline;
+}
+
+.bt-mt {
+  margin-right: 4px;
+}
+
+/* Inline emphasis label inside a value cell (Shift / Modulo / FWM / LWM / Start / Texture). */
+.bt-eh {
+  font-weight: bold;
+  color: var(--vscode-descriptionForeground);
+  margin: 0 4px 0 10px;
+}
+
+.tip-val > .bt-eh:first-child {
+  margin-left: 0;
+}
+
+/* Flag / minterm / channel chip (used in the value column). UI font, not monospace (matches the
+   old extension and the blitter tooltip). */
+.tooltip .tt-bit {
+  font: 11px var(--vscode-font-family, sans-serif);
+  padding: 0 3px;
+  background: var(--vscode-toolbar-hoverBackground, rgba(255, 255, 255, 0.08));
+  color: var(--vscode-descriptionForeground);
+  opacity: 0.5;
+}
+
+.tooltip .tt-bit.on {
+  background: var(--vscode-inputOption-activeBackground);
+  color: var(--vscode-inputOption-activeForeground, var(--vscode-foreground));
+  opacity: 1;
+}
+
+/* The DMA tooltip is wider than the default tooltip (the DMA Control chips + the register-doc
+   table need room); override the base .tooltip max-width so the inline width is honoured, and
+   allow wrapping (the base .tooltip is white-space:nowrap, which would overflow the call stack,
+   the register-doc paragraphs and the doc table). */
+.dma-tip {
+  max-width: 760px;
+  white-space: normal;
+}
+
+/* Let grid value cells shrink below their content so long values (call stack, addresses) wrap
+   inside the column instead of overflowing the tooltip. */
+.tip-grid > .tip-val {
+  min-width: 0;
+}
+
+/* Custom-register documentation (wholesale-copied markdown, rendered via markdown-to-jsx)
+   shown under the DMA tooltip grid for register accesses. Compact, with a bit-description table. */
+.dma-doc {
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px solid var(--vscode-panel-border, #444);
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--vscode-descriptionForeground);
+  overflow-wrap: anywhere;
+}
+
+.dma-doc :first-child {
+  margin-top: 0;
+}
+
+.dma-doc p {
+  margin: 4px 0;
+}
+
+.dma-doc strong {
+  color: var(--vscode-foreground);
+}
+
+.dma-doc table {
+  border-collapse: collapse;
+  width: 100%;
+  margin: 4px 0;
+}
+
+.dma-doc th,
+.dma-doc td {
+  border: 1px solid var(--vscode-panel-border, #444);
+  padding: 1px 5px;
+  text-align: left;
+  vertical-align: top;
+  word-break: break-word; /* wrap long descriptions instead of overflowing the tooltip */
+}
+
+.dma-doc th {
+  color: var(--vscode-foreground);
+  font-weight: 600;
+}
+
+/* ── TimeView (top-down function table) ─────────────────────────────────────
+   Ported from vscode-amiga-debug table/time-view.module.css
+   ──────────────────────────────────────────────────────────────────────── */
+
+.time-view {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+  /* Match the old extension: the TimeView renders at the webview's default UI font size
+     (the old ext set no font-size on its rows, only the editor font-family below). A 12px
+     clamp here made the time column look smaller than the old ext. */
+  font-size: var(--vscode-font-size);
+}
+
+/* Data rows use the monospace editor font; the header keeps the default UI font
+   (matches the old extension, where editor-font is scoped to the rows only). */
+.tv-rows {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden; /* react-window List v2 manages its own scroll */
+  font-family: var(--vscode-editor-font-family);
+}
+
+.tv-row {
+  display: flex;
+  align-items: center;
+  height: 20px;
+  cursor: default;
+  box-sizing: border-box;
+}
+
+.tv-row:focus {
+  outline: 0;
+  background: var(--vscode-list-focusBackground);
+  color: var(--vscode-list-focusForeground);
+}
+
+.tv-header {
+  flex-shrink: 0;
+  background: var(--vscode-editor-background);
+}
+
+.tv-duration {
+  text-align: right;
+  width: 110px;
+  flex-shrink: 0;
+  margin: 0 4px;
+  color: var(--vscode-terminal-ansiYellow);
+  position: relative;
+  z-index: 0;
+}
+
+.tv-duration span {
+  position: relative; /* above the impact bar */
+}
+
+.tv-heading {
+  color: var(--vscode-foreground);
+  user-select: none;
+}
+
+.tv-heading.tv-sorted {
+  font-weight: bold;
+}
+
+.tv-heading .codicon {
+  vertical-align: middle;
+  font-size: 11px;
+}
+
+.tv-duration.tv-heading {
+  cursor: pointer;
+}
+
+.tv-duration.tv-heading:hover {
+  background: var(--vscode-toolbar-hoverBackground);
+}
+
+.tv-location {
+  display: flex;
+  align-items: center;
+  flex: 1;
+  overflow: hidden;
+  color: var(--vscode-terminal-foreground);
+  min-width: 0;
+}
+
+.tv-location.tv-heading {
+  padding-left: 10px;
+  color: var(--vscode-foreground);
+}
+
+.tv-expander {
+  flex-shrink: 0;
+  width: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0.7;
+  cursor: pointer;
+  user-select: none;
+}
+
+.tv-expander:hover {
+  opacity: 1;
+}
+
+.tv-fn {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  max-width: 80%;
+}
+
+/* DMA channel color swatch (TimeView rows + flame DMA tooltip). A square-cornered
+   rectangle (~2 chars wide), matching the old extension's inline "&nbsp;&nbsp;" swatch. */
+.dma-dot {
+  display: inline-block;
+  width: 1.2em;
+  height: 1em;
+  margin-right: 0.4em;
+  flex-shrink: 0;
+  vertical-align: middle;
+}
+
+.tv-file {
+  font-family: var(--vscode-font-family);
+  direction: rtl;
+  flex: 1;
+  margin-left: 2em;
+  font-size: 0.8em;
+  opacity: 0.8;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.tv-file a {
+  color: var(--vscode-terminal-foreground);
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.tv-file a:hover {
+  text-decoration: underline;
+}
+
+.tv-impact-bar {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  right: 0;
+  left: 0;
+  background: rgba(255, 255, 255, 0.1);
+  z-index: -1;
+  transform-origin: 100%;
+  border-bottom: 2px solid rgba(255, 255, 255, 0.2);
+}
+
+.vscode-light .tv-impact-bar {
+  background: rgba(0, 0, 0, 0.2);
+}
+
+.vscode-high-contrast .tv-impact-bar {
+  background: #fff;
+}

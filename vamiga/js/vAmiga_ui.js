@@ -2366,6 +2366,49 @@ postMessage({ type: 'ready' });
         }
     }
 
+    // --- CPU profiler (vscode-vamiga-debugger) -------------------------------
+    // Upload the per-code-location unwind table (Uint8Array of 6-byte entries) plus
+    // the program text range it covers.
+    wasm_profile_set_unwind = function (buffer, startAddr, endAddr) {
+        const ptr = Module._malloc(buffer.length);
+        let ok;
+        // try/finally so the malloc'd buffer is freed even if HEAPU8.set or the wasm call throws.
+        try {
+            Module.HEAPU8.set(buffer, ptr);
+            ok = Module._wasm_profile_set_unwind(ptr, buffer.length, startAddr, endAddr);
+        } finally {
+            Module._free(ptr);
+        }
+        if (!ok) {
+            throw new Error('wasm_profile_set_unwind failed');
+        }
+    }
+    wasm_profile_start = Module.cwrap('wasm_profile_start', 'number', ['number']);
+    wasm_profile_stop = Module.cwrap('wasm_profile_stop', 'undefined');
+    // Read the raw u32 profile stream straight off the heap and copy it out (the
+    // heap view is invalidated on the next capture). Returns the buffer plus capture
+    // diagnostics (range + instruction counts) for tracing empty results.
+    wasm_profile_get_data = function () {
+        const obj = JSON.parse(Module.ccall('wasm_profile_get_data', 'string', [], []));
+        const view = new Uint8Array(Module.HEAPU8.buffer, obj.address, obj.size);
+        return { data: new Uint8Array(view), start: obj.start, end: obj.end, total: obj.total, inRange: obj.inRange, frameCycles: obj.frameCycles, isPAL: obj.isPAL };
+    }
+    // DMA profiler readout (captured in the same frame as the CPU profile). The
+    // enriched grid is Cell[8] (owner,flags,data,addr); copy it off the heap before the
+    // next capture invalidates the view.
+    wasm_dma_get_data = function () {
+        const obj = JSON.parse(Module.ccall('wasm_dma_get_data', 'string', [], []));
+        const view = new Uint8Array(Module.HEAPU8.buffer, obj.address, obj.size);
+        return { data: new Uint8Array(view) };
+    }
+    // Reconstruction baseline snapshot (chip + slow RAM) taken at capture start.
+    wasm_dma_get_snapshot = function () {
+        const obj = JSON.parse(Module.ccall('wasm_dma_get_snapshot', 'string', [], []));
+        const chip = obj.chipLen ? new Uint8Array(new Uint8Array(Module.HEAPU8.buffer, obj.chipAddr, obj.chipLen)) : new Uint8Array(0);
+        const slow = obj.slowLen ? new Uint8Array(new Uint8Array(Module.HEAPU8.buffer, obj.slowAddr, obj.slowLen)) : new Uint8Array(0);
+        return { chip, slow };
+    }
+
     // Initialize worker after all WASM functions are available - failure is fatal
     initEmulationWorker();
 
@@ -2787,6 +2830,33 @@ postMessage({ type: 'ready' });
                     break;
                 case 'getCpuTrace':
                     rpcRequest(() => JSON.parse(wasm_get_cpu_trace(message.args.count)));
+                    break;
+                case 'profileSetUnwind':
+                    rpcRequest(() => {
+                        wasm_profile_set_unwind(message.args.data, message.args.startAddr, message.args.endAddr);
+                        return { ok: true };
+                    });
+                    break;
+                case 'startProfiling':
+                    rpcRequest(() => {
+                        return { ok: !!wasm_profile_start(message.args.numFrames ?? 1) };
+                    });
+                    break;
+                case 'stopProfiling':
+                    rpcRequest(() => { wasm_profile_stop(); return { ok: true }; });
+                    break;
+                case 'getProfileData':
+                    // Returns the raw u32 profile stream as a Uint8Array (binary transfer,
+                    // no JSON/base64 — the extension decodes + symbolicates) plus diagnostics.
+                    rpcRequest(() => wasm_profile_get_data());
+                    break;
+                case 'getDmaData':
+                    // Returns the enriched DMA grid (Cell[8]) as a Uint8Array (binary).
+                    rpcRequest(() => wasm_dma_get_data());
+                    break;
+                case 'getDmaSnapshot':
+                    // Returns the chip/slow RAM reconstruction baseline as Uint8Arrays.
+                    rpcRequest(() => wasm_dma_get_snapshot());
                     break;
                 case 'stepBack':
                     rpcRequest(() => {

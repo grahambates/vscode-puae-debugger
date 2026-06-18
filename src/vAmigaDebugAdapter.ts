@@ -166,6 +166,9 @@ export class VamigaDebugAdapter extends LoggingDebugSession {
   private trace = false;
   private fastLoad = false;
   private programPath = "";
+  private debugProgramPath = ""; // file the debug symbols (ELF/hunks) were read from
+  private segmentOffsets: number[] = []; // loaded segment base addresses (relocation)
+  private sourceBaseDir = ""; // baseDir passed to sourceMapFromDwarf (ELF source paths)
 
   private isRunning = false;
   private stopOnEntry = false;
@@ -308,6 +311,7 @@ export class VamigaDebugAdapter extends LoggingDebugSession {
     this.fastLoad = args.fastLoad ?? false;
 
     const debugProgram = args.debugProgram || this.programPath;
+    this.debugProgramPath = debugProgram;
     logger.log(`Reading debug symbols from ${debugProgram}`);
 
     // Read debug symbols:
@@ -1209,10 +1213,12 @@ export class VamigaDebugAdapter extends LoggingDebugSession {
    */
   private attach(offsets: number[]) {
     try {
+      this.segmentOffsets = offsets;
       if (this.dwarfData) {
         // Elf doesn't contain absolute path of sources. Assume it's one level up e.g. `out/a.elf`
         // TODO: find a better way to do this, add launch option, check files exist there
         const baseDir = path.dirname(path.dirname(this.programPath));
+        this.sourceBaseDir = baseDir;
         this.sourceMap = sourceMapFromDwarf(this.dwarfData, offsets, baseDir);
       } else if (this.hunks) {
         this.sourceMap = sourceMapFromHunks(this.hunks, offsets);
@@ -1497,5 +1503,26 @@ export class VamigaDebugAdapter extends LoggingDebugSession {
       throw new Error("Not initialized");
     }
     return this.sourceMap;
+  }
+
+  /** Path to the file the debug symbols were read from (the ELF, or the program itself). */
+  public getDebugProgramPath(): string {
+    return this.debugProgramPath;
+  }
+
+  /** Relocation used to build the SourceMap, so a saved profile can rebuild an identical one. */
+  public getRelocation(): { segmentOffsets: number[]; baseDir: string } {
+    return { segmentOffsets: this.segmentOffsets, baseDir: this.sourceBaseDir };
+  }
+
+  /**
+   * Kickstart ROM identity, so a saved profile can re-merge the `.kick` symbol module on load and
+   * symbolicate ROM/OS leaves as [Kick] <name>. The empty sentinel means no ROM symbols were
+   * resolved (unset/unknown ROM) — the loader then leaves ROM addresses as flat [Kickstart].
+   */
+  public getKickstartInfo(): { sha1: string; name: string } {
+    return this.kickstartSymbols
+      ? { sha1: this.kickstartSymbols.sha1, name: this.kickstartSymbols.name }
+      : { sha1: "", name: "" };
   }
 }
