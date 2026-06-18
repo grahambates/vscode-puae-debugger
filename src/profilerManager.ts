@@ -89,12 +89,16 @@ export function decodeProfileStream(words: Uint32Array): InstructionSample[] {
 }
 
 // Symbolicate a PC into a ProfileFrame using the DWARF/symbol source map. Function
-// name comes from the nearest preceding symbol; file/line from the line table.
+// name comes from the nearest preceding symbol; file/line from the line table, looked
+// up at the *symbol's own* address rather than pc — a macro invoked from several call
+// sites can carry its own (included) file/line in the line table, and resolving at pc
+// would make instructions inside the same function look like different locations
+// (different `file`) and split the flame graph despite sharing one function name.
 function symbolicate(pc: number, sourceMap: SourceMap): ProfileFrame {
   const synthetic = syntheticLabel(pc, sourceMap);
   if (synthetic) return { func: synthetic, file: undefined, line: undefined, address: pc };
-  const sym = sourceMap.findSymbolOffset(pc);
-  const loc = sourceMap.lookupAddress(pc);
+  const sym = sourceMap.findSymbolOffset(pc, true);
+  const loc = sourceMap.lookupAddress(sym ? pc - sym.offset : pc);
   return {
     func: sym ? sym.symbol : `0x${pc.toString(16)}`,
     file: loc?.path,
@@ -117,12 +121,16 @@ function symbolicate(pc: number, sourceMap: SourceMap): ProfileFrame {
 function expandPc(pc: number, sourceMap: SourceMap): ProfileFrame[] {
   const synthetic = syntheticLabel(pc, sourceMap);
   if (synthetic) return [{ func: synthetic, file: undefined, line: undefined, address: pc }];
-  const sym = sourceMap.findSymbolOffset(pc);
+  const sym = sourceMap.findSymbolOffset(pc, true);
   const loc = sourceMap.lookupAddress(pc);
   const funcName = sym ? sym.symbol : `0x${pc.toString(16)}`;
   const inlines = sourceMap.getInlineFramesForPc?.(pc) ?? []; // innermost-first
   if (inlines.length === 0) {
-    return [{ func: funcName, file: loc?.path, line: loc?.line, address: pc }];
+    // No inlining (typical for assembly): resolve file/line at the symbol's own address,
+    // not pc, so a function invoked via a macro carrying its own line-table entry (e.g. an
+    // include) still resolves to one consistent location instead of splitting per call site.
+    const declLoc = sym ? sourceMap.lookupAddress(pc - sym.offset) : loc;
+    return [{ func: funcName, file: declLoc?.path, line: declLoc?.line, address: pc }];
   }
   const n = inlines.length;
   // Inlined frames are suffixed " (inlined)" (matching the old vscode-amiga-debug) so the

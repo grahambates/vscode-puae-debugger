@@ -295,12 +295,16 @@ export class SourceMap {
   }
 
   /**
-   * Find the offset from the previous label in source for a given address
+   * Find the offset from the previous label in source for a given address.
    *
    * @param address
+   * @param excludeLocal Skip vasm-style local labels (leading `.`, e.g. macro-internal
+   * branch targets like `.\@`) so the result names the enclosing routine instead of an
+   * internal label. Used by the profiler, where every local label would otherwise look
+   * like a distinct function.
    * @returns
    */
-  public findSymbolOffset(address: number): SymbolOffset | undefined {
+  public findSymbolOffset(address: number, excludeLocal = false): SymbolOffset | undefined {
     // Find which segment (if any) address is in
     const currentSegment = this.findSegmentForAddress(address);
     // Only care about addresses in our source map
@@ -310,6 +314,7 @@ export class SourceMap {
 
     let ret: SymbolOffset | undefined;
     for (const symbol in this.symbols) {
+      if (excludeLocal && symbol.startsWith(".")) continue;
       const symAddr = this.symbols[symbol];
       const offset = address - symAddr;
       if (
