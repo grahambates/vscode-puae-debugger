@@ -224,4 +224,33 @@ describe("buildUnwindTable", () => {
     }
     expect(checked).toBeGreaterThan(0);
   });
+
+  it("skips a row whose CFA offset doesn't fit the packed 12-bit field, instead of wrapping it", () => {
+    // A function with a large (>4095-byte) stack frame and no frame pointer can have
+    // CFA = SP + offset with offset >= 4096, which can't be represented in the wire
+    // format's 12-bit offset field. Silently masking with `& 0xfff` would compute a
+    // wrong (truncated) CFA and corrupt every saved-register read derived from it.
+    const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+    const oversized: UnwindRow = { startPc: 0x1000, endPc: 0x1010, cfaReg: 15, cfaOffset: 5000 };
+    const t = buildUnwindTable([oversized])!;
+    expect(t).toBeDefined();
+
+    const view = new DataView(t.buffer.buffer);
+    for (let pc = t.startAddr; pc < t.endAddr; pc += 2) {
+      const o = ((pc - t.startAddr) >> 1) * PROFILER_UNWIND_ENTRY_SIZE;
+      // Left zeroed (the "no unwind info" sentinel), not a wrapped/corrupt CFA.
+      expect(view.getUint16(o, true)).toBe(0);
+    }
+    expect(warn).toHaveBeenCalled();
+    warn.mockRestore();
+  });
+
+  it("still writes a row whose CFA offset is exactly at the 12-bit boundary (0xfff)", () => {
+    const boundary: UnwindRow = { startPc: 0x2000, endPc: 0x2002, cfaReg: 15, cfaOffset: 0xfff };
+    const t = buildUnwindTable([boundary])!;
+    const view = new DataView(t.buffer.buffer);
+    const packed = view.getUint16(0, true);
+    expect((packed >> 12) & 0xf).toBe(15);
+    expect(packed & 0xfff).toBe(0xfff);
+  });
 });

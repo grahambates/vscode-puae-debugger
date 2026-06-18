@@ -55,7 +55,19 @@ export function buildUnwindTable(rows: UnwindRow[]): UnwindTable | undefined {
 
   for (const row of rows) {
     // Pack once per row. cfaReg is a m68k DWARF register number (0-15 → D0-D7/A0-A7),
-    // so it fits in 4 bits; cfaOffset is a small positive frame offset (CFA is above SP).
+    // so it fits in 4 bits; cfaOffset is a small positive frame offset (CFA is above SP)
+    // packed into the remaining 12 bits (0-4095). A frame larger than that can't be
+    // represented in this wire format — rather than silently wrapping (corrupting the
+    // CFA, and so every saved-register read computed from it), skip the row and leave
+    // its slots zeroed, the existing "no unwind info" sentinel for uncovered code.
+    if (row.cfaOffset < 0 || row.cfaOffset > 0xfff) {
+      console.warn(
+        `buildUnwindTable: CFA offset ${row.cfaOffset} out of the packed 12-bit range ` +
+          `for pc range 0x${row.startPc.toString(16)}-0x${row.endPc.toString(16)}; skipping ` +
+          `(profiler call stacks through this range will stop here instead of using a corrupt CFA)`,
+      );
+      continue;
+    }
     const cfa = (((row.cfaReg & 0xf) << 12) | (row.cfaOffset & 0xfff)) & 0xffff;
     const r13 = row.r13Offset ?? 0;
     const ra = row.raOffset ?? RA_FALLBACK_OFFSET;
