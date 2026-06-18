@@ -2,8 +2,6 @@ import { SourceMap } from "./sourceMap";
 import { buildUnwindTable } from "./unwindTable";
 import {
   ProfileFrame,
-  CallTreeNode,
-  ProfileResult,
   IProfileModel,
   IComputedNode,
   ILocation,
@@ -12,7 +10,7 @@ import {
 } from "./shared/profilerTypes";
 import { decodeDmaGrid, decodeCustomRegs } from "./dma";
 
-export type { ProfileFrame, CallTreeNode, ProfileResult, IProfileModel };
+export type { ProfileFrame, IProfileModel };
 
 // Flatten the source map's symbols into the address-sorted {address,name,size} list the
 // webview symbolizer consumes. Sizes come from getSymbolLengths (clamped to segment end).
@@ -86,25 +84,6 @@ export function decodeProfileStream(words: Uint32Array): InstructionSample[] {
     samples.push({ stack, cycles });
   }
   return samples;
-}
-
-// Symbolicate a PC into a ProfileFrame using the DWARF/symbol source map. Function
-// name comes from the nearest preceding symbol; file/line from the line table, looked
-// up at the *symbol's own* address rather than pc — a macro invoked from several call
-// sites can carry its own (included) file/line in the line table, and resolving at pc
-// would make instructions inside the same function look like different locations
-// (different `file`) and split the flame graph despite sharing one function name.
-function symbolicate(pc: number, sourceMap: SourceMap): ProfileFrame {
-  const synthetic = syntheticLabel(pc, sourceMap);
-  if (synthetic) return { func: synthetic, file: undefined, line: undefined, address: pc };
-  const sym = sourceMap.findSymbolOffset(pc, true);
-  const loc = sourceMap.lookupAddress(sym ? pc - sym.offset : pc);
-  return {
-    func: sym ? sym.symbol : `0x${pc.toString(16)}`,
-    file: loc?.path,
-    line: loc?.line,
-    address: pc,
-  };
 }
 
 // Expand a PC into its logical call frames, outermost-first: the physical (concrete)
@@ -190,54 +169,6 @@ export function applyContextReuse(samples: InstructionSample[], sourceMap: Sourc
     if (!outOfProgram && !noCfiBlob) lastProgramStack = s.stack;
     return s;
   });
-}
-
-// Aggregate per-instruction samples into a call tree. Each distinct PC is
-// symbolicated exactly once (memoized) and interned into uniqueFrames; tree nodes
-// reference frames by index. Stacks are walked root-first (outermost -> leaf), so
-// the synthetic root's children are the top-level functions.
-export function buildCallTree(samples: InstructionSample[], sourceMap: SourceMap): ProfileResult {
-  const uniqueFrames: ProfileFrame[] = [];
-  const frameIndexByPc = new Map<number, number>();
-  const internFrame = (pc: number): number => {
-    let idx = frameIndexByPc.get(pc);
-    if (idx === undefined) {
-      idx = uniqueFrames.length;
-      uniqueFrames.push(symbolicate(pc, sourceMap));
-      frameIndexByPc.set(pc, idx);
-    }
-    return idx;
-  };
-
-  const root: CallTreeNode = { frame: -1, self: 0, total: 0, children: [] };
-  // Per-node child lookup keyed by frame index — keeps tree building near-linear
-  // instead of O(children) per step.
-  const childMaps = new WeakMap<CallTreeNode, Map<number, CallTreeNode>>();
-  const childOf = (node: CallTreeNode, frame: number): CallTreeNode => {
-    let map = childMaps.get(node);
-    if (!map) { map = new Map(); childMaps.set(node, map); }
-    let child = map.get(frame);
-    if (!child) {
-      child = { frame, self: 0, total: 0, children: [] };
-      map.set(frame, child);
-      node.children.push(child);
-    }
-    return child;
-  };
-
-  let totalCycles = 0;
-  for (const s of applyContextReuse(samples, sourceMap)) {
-    totalCycles += s.cycles;
-    root.total += s.cycles;
-    let node = root;
-    for (let i = s.stack.length - 1; i >= 0; i--) {
-      node = childOf(node, internFrame(s.stack[i]));
-      node.total += s.cycles;
-    }
-    node.self += s.cycles; // leaf accrues self time
-  }
-
-  return { uniqueFrames, root, totalCycles, sampleCount: samples.length };
 }
 
 // Build the time-ordered IProfileModel the flame chart renders, from the per-
