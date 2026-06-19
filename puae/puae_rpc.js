@@ -999,12 +999,41 @@ export function setupRpcDispatcher(M, postMessage) {
           };
         });
         break;
-      case "getDmaData":
-        rpcRequest(() => ({ data: new Uint8Array(0) }));
+      case "getDmaData": {
+        const ptr = M._wasm_dma_get_grid_ptr();
+        const size = M._wasm_dma_get_grid_size();
+        rpcRequest(() => ({
+          data: size > 0
+            ? new Uint8Array(M.HEAPU8.buffer, ptr, size).slice()
+            : new Uint8Array(0),
+        }));
         break;
-      case "getDmaSnapshot":
-        rpcRequest(() => ({ chip: new Uint8Array(0), slow: new Uint8Array(0), custom: new Uint8Array(0) }));
+      }
+      case "getDmaSnapshot": {
+        const chipPtr = M._wasm_dma_get_chip_ptr();
+        const chipSize = M._wasm_dma_get_chip_size();
+        const chip = new Uint8Array(M.HEAPU8.buffer, chipPtr, chipSize).slice();
+
+        const slowPtr = M._wasm_dma_get_slow_ptr();
+        const slowSize = M._wasm_dma_get_slow_size();
+        const slow = slowSize > 0
+          ? new Uint8Array(M.HEAPU8.buffer, slowPtr, slowSize).slice()
+          : new Uint8Array(0);
+
+        // save_custom() output: 4-byte chipset_mask header + 256 big-endian u16 words.
+        // Profiler expects 256 little-endian u16 words (512 bytes), so byte-swap here.
+        M._wasm_read_custom_regs_raw();
+        const rawPtr = M._wasm_get_custom_regs_raw_buf();
+        const rawView = new DataView(M.HEAPU8.buffer, rawPtr, 520);
+        const custom = new Uint8Array(512);
+        const customView = new DataView(custom.buffer);
+        for (let i = 0; i < 256; i++) {
+          customView.setUint16(i * 2, rawView.getUint16(4 + i * 2, false), true);
+        }
+
+        rpcRequest(() => ({ chip, slow, custom }));
         break;
+      }
       default:
         console.warn(`[puae_rpc] unhandled command: ${message.command}`);
     }

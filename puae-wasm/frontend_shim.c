@@ -641,26 +641,41 @@ void wasm_write_instr_count(uint32_t lo, uint32_t hi) {
     puae_debug_write_instr_count(((uint64_t)hi << 32) | (uint64_t)lo);
 }
 
-// --- CPU profiler (vAmiga-format branch-stack capture) ---
+// --- CPU + DMA profiler ---
 
 extern int  g_wprofActive;
 extern void wasm_profile_prepare(void);
 extern void wasm_profile_finish(void);
+extern void wasm_dma_serialize_grid(void);
 
-// Runs numFrames PAL/NTSC frames synchronously while the profiler samples each
-// in-range instruction's call stack + cycle delta. Returns 1 on success.
+extern int  debug_dma;
+extern void record_dma_reset(int start);
+
+// Runs numFrames PAL/NTSC frames, sampling CPU call stacks and DMA slots.
+// Returns 1 on success.
 EMSCRIPTEN_KEEPALIVE
 int wasm_profile_start(int numFrames)
 {
     wasm_profile_prepare();
+    record_dma_reset(1);   /* alloc if needed, toggle buffer, set debug_dma=1 */
     int target = (int)g_frame_count + numFrames;
     while ((int)g_frame_count < target) {
         libretro_frame_end = false;
         retro_run();
     }
+    debug_dma = 0;
     wasm_profile_finish();
+    wasm_dma_serialize_grid();
     return 1;
 }
+
+// DMA grid, chip/slow RAM ptrs — implemented in ami_debug.c (has PUAE headers).
+extern const uint8_t *wasm_dma_get_grid_ptr(void);
+extern uint32_t       wasm_dma_get_grid_size(void);
+extern uint32_t       wasm_dma_get_chip_ptr(void);
+extern uint32_t       wasm_dma_get_chip_size(void);
+extern uint32_t       wasm_dma_get_slow_ptr(void);
+extern uint32_t       wasm_dma_get_slow_size(void);
 
 // --- Bulk instruction replay (Phase 2 exact-instruction rewind) ---
 

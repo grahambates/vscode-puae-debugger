@@ -407,6 +407,40 @@ wasm_profile_get_stats(void)
 	return g_wprof_stats_buf;
 }
 
+// ---- DMA profiler grid (vAmiga Cell[] format) ----
+// Populated by wasm_dma_serialize_grid() after wasm_profile_start completes.
+// 227 * 313 * 8 bytes = ~568KB; serialised by e9k_dma_serialize() in debug.c.
+#define E9K_DMA_CELL_BYTES 8
+static uint8_t g_dmaGrid[227 * 313 * E9K_DMA_CELL_BYTES];
+static uint32_t g_dmaGridSize;
+
+extern uint32_t e9k_dma_serialize(uint8_t *out);
+
+void
+wasm_dma_serialize_grid(void)
+{
+	g_dmaGridSize = e9k_dma_serialize(g_dmaGrid);
+}
+
+E9K_DEBUG_EXPORT const uint8_t *
+wasm_dma_get_grid_ptr(void) { return g_dmaGrid; }
+
+E9K_DEBUG_EXPORT uint32_t
+wasm_dma_get_grid_size(void) { return g_dmaGridSize; }
+
+// Chip and slow RAM wasm-heap pointers for the profiler memory-reconstruction snapshot.
+E9K_DEBUG_EXPORT uint32_t
+wasm_dma_get_chip_ptr(void)  { return (uint32_t)chipmem_bank.baseaddr; }
+
+E9K_DEBUG_EXPORT uint32_t
+wasm_dma_get_chip_size(void) { return (uint32_t)(chipmem_bank.mask + 1); }
+
+E9K_DEBUG_EXPORT uint32_t
+wasm_dma_get_slow_ptr(void)  { return (uint32_t)bogomem_bank.baseaddr; }
+
+E9K_DEBUG_EXPORT uint32_t
+wasm_dma_get_slow_size(void) { return bogomem_bank.baseaddr ? (uint32_t)(bogomem_bank.mask + 1) : 0; }
+
 static void
 e9k_debug_cpuTrace_instrHook(uint32_t pc24)
 {
