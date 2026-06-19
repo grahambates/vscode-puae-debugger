@@ -12,7 +12,6 @@ class PuaeAudioProcessor extends AudioWorkletProcessor {
     this.wr = 0;
     this.rd = 0;
     this.count = 0;
-    this.procCount = 0;
     this.port.onmessage = ({ data: { l, r } }) => {
       const n = l.length;
       const space = this.cap - this.count;
@@ -37,11 +36,6 @@ class PuaeAudioProcessor extends AudioWorkletProcessor {
       this.rd = (this.rd + 1) % this.cap;
     }
     this.count -= avail;
-    this.procCount++;
-    // Every ~172 calls (≈1 second) report fill level back to main thread for diagnostics
-    if (this.procCount % 172 === 1) {
-      this.port.postMessage({ type: 'diag', count: this.count, cap: this.cap, proc: this.procCount });
-    }
     return true;
   }
 }

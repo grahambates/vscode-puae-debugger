@@ -182,35 +182,57 @@ export async function main(config = {}) {
   }
 
   // PUAE always outputs at 44100 Hz; AudioContext may be at a different rate (e.g. 48000).
-  // Resample each chunk with linear interpolation so the worklet's ring buffer
-  // stays balanced — without this, a 48000 Hz context drains 960 samples per 20ms
-  // while we only push 882, emptying the buffer every cycle.
+  // Resample with linear interpolation so the worklet's ring buffer stays balanced —
+  // without this, a 48000 Hz context drains 960 samples per 20ms while we only push
+  // 882, emptying the buffer every cycle.
+  //
+  // The resampler is *stateful*: it carries a fractional read position and the last
+  // source sample across chunks. Resampling each ~882-sample chunk in isolation
+  // (mapping it to [0, dstN-1] on its own) put a one-sample spacing discontinuity at
+  // every chunk boundary — an audible 50 Hz buzz/jitter on any context whose rate
+  // isn't exactly 44100. Walking one continuous phase across chunks removes it.
   let audioPuaeRate  = 44100;
   let audioCtxRate   = 44100;
+  let audioResampleFrac = 0;            // fractional distance past audioPrevL/R, in [0,1)
+  let audioPrevL = 0, audioPrevR = 0;   // last source sample of the previous chunk
 
-  function resampleChunk(srcL, srcR, srcN) {
-    const dstN = Math.round(srcN * audioCtxRate / audioPuaeRate);
-    if (dstN === srcN) { return { l: srcL.slice(), r: srcR.slice() }; }
-    const l = new Float32Array(dstN);
-    const r = new Float32Array(dstN);
-    const scale = (srcN - 1) / Math.max(dstN - 1, 1);
-    for (let i = 0; i < dstN; i++) {
-      const pos  = i * scale;
-      const idx  = pos | 0;
-      const frac = pos - idx;
-      const idx2 = idx + 1 < srcN ? idx + 1 : idx;
-      l[i] = srcL[idx] + frac * (srcL[idx2] - srcL[idx]);
-      r[i] = srcR[idx] + frac * (srcR[idx2] - srcR[idx]);
-    }
-    return { l, r };
+  function resetResampler() {
+    audioResampleFrac = 0;
+    audioPrevL = 0;
+    audioPrevR = 0;
   }
 
-  let _pushCount = 0;
+  function resampleChunk(srcL, srcR, srcN) {
+    // Pass-through when rates match: copy out (callers transfer the buffer).
+    if (audioCtxRate === audioPuaeRate) {
+      return { l: srcL.slice(0, srcN), r: srcR.slice(0, srcN) };
+    }
+    const step = audioPuaeRate / audioCtxRate; // source samples advanced per output sample
+    const l = new Float32Array(Math.ceil(srcN / step) + 2);
+    const r = new Float32Array(l.length);
+    let frac = audioResampleFrac;
+    let prevL = audioPrevL, prevR = audioPrevR;
+    let o = 0;
+    for (let i = 0; i < srcN; i++) {
+      const curL = srcL[i], curR = srcR[i];
+      // Emit every output sample falling between prevSample and curSample.
+      while (frac < 1) {
+        l[o] = prevL + frac * (curL - prevL);
+        r[o] = prevR + frac * (curR - prevR);
+        o++;
+        frac += step;
+      }
+      frac -= 1;
+      prevL = curL; prevR = curR;
+    }
+    audioResampleFrac = frac;
+    audioPrevL = prevL; audioPrevR = prevR;
+    return { l: l.subarray(0, o), r: r.subarray(0, o) };
+  }
+
   function pushAccumToWorklet() {
     if (!workletNode) return;
     const n = M._wasm_get_audio_accum_count();
-    if (_pushCount < 5) console.log('[audio] push #' + _pushCount + ': n=' + n);
-    _pushCount++;
     if (n <= 0) return;
     const ptrL = M._wasm_get_audio_accum_L();
     const ptrR = M._wasm_get_audio_accum_R();
@@ -249,18 +271,15 @@ export async function main(config = {}) {
     workletNode.connect(gain);
     gain.connect(audioCtx.destination);
 
-    workletNode.port.onmessage = ({ data }) => {
-      if (data && data.type === 'diag') {
-        console.log('[worklet] fill=' + data.count + '/' + data.cap +
-                    ' (' + (data.count * 100 / data.cap | 0) + '%)' +
-                    ' proc#' + data.proc);
-      }
-    };
-
-    // Pre-fill the ring buffer with ~60ms of audio before the worklet starts
-    // draining it, so initial message-delivery latency doesn't cause underruns.
-    for (let i = 0; i < 3; i++) M._wasm_tick();
-    emuFrames += 3;
+    // Pre-fill the ring buffer with ~100ms of audio before the worklet starts
+    // draining it, so initial message-delivery latency and scheduling jitter
+    // don't immediately underrun. This cushion is what the catch-up logic in
+    // frame() (running up to 2 ticks per callback) restores after a main-thread
+    // stall — see the comment there.
+    resetResampler();
+    const PREFILL_FRAMES = 5;
+    for (let i = 0; i < PREFILL_FRAMES; i++) M._wasm_tick();
+    emuFrames += PREFILL_FRAMES;
     pushAccumToWorklet();
   }
   // -------------------------------------------------------
@@ -521,11 +540,17 @@ export async function main(config = {}) {
         if (M._wasm_is_paused()) { hitBreakpoint = true; break; }
       }
     } else {
-      // Run at most 1 tick per callback. Running 2 back-to-back to catch up
-      // after a main-thread delay creates a 32ms render gap (visible stutter);
-      // a 1-frame debt catches up gradually over the next few Worker callbacks
-      // with no perceptible visual impact.
-      const toRun = Math.min(dueFrames - emuFrames, 1);
+      // Run up to 2 ticks per callback so a frame debt incurred during a
+      // main-thread stall can be paid back. Capping at 1 (as before) meant
+      // emuFrames could never catch back up to wall-clock time after a hiccup,
+      // so each stall permanently shrank the audio cushion (production stuck at
+      // exactly the consumption rate, never above it) until the worklet ring
+      // buffer underran — the dominant cause of jittery/crackly audio. Allowing
+      // a single extra tick lets the cushion recover one frame per callback
+      // (882 samples produced vs ~882 consumed per 20ms = net +1 frame of
+      // headroom while behind), at the cost of an occasional dropped video
+      // frame, which is imperceptible.
+      const toRun = Math.min(dueFrames - emuFrames, 2);
       for (let i = 0; i < toRun; i++) {
         M._wasm_tick();
         ranCount++;
