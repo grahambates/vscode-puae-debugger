@@ -51,7 +51,13 @@ function startTickWorker(onTick, intervalMs) {
   `;
   const blob = new Blob([workerScript], { type: 'application/javascript' });
   const worker = new Worker(URL.createObjectURL(blob));
-  worker.onmessage = (event) => onTick(event.data);
+  // Use the main thread's performance.now() rather than the Worker's timestamp.
+  // When VS Code delays the main thread, Worker messages queue up with stale
+  // Worker-clock timestamps 20ms apart; processing them with those timestamps
+  // causes back-to-back ticks (burst renders). Using the main-thread clock
+  // means queued messages all see nearly the same real time, so the dueFrames
+  // guard skips duplicates instead of firing them all.
+  worker.onmessage = () => onTick(performance.now());
   worker.postMessage({ command: 'start', intervalMs });
   return worker;
 }
@@ -382,8 +388,11 @@ export async function main(config = {}) {
         if (M._wasm_is_paused()) { hitBreakpoint = true; break; }
       }
     } else {
-      // Run ticks to catch up (cap at 2 to avoid spiral-of-death if we fall behind).
-      const toRun = Math.min(dueFrames - emuFrames, 2);
+      // Run at most 1 tick per callback. Running 2 back-to-back to catch up
+      // after a main-thread delay creates a 32ms render gap (visible stutter);
+      // a 1-frame debt catches up gradually over the next few Worker callbacks
+      // with no perceptible visual impact.
+      const toRun = Math.min(dueFrames - emuFrames, 1);
       for (let i = 0; i < toRun; i++) {
         M._wasm_tick();
         ranCount++;
