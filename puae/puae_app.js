@@ -404,8 +404,8 @@ export async function main(config = {}) {
     // just back to its start (see puae_rpc.js's pushSnapshot). rpc is only
     // set inside the VS Code webview — debug.html has no RPC bridge.
     if (rpc && !wasPaused && ranCount > 0 && emuFrames - lastCheckpointFrame >= CHECKPOINT_INTERVAL_FRAMES) {
-      rpc.pushSnapshot();
       lastCheckpointFrame = emuFrames;
+      setTimeout(() => rpc.pushSnapshot(), 0);
     }
 
     // Non-fastLoad (programB64) boot: poll for exec/graphics libraries being
