@@ -2876,22 +2876,29 @@ postMessage({ type: 'ready' });
                     });
                     break;
                 case 'continueReverse':
-                    rpcRequest(() => {
+                    rpcRequest(async () => {
                         if (snapshotHistory.length === 0) return false;
                         const current = readInstrCount();
                         const target = current - 1n;
                         if (target < snapshotHistory[0].instrCount) return false;
                         let i = snapshotHistory.length - 1;
                         while (i >= 0 && snapshotHistory[i].instrCount > target) i--;
-                        // Scan backward through checkpoint intervals for a breakpoint hit
+                        // Scan backward through checkpoint intervals for a breakpoint hit,
+                        // rendering each interval to canvas for visual feedback.
                         for (; i >= 0; i--) {
                             const entry = snapshotHistory[i];
                             const next = snapshotHistory[i + 1];
                             const upper = (next && next.instrCount <= target + 1n)
                                 ? next.instrCount : target + 1n;
+                            // Scan pass: find latest breakpoint hit in this interval.
                             wasm_loadfile('stepback.vAmiga', entry.data);
                             wasm_configure('WARP_MODE', 'NEVER');
                             const match = replayScan(upper - entry.instrCount);
+                            // Render pass: replay same interval with video for visual feedback.
+                            wasm_loadfile('stepback.vAmiga', entry.data);
+                            wasm_configure('WARP_MODE', 'NEVER');
+                            replayInstructionsVideo(upper - entry.instrCount);
+                            await new Promise(r => setTimeout(r, 0)); // yield for canvas repaint
                             if (match !== null) {
                                 wasm_loadfile('stepback.vAmiga', entry.data);
                                 wasm_configure('WARP_MODE', 'NEVER');
@@ -2900,14 +2907,11 @@ postMessage({ type: 'ready' });
                                 return true;
                             }
                         }
-                        // No breakpoint found: land at oldest checkpoint
-                        const oldest = snapshotHistory[0];
-                        wasm_loadfile('stepback.vAmiga', oldest.data);
+                        // No breakpoint found — land at oldest checkpoint, signal "reached start".
+                        wasm_loadfile('stepback.vAmiga', snapshotHistory[0].data);
                         wasm_configure('WARP_MODE', 'NEVER');
-                        const replayCount = target - oldest.instrCount;
-                        if (replayCount > 0n) replayInstructionsVideo(replayCount);
                         snapshotIndex = 0;
-                        return true;
+                        return false;
                     });
                     break;
                 case 'stepBackFrame':
