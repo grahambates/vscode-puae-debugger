@@ -164,22 +164,8 @@ export async function main(config = {}) {
   // -------- audio setup --------
   let workletNode = null;
   let audioCtx = null;
-  let gain = null; // hoisted so the speed control can mute audio when speedFactor !== 1
-
-  // Browsers' autoplay policy suspends new AudioContexts until a user
-  // gesture. Resume on the first click/keypress in the panel, and re-arm
-  // these listeners (via audioCtx.onstatechange, set in startAudio) if the
-  // context ever drops out of 'running' again (e.g. after the webview tab
-  // is hidden) — mirrors vAmiga_ui.js's add/remove_unlock_user_action.
-  const resumeAudio = () => audioCtx?.resume();
-  function addUnlockListeners() {
-    document.addEventListener('pointerdown', resumeAudio);
-    document.addEventListener('keydown', resumeAudio);
-  }
-  function removeUnlockListeners() {
-    document.removeEventListener('pointerdown', resumeAudio);
-    document.removeEventListener('keydown', resumeAudio);
-  }
+  let gain = null; // hoisted so the speed/warp controls can mute audio
+  let audioMuted = true; // starts muted — the toggle button is the explicit opt-in
 
   // PUAE always outputs at 44100 Hz; AudioContext may be at a different rate (e.g. 48000).
   // Resample with linear interpolation so the worklet's ring buffer stays balanced —
@@ -254,14 +240,12 @@ export async function main(config = {}) {
     console.log('[audio] sampleRate=' + audioCtxRate + ' (PUAE=' + audioPuaeRate + ')' +
                 (audioCtxRate !== audioPuaeRate ? ' — resampling active' : ' — pass-through'));
 
-    // Re-arm (or clear) the unlock listeners whenever the context's running
-    // state changes — e.g. autoplay-suspended at creation, or re-suspended
-    // after the webview tab is hidden.
+    // If the context gets re-suspended (e.g. tab hidden), resume it
+    // automatically when the user next clicks the audio button — no blanket
+    // document listeners needed since the button is the explicit gesture.
     audioCtx.onstatechange = () => {
-      if (audioCtx.state === 'running') removeUnlockListeners();
-      else addUnlockListeners();
+      if (audioCtx.state !== 'running' && !audioMuted) audioCtx.resume();
     };
-    if (audioCtx.state !== 'running') addUnlockListeners();
     await audioCtx.audioWorklet.addModule(audioWorkletUrl);
     workletNode = new AudioWorkletNode(audioCtx, 'puae-audio-processor', {
       outputChannelCount: [2], numberOfInputs: 0, numberOfOutputs: 1
@@ -355,7 +339,7 @@ export async function main(config = {}) {
   // Audio can't play correctly at non-1x speed or in warp mode (pitch/rate
   // would need to change too), so mute it whenever either is active.
   function applyAudioMute() {
-    if (gain) gain.gain.value = (warpMode || speedFactor !== 1) ? 0 : 0.5;
+    if (gain) gain.gain.value = (audioMuted || warpMode || speedFactor !== 1) ? 0 : 0.5;
   }
 
   const speedSelect = document.getElementById('speed');
@@ -372,6 +356,17 @@ export async function main(config = {}) {
     warpCheckbox.addEventListener('change', () => {
       warpMode = warpCheckbox.checked;
       if (speedSelect) speedSelect.disabled = warpMode;
+      applyAudioMute();
+    });
+  }
+
+  const audioToggle = document.getElementById('audio-toggle');
+  if (audioToggle) {
+    audioToggle.addEventListener('click', () => {
+      audioMuted = !audioMuted;
+      audioToggle.textContent = audioMuted ? '🔇' : '🔊';
+      audioToggle.title = audioMuted ? 'Unmute audio' : 'Mute audio';
+      if (!audioMuted) audioCtx?.resume(); // satisfies autoplay policy on first click
       applyAudioMute();
     });
   }

@@ -20,6 +20,18 @@
   #controls label.warp {
     margin-left: 12px;
   }
+  #audio-toggle {
+    margin-left: 12px;
+    background: none;
+    border: none;
+    cursor: pointer;
+    color: var(--vscode-foreground);
+    font-size: 14px;
+    padding: 0 2px;
+    vertical-align: middle;
+    opacity: 0.65;
+  }
+  #audio-toggle:hover { opacity: 1; }
   #dma-overlay, #channel-visibility {
     padding: 4px 6px;
     font-family: var(--vscode-font-family, sans-serif);
@@ -40,6 +52,7 @@
     <option value="0.1">10%</option>
   </select>
   <label class="warp"><input type="checkbox" id="warp"> Warp</label>
+  <button id="audio-toggle" title="Unmute audio">🔇</button>
 </div>
 <div id="dma-overlay"></div>
 <div id="channel-visibility"></div>
