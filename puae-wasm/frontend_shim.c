@@ -699,6 +699,10 @@ void wasm_replay_scan(uint32_t count) { g_replay_scan_match = puae_debug_replay_
 EMSCRIPTEN_KEEPALIVE
 void wasm_replay_scan_frame(uint32_t count) { g_replay_scan_match = puae_debug_replay_scan_frame(count); }
 
+// Combined scan + video in one pass — see puae_debug_replay_scan_video.
+EMSCRIPTEN_KEEPALIVE
+void wasm_replay_scan_video(uint32_t count) { g_replay_scan_match = puae_debug_replay_scan_video(count); }
+
 EMSCRIPTEN_KEEPALIVE
 uint32_t wasm_get_replay_scan_match_lo(void) { return (uint32_t)(g_replay_scan_match & 0xFFFFFFFFu); }
 

@@ -63,6 +63,12 @@ puae_debug_replay_scan(uint32_t count);
 uint64_t
 puae_debug_replay_scan_frame(uint32_t count);
 
+// Combined scan + video: like puae_debug_replay_scan but also enables video
+// so the framebuffer is updated in the same pass, avoiding a second
+// restore+replay in continueReverse's per-interval render step.
+uint64_t
+puae_debug_replay_scan_video(uint32_t count);
+
 // Temporarily zeroes e9k_debug_breakpointCount (saving its previous value),
 // for wasm_unserialize to call across retro_unserialize. See ami_debug.c for
 // why this is needed. puae_debug_resume_breakpoints restores the saved count.

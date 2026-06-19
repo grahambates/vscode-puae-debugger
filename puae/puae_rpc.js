@@ -148,6 +148,19 @@ function replayScan(M, count) {
   return match === REPLAY_SCAN_NO_MATCH ? null : match;
 }
 
+// Combined scan + video in one pass: like replayScan but also enables
+// replayVideoEnabled so the framebuffer is updated simultaneously. Avoids the
+// second restore+replay that continueReverse's separate scan and render passes
+// would otherwise require.
+function replayScanVideo(M, count) {
+  if (count <= 0n) return null;
+  M._wasm_replay_scan_video(Number(count));
+  const lo = M._wasm_get_replay_scan_match_lo();
+  const hi = M._wasm_get_replay_scan_match_hi();
+  const match = (BigInt(hi >>> 0) << 32n) | BigInt(lo >>> 0);
+  return match === REPLAY_SCAN_NO_MATCH ? null : match;
+}
+
 // Like replayScan, but returns the instrCount of the latest frame boundary
 // (vblank) crossed within the replayed range, or null if none was crossed.
 function replayScanFrame(M, count) {
@@ -923,13 +936,10 @@ export function setupRpcDispatcher(M, postMessage) {
             const entry = snapshotHistory[i];
             const next = snapshotHistory[i + 1];
             const upper = next && next.instrCount <= target + 1n ? next.instrCount : target + 1n;
-            const count = Number(upper - entry.instrCount);
-            // Scan pass: find latest breakpoint hit in this interval.
+            // Combined scan+video pass: scan for breakpoints and update the
+            // framebuffer in one m68k_go run, avoiding a second restore+replay.
             restoreCheckpoint(M, entry);
-            const match = replayScan(M, upper - entry.instrCount);
-            // Render pass: replay same interval with video for visual feedback.
-            restoreCheckpoint(M, entry);
-            if (count > 0) M._wasm_replay_instructions_video(count);
+            const match = replayScanVideo(M, upper - entry.instrCount);
             if (typeof globalThis.drawCurrentFrame === "function") globalThis.drawCurrentFrame();
             await new Promise(r => setTimeout(r, 0)); // yield for canvas repaint
             if (match !== null) {

@@ -1265,6 +1265,25 @@ puae_debug_replay_scan(uint32_t count)
 	return puae_debug_scanLastMatch;
 }
 
+// Combined scan + video: like puae_debug_replay_scan but also enables
+// replayVideoEnabled so the framebuffer is updated during the same pass.
+// Avoids the second restore+replay that continueReverse's separate scan and
+// render passes would otherwise require.
+E9K_DEBUG_EXPORT uint64_t
+puae_debug_replay_scan_video(uint32_t count)
+{
+	if (count == 0) {
+		return (uint64_t)-1;
+	}
+	puae_debug_scanMode = 1;
+	puae_debug_scanLastMatch = (uint64_t)-1;
+	puae_debug_replayVideoEnabled = 1;
+	puae_debug_replay_instructions(count);
+	puae_debug_scanMode = 0;
+	puae_debug_replayVideoEnabled = 0;
+	return puae_debug_scanLastMatch;
+}
+
 // Like puae_debug_replay_scan, but records the instrCount of the most recent
 // frame boundary (vblank) crossed during the replay range, for
 // stepBackFrame. Returns (uint64_t)-1 if no frame boundary was crossed.
