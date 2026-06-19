@@ -544,6 +544,35 @@ wasm_dma_get_slow_ptr(void)  { return (uint32_t)bogomem_bank.baseaddr; }
 E9K_DEBUG_EXPORT uint32_t
 wasm_dma_get_slow_size(void) { return bogomem_bank.baseaddr ? (uint32_t)(bogomem_bank.mask + 1) : 0; }
 
+// ---- DMA live overlay controls ----
+extern void e9k_dma_set_channel_enabled(int type, int enabled);
+extern void e9k_dma_draw_overlay(uint8_t *rgba, int width, int height, int opacity);
+
+int g_dmaOverlayEnabled = 0;
+int g_dmaOverlayOpacity = 128;
+
+E9K_DEBUG_EXPORT void
+wasm_dma_overlay_enable(int on)
+{
+	g_dmaOverlayEnabled = on ? 1 : 0;
+	if (on && !debug_dma)
+		debug_dma = 1;
+}
+
+E9K_DEBUG_EXPORT void
+wasm_dma_overlay_set_channel(int type, int on)
+{
+	e9k_dma_set_channel_enabled(type, on);
+}
+
+E9K_DEBUG_EXPORT void
+wasm_dma_overlay_set_opacity(int opacity)
+{
+	if (opacity < 0) opacity = 0;
+	if (opacity > 255) opacity = 255;
+	g_dmaOverlayOpacity = opacity;
+}
+
 static void
 e9k_debug_cpuTrace_instrHook(uint32_t pc24)
 {

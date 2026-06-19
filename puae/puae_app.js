@@ -357,6 +357,80 @@ export async function main(config = {}) {
     });
   }
 
+  // DMA overlay panel (#dma-overlay, optional).
+  // Controls: master enable toggle, per-channel checkboxes, opacity slider.
+  // All wired directly to the WASM overlay functions (no RPC round-trip needed).
+  const DMA_CHANNELS = [
+    { type: 1, label: 'Refresh', color: '#444444' },
+    { type: 2, label: 'CPU',     color: '#a25342' },
+    { type: 3, label: 'Copper',  color: '#eeee00' },
+    { type: 4, label: 'Audio',   color: '#ff0000' },
+    { type: 5, label: 'Blitter', color: '#008888' },
+    { type: 6, label: 'Bitplane',color: '#0000ff' },
+    { type: 7, label: 'Sprite',  color: '#ff00ff' },
+    { type: 8, label: 'Disk',    color: '#ffffff' },
+    { type: 9, label: 'Conflict',color: '#ffb840' },
+  ];
+
+  const dmaOverlayPanel = document.getElementById('dma-overlay');
+  if (dmaOverlayPanel) {
+    // Master toggle
+    const masterLabel = document.createElement('label');
+    masterLabel.style.cssText = 'display:block;margin-bottom:4px;font-weight:bold;';
+    const masterCheck = document.createElement('input');
+    masterCheck.type = 'checkbox';
+    masterCheck.id = 'dma-overlay-enable';
+    masterLabel.appendChild(masterCheck);
+    masterLabel.appendChild(document.createTextNode(' DMA Overlay'));
+    dmaOverlayPanel.appendChild(masterLabel);
+
+    // Per-channel checkboxes
+    const channelRow = document.createElement('div');
+    channelRow.style.cssText = 'display:flex;flex-wrap:wrap;gap:4px 10px;margin-bottom:4px;';
+    for (const ch of DMA_CHANNELS) {
+      const lbl = document.createElement('label');
+      lbl.style.cssText = `display:flex;align-items:center;gap:3px;`;
+      const swatch = document.createElement('span');
+      swatch.style.cssText = `display:inline-block;width:10px;height:10px;background:${ch.color};border:1px solid #666;`;
+      const cb = document.createElement('input');
+      cb.type = 'checkbox';
+      cb.checked = true;
+      cb.dataset.dmaType = ch.type;
+      cb.addEventListener('change', () => {
+        M._wasm_dma_overlay_set_channel(ch.type, cb.checked ? 1 : 0);
+      });
+      lbl.appendChild(cb);
+      lbl.appendChild(swatch);
+      lbl.appendChild(document.createTextNode(ch.label));
+      channelRow.appendChild(lbl);
+    }
+    dmaOverlayPanel.appendChild(channelRow);
+
+    // Opacity slider
+    const opacityRow = document.createElement('div');
+    opacityRow.style.cssText = 'display:flex;align-items:center;gap:6px;';
+    const opacityLbl = document.createElement('label');
+    opacityLbl.textContent = 'Opacity:';
+    const opacitySlider = document.createElement('input');
+    opacitySlider.type = 'range';
+    opacitySlider.min = 0;
+    opacitySlider.max = 255;
+    opacitySlider.value = 128;
+    opacitySlider.style.cssText = 'flex:1;';
+    opacitySlider.addEventListener('input', () => {
+      M._wasm_dma_overlay_set_opacity(parseInt(opacitySlider.value, 10));
+    });
+    opacityRow.appendChild(opacityLbl);
+    opacityRow.appendChild(opacitySlider);
+    dmaOverlayPanel.appendChild(opacityRow);
+
+    masterCheck.addEventListener('change', () => {
+      M._wasm_dma_overlay_enable(masterCheck.checked ? 1 : 0);
+      channelRow.style.opacity = masterCheck.checked ? '1' : '0.4';
+      opacityRow.style.opacity = masterCheck.checked ? '1' : '0.4';
+    });
+  }
+
   // Set up the audio graph now — this doesn't itself need a user gesture.
   // No "enable audio" button needed: the unlock listeners registered above
   // (via audioCtx.onstatechange) resume playback on the first click/keypress.

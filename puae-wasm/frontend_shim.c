@@ -55,6 +55,11 @@ static int   g_audio_accum_n = 0; // frames accumulated, not yet packed into slo
 // JS reads this via wasm_get_fb_rgba() and feeds it straight into putImageData.
 static uint8_t g_rgba_buf[MAX_FB_PIXELS * 4];
 
+// DMA live overlay — state lives in ami_debug.c, draw function in debug.c.
+extern int  g_dmaOverlayEnabled;
+extern int  g_dmaOverlayOpacity;
+extern void e9k_dma_draw_overlay(uint8_t *rgba, int width, int height, int opacity);
+
 static void shim_video_refresh(const void *data, unsigned width, unsigned height, size_t pitch) {
     if (puae_debug_is_replaying() && !puae_debug_is_replay_video_enabled()) {
         // Suppress frame-count/pixel-buffer/profiler updates during replay —
@@ -120,6 +125,9 @@ static void shim_video_refresh(const void *data, unsigned width, unsigned height
                 src_row += pitch;
             }
         }
+
+        if (g_dmaOverlayEnabled)
+            e9k_dma_draw_overlay(g_rgba_buf, (int)safe_w, (int)safe_h, g_dmaOverlayOpacity);
     }
 
     if (puae_debug_is_replaying()) {
