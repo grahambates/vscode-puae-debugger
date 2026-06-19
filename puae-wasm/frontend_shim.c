@@ -641,6 +641,27 @@ void wasm_write_instr_count(uint32_t lo, uint32_t hi) {
     puae_debug_write_instr_count(((uint64_t)hi << 32) | (uint64_t)lo);
 }
 
+// --- CPU profiler (vAmiga-format branch-stack capture) ---
+
+extern int  g_wprofActive;
+extern void wasm_profile_prepare(void);
+extern void wasm_profile_finish(void);
+
+// Runs numFrames PAL/NTSC frames synchronously while the profiler samples each
+// in-range instruction's call stack + cycle delta. Returns 1 on success.
+EMSCRIPTEN_KEEPALIVE
+int wasm_profile_start(int numFrames)
+{
+    wasm_profile_prepare();
+    int target = (int)g_frame_count + numFrames;
+    while ((int)g_frame_count < target) {
+        libretro_frame_end = false;
+        retro_run();
+    }
+    wasm_profile_finish();
+    return 1;
+}
+
 // --- Bulk instruction replay (Phase 2 exact-instruction rewind) ---
 
 EMSCRIPTEN_KEEPALIVE

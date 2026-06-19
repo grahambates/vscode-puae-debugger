@@ -1,8 +1,7 @@
 import * as vscode from "vscode";
 import * as path from "path";
-import { VAmiga } from "./vAmiga";
 import { VamigaDebugAdapter } from "./vAmigaDebugAdapter";
-import { ProfilerManager } from "./profilerManager";
+import { ProfilerManager, ProfilerRpcClient } from "./profilerManager";
 import { encodeCapture } from "./vamigaProfile";
 import { packBulk } from "./profilerBulk";
 import { ProfileEditorProvider } from "./profileEditorProvider";
@@ -33,9 +32,9 @@ export class ProfilerViewerProvider {
   constructor(
     private readonly extensionUri: vscode.Uri,
     private readonly storageUri: vscode.Uri, // writable dir (in localResourceRoots) for the bulk blob
-    private readonly vAmiga: VAmiga,
+    private readonly getClient: () => ProfilerRpcClient | undefined,
   ) {
-    this.manager = new ProfilerManager(this.vAmiga, () => {
+    this.manager = new ProfilerManager(getClient, () => {
       try {
         return VamigaDebugAdapter.getActiveAdapter()?.getSourceMap();
       } catch {

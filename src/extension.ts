@@ -32,7 +32,11 @@ export function activate(context: vscode.ExtensionContext) {
   );
   // Writable, webview-fetchable scratch dir for the profiler's bulk capture blobs.
   const profilerStorage = context.globalStorageUri;
-  const profilerViewer = new ProfilerViewerProvider(context.extensionUri, profilerStorage, vAmiga);
+  const profilerViewer = new ProfilerViewerProvider(
+    context.extensionUri,
+    profilerStorage,
+    () => VamigaDebugAdapter.getActiveAdapter()?.getProfilerClient(),
+  );
 
   // Register the debug adapters
   context.subscriptions.push(

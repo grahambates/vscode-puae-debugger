@@ -968,6 +968,43 @@ export function setupRpcDispatcher(M, postMessage) {
           return false;
         });
         break;
+      case "profileSetUnwind": {
+        const raw = args.data;
+        const bytes = raw instanceof Uint8Array ? raw
+          : raw instanceof ArrayBuffer ? new Uint8Array(raw)
+          : new Uint8Array(0);
+        const ptr = bytes.length > 0 ? M._malloc(bytes.length) : 0;
+        if (ptr) M.HEAPU8.set(bytes, ptr);
+        M._wasm_profile_set_unwind(ptr, bytes.length, args.startAddr >>> 0, args.endAddr >>> 0);
+        if (ptr) M._free(ptr);
+        rpcRequest(() => ({ ok: true }));
+        break;
+      }
+      case "startProfiling":
+        rpcRequest(() => ({ ok: !!M._wasm_profile_start(args.numFrames ?? 1) }));
+        break;
+      case "getProfileData":
+        rpcRequest(() => {
+          const stats = JSON.parse(M.UTF8ToString(M._wasm_profile_get_stats()));
+          const ptr = M._wasm_profile_get_buf_ptr();
+          const words = M._wasm_profile_get_buf_words();
+          return {
+            data: new Uint8Array(M.HEAPU8.buffer, ptr, words * 4).slice(),
+            start: stats.start,
+            end: stats.end,
+            total: stats.total,
+            inRange: stats.inRange,
+            frameCycles: 0,
+            isPAL: true,
+          };
+        });
+        break;
+      case "getDmaData":
+        rpcRequest(() => ({ data: new Uint8Array(0) }));
+        break;
+      case "getDmaSnapshot":
+        rpcRequest(() => ({ chip: new Uint8Array(0), slow: new Uint8Array(0), custom: new Uint8Array(0) }));
+        break;
       default:
         console.warn(`[puae_rpc] unhandled command: ${message.command}`);
     }

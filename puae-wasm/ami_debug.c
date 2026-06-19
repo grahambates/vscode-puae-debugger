@@ -308,6 +308,105 @@ e9k_debug_profiler_instrHook(uint32_t pc24)
 	}
 }
 
+// ---- wasm_profile: vAmiga-format CPU profiler (assembly branch-stack mode) ----
+// Each record: [depth, leaf_pc, callerN-1, ..., caller0, cycleDelta] (uint32_t).
+// Address range from wasm_profile_set_unwind; call stack from the JSR/BSR/RTS/RTE
+// shadow tracked in e9k_debug_instructionHookImpl below.
+
+#define WASM_PROFILE_BUF_WORDS (1 << 20)   /* 4 MB ≈ 174k samples at avg depth 5 */
+static uint32_t g_wprofBuf[WASM_PROFILE_BUF_WORDS];
+static uint32_t g_wprofBufLen;
+int             g_wprofActive;             /* non-static: read by wasm_profile_start */
+static uint32_t g_wprofStartAddr;
+static uint32_t g_wprofEndAddr;
+static uint64_t g_wprofTotalInstrs;
+static uint64_t g_wprofInRangeInstrs;
+static evt_t    g_wprofLastCycle;
+static int      g_wprofLastCycleValid;
+static int      g_wprofWasPaused;
+
+void
+wasm_profile_prepare(void)
+{
+	g_wprofBufLen          = 0;
+	g_wprofTotalInstrs     = 0;
+	g_wprofInRangeInstrs   = 0;
+	g_wprofLastCycleValid  = 0;
+	g_wprofActive          = 1;
+	g_wprofWasPaused       = e9k_debug_paused;
+	e9k_debug_paused       = 0;
+}
+
+void
+wasm_profile_finish(void)
+{
+	g_wprofActive    = 0;
+	e9k_debug_paused = g_wprofWasPaused;
+}
+
+static void
+wasm_profile_instrHook(uint32_t pc24)
+{
+	if (!g_wprofActive) return;
+	if (puae_debug_replayMode) return;
+
+	g_wprofTotalInstrs++;
+	if (pc24 < g_wprofStartAddr || pc24 >= g_wprofEndAddr) return;
+	g_wprofInRangeInstrs++;
+
+	evt_t now = get_cycles();
+	uint32_t cycleDelta = 1;
+	if (g_wprofLastCycleValid && CYCLE_UNIT > 0) {
+		evt_t delta = now - g_wprofLastCycle;
+		if (delta > 0) {
+			uint64_t d = (uint64_t)delta / (uint64_t)CYCLE_UNIT;
+			if (d > 0) cycleDelta = (uint32_t)(d < 0xfffffu ? d : 0xfffffu);
+		}
+	}
+	g_wprofLastCycle      = now;
+	g_wprofLastCycleValid = 1;
+
+	/* Stack: leaf (current PC) + shadow call stack, innermost caller first */
+	uint32_t stkDepth = (uint32_t)e9k_debug_callstackDepth;
+	if (stkDepth > 63) stkDepth = 63;
+	uint32_t depth  = 1 + stkDepth;
+	uint32_t needed = 1 + depth + 1;   /* depth-word + PCs + cycleDelta */
+	if (g_wprofBufLen + needed > WASM_PROFILE_BUF_WORDS) return;
+
+	g_wprofBuf[g_wprofBufLen++] = depth;
+	g_wprofBuf[g_wprofBufLen++] = pc24;   /* leaf */
+	for (uint32_t i = 0; i < stkDepth; i++)
+		g_wprofBuf[g_wprofBufLen++] = e9k_debug_callstack[stkDepth - 1 - i];
+	g_wprofBuf[g_wprofBufLen++] = cycleDelta;
+}
+
+E9K_DEBUG_EXPORT void
+wasm_profile_set_unwind(const void *data, uint32_t len, uint32_t startAddr, uint32_t endAddr)
+{
+	(void)data; (void)len;   /* ignored: branch-stack is tracked in C */
+	g_wprofStartAddr = startAddr;
+	g_wprofEndAddr   = endAddr;
+}
+
+E9K_DEBUG_EXPORT uint32_t *
+wasm_profile_get_buf_ptr(void) { return g_wprofBuf; }
+
+E9K_DEBUG_EXPORT uint32_t
+wasm_profile_get_buf_words(void) { return g_wprofBufLen; }
+
+static char g_wprof_stats_buf[256];
+
+E9K_DEBUG_EXPORT const char *
+wasm_profile_get_stats(void)
+{
+	snprintf(g_wprof_stats_buf, sizeof(g_wprof_stats_buf),
+		"{\"start\":%u,\"end\":%u,\"total\":%llu,\"inRange\":%llu}",
+		(unsigned)g_wprofStartAddr, (unsigned)g_wprofEndAddr,
+		(unsigned long long)g_wprofTotalInstrs,
+		(unsigned long long)g_wprofInRangeInstrs);
+	return g_wprof_stats_buf;
+}
+
 static void
 e9k_debug_cpuTrace_instrHook(uint32_t pc24)
 {
@@ -1466,6 +1565,7 @@ e9k_debug_instructionHookImpl(uaecptr pc, uae_u16 opcode)
 	uint32_t pc24 = e9k_debug_maskAddr(pc);
 
 	e9k_debug_profiler_instrHook(pc24);
+	wasm_profile_instrHook(pc24);
 	e9k_debug_cpuTrace_instrHook(pc24);
 
 	if (e9k_debug_stepInstrAfter) {

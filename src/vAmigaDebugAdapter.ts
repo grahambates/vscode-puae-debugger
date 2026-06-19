@@ -59,6 +59,7 @@ import {
 } from "./repl";
 import { exceptionBreakpointFilters } from "./hardware";
 import { VariablesManager } from "./variablesManager";
+import { ProfilerRpcClient } from "./profilerManager";
 import { BreakpointManager } from "./breakpointManager";
 import { StackManager } from "./stackManager";
 import { DisassemblyManager } from "./disassemblyManager";
@@ -213,6 +214,11 @@ export class VamigaDebugAdapter extends LoggingDebugSession {
    */
   public getEmulator(): Emulator {
     return this.emulator;
+  }
+
+  // Both VAmiga and PuaeEmulator are WebviewEmulators and satisfy ProfilerRpcClient.
+  public getProfilerClient(): ProfilerRpcClient {
+    return this.emulator as unknown as ProfilerRpcClient;
   }
 
   public notifySteppedBack(): void {

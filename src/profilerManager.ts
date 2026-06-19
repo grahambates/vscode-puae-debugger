@@ -364,7 +364,7 @@ export function buildModelFromCapture(
 // receives the compact tree.
 export class ProfilerManager {
   constructor(
-    private readonly rpc: ProfilerRpcClient,
+    private readonly getClient: () => ProfilerRpcClient | undefined,
     private readonly getSourceMap: () => SourceMap | undefined,
   ) {}
 
@@ -384,6 +384,8 @@ export class ProfilerManager {
   }
 
   public async capture(numFrames = 1): Promise<IProfileModel> {
+    const rpc = this.getClient();
+    if (!rpc) throw new Error("Profiler: no active emulator session — start a debug session first");
     const sourceMap = this.getSourceMap();
     if (!sourceMap) throw new Error("Profiler: no source map (is a program loaded with DWARF info?)");
 
@@ -391,7 +393,7 @@ export class ProfilerManager {
     const table = buildUnwindTable(rows);
     if (table) {
       // C/C++ with DWARF .debug_frame: the emulator unwinds A5/A7 with this table.
-      await this.rpc.sendRpcCommand("profileSetUnwind", {
+      await rpc.sendRpcCommand("profileSetUnwind", {
         data: table.buffer,
         startAddr: table.startAddr,
         endAddr: table.endAddr,
@@ -407,7 +409,7 @@ export class ProfilerManager {
       if (ranges.length === 0) throw new Error("Profiler: no loaded code segment");
       const startAddr = Math.min(...ranges.map((s) => s.address));
       const endAddr = Math.max(...ranges.map((s) => s.address + s.size));
-      await this.rpc.sendRpcCommand("profileSetUnwind", {
+      await rpc.sendRpcCommand("profileSetUnwind", {
         data: new Uint8Array(0),
         startAddr,
         endAddr,
@@ -415,11 +417,11 @@ export class ProfilerManager {
     }
 
     // Capture runs N frames synchronously in the emulator; allow generous time.
-    await this.rpc.sendRpcCommand("startProfiling", { numFrames }, 30000);
+    await rpc.sendRpcCommand("startProfiling", { numFrames }, 30000);
 
     const u8 = (d: unknown): Uint8Array => (d instanceof Uint8Array ? d : new Uint8Array((d as ArrayLike<number>) ?? 0));
 
-    const res = await this.rpc.sendRpcCommand<{
+    const res = await rpc.sendRpcCommand<{
       data: Uint8Array;
       start: number;
       end: number;
@@ -444,11 +446,11 @@ export class ProfilerManager {
     // Fetch the DMA grid (captured in the same frame) + the reconstruction snapshot into the
     // RawCapture. Failure here must not break the CPU profile, so it's best-effort.
     try {
-      const dmaRes = await this.rpc.sendRpcCommand<{ data: Uint8Array }>("getDmaData");
+      const dmaRes = await rpc.sendRpcCommand<{ data: Uint8Array }>("getDmaData");
       const dmaBytes = u8(dmaRes.data);
       if (dmaBytes.length) {
         raw.dma = dmaBytes;
-        const snap = await this.rpc.sendRpcCommand<{ chip: Uint8Array; slow: Uint8Array; custom: Uint8Array }>(
+        const snap = await rpc.sendRpcCommand<{ chip: Uint8Array; slow: Uint8Array; custom: Uint8Array }>(
           "getDmaSnapshot",
         );
         raw.snapshot = { chip: u8(snap.chip), slow: u8(snap.slow), custom: u8(snap.custom) };

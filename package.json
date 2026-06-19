@@ -99,7 +99,7 @@
         },
         {
           "command": "vamiga-debugger.openProfiler",
-          "when": "debugType == 'vamiga'"
+          "when": "debugType == 'vamiga' || debugType == 'puae'"
         }
       ],
       "debug/toolBar": [
@@ -130,7 +130,7 @@
         },
         {
           "command": "vamiga-debugger.openProfiler",
-          "when": "debugType == 'vamiga'",
+          "when": "debugType == 'vamiga' || debugType == 'puae'",
           "group": "navigation@54.5"
         }
       ],
