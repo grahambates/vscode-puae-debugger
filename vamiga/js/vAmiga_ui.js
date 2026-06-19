@@ -4200,6 +4200,74 @@ $('.layer').change( function(event) {
     wasm_cut_layers( layer_value );
 });
 
+// Per-bitplane/sprite/audio-channel visibility toggles (debugger feature).
+// wasm_configure() uses parseBool() and can't handle numeric bitmasks, so we
+// go via wasm_retro_shell() which takes the same commands as the RetroShell:
+//   denise set HIDDEN_BITPLANES <mask>   (0x00–0xFF, bit N = BPL N+1 hidden)
+//   denise set HIDDEN_SPRITES <mask>     (0x00–0xFF, bit N = SPR N hidden)
+//   audio set VOL<N> <0|100>             (mute/unmute individual channel)
+{
+    const channelVisPanel = document.getElementById('channel-visibility');
+    if (channelVisPanel) {
+        let bpMask = 0, sprMask = 0;
+
+        function makeChannelGroup(title, count, labelFn, setter) {
+            const section = document.createElement('div');
+            section.style.cssText = 'margin-top:8px;';
+            const heading = document.createElement('label');
+            heading.className = 'mt-1';
+            heading.textContent = title;
+            section.appendChild(heading);
+            const row = document.createElement('div');
+            row.style.cssText = 'display:flex;flex-direction:row;flex-wrap:wrap;';
+            for (let i = 0; i < count; i++) {
+                const wrapper = document.createElement('div');
+                wrapper.className = 'custom-control custom-checkbox custom-control-lg';
+                const cb = document.createElement('input');
+                cb.type = 'checkbox';
+                cb.checked = true;
+                cb.className = 'custom-control-input';
+                const uid = 'dbg_ch_' + title.replace(/\s+/g, '_') + '_' + i;
+                cb.id = uid;
+                const lbl = document.createElement('label');
+                lbl.className = 'custom-control-label text-muted';
+                lbl.htmlFor = uid;
+                lbl.style.cssText = 'width:36px;';
+                lbl.textContent = labelFn(i);
+                const idx = i;
+                cb.addEventListener('change', () => setter(idx, cb.checked));
+                wrapper.appendChild(cb);
+                wrapper.appendChild(lbl);
+                row.appendChild(wrapper);
+            }
+            section.appendChild(row);
+            return section;
+        }
+
+        channelVisPanel.appendChild(makeChannelGroup(
+            'Bitplanes', 8,
+            i => 'BPL' + (i + 1),
+            (i, visible) => {
+                if (visible) bpMask &= ~(1 << i); else bpMask |= (1 << i);
+                wasm_retro_shell('denise set HIDDEN_BITPLANES ' + bpMask);
+            }
+        ));
+        channelVisPanel.appendChild(makeChannelGroup(
+            'Sprites', 8,
+            i => 'SPR' + i,
+            (i, visible) => {
+                if (visible) sprMask &= ~(1 << i); else sprMask |= (1 << i);
+                wasm_retro_shell('denise set HIDDEN_SPRITES ' + sprMask);
+            }
+        ));
+        channelVisPanel.appendChild(makeChannelGroup(
+            'Audio', 4,
+            i => 'AUD' + i,
+            (i, enabled) => wasm_retro_shell('audio set VOL' + i + ' ' + (enabled ? '100' : '0'))
+        ));
+    }
+}
+
 //------
     load_console=function () { var script = document.createElement('script'); script.src="js/eruda.js"; document.body.appendChild(script); script.onload = function () { eruda.init(
     {
