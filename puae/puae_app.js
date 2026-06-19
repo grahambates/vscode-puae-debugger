@@ -431,6 +431,50 @@ export async function main(config = {}) {
     });
   }
 
+  // Channel visibility panel (#channel-visibility, optional).
+  // Checkboxes to disable individual bitplanes, sprites, and audio channels.
+  const channelVisPanel = document.getElementById('channel-visibility');
+  if (channelVisPanel) {
+    function makeChannelGroup(title, count, labelFn, setter) {
+      const section = document.createElement('div');
+      section.style.cssText = 'margin-bottom:4px;';
+      const heading = document.createElement('span');
+      heading.textContent = title + ': ';
+      heading.style.cssText = 'min-width:64px;display:inline-block;';
+      section.appendChild(heading);
+      for (let i = 0; i < count; i++) {
+        const lbl = document.createElement('label');
+        lbl.style.cssText = 'margin-right:8px;';
+        const cb = document.createElement('input');
+        cb.type = 'checkbox';
+        cb.checked = true;
+        cb.style.cssText = 'margin-right:2px;';
+        const idx = i;
+        cb.addEventListener('change', () => setter(idx, cb.checked ? 1 : 0));
+        lbl.appendChild(cb);
+        lbl.appendChild(document.createTextNode(labelFn(i)));
+        section.appendChild(lbl);
+      }
+      return section;
+    }
+
+    channelVisPanel.appendChild(makeChannelGroup(
+      'Bitplanes', 8,
+      i => `BPL${i + 1}`,
+      (i, v) => M._wasm_set_bitplane_enabled(i, v)
+    ));
+    channelVisPanel.appendChild(makeChannelGroup(
+      'Sprites', 8,
+      i => `SPR${i}`,
+      (i, v) => M._wasm_set_sprite_enabled(i, v)
+    ));
+    channelVisPanel.appendChild(makeChannelGroup(
+      'Audio', 4,
+      i => `AUD${i}`,
+      (i, v) => M._wasm_set_audio_channel_enabled(i, v)
+    ));
+  }
+
   // Set up the audio graph now — this doesn't itself need a user gesture.
   // No "enable audio" button needed: the unlock listeners registered above
   // (via audioCtx.onstatechange) resume playback on the first click/keypress.

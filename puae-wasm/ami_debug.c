@@ -573,6 +573,41 @@ wasm_dma_overlay_set_opacity(int opacity)
 	g_dmaOverlayOpacity = opacity;
 }
 
+// ---- Channel visibility: bitplanes, sprites, audio ----
+extern int debug_bpl_mask;   /* drawing.c: bits 0-5 = BPL1-6, default 0xff */
+extern int debug_sprite_mask; /* debug.c: bits 0-7 = SPR0-7, default 0xff */
+extern int audio_channel_mask; /* audio.c: bits 0-3 = AUD0-3, default 0xf */
+
+E9K_DEBUG_EXPORT void
+wasm_set_bitplane_enabled(int index, int enabled)
+{
+	if (index < 0 || index > 7) return;
+	if (enabled)
+		debug_bpl_mask |=  (1 << index);
+	else
+		debug_bpl_mask &= ~(1 << index);
+}
+
+E9K_DEBUG_EXPORT void
+wasm_set_sprite_enabled(int index, int enabled)
+{
+	if (index < 0 || index > 7) return;
+	if (enabled)
+		debug_sprite_mask |=  (1 << index);
+	else
+		debug_sprite_mask &= ~(1 << index);
+}
+
+E9K_DEBUG_EXPORT void
+wasm_set_audio_channel_enabled(int index, int enabled)
+{
+	if (index < 0 || index > 3) return;
+	if (enabled)
+		audio_channel_mask |=  (1 << index);
+	else
+		audio_channel_mask &= ~(1 << index);
+}
+
 static void
 e9k_debug_cpuTrace_instrHook(uint32_t pc24)
 {
