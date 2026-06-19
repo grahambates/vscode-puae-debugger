@@ -994,7 +994,7 @@ export function setupRpcDispatcher(M, postMessage) {
             end: stats.end,
             total: stats.total,
             inRange: stats.inRange,
-            frameCycles: 0,
+            frameCycles: stats.frameCycles ?? 0,
             isPAL: true,
           };
         });

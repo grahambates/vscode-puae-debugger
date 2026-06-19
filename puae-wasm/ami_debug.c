@@ -308,10 +308,11 @@ e9k_debug_profiler_instrHook(uint32_t pc24)
 	}
 }
 
-// ---- wasm_profile: vAmiga-format CPU profiler (assembly branch-stack mode) ----
+// ---- wasm_profile: vAmiga-format CPU profiler ----
 // Each record: [depth, leaf_pc, callerN-1, ..., caller0, cycleDelta] (uint32_t).
-// Address range from wasm_profile_set_unwind; call stack from the JSR/BSR/RTS/RTE
-// shadow tracked in e9k_debug_instructionHookImpl below.
+// Address range + optional DWARF unwind table from wasm_profile_set_unwind.
+// When a table is present (C/C++ programs): call stack reconstructed by walking
+// DWARF CFA chains.  When absent (assembly): JSR/BSR/RTS shadow call stack.
 
 #define WASM_PROFILE_BUF_WORDS (1 << 20)   /* 4 MB ≈ 174k samples at avg depth 5 */
 static uint32_t g_wprofBuf[WASM_PROFILE_BUF_WORDS];
@@ -324,6 +325,81 @@ static uint64_t g_wprofInRangeInstrs;
 static evt_t    g_wprofLastCycle;
 static int      g_wprofLastCycleValid;
 static int      g_wprofWasPaused;
+static evt_t    g_wprofStartCycles;
+static uint64_t g_wprofFrameCycles;
+
+/* DWARF unwind table uploaded by wasm_profile_set_unwind (NULL = assembly/branch-stack). */
+static uint8_t *g_wprofUnwindBuf = NULL;
+static uint32_t g_wprofUnwindLen = 0;
+
+/*
+ * Safe 4-byte big-endian read from the Amiga address space, with no side effects.
+ * Uses mem_banks[] (standard UAE memory map) so chip, slow, and fast RAM all work.
+ * Returns 0 for unmapped or ROM addresses (which never hold a 68k stack frame).
+ */
+static uint32_t
+unwind_read_safe(uint32_t addr)
+{
+	const addrbank *b = mem_banks[addr >> 16];
+	if (!b || !b->baseaddr) return 0;
+	uint32_t off = addr & b->mask;
+	if (off + 3 > b->mask) return 0;
+	const uint8_t *p = b->baseaddr + off;
+	return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) |
+	       ((uint32_t)p[2] << 8)  |  (uint32_t)p[3];
+}
+
+#define UNWIND_ENTRY_BYTES 6  /* u16 cfa_packed, i16 r13_off, i16 ra_off */
+
+/*
+ * Walk DWARF call frames from the current PC, filling callers[] with the
+ * return-address chain innermost-first.  Returns the number of callers written.
+ *
+ * Entry format (from unwindTable.ts / WinUAE cpu_profiler_unwind):
+ *   cfa_packed = (cfaReg << 12) | cfaOffset  — 0 means no DWARF info
+ *   r13_off    = offset from CFA where caller's A5 is saved (0 = not tracked)
+ *   ra_off     = offset from CFA where return address is saved
+ */
+static uint32_t
+wasm_profile_dwarf_walk(uint32_t pc, uint32_t *callers, uint32_t maxCallers)
+{
+	uint32_t depth = 0;
+	/* Mirror the live 68k register file; updated as we unwind each frame. */
+	uint32_t cur_regs[16];
+	for (int i = 0; i < 16; i++) cur_regs[i] = regs.regs[i];
+
+	while (depth < maxCallers && pc >= g_wprofStartAddr && pc < g_wprofEndAddr) {
+		uint32_t idx = (pc - g_wprofStartAddr) >> 1;
+		if ((idx + 1) * UNWIND_ENTRY_BYTES > g_wprofUnwindLen) break;
+
+		const uint8_t *e = g_wprofUnwindBuf + idx * UNWIND_ENTRY_BYTES;
+		uint16_t cfa_packed = (uint16_t)e[0] | ((uint16_t)e[1] << 8);
+		if (cfa_packed == 0) break;  /* no DWARF CFI for this PC */
+
+		int16_t r13_off = (int16_t)((uint16_t)e[2] | ((uint16_t)e[3] << 8));
+		int16_t ra_off  = (int16_t)((uint16_t)e[4] | ((uint16_t)e[5] << 8));
+		uint8_t cfaReg  = (uint8_t)(cfa_packed >> 12);   /* DWARF 68k reg 0-15 */
+		uint32_t cfaOff = (uint32_t)(cfa_packed & 0xfff);
+
+		/* CFA = reg[cfaReg] + cfaOffset.  SP=reg[15], A5=reg[13] are most common. */
+		uint32_t cfa = cur_regs[cfaReg] + cfaOff;
+
+		/* Return address is at CFA + ra_off (typically CFA - 4 for m68k). */
+		uint32_t ra = unwind_read_safe((uint32_t)((int32_t)cfa + ra_off));
+		if (!ra) break;
+
+		/* Restore caller's A5 if it was pushed onto the stack. */
+		if (r13_off != 0)
+			cur_regs[13] = unwind_read_safe((uint32_t)((int32_t)cfa + r13_off));
+
+		/* Caller's SP is this frame's CFA. */
+		cur_regs[15] = cfa;
+
+		callers[depth++] = ra;
+		pc = ra;
+	}
+	return depth;
+}
 
 void
 wasm_profile_prepare(void)
@@ -332,14 +408,20 @@ wasm_profile_prepare(void)
 	g_wprofTotalInstrs     = 0;
 	g_wprofInRangeInstrs   = 0;
 	g_wprofLastCycleValid  = 0;
+	g_wprofFrameCycles     = 0;
 	g_wprofActive          = 1;
 	g_wprofWasPaused       = e9k_debug_paused;
 	e9k_debug_paused       = 0;
+	g_wprofStartCycles     = get_cycles();
 }
 
 void
-wasm_profile_finish(void)
+wasm_profile_finish(int numFrames)
 {
+	if (numFrames > 0 && CYCLE_UNIT > 0) {
+		evt_t elapsed = get_cycles() - g_wprofStartCycles;
+		g_wprofFrameCycles = (uint64_t)elapsed / (uint64_t)CYCLE_UNIT / (uint64_t)numFrames;
+	}
 	g_wprofActive    = 0;
 	e9k_debug_paused = g_wprofWasPaused;
 }
@@ -366,9 +448,20 @@ wasm_profile_instrHook(uint32_t pc24)
 	g_wprofLastCycle      = now;
 	g_wprofLastCycleValid = 1;
 
-	/* Stack: leaf (current PC) + shadow call stack, innermost caller first */
-	uint32_t stkDepth = (uint32_t)e9k_debug_callstackDepth;
-	if (stkDepth > 63) stkDepth = 63;
+	/* Stack: leaf (current PC) + callers innermost-first.
+	 * DWARF unwind table present  → walk CFA chain from live registers.
+	 * No table (assembly program) → use JSR/BSR/RTS shadow call stack. */
+	uint32_t callers[63];
+	uint32_t stkDepth;
+	if (g_wprofUnwindLen > 0) {
+		stkDepth = wasm_profile_dwarf_walk(pc24, callers, 63);
+	} else {
+		stkDepth = (uint32_t)e9k_debug_callstackDepth;
+		if (stkDepth > 63) stkDepth = 63;
+		for (uint32_t i = 0; i < stkDepth; i++)
+			callers[i] = e9k_debug_callstack[stkDepth - 1 - i];
+	}
+
 	uint32_t depth  = 1 + stkDepth;
 	uint32_t needed = 1 + depth + 1;   /* depth-word + PCs + cycleDelta */
 	if (g_wprofBufLen + needed > WASM_PROFILE_BUF_WORDS) return;
@@ -376,14 +469,23 @@ wasm_profile_instrHook(uint32_t pc24)
 	g_wprofBuf[g_wprofBufLen++] = depth;
 	g_wprofBuf[g_wprofBufLen++] = pc24;   /* leaf */
 	for (uint32_t i = 0; i < stkDepth; i++)
-		g_wprofBuf[g_wprofBufLen++] = e9k_debug_callstack[stkDepth - 1 - i];
+		g_wprofBuf[g_wprofBufLen++] = callers[i];
 	g_wprofBuf[g_wprofBufLen++] = cycleDelta;
 }
 
 E9K_DEBUG_EXPORT void
 wasm_profile_set_unwind(const void *data, uint32_t len, uint32_t startAddr, uint32_t endAddr)
 {
-	(void)data; (void)len;   /* ignored: branch-stack is tracked in C */
+	free(g_wprofUnwindBuf);
+	g_wprofUnwindBuf = NULL;
+	g_wprofUnwindLen = 0;
+	if (len > 0 && data) {
+		g_wprofUnwindBuf = malloc(len);
+		if (g_wprofUnwindBuf) {
+			memcpy(g_wprofUnwindBuf, data, len);
+			g_wprofUnwindLen = len;
+		}
+	}
 	g_wprofStartAddr = startAddr;
 	g_wprofEndAddr   = endAddr;
 }
@@ -400,10 +502,11 @@ E9K_DEBUG_EXPORT const char *
 wasm_profile_get_stats(void)
 {
 	snprintf(g_wprof_stats_buf, sizeof(g_wprof_stats_buf),
-		"{\"start\":%u,\"end\":%u,\"total\":%llu,\"inRange\":%llu}",
+		"{\"start\":%u,\"end\":%u,\"total\":%llu,\"inRange\":%llu,\"frameCycles\":%llu}",
 		(unsigned)g_wprofStartAddr, (unsigned)g_wprofEndAddr,
 		(unsigned long long)g_wprofTotalInstrs,
-		(unsigned long long)g_wprofInRangeInstrs);
+		(unsigned long long)g_wprofInRangeInstrs,
+		(unsigned long long)g_wprofFrameCycles);
 	return g_wprof_stats_buf;
 }
 

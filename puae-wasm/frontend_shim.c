@@ -645,7 +645,7 @@ void wasm_write_instr_count(uint32_t lo, uint32_t hi) {
 
 extern int  g_wprofActive;
 extern void wasm_profile_prepare(void);
-extern void wasm_profile_finish(void);
+extern void wasm_profile_finish(int numFrames);
 extern void wasm_dma_serialize_grid(void);
 
 extern int  debug_dma;
@@ -664,7 +664,7 @@ int wasm_profile_start(int numFrames)
         retro_run();
     }
     debug_dma = 0;
-    wasm_profile_finish();
+    wasm_profile_finish(numFrames);
     wasm_dma_serialize_grid();
     return 1;
 }
