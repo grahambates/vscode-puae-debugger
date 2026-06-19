@@ -133,7 +133,7 @@ send("removeBreakpoint", { address: state1[17] });
 // history (oldest remaining snapshot), then returns false once exhausted ---
 {
   const res = await request("continueReverse");
-  check("continueReverse (no breakpoint match) returns true", res === true);
+  check("continueReverse (no breakpoint match) returns false (reached start)", res === false);
   const after = regsSnapshot();
   check(
     "continueReverse (no breakpoint match) lands at the oldest remaining snapshot",

@@ -266,7 +266,7 @@ export abstract class WebviewEmulator implements Emulator {
 
   public async continueReverse(): Promise<boolean> {
     this.invalidateCache();
-    const res = await this.sendRpcCommand("continueReverse");
+    const res = await this.sendRpcCommand("continueReverse", undefined, 30000);
     return !!res;
   }
 

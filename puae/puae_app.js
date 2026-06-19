@@ -298,6 +298,21 @@ export async function main(config = {}) {
   // advancing.
   let lastFbFrameCount = -1;
 
+  // Called by puae_rpc.js's async continueReverse to paint the current wasm
+  // framebuffer to the canvas between checkpoint intervals.
+  globalThis.drawCurrentFrame = () => {
+    const w = M._wasm_get_fb_width();
+    const h = M._wasm_get_fb_height();
+    if (!w || !h) return;
+    if (canvas.width !== w || canvas.height !== h) {
+      canvas.width = w; canvas.height = h; imgData = null;
+    }
+    if (!imgData) imgData = ctx.createImageData(w, h);
+    imgData.data.set(new Uint8ClampedArray(M.HEAPU8.buffer, M._wasm_get_fb_rgba(), w * h * 4));
+    ctx.putImageData(imgData, 0, 0);
+    lastFbFrameCount = M._wasm_get_frame_count();
+  };
+
   // Non-fastLoad (programB64) process-attach state: tryExec() arms an
   // AllocMem breakpoint once exec/graphics libraries are ready (execReady),
   // then getCurrentProcess() is checked on each hit until it identifies our

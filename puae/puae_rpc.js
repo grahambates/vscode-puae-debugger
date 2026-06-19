@@ -725,6 +725,13 @@ export function setupRpcDispatcher(M, postMessage) {
       postMessage(res);
     };
 
+    const rpcRequestAsync = (resultFn) => {
+      const res = { type: "rpcResponse", id: args._rpcId };
+      resultFn()
+        .then(result => { res.result = result; postMessage(res); })
+        .catch(error => { res.result = { error: error.message }; postMessage(res); });
+    };
+
     switch (message.command) {
       // --- One-way commands ---
       case "pause":
@@ -900,13 +907,12 @@ export function setupRpcDispatcher(M, postMessage) {
       case "continueReverse":
         // Walks back through snapshotHistory's checkpoint intervals (newest
         // first), scanning each for the latest instruction whose PC matches a
-        // breakpoint, and lands exactly there. If no breakpoint matches
-        // anywhere in history, lands exactly one instruction before the
-        // current state, relative to the oldest checkpoint (mirroring
-        // stepBack's target but possibly replaying a much larger range).
-        // Returns false if the target predates the oldest checkpoint still in
-        // history.
-        rpcRequest(() => {
+        // breakpoint, and lands exactly there. Each interval is also replayed
+        // with video enabled and the canvas painted so the user sees the
+        // display stepping backward in time while the scan runs. Returns false
+        // (no breakpoint found / reached start of history) so the DAP adapter
+        // shows "Cannot continue reverse: reached start of rewind history".
+        rpcRequestAsync(async () => {
           if (snapshotHistory.length === 0) return false;
           const current = readInstrCount(M);
           const target = current - 1n;
@@ -917,18 +923,24 @@ export function setupRpcDispatcher(M, postMessage) {
             const entry = snapshotHistory[i];
             const next = snapshotHistory[i + 1];
             const upper = next && next.instrCount <= target + 1n ? next.instrCount : target + 1n;
+            const count = Number(upper - entry.instrCount);
+            // Scan pass: find latest breakpoint hit in this interval.
             restoreCheckpoint(M, entry);
             const match = replayScan(M, upper - entry.instrCount);
+            // Render pass: replay same interval with video for visual feedback.
+            restoreCheckpoint(M, entry);
+            if (count > 0) M._wasm_replay_instructions_video(count);
+            if (typeof globalThis.drawCurrentFrame === "function") globalThis.drawCurrentFrame();
+            await new Promise(r => setTimeout(r, 0)); // yield for canvas repaint
             if (match !== null) {
               restoreCheckpoint(M, entry);
               replayInstructionsVideo(M, match - entry.instrCount);
               return true;
             }
           }
-          const oldest = snapshotHistory[0];
-          restoreCheckpoint(M, oldest);
-          replayInstructionsVideo(M, target - oldest.instrCount);
-          return true;
+          // No breakpoint found — land at oldest checkpoint, signal "reached start".
+          restoreCheckpoint(M, snapshotHistory[0]);
+          return false;
         });
         break;
       case "stepBackFrame":
