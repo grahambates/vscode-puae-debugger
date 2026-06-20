@@ -7,8 +7,15 @@
 import { setupRpcDispatcher, getCurrentStopMessage, tryExec, getCurrentProcess, isExecReady } from './puae_rpc.js';
 
 // The Amiga's PAL frame rate — both the render loop's due-frames accounting
-// and its driving tick-worker interval are derived from this.
-const PAL_FPS = 50;
+// and its driving tick-worker interval are derived from this. Not exactly 50:
+// the core's own retro_get_system_av_info() reports 49.92041015625 (PAL's
+// true vertical refresh rate, from the chipset's line/cycle timing — this
+// codebase only ever runs PAL, no NTSC option exists). Using a rounded 50
+// here made the JS-side scheduler tick ~0.16% faster than the audio the core
+// actually generates per real second, with no feedback to correct it — audio
+// production slowly outran consumption, filling the worklet's ring buffer
+// until it overflowed (an audible click), no matter how big the buffer was.
+const PAL_FPS = 49.92041015625;
 
 // In warp mode, run as many ticks as fit in this time budget per tick-worker
 // callback (which itself fires every 1000/PAL_FPS ms), leaving headroom in
@@ -17,8 +24,8 @@ const WARP_TICK_BUDGET_MS = 15;
 
 // How often to take a periodic full-state checkpoint (rpc.pushSnapshot())
 // during a free-run, for stepBack/continueReverse — one per second of
-// emulated time.
-const CHECKPOINT_INTERVAL_FRAMES = PAL_FPS;
+// emulated time. Rounded; doesn't need PAL_FPS's precision.
+const CHECKPOINT_INTERVAL_FRAMES = Math.round(PAL_FPS);
 
 // Register names: D0-D7, A0-A7, SR, PC — order matches e9k_debug_read_regs().
 export const REG_NAMES = [
@@ -169,14 +176,15 @@ export async function main(config = {}) {
 
   // PUAE always outputs at 44100 Hz; AudioContext may be at a different rate (e.g. 48000).
   // Resample with linear interpolation so the worklet's ring buffer stays balanced —
-  // without this, a 48000 Hz context drains 960 samples per 20ms while we only push
-  // 882, emptying the buffer every cycle.
+  // without this, a 48000 Hz context drains faster than we'd otherwise push, emptying
+  // the buffer every cycle.
   //
   // The resampler is *stateful*: it carries a fractional read position and the last
-  // source sample across chunks. Resampling each ~882-sample chunk in isolation
-  // (mapping it to [0, dstN-1] on its own) put a one-sample spacing discontinuity at
-  // every chunk boundary — an audible 50 Hz buzz/jitter on any context whose rate
-  // isn't exactly 44100. Walking one continuous phase across chunks removes it.
+  // source sample across chunks. Resampling each tick's chunk (~883 samples, one PAL
+  // frame at 44100/49.92041015625) in isolation (mapping it to [0, dstN-1] on its own)
+  // put a one-sample spacing discontinuity at every chunk boundary — an audible buzz/
+  // jitter on any context whose rate isn't exactly 44100. Walking one continuous phase
+  // across chunks removes it.
   let audioPuaeRate  = 44100;
   let audioCtxRate   = 44100;
   let audioResampleFrac = 0;            // fractional distance past audioPrevL/R, in [0,1)
@@ -220,6 +228,14 @@ export async function main(config = {}) {
     if (!workletNode) return;
     const n = M._wasm_get_audio_accum_count();
     if (n <= 0) return;
+    if (audioCtx.state !== 'running') {
+      // Nothing is draining the worklet right now (context suspended — e.g.
+      // autoplay policy before the user unmutes) — discard instead of
+      // building a backlog that would otherwise dump out as a stale,
+      // overflow-glitched burst the moment playback resumes.
+      M._wasm_reset_audio_accum();
+      return;
+    }
     const ptrL = M._wasm_get_audio_accum_L();
     const ptrR = M._wasm_get_audio_accum_R();
     // Views into wasm memory — read before resetting accumulator.
@@ -243,8 +259,22 @@ export async function main(config = {}) {
     // If the context gets re-suspended (e.g. tab hidden), resume it
     // automatically when the user next clicks the audio button — no blanket
     // document listeners needed since the button is the explicit gesture.
+    let audioWasRunning = audioCtx.state === 'running';
     audioCtx.onstatechange = () => {
-      if (audioCtx.state !== 'running' && !audioMuted) audioCtx.resume();
+      const running = audioCtx.state === 'running';
+      if (running && !audioWasRunning) {
+        // Just started draining again after being suspended (e.g. autoplay
+        // policy before the first unmute, or a tab-hidden re-suspend) —
+        // discard whatever piled up in both the wasm accumulator and the
+        // worklet's ring buffer while nothing was consuming it. Without
+        // this, resuming dumps a backlog of stale, overflow-truncated audio
+        // all at once — an audible jump.
+        M._wasm_reset_audio_accum();
+        resetResampler();
+        workletNode?.port.postMessage({ reset: true });
+      }
+      audioWasRunning = running;
+      if (!running && !audioMuted) audioCtx.resume();
     };
     await audioCtx.audioWorklet.addModule(audioWorkletUrl);
     workletNode = new AudioWorkletNode(audioCtx, 'puae-audio-processor', {
@@ -255,13 +285,13 @@ export async function main(config = {}) {
     workletNode.connect(gain);
     gain.connect(audioCtx.destination);
 
-    // Pre-fill the ring buffer with ~100ms of audio before the worklet starts
+    // Pre-fill the ring buffer with ~200ms of audio before the worklet starts
     // draining it, so initial message-delivery latency and scheduling jitter
     // don't immediately underrun. This cushion is what the catch-up logic in
-    // frame() (running up to 2 ticks per callback) restores after a main-thread
-    // stall — see the comment there.
+    // frame() (uncapped, time-budgeted tick recovery) restores after a
+    // main-thread stall — see the comment there.
     resetResampler();
-    const PREFILL_FRAMES = 5;
+    const PREFILL_FRAMES = 10;
     for (let i = 0; i < PREFILL_FRAMES; i++) M._wasm_tick();
     emuFrames += PREFILL_FRAMES;
     pushAccumToWorklet();
@@ -289,6 +319,17 @@ export async function main(config = {}) {
   // Drive at exactly 50 Hz PAL using a cumulative due-frames counter so the tick
   // fires at the right wall-clock time regardless of the display refresh rate.
   let emuFrames = 0;  // total emulation frames run so far
+  // When audio is running at normal speed, pace emulation off the AudioContext's
+  // own clock instead of the system clock (performance.now()). The two clocks
+  // run at very slightly different rates (ordinary audio-hardware clock drift),
+  // so pacing off the system clock while the worklet drains at the hardware
+  // rate makes production slowly outrun consumption until the ring buffer
+  // fills and starts dropping samples — an audible click each time it
+  // overflows. Tying production to the same clock that drives consumption
+  // removes the drift instead of just buffering around it. null means "not
+  // currently using the audio clock" (audio not yet running, or warp/non-1x
+  // speed, which mute audio and must stay on the system clock).
+  let lastAudioClockS = null;
   let lastCheckpointFrame = 0; // emuFrames at the last periodic rpc.pushSnapshot()
   let frames    = 0;
   let fpsTime   = 0;
@@ -536,8 +577,20 @@ export async function main(config = {}) {
     if (lastTs === null) { lastTs = ts; fpsTime = ts; }
 
     // Accumulate emulated time scaled by speedFactor, so changing speed
-    // mid-session doesn't cause a discontinuous jump in dueFrames.
-    emuClockMs += (ts - lastTs) * speedFactor;
+    // mid-session doesn't cause a discontinuous jump in dueFrames. Use the
+    // AudioContext clock as the source while it's actually driving audio
+    // (see lastAudioClockS above) so production can't drift from consumption;
+    // otherwise fall back to the system clock.
+    const useAudioClock = !!audioCtx && audioCtx.state === 'running' && speedFactor === 1 && !warpMode;
+    if (useAudioClock) {
+      const audioNowS = audioCtx.currentTime;
+      if (lastAudioClockS === null) lastAudioClockS = audioNowS; // avoid a jump when (re-)entering this mode
+      emuClockMs += (audioNowS - lastAudioClockS) * 1000;
+      lastAudioClockS = audioNowS;
+    } else {
+      emuClockMs += (ts - lastTs) * speedFactor;
+      lastAudioClockS = null; // re-sync without a jump next time we enter audio-clock mode
+    }
     lastTs = ts;
 
     // How many PAL frames should have elapsed (in emulated time) so far?
@@ -573,18 +626,17 @@ export async function main(config = {}) {
         if (M._wasm_is_paused()) { hitBreakpoint = true; break; }
       }
     } else {
-      // Run up to 2 ticks per callback so a frame debt incurred during a
-      // main-thread stall can be paid back. Capping at 1 (as before) meant
-      // emuFrames could never catch back up to wall-clock time after a hiccup,
-      // so each stall permanently shrank the audio cushion (production stuck at
-      // exactly the consumption rate, never above it) until the worklet ring
-      // buffer underran — the dominant cause of jittery/crackly audio. Allowing
-      // a single extra tick lets the cushion recover one frame per callback
-      // (882 samples produced vs ~882 consumed per 20ms = net +1 frame of
-      // headroom while behind), at the cost of an occasional dropped video
-      // frame, which is imperceptible.
-      const toRun = Math.min(dueFrames - emuFrames, 2);
-      for (let i = 0; i < toRun; i++) {
+      // Run ticks until caught up to dueFrames, within a time budget. A flat
+      // cap on ticks-per-callback (the previous approach) limits how fast a
+      // frame debt incurred during a main-thread stall can be paid back —
+      // any stall longer than the cap permanently shrinks the audio cushion
+      // until the worklet's ring buffer underruns (the dominant cause of
+      // jittery/crackly audio). Budgeting by time instead lets a single
+      // callback fully repay an arbitrarily large debt, at the cost of an
+      // occasional dropped video frame while catching up, which is
+      // imperceptible.
+      while (emuFrames + ranCount < dueFrames &&
+             performance.now() - tTickStart < WARP_TICK_BUDGET_MS) {
         M._wasm_tick();
         ranCount++;
         if (M._wasm_is_paused()) { hitBreakpoint = true; break; }
@@ -605,7 +657,7 @@ export async function main(config = {}) {
     // set inside the VS Code webview — debug.html has no RPC bridge.
     if (rpc && !wasPaused && ranCount > 0 && emuFrames - lastCheckpointFrame >= CHECKPOINT_INTERVAL_FRAMES) {
       lastCheckpointFrame = emuFrames;
-      // setTimeout(() => rpc.pushSnapshot(), 0);
+      setTimeout(() => rpc.pushSnapshot(), 0);
     }
 
     // Non-fastLoad (programB64) boot: poll for exec/graphics libraries being

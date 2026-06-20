@@ -1,18 +1,32 @@
 // Ring-buffer AudioWorkletProcessor for the PUAE wasm debugger backend.
 // Accepts { l: Float32Array, r: Float32Array } messages of any size from the
 // main thread and drains them 128 samples at a time. No fixed slot size means
-// the 882-sample-per-tick batching of libretro's pull model doesn't cause gaps.
+// the variable per-tick sample count (~883 at the real PAL frame rate) doesn't
+// need to divide evenly into anything.
 class PuaeAudioProcessor extends AudioWorkletProcessor {
   constructor() {
     super();
-    const CAP = 16384; // ~371ms at 44100Hz
+    // Generous headroom matters more than low latency here — this drives a
+    // debugger's emulator, not an instrument, so an extra few hundred ms of
+    // audio latency is imperceptible. The catch-up loop in puae_app.js's
+    // frame() can legitimately push a multi-tick burst (e.g. after even a
+    // small scheduling hiccup), and a tight cap leaves that burst nowhere to
+    // go but truncated — an audible click. A much bigger cap absorbs it.
+    const CAP = 131072; // ~2.97s at 44100Hz
     this.L = new Float32Array(CAP);
     this.R = new Float32Array(CAP);
     this.cap = CAP;
     this.wr = 0;
     this.rd = 0;
     this.count = 0;
-    this.port.onmessage = ({ data: { l, r } }) => {
+    this.port.onmessage = ({ data }) => {
+      if (data.reset) {
+        // Discard everything — used when resuming from a suspended context,
+        // where whatever's queued is stale (it was never being drained).
+        this.wr = 0; this.rd = 0; this.count = 0;
+        return;
+      }
+      const { l, r } = data;
       const n = l.length;
       const space = this.cap - this.count;
       const toCopy = Math.min(n, space);
