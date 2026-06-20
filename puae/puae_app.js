@@ -351,10 +351,11 @@ export async function main(config = {}) {
     });
   }
 
-  const warpCheckbox = document.getElementById('warp');
-  if (warpCheckbox) {
-    warpCheckbox.addEventListener('change', () => {
-      warpMode = warpCheckbox.checked;
+  const warpButton = document.getElementById('warp');
+  if (warpButton) {
+    warpButton.addEventListener('click', () => {
+      warpMode = !warpMode;
+      warpButton.classList.toggle('active', warpMode);
       if (speedSelect) speedSelect.disabled = warpMode;
       applyAudioMute();
     });
@@ -371,120 +372,155 @@ export async function main(config = {}) {
     });
   }
 
+  // Builds a labelled group of small numbered toggle squares (toolbar-style,
+  // replacing the previous checkbox lists). `items` is [{ key, text, color? }];
+  // onToggle(item, active) is called whenever a square is clicked.
+  function makeToggleGroup(label, items, onToggle) {
+    const group = document.createElement('div');
+    group.className = 'chan-group';
+    const lbl = document.createElement('span');
+    lbl.className = 'chan-group-label';
+    lbl.textContent = label;
+    group.appendChild(lbl);
+    const grid = document.createElement('div');
+    grid.className = 'chan-grid';
+    for (const item of items) {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'chan-btn active';
+      btn.textContent = item.text;
+      btn.title = item.title || item.text;
+      if (item.color) btn.style.setProperty('--chan-color', item.color);
+      btn.addEventListener('click', () => {
+        const active = !btn.classList.contains('active');
+        btn.classList.toggle('active', active);
+        onToggle(item, active);
+      });
+      grid.appendChild(btn);
+    }
+    group.appendChild(grid);
+    return group;
+  }
+
   // DMA overlay panel (#dma-overlay, optional).
-  // Controls: master enable toggle, per-channel checkboxes, opacity slider.
-  // All wired directly to the WASM overlay functions (no RPC round-trip needed).
+  // Controls: an "ALL" toggle, per-channel toggle squares, opacity slider.
+  // There's no separate overlay-enable flag in the UI — the overlay is simply
+  // enabled whenever at least one channel is active, and disabled when all
+  // are off. All wired directly to the WASM overlay functions (no RPC
+  // round-trip needed).
   const DMA_CHANNELS = [
-    { type: 1, label: 'Refresh', color: '#444444' },
-    { type: 2, label: 'CPU',     color: '#a25342' },
-    { type: 3, label: 'Copper',  color: '#eeee00' },
-    { type: 4, label: 'Audio',   color: '#ff0000' },
-    { type: 5, label: 'Blitter', color: '#008888' },
-    { type: 6, label: 'Bitplane',color: '#0000ff' },
-    { type: 7, label: 'Sprite',  color: '#ff00ff' },
-    { type: 8, label: 'Disk',    color: '#ffffff' },
-    { type: 9, label: 'Conflict',color: '#ffb840' },
+    { type: 1, label: 'Refresh', abbr: 'REF', color: '#444444' },
+    { type: 2, label: 'CPU',     abbr: 'CPU', color: '#a25342' },
+    { type: 3, label: 'Copper',  abbr: 'COP', color: '#eeee00' },
+    { type: 4, label: 'Audio',   abbr: 'AUD', color: '#ff0000' },
+    { type: 5, label: 'Blitter', abbr: 'BLT', color: '#008888' },
+    { type: 6, label: 'Bitplane',abbr: 'BPL', color: '#0000ff' },
+    { type: 7, label: 'Sprite',  abbr: 'SPR', color: '#ff00ff' },
+    { type: 8, label: 'Disk',    abbr: 'DSK', color: '#ffffff' },
+    { type: 9, label: 'Conflict',abbr: 'CON', color: '#ffb840' },
   ];
 
   const dmaOverlayPanel = document.getElementById('dma-overlay');
   if (dmaOverlayPanel) {
-    // Master toggle
-    const masterLabel = document.createElement('label');
-    masterLabel.style.cssText = 'display:block;margin-bottom:4px;font-weight:bold;';
-    const masterCheck = document.createElement('input');
-    masterCheck.type = 'checkbox';
-    masterCheck.id = 'dma-overlay-enable';
-    masterLabel.appendChild(masterCheck);
-    masterLabel.appendChild(document.createTextNode(' DMA Overlay'));
-    dmaOverlayPanel.appendChild(masterLabel);
+    const channelGroup = document.createElement('div');
+    channelGroup.className = 'chan-group';
+    const channelLbl = document.createElement('span');
+    channelLbl.className = 'chan-group-label';
+    channelLbl.textContent = 'DMA';
+    channelGroup.appendChild(channelLbl);
 
-    // Per-channel checkboxes
-    const channelRow = document.createElement('div');
-    channelRow.style.cssText = 'display:flex;flex-wrap:wrap;gap:4px 10px;margin-bottom:4px;';
-    for (const ch of DMA_CHANNELS) {
-      const lbl = document.createElement('label');
-      lbl.style.cssText = `display:flex;align-items:center;gap:3px;`;
-      const swatch = document.createElement('span');
-      swatch.style.cssText = `display:inline-block;width:10px;height:10px;background:${ch.color};border:1px solid #666;`;
-      const cb = document.createElement('input');
-      cb.type = 'checkbox';
-      cb.checked = true;
-      cb.dataset.dmaType = ch.type;
-      cb.addEventListener('change', () => {
-        M._wasm_dma_overlay_set_channel(ch.type, cb.checked ? 1 : 0);
-      });
-      lbl.appendChild(cb);
-      lbl.appendChild(swatch);
-      lbl.appendChild(document.createTextNode(ch.label));
-      channelRow.appendChild(lbl);
+    const grid = document.createElement('div');
+    grid.className = 'chan-grid';
+
+    const allBtn = document.createElement('button');
+    allBtn.type = 'button';
+    allBtn.className = 'chan-btn all-btn';
+    allBtn.textContent = 'ALL';
+    allBtn.title = 'Toggle all DMA channels';
+    grid.appendChild(allBtn);
+
+    function setChannel(idx, active) {
+      const ch = DMA_CHANNELS[idx];
+      channelBtns[idx].classList.toggle('active', active);
+      M._wasm_dma_overlay_set_channel(ch.type, active ? 1 : 0);
+      const anyActive = channelBtns.some(b => b.classList.contains('active'));
+      M._wasm_dma_overlay_enable(anyActive ? 1 : 0);
+      dmaOverlayPanel.classList.toggle('disabled', !anyActive);
     }
-    dmaOverlayPanel.appendChild(channelRow);
+
+    function syncAllBtn() {
+      allBtn.classList.toggle('active', channelBtns.every(b => b.classList.contains('active')));
+    }
+
+    // Start with every channel off — the overlay is opt-in.
+    const channelBtns = DMA_CHANNELS.map((ch, idx) => {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'chan-btn';
+      btn.textContent = ch.abbr;
+      btn.title = ch.label;
+      btn.style.setProperty('--chan-color', ch.color);
+      btn.addEventListener('click', () => {
+        setChannel(idx, !btn.classList.contains('active'));
+        syncAllBtn();
+      });
+      grid.appendChild(btn);
+      return btn;
+    });
+
+    allBtn.addEventListener('click', () => {
+      const turnOn = !channelBtns.every(b => b.classList.contains('active'));
+      DMA_CHANNELS.forEach((_, idx) => setChannel(idx, turnOn));
+      syncAllBtn();
+    });
+
+    channelGroup.appendChild(grid);
+    dmaOverlayPanel.appendChild(channelGroup);
+    dmaOverlayPanel.classList.add('disabled');
 
     // Opacity slider
     const opacityRow = document.createElement('div');
-    opacityRow.style.cssText = 'display:flex;align-items:center;gap:6px;';
-    const opacityLbl = document.createElement('label');
-    opacityLbl.textContent = 'Opacity:';
+    opacityRow.className = 'opacity-row';
+    const opacityLbl = document.createElement('span');
+    opacityLbl.className = 'chan-group-label';
+    opacityLbl.textContent = 'Opacity';
     const opacitySlider = document.createElement('input');
     opacitySlider.type = 'range';
     opacitySlider.min = 0;
     opacitySlider.max = 255;
     opacitySlider.value = 128;
-    opacitySlider.style.cssText = 'flex:1;';
     opacitySlider.addEventListener('input', () => {
       M._wasm_dma_overlay_set_opacity(parseInt(opacitySlider.value, 10));
     });
     opacityRow.appendChild(opacityLbl);
     opacityRow.appendChild(opacitySlider);
     dmaOverlayPanel.appendChild(opacityRow);
-
-    masterCheck.addEventListener('change', () => {
-      M._wasm_dma_overlay_enable(masterCheck.checked ? 1 : 0);
-      channelRow.style.opacity = masterCheck.checked ? '1' : '0.4';
-      opacityRow.style.opacity = masterCheck.checked ? '1' : '0.4';
-    });
   }
 
   // Channel visibility panel (#channel-visibility, optional).
-  // Checkboxes to disable individual bitplanes, sprites, and audio channels.
+  // Numbered toggle squares to disable individual bitplanes, sprites, and
+  // audio channels.
   const channelVisPanel = document.getElementById('channel-visibility');
   if (channelVisPanel) {
-    function makeChannelGroup(title, count, labelFn, setter) {
-      const section = document.createElement('div');
-      section.style.cssText = 'margin-bottom:4px;';
-      const heading = document.createElement('span');
-      heading.textContent = title + ': ';
-      heading.style.cssText = 'min-width:64px;display:inline-block;';
-      section.appendChild(heading);
-      for (let i = 0; i < count; i++) {
-        const lbl = document.createElement('label');
-        lbl.style.cssText = 'margin-right:8px;';
-        const cb = document.createElement('input');
-        cb.type = 'checkbox';
-        cb.checked = true;
-        cb.style.cssText = 'margin-right:2px;';
-        const idx = i;
-        cb.addEventListener('change', () => setter(idx, cb.checked ? 1 : 0));
-        lbl.appendChild(cb);
-        lbl.appendChild(document.createTextNode(labelFn(i)));
-        section.appendChild(lbl);
-      }
-      return section;
+    function makeIndexedGroup(label, count, textFn, setter) {
+      const items = [];
+      for (let i = 0; i < count; i++) items.push({ key: i, text: textFn(i) });
+      return makeToggleGroup(label, items, (item, active) => setter(item.key, active ? 1 : 0));
     }
 
-    channelVisPanel.appendChild(makeChannelGroup(
+    channelVisPanel.appendChild(makeIndexedGroup(
       'Bitplanes', 8,
-      i => `BPL${i + 1}`,
+      i => String(i + 1),
       (i, v) => M._wasm_set_bitplane_enabled(i, v)
     ));
-    channelVisPanel.appendChild(makeChannelGroup(
+    channelVisPanel.appendChild(makeIndexedGroup(
       'Sprites', 8,
-      i => `SPR${i}`,
+      i => String(i),
       (i, v) => M._wasm_set_sprite_enabled(i, v)
     ));
-    channelVisPanel.appendChild(makeChannelGroup(
+    channelVisPanel.appendChild(makeIndexedGroup(
       'Audio', 4,
-      i => `AUD${i}`,
+      i => String(i),
       (i, v) => M._wasm_set_audio_channel_enabled(i, v)
     ));
   }
