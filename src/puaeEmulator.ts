@@ -94,7 +94,10 @@ export class PuaeEmulator extends WebviewEmulator {
       {
         enableScripts: true,
         retainContextWhenHidden: true,
-        localResourceRoots: [puaeDir],
+        localResourceRoots: [
+          puaeDir,
+          vscode.Uri.joinPath(this.extensionUri, "node_modules", "@vscode/codicons"),
+        ],
       },
     );
 
@@ -158,6 +161,15 @@ export class PuaeEmulator extends WebviewEmulator {
     const puaeWasmUri = uri("puae.wasm");
     const workletUri = uri("puae_audioprocessor.js");
     const appUri = uri("puae_app.js");
+    const codiconsUri = webview.asWebviewUri(
+      vscode.Uri.joinPath(
+        this.extensionUri,
+        "node_modules",
+        "@vscode/codicons",
+        "dist",
+        "codicon.css",
+      ),
+    );
 
     const kickstartPath = this.openOptions?.kickstartRom as string | undefined;
     let romDataUri = "";
@@ -198,7 +210,8 @@ export class PuaeEmulator extends WebviewEmulator {
     const csp = [
       `default-src 'none'`,
       `script-src ${src} 'unsafe-inline' 'wasm-unsafe-eval'`,
-      `style-src 'unsafe-inline'`,
+      `style-src ${src} 'unsafe-inline'`,
+      `font-src ${src}`,
       `worker-src ${src} blob:`,
       `connect-src ${src} data:`,
       `img-src data:`,
@@ -206,10 +219,11 @@ export class PuaeEmulator extends WebviewEmulator {
 
     let html = readFileSync(join(puaeFsPath, "index.html"), "utf8");
 
-    // Inject CSP meta tag.
+    // Inject CSP meta tag + the codicon webfont stylesheet (gives the page
+    // access to VS Code's built-in icon set via <i class="codicon codicon-*">).
     html = html.replace(
       '<meta charset="utf-8">',
-      `<meta charset="utf-8">\n<meta http-equiv="Content-Security-Policy" content="${csp}">`,
+      `<meta charset="utf-8">\n<meta http-equiv="Content-Security-Policy" content="${csp}">\n<link href="${codiconsUri}" rel="stylesheet">`,
     );
 
     // Patch external script src to webview URI.

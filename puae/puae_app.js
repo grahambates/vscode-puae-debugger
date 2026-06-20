@@ -362,10 +362,12 @@ export async function main(config = {}) {
   }
 
   const audioToggle = document.getElementById('audio-toggle');
+  const audioToggleIcon = audioToggle?.querySelector('.codicon');
   if (audioToggle) {
     audioToggle.addEventListener('click', () => {
       audioMuted = !audioMuted;
-      audioToggle.textContent = audioMuted ? '🔇' : '🔊';
+      audioToggleIcon.classList.toggle('codicon-mute', audioMuted);
+      audioToggleIcon.classList.toggle('codicon-unmute', !audioMuted);
       audioToggle.title = audioMuted ? 'Unmute audio' : 'Mute audio';
       if (!audioMuted) audioCtx?.resume(); // satisfies autoplay policy on first click
       applyAudioMute();
@@ -603,7 +605,7 @@ export async function main(config = {}) {
     // set inside the VS Code webview — debug.html has no RPC bridge.
     if (rpc && !wasPaused && ranCount > 0 && emuFrames - lastCheckpointFrame >= CHECKPOINT_INTERVAL_FRAMES) {
       lastCheckpointFrame = emuFrames;
-      setTimeout(() => rpc.pushSnapshot(), 0);
+      // setTimeout(() => rpc.pushSnapshot(), 0);
     }
 
     // Non-fastLoad (programB64) boot: poll for exec/graphics libraries being

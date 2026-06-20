@@ -33,17 +33,6 @@
     border: 1px solid var(--vscode-dropdown-border, transparent);
     vertical-align: middle;
   }
-  #audio-toggle {
-    background: none;
-    border: none;
-    cursor: pointer;
-    color: var(--vscode-foreground);
-    font-size: 14px;
-    padding: 0 2px;
-    vertical-align: middle;
-    opacity: 0.65;
-  }
-  #audio-toggle:hover { opacity: 1; }
   .chan-group { display: flex; align-items: center; gap: 4px; }
   .chan-grid { display: flex; gap: 2px; }
   .chan-btn {
@@ -79,6 +68,23 @@
   .chan-btn.all-btn { font-weight: bold; }
   .opacity-row { display: flex; align-items: center; gap: 4px; }
   .opacity-row input[type=range] { width: 70px; vertical-align: middle; }
+  #audio-toggle {
+    margin-left: auto;
+    width: 22px;
+    height: 22px;
+    box-sizing: border-box;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border: none;
+    border-radius: 2px;
+    background: none;
+    color: var(--vscode-foreground);
+    cursor: pointer;
+    opacity: 0.75;
+  }
+  #audio-toggle .codicon { font-size: 16px; }
+  #audio-toggle:hover { opacity: 1; background: var(--vscode-toolbar-hoverBackground, rgba(128,128,128,0.2)); }
 </style>
 </head>
 <body>
@@ -92,10 +98,7 @@
     <option value="0.1">10%</option>
   </select>
   <button id="warp" type="button" class="chan-btn" title="Toggle warp mode">WARP</button>
-  <span class="chan-group" style="margin-left:auto;">
-    <label for="audio-toggle">Audio:</label>
-    <button id="audio-toggle" title="Unmute audio">🔇</button>
-  </span>
+  <button id="audio-toggle" type="button" title="Unmute audio"><i class="codicon codicon-mute"></i></button>
 </div>
 <div id="dma-overlay"></div>
 <div id="channel-visibility"></div>
