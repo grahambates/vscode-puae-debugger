@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="en-us">
+<head>
+<meta charset="utf-8">
+<base href="${vamigaUri}/">
+<style>
+  body { margin: 0; padding: 0; }
+  #canvas { display: block; max-width: 100%; }
+  #controls, #dma-overlay, #channel-visibility {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 4px 14px;
+    padding: 3px 6px;
+    box-sizing: border-box;
+    max-width: 720px;
+    font-family: var(--vscode-font-family, sans-serif);
+    font-size: var(--vscode-font-size, 12px);
+    color: var(--vscode-foreground);
+  }
+  #dma-overlay, #channel-visibility {
+    border-top: 1px solid var(--vscode-panel-border, #444);
+  }
+  #controls label, .chan-group-label {
+    opacity: 0.65;
+    font-size: inherit;
+    color: inherit;
+    line-height: 1;
+  }
+  #controls select {
+    background: var(--vscode-dropdown-background);
+    color: var(--vscode-dropdown-foreground);
+    border: 1px solid var(--vscode-dropdown-border, transparent);
+    vertical-align: middle;
+  }
+  .chan-group { display: flex; align-items: center; gap: 4px; }
+  .chan-grid { display: flex; gap: 2px; }
+  .chan-btn {
+    min-width: 16px;
+    height: 16px;
+    box-sizing: border-box;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 9px;
+    line-height: 1;
+    border: 1px solid var(--vscode-panel-border, #555);
+    border-radius: 2px;
+    background: transparent;
+    color: var(--vscode-foreground);
+    opacity: 0.4;
+    cursor: pointer;
+    user-select: none;
+    padding: 0 3px;
+  }
+  .chan-btn.active {
+    opacity: 1;
+    background: var(--chan-color, var(--vscode-button-background, #0e639c));
+    border-color: var(--chan-color, var(--vscode-button-background, #0e639c));
+    color: #fff;
+  }
+  .chan-btn:hover { opacity: 0.75; }
+  .chan-btn.active:hover { opacity: 1; }
+  .chan-btn.all-btn { font-weight: bold; }
+  #audio-toggle {
+    margin-left: auto;
+    width: 22px;
+    height: 22px;
+    box-sizing: border-box;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border: none;
+    border-radius: 2px;
+    background: none;
+    color: var(--vscode-foreground);
+    cursor: pointer;
+    opacity: 0.75;
+  }
+  #audio-toggle .codicon { font-size: 16px; }
+  #audio-toggle:hover { opacity: 1; background: var(--vscode-toolbar-hoverBackground, rgba(128,128,128,0.2)); }
+</style>
+</head>
+<body>
+  <canvas id="canvas"></canvas>
+  <div id="controls">
+    <label for="speed">Speed:</label>
+    <select id="speed">
+      <option value="100" selected>100%</option>
+      <option value="50">50%</option>
+      <option value="25">25%</option>
+      <option value="10">10%</option>
+    </select>
+    <button id="warp" type="button" class="chan-btn" title="Toggle warp mode">WARP</button>
+    <button id="audio-toggle" type="button" title="Unmute audio"><i class="codicon codicon-mute"></i></button>
+  </div>
+  <div id="dma-overlay"></div>
+  <div id="channel-visibility"></div>
+
+  <script>
+    let callParams = __CALL_PARAMS__;
+
+    window.Module = {
+      canvas: document.getElementById('canvas'),
+      postRun: [() => window.__vamigaBoot && window.__vamigaBoot()],
+      print: (text) => console.log(text),
+      printErr: (text) => console.error(text),
+    };
+    window.onerror = (msg, url, line, col, error) => {
+      console.error('[vamiga] boot error:', msg, url, line, col, error);
+    };
+  </script>
+  <script src="vAmiga.js" async></script>
+  <script type="module">
+    import { main } from './vamiga_app.js';
+    main({ callParams }).catch((e) => console.error(e));
+  </script>
+</body>
+</html>

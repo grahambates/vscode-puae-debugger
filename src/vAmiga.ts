@@ -503,18 +503,48 @@ export class VAmiga extends WebviewEmulator {
     if (!this.panel) {
       throw new Error("Panel not initialized");
     }
+    const webview = this.panel.webview;
 
-    const vamigaUri = this.panel.webview.asWebviewUri(
+    const vamigaUri = webview.asWebviewUri(
       vscode.Uri.joinPath(this.extensionUri, "vamiga"),
     );
+    const codiconsUri = webview.asWebviewUri(
+      vscode.Uri.joinPath(
+        this.extensionUri,
+        "node_modules",
+        "@vscode/codicons",
+        "dist",
+        "codicon.css",
+      ),
+    );
+
+    // CSP: scripts from the webview resource scheme plus inline (the page's
+    // own inline classic/module scripts), wasm-unsafe-eval for wasm
+    // execution, workers for the emulation-timing Worker, connect for the
+    // data-URI ROM/program fetches. Mirrors puae's CSP (src/puaeEmulator.ts).
+    const src = webview.cspSource;
+    const csp = [
+      `default-src 'none'`,
+      `script-src ${src} 'unsafe-inline' 'wasm-unsafe-eval'`,
+      `style-src ${src} 'unsafe-inline'`,
+      `font-src ${src}`,
+      `worker-src ${src} blob:`,
+      `connect-src ${src} data:`,
+      `img-src data:`,
+    ].join("; ");
 
     // Read the HTML template from the vamiga directory
     const templatePath = join(
       this.extensionUri.fsPath,
       "vamiga",
-      "vAmiga.html",
+      "index.html",
     );
     let htmlContent = readFileSync(templatePath, "utf8");
+
+    htmlContent = htmlContent.replace(
+      '<meta charset="utf-8">',
+      `<meta charset="utf-8">\n<meta http-equiv="Content-Security-Policy" content="${csp}">\n<link href="${codiconsUri}" rel="stylesheet">`,
+    );
 
     // Replace template variables
     htmlContent = htmlContent.replace(/\$\{vamigaUri\}/g, vamigaUri.toString());
