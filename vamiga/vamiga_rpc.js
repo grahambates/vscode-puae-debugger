@@ -137,6 +137,28 @@ export function setupRpcDispatcher(M, postMessage, { state, wasmRun, wasmHalt, r
     return match === REPLAY_NO_MATCH ? null : match;
   }
 
+  // Loading a snapshot wipes the framebuffer (PixelEngine::_didLoad ->
+  // clearAll(), since pixel data isn't part of the serialized snapshot), so a
+  // short replay only repaints the handful of scanlines it actually executes
+  // and leaves the rest of the frame blank/transparent. When two history
+  // entries (e.g. consecutive breakpoint hits) are close together, the
+  // closest one isn't enough — walk back to an earlier entry so the replay
+  // spans at least a full frame's worth of instructions before landing on
+  // targetCount, purely for a complete repaint (CPU/memory state at
+  // targetCount is identical regardless of which entry we replay from).
+  const MIN_RENDER_REPLAY = 20000n;
+  function renderAt(historyIndex, targetCount) {
+    let renderIndex = historyIndex;
+    while (renderIndex > 0 &&
+           targetCount - state.snapshotHistory[renderIndex].instrCount < MIN_RENDER_REPLAY) {
+      renderIndex--;
+    }
+    const renderEntry = state.snapshotHistory[renderIndex];
+    wasm_loadfile('stepback.vAmiga', renderEntry.data);
+    wasm_configure('WARP_MODE', 'NEVER');
+    replayInstructionsVideo(targetCount - renderEntry.instrCount);
+  }
+
   // Exported so vamiga_app.js's boot logic (periodic snapshots, handleStop)
   // can take a snapshot too without duplicating this logic.
   function pushSnapshot() {
@@ -252,11 +274,7 @@ export function setupRpcDispatcher(M, postMessage, { state, wasmRun, wasmHalt, r
           if (target < state.snapshotHistory[0].instrCount) return false;
           let i = state.snapshotHistory.length - 1;
           while (state.snapshotHistory[i].instrCount > target) i--;
-          const entry = state.snapshotHistory[i];
-          wasm_loadfile('stepback.vAmiga', entry.data);
-          wasm_configure('WARP_MODE', 'NEVER');
-          const replayCount = target - entry.instrCount;
-          if (replayCount > 0n) replayInstructionsVideo(replayCount);
+          renderAt(i, target);
           state.snapshotIndex = i;
           return true;
         });
@@ -272,24 +290,25 @@ export function setupRpcDispatcher(M, postMessage, { state, wasmRun, wasmHalt, r
           for (; i >= 0; i--) {
             const entry = state.snapshotHistory[i];
             const next = state.snapshotHistory[i + 1];
-            const upper = (next && next.instrCount <= target + 1n) ? next.instrCount : target + 1n;
+            const upper = (next && next.instrCount <= target) ? next.instrCount : target;
             wasm_loadfile('stepback.vAmiga', entry.data);
             wasm_configure('WARP_MODE', 'NEVER');
-            const match = replayScan(upper - entry.instrCount);
-            wasm_loadfile('stepback.vAmiga', entry.data);
-            wasm_configure('WARP_MODE', 'NEVER');
-            replayInstructionsVideo(upper - entry.instrCount);
+            // The scan below only checks positions reached by executing
+            // forward from this snapshot, never the snapshot's own PC. Since
+            // snapshots are taken at breakpoint stops, that PC is often
+            // itself the match we're looking for (e.g. the oldest snapshot
+            // in history, which no earlier chunk's scan covers).
+            const ownPc = parseInt(JSON.parse(wasm_get_cpu_info()).pc, 16);
+            const selfMatch = state.breakpoints.has(ownPc) ? entry.instrCount : null;
+            const match = replayScan(upper - entry.instrCount) ?? selfMatch;
             await new Promise((r) => setTimeout(r, 0));
             if (match !== null) {
-              wasm_loadfile('stepback.vAmiga', entry.data);
-              wasm_configure('WARP_MODE', 'NEVER');
-              replayInstructionsVideo(match - entry.instrCount);
+              renderAt(i, match);
               state.snapshotIndex = i;
               return true;
             }
           }
-          wasm_loadfile('stepback.vAmiga', state.snapshotHistory[0].data);
-          wasm_configure('WARP_MODE', 'NEVER');
+          renderAt(0, state.snapshotHistory[0].instrCount);
           state.snapshotIndex = 0;
           return false;
         });
@@ -308,9 +327,7 @@ export function setupRpcDispatcher(M, postMessage, { state, wasmRun, wasmHalt, r
             wasm_configure('WARP_MODE', 'NEVER');
             const match = replayScanFrame(target - entry.instrCount);
             if (match !== null) {
-              wasm_loadfile('stepback.vAmiga', entry.data);
-              wasm_configure('WARP_MODE', 'NEVER');
-              replayInstructionsVideo(match - entry.instrCount);
+              renderAt(i, match);
               state.snapshotIndex = i;
               return true;
             }
