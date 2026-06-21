@@ -33,6 +33,17 @@ const CROP_HEIGHT = ACTIVE_HEIGHT + MARGIN_Y * 2; // *2 again below (field doubl
 const X_OFF = ACTIVE_LEFT - (CROP_WIDTH - ACTIVE_WIDTH) / 2;
 const Y_OFF = ACTIVE_TOP - MARGIN_Y;
 
+// The DMA debug overlay (DEBUG_CHANNELn/DEBUG_ENABLE) colorizes DMA fetch
+// cycles directly in the framebuffer the core writes, including ones that
+// fall outside the normal cropped view above — audio and sprite DMA fetches
+// happen during horizontal blanking, off the left edge of the active window.
+// So while any channel is enabled, show the whole raw buffer (full overscan)
+// instead of the normal crop, so those cycles are actually visible.
+const FULL_X_OFF = 0;
+const FULL_Y_OFF = 0;
+const FULL_WIDTH = HPIXELS;
+const FULL_HEIGHT = VPIXELS;
+
 export function createCanvasRenderer(M, canvas) {
   // The framebuffer is a single field — the removed GL renderer always
   // displayed it stretched 2x vertically (`canvas.height = h*2`,
@@ -49,19 +60,36 @@ export function createCanvasRenderer(M, canvas) {
 
   const ctx = canvas.getContext('2d');
   ctx.imageSmoothingEnabled = false;
-  canvas.width = CROP_WIDTH;
-  canvas.height = CROP_HEIGHT * 2;
+
+  let overscan = false;
+  let xOff = X_OFF;
+  let yOff = Y_OFF;
+  let width = CROP_WIDTH;
+  let height = CROP_HEIGHT;
+  canvas.width = width;
+  canvas.height = height * 2;
+
+  function setOverscan(enabled) {
+    if (enabled === overscan) return;
+    overscan = enabled;
+    xOff = enabled ? FULL_X_OFF : X_OFF;
+    yOff = enabled ? FULL_Y_OFF : Y_OFF;
+    width = enabled ? FULL_WIDTH : CROP_WIDTH;
+    height = enabled ? FULL_HEIGHT : CROP_HEIGHT;
+    canvas.width = width;
+    canvas.height = height * 2;
+  }
 
   function render() {
-    const pixels = M._wasm_pixel_buffer() + Y_OFF * (HPIXELS << 2);
+    const pixels = M._wasm_pixel_buffer() + yOff * (HPIXELS << 2);
     // Any heap view's .buffer is the same underlying ArrayBuffer — use
     // HEAPU8, which this build actually exports onto Module (HEAPU32 is
     // only a closure-local in the Emscripten glue, never attached to
     // Module, so `M.HEAPU32` is always undefined here).
-    const pixelBuffer = new Uint8Array(M.HEAPU8.buffer, pixels, (HPIXELS * CROP_HEIGHT) << 2);
+    const pixelBuffer = new Uint8Array(M.HEAPU8.buffer, pixels, (HPIXELS * height) << 2);
     imageData.data.set(pixelBuffer);
     offCtx.putImageData(imageData, 0, 0);
-    ctx.drawImage(offscreen, X_OFF, 0, CROP_WIDTH, CROP_HEIGHT, 0, 0, CROP_WIDTH, CROP_HEIGHT * 2);
+    ctx.drawImage(offscreen, xOff, 0, width, height, 0, 0, width, height * 2);
   }
 
   // The wasm core also calls this directly (bare global, see vamiga_app.js)
@@ -69,5 +97,5 @@ export function createCanvasRenderer(M, canvas) {
   // the canvas stays at a fixed position/size rather than chasing it.
   function setDisplay() {}
 
-  return { render, setDisplay };
+  return { render, setDisplay, setOverscan };
 }

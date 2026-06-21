@@ -349,7 +349,7 @@ export async function main(config = {}) {
 
     // --- DMA channel toggles ---
     if (dmaOverlayPanel) {
-      setupDmaOverlayPanel(dmaOverlayPanel, wasm_configure, wasm_configure_key);
+      setupDmaOverlayPanel(dmaOverlayPanel, wasm_configure, wasm_configure_key, ensureCanvasRenderer);
     }
 
     // --- per-channel visibility (debugger feature, not vamigaweb UI) ---
@@ -601,7 +601,7 @@ const DMA_CHANNELS = [
   { id: 'refresh', label: 'REF', color: '#444444' },
 ];
 
-function setupDmaOverlayPanel(panel, wasm_configure, wasm_configure_key) {
+function setupDmaOverlayPanel(panel, wasm_configure, wasm_configure_key, ensureCanvasRenderer) {
   // Explicitly zero every channel flag (0-7) up front — left at the core's
   // own default (apparently "visible"), an untouched channel shows up as
   // soon as DEBUG_ENABLE flips on for any other channel, until it's been
@@ -611,6 +611,10 @@ function setupDmaOverlayPanel(panel, wasm_configure, wasm_configure_key) {
   function setEnabled(anyActive) {
     wasm_configure('DEBUG_ENABLE', anyActive ? '1' : '0');
     wasm_configure('DMA.DEBUG_ENABLE', anyActive ? '1' : '0');
+    // Audio/sprite DMA fetch cycles the overlay colorizes happen outside the
+    // normally-cropped view (in horizontal blanking) — extend the canvas to
+    // full overscan while any channel is on so they're actually visible.
+    ensureCanvasRenderer().setOverscan(anyActive);
   }
 
   const group = document.createElement('div');
