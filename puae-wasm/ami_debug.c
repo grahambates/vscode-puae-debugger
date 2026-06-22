@@ -39,6 +39,7 @@
 #include "audio.h"
 #include "newcpu.h"
 #include "debug.h"
+#include "drawing.h"
 
 #define E9K_DEBUG_CALLSTACK_MAX 256
 #define E9K_DEBUG_BREAKPOINT_MAX 4096
@@ -551,12 +552,87 @@ extern void e9k_dma_draw_overlay(uint8_t *rgba, int width, int height, int opaci
 int g_dmaOverlayEnabled = 0;
 int g_dmaOverlayOpacity = 128;
 
+// e9k: the DMA overlay's coordinate space (e9k_dma_draw_overlay, debug.c)
+// covers the full raw PAL raster (hpos/vpos including blanking). Normally
+// UAE's line decoder (drawing.c) only renders the active display window plus
+// a small margin into the framebuffer — currprefs.gfx_overscanmode controls
+// how much border/blanking it actually decodes (OVERSCANMODE_OVERSCAN..
+// OVERSCANMODE_ULTRA, options.h). Bump it to OVERSCANMODE_ULTRA (widest)
+// while any overlay channel is active so the DMA cycles that happen in
+// blanking (audio/sprite fetches) actually have picture data under them,
+// then restore whatever was configured before once all channels are off.
+// reset_drawing() (drawing.h) re-runs the same border/window recalculation
+// vsync_handle_check() does on a prefs change, applying it immediately.
+static int g_dmaOverlaySavedOverscanmode = -1;
+
+// retro_set_geometry() (libretro-core.c) swaps retrow/retroh themselves to
+// the full raw-raster size (912x626, matching vAmiga's own full-overscan
+// HPIXELS x VPIXELS*2 reference) while g_dmaOverlayEnabled, instead of the
+// normal 720x574 PAL preset. crop_id must go to CROP_NONE at the same time
+// (the "medium" default crop otherwise still applies, cropping the bigger
+// buffer down) — extern'd from libretro-core.c, along with the flag that
+// drives retro_update_av_info()'s recompute.
+extern unsigned char crop_id;
+extern bool request_update_av_info;
+static int g_dmaOverlaySavedCropId = -1;
+
+// retrow/retroh (set from retro_set_geometry's w/h, libretro-core.c) are
+// just the size REPORTED to the frontend. The real rendering buffer's
+// allocated stride (gfxvidinfo->drawbuffer.width_allocated/rowbytes,
+// libretro-glue.c) is sized from defaultw/defaulth instead, refreshed by
+// check_prefs_changed_gfx() only when config_changed is set. Leaving
+// defaultw/defaulth at the old preset while retrow/retroh (and hence the
+// reported pitch, retrow << shift) jump to 912x626 desyncs the stride the
+// frontend assumes from the stride the buffer actually has — every scanline
+// read walks into the wrong row of real pixel data, shearing the image.
+extern unsigned short int defaultw, defaulth;
+static int g_dmaOverlaySavedDefaultW = -1, g_dmaOverlaySavedDefaultH = -1;
+
 E9K_DEBUG_EXPORT void
 wasm_dma_overlay_enable(int on)
 {
 	g_dmaOverlayEnabled = on ? 1 : 0;
-	if (on && !debug_dma)
-		debug_dma = 1;
+	// debug_dma gates the DMA-record bookkeeping (custom.c/blitter.c/cia.c/
+	// newcpu.c, dozens of call sites in the hot per-cycle path) that feeds
+	// dma_record[]/e9k_dma_draw_overlay — turning it on costs real
+	// performance, so it must turn back off once no channel needs it,
+	// rather than staying on for the rest of the session.
+	debug_dma = on ? 1 : 0;
+
+	if (on) {
+		if (g_dmaOverlaySavedOverscanmode < 0)
+			g_dmaOverlaySavedOverscanmode = currprefs.gfx_overscanmode;
+		currprefs.gfx_overscanmode = OVERSCANMODE_ULTRA;
+
+		if (g_dmaOverlaySavedCropId < 0)
+			g_dmaOverlaySavedCropId = crop_id;
+		crop_id = 0; /* CROP_NONE */
+
+		if (g_dmaOverlaySavedDefaultW < 0) {
+			g_dmaOverlaySavedDefaultW = defaultw;
+			g_dmaOverlaySavedDefaultH = defaulth;
+		}
+		defaultw = 912;
+		defaulth = 626;
+	} else {
+		if (g_dmaOverlaySavedOverscanmode >= 0) {
+			currprefs.gfx_overscanmode = g_dmaOverlaySavedOverscanmode;
+			g_dmaOverlaySavedOverscanmode = -1;
+		}
+		if (g_dmaOverlaySavedCropId >= 0) {
+			crop_id = (unsigned char)g_dmaOverlaySavedCropId;
+			g_dmaOverlaySavedCropId = -1;
+		}
+		if (g_dmaOverlaySavedDefaultW >= 0) {
+			defaultw = (unsigned short int)g_dmaOverlaySavedDefaultW;
+			defaulth = (unsigned short int)g_dmaOverlaySavedDefaultH;
+			g_dmaOverlaySavedDefaultW = -1;
+			g_dmaOverlaySavedDefaultH = -1;
+		}
+	}
+	reset_drawing();
+	request_update_av_info = true;
+	set_config_changed();
 }
 
 E9K_DEBUG_EXPORT void

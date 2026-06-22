@@ -24,9 +24,13 @@
 // when a breakpoint fires, causing retro_run() to return early.
 extern bool libretro_frame_end;
 
-// Max PUAE PAL framebuffer: 720×574 × 4 bytes per pixel (PUAE_VIDEO_WIDTH x
-// PUAE_VIDEO_HEIGHT_PAL in libretro-core.h)
-#define MAX_FB_PIXELS (720 * 574)
+// Max PUAE PAL framebuffer: normally 720×574 (PUAE_VIDEO_WIDTH x
+// PUAE_VIDEO_HEIGHT_PAL in libretro-core.h), but retro_set_geometry()
+// reports 912x626 (the true full raw raster) while the DMA overlay is
+// active — see wasm_dma_overlay_enable (ami_debug.c). Size for that case.
+#define MAX_FB_WIDTH  912
+#define MAX_FB_HEIGHT 626
+#define MAX_FB_PIXELS (MAX_FB_WIDTH * MAX_FB_HEIGHT)
 
 static const void *g_fb_data;
 static unsigned g_fb_width, g_fb_height;
@@ -76,8 +80,8 @@ static void shim_video_refresh(const void *data, unsigned width, unsigned height
     if (data) {
         const uint8_t *src_row = (const uint8_t *)data;
         uint8_t *dst = g_rgba_buf;
-        unsigned safe_w = width  < 720 ? width  : 720;
-        unsigned safe_h = height < 574 ? height : 574;
+        unsigned safe_w = width  < MAX_FB_WIDTH  ? width  : MAX_FB_WIDTH;
+        unsigned safe_h = height < MAX_FB_HEIGHT ? height : MAX_FB_HEIGHT;
 
         if (g_pixel_format == RETRO_PIXEL_FORMAT_XRGB8888) {
             // 32 bpp: 0x00RRGGBB (X byte ignored)
@@ -240,6 +244,15 @@ static bool shim_environment(unsigned cmd, void *data) {
                 if (strcmp(var->key, "puae_model")         == 0) { var->value = "A500";           return true; }
                 if (strcmp(var->key, "puae_model_fd")      == 0) { var->value = "A500";           return true; }
                 if (strcmp(var->key, "puae_video_resolution")== 0) { var->value = "hires";        return true; }
+                // "disabled": the standard 720x574 PAL-with-padding view
+                // (no extra crop beyond PUAE's own preset). While the DMA
+                // overlay is active, wasm_dma_overlay_enable() (ami_debug.c)
+                // overrides crop_id directly to CROP_NONE *and* widens
+                // retrow/retroh themselves (retro_set_geometry, libretro-
+                // core.c) to the true full raw raster (912x626) — that's
+                // what makes the canvas visibly grow past the standard size
+                // exactly while a DMA channel is on, and shrink back to it
+                // when all are off.
                 if (strcmp(var->key, "puae_crop")          == 0) { var->value = "disabled";       return true; }
                 if (strcmp(var->key, "puae_horizontal_pos")== 0) { var->value = "0";              return true; }
                 if (strcmp(var->key, "puae_vertical_pos")  == 0) { var->value = "0";              return true; }
