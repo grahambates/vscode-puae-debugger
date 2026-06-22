@@ -167,10 +167,17 @@ export interface Segment {
 
 export interface StopMessage {
   hasMessage: boolean;
-  name: "BREAKPOINT_REACHED" | "WATCHPOINT_REACHED" | "CATCHPOINT_REACHED";
+  name:
+    | "BREAKPOINT_REACHED"
+    | "WATCHPOINT_REACHED"
+    | "CATCHPOINT_REACHED"
+    | "MEMORY_PROTECTION_VIOLATION";
   payload: {
     pc: number;
     vector: number;
+    addr?: number;
+    value?: number;
+    sizeBits?: number;
   };
 }
 

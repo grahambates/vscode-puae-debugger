@@ -26,7 +26,16 @@ export const exceptionBreakpointFilters: DebugProtocol.ExceptionBreakpointsFilte
     // { filter: '6', label: 'CHK instruction', default: false },
     // { filter: '7', label: 'TRAPV instruction', default: false },
     { filter: "8", label: "Privilege violation", default: false },
+    {
+      filter: "memoryProtection",
+      label: "Write to unallocated memory",
+      default: false,
+    },
   ];
+
+// Sentinel BreakpointRef "address" for the memory protection exception
+// filter (see breakpointManager.ts) — not a real 68k vector number.
+export const MEMORY_PROTECTION_VECTOR = -1;
 
 // What's your vector Victor?
 export const vectors = [

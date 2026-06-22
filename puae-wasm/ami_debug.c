@@ -26,6 +26,7 @@
 #include "puae_debug.h"
 #include "e9k_protect.h"
 #include "e9k_watchpoint.h"
+#include "e9k_memprotect.h"
 
 #include "libretro.h"
 
@@ -130,6 +131,38 @@ int puae_debug_inspect_active = 0;
 
 static e9k_debug_protect_t e9k_debug_protects[E9K_PROTECT_COUNT];
 static uint64_t e9k_debug_protectEnabledMask = 0;
+
+// Memory protection: breaks on writes to RAM outside e9k_debug_memprotect_ranges
+// (and outside the always-allowed low-memory vector table). Ranges are seeded
+// by the debug adapter with fastLoad's directly-injected program segments/
+// stack (which bypass AllocMem entirely), and otherwise kept live by watching
+// for AllocMem/FreeMem calls system-wide (see e9k_debug_memprotect_instrHook).
+// There's no per-task scoping — any currently-allocated AmigaOS memory is
+// allowed, not just the debugged program's own — both because the debugged
+// program runs bare-metal with no real Task in fastLoad mode, and because
+// that's a simpler, deliberately chosen tradeoff over precise per-task
+// tracking.
+//
+// Tracking (the AllocMem/FreeMem watch) and enforcement (breaking on a
+// violation) are independent: tracking starts as soon as exec.library is
+// ready (see e9k_debug_memprotect_start_tracking, called from puae_app.js
+// for both fastLoad and non-fastLoad boot paths) so the allow-list is
+// already populated by the time a user enables enforcement via the "Write to
+// unallocated memory" exception breakpoint — including non-fastLoad's
+// DOS-loaded program, whose hunks are allocated by a real AllocMem call
+// (inside LoadSeg) before the debug adapter ever sees it.
+#define E9K_MEMPROTECT_VECTOR_TABLE_END 0x400u
+static int e9k_debug_memprotectTracking = 0;
+static int e9k_debug_memprotectEnabled = 0;
+static e9k_debug_memprotect_range_t e9k_debug_memprotectRanges[E9K_MEMPROTECT_RANGE_COUNT];
+static size_t e9k_debug_memprotectRangeCount = 0;
+static uint32_t e9k_debug_memprotectAllocMemAddr = 0;
+static uint32_t e9k_debug_memprotectFreeMemAddr = 0;
+static int e9k_debug_memprotectAllocPending = 0;
+static uint32_t e9k_debug_memprotectAllocSize = 0;
+static uint32_t e9k_debug_memprotectAllocReturnPc = 0;
+static e9k_debug_memprotect_break_t e9k_debug_memprotectBreak = {0};
+static int e9k_debug_memprotectBreakPending = 0;
 
 static uint64_t puae_debug_catchpointEnabledMask = 0;
 static e9k_debug_catchbreak_t puae_debug_catchbreak = {0};
@@ -1834,6 +1867,146 @@ next_write_byte:
 	return 1;
 }
 
+static void
+e9k_debug_memprotectBreakRequest(uint32_t pc, uint32_t addr24, uint32_t value, uint32_t sizeBits)
+{
+	if (e9k_debug_memprotectBreakPending) {
+		return;
+	}
+	e9k_debug_memprotectBreak.pc = pc;
+	e9k_debug_memprotectBreak.addr = addr24;
+	e9k_debug_memprotectBreak.value = e9k_debug_maskValue(value, sizeBits);
+	e9k_debug_memprotectBreak.sizeBits = sizeBits;
+	e9k_debug_memprotectBreakPending = 1;
+	e9k_debug_requestBreak();
+}
+
+// Called on every retired instruction (when enabled) to track AllocMem/
+// FreeMem calls made by the running program, keeping
+// e9k_debug_memprotectRanges in sync with what's actually allocated.
+static void
+e9k_debug_memprotect_instrHook(uint32_t pc24)
+{
+	if (!e9k_debug_memprotectTracking) {
+		return;
+	}
+
+	if (e9k_debug_memprotectAllocPending && pc24 == e9k_debug_memprotectAllocReturnPc) {
+		e9k_debug_memprotectAllocPending = 0;
+		uint32_t result = m68k_dreg(regs, 0);
+		if (result != 0 && e9k_debug_memprotectAllocSize != 0) {
+			e9k_debug_memprotect_add_range(result, e9k_debug_memprotectAllocSize);
+		}
+	}
+
+	if (e9k_debug_memprotectAllocMemAddr != 0 && pc24 == e9k_debug_memprotectAllocMemAddr) {
+		e9k_debug_memprotectAllocSize = m68k_dreg(regs, 0);
+		e9k_debug_memprotectAllocReturnPc = e9k_debug_maskAddr(get_long(m68k_areg(regs, 7)));
+		e9k_debug_memprotectAllocPending = 1;
+	} else if (e9k_debug_memprotectFreeMemAddr != 0 && pc24 == e9k_debug_memprotectFreeMemAddr) {
+		uint32_t freedAddr = m68k_areg(regs, 1);
+		for (size_t i = 0; i < e9k_debug_memprotectRangeCount; ++i) {
+			if (e9k_debug_memprotectRanges[i].addr == freedAddr) {
+				size_t remain = e9k_debug_memprotectRangeCount - (i + 1u);
+				if (remain) {
+					memmove(&e9k_debug_memprotectRanges[i], &e9k_debug_memprotectRanges[i + 1u], remain * sizeof(e9k_debug_memprotectRanges[0]));
+				}
+				e9k_debug_memprotectRangeCount--;
+				break;
+			}
+		}
+	}
+}
+
+// Called after every committed RAM write (when enabled) to check it landed
+// inside an allowed range; if not, requests a break (memory already holds
+// the bad value at this point — same "let it happen, then halt" semantics
+// as watchpoints).
+static void
+e9k_debug_memprotectCheckWrite(uint32_t addr24, uint32_t value, uint32_t sizeBits)
+{
+	if (!e9k_debug_memprotectEnabled || e9k_debug_memprotectBreakPending) {
+		return;
+	}
+
+	uint32_t sizeBytes = e9k_debug_sizeBytes(sizeBits);
+	if (sizeBytes == 0u) {
+		return;
+	}
+
+	for (uint32_t i = 0; i < sizeBytes; ++i) {
+		uint32_t a = (addr24 + i) & 0x00ffffffu;
+		if (a < E9K_MEMPROTECT_VECTOR_TABLE_END) {
+			continue;
+		}
+		int allowed = 0;
+		for (size_t r = 0; r < e9k_debug_memprotectRangeCount; ++r) {
+			const e9k_debug_memprotect_range_t *range = &e9k_debug_memprotectRanges[r];
+			if (a >= range->addr && a < range->addr + range->size) {
+				allowed = 1;
+				break;
+			}
+		}
+		if (!allowed) {
+			e9k_debug_memprotectBreakRequest(e9k_debug_maskAddr(m68k_getpc()), addr24, value, sizeBits);
+			return;
+		}
+	}
+}
+
+E9K_DEBUG_EXPORT void
+e9k_debug_memprotect_set_enabled(int enabled)
+{
+	// Only toggles enforcement (whether a write outside the allow-list
+	// breaks). Tracking (the AllocMem/FreeMem watch that builds the
+	// allow-list) is independent — see e9k_debug_memprotect_start_tracking.
+	e9k_debug_memprotectEnabled = enabled ? 1 : 0;
+}
+
+E9K_DEBUG_EXPORT void
+e9k_debug_memprotect_start_tracking(void)
+{
+	uint32_t execBase = get_long(4);
+	e9k_debug_memprotectAllocMemAddr = e9k_debug_maskAddr(execBase - 198u);
+	e9k_debug_memprotectFreeMemAddr = e9k_debug_maskAddr(execBase - 210u);
+	e9k_debug_memprotectAllocPending = 0;
+	e9k_debug_memprotectTracking = 1;
+}
+
+E9K_DEBUG_EXPORT void
+e9k_debug_memprotect_reset_ranges(void)
+{
+	e9k_debug_memprotectRangeCount = 0;
+	e9k_debug_memprotectAllocPending = 0;
+}
+
+E9K_DEBUG_EXPORT int
+e9k_debug_memprotect_add_range(uint32_t addr, uint32_t size)
+{
+	if (e9k_debug_memprotectRangeCount >= E9K_MEMPROTECT_RANGE_COUNT) {
+		return -1;
+	}
+	int index = (int)e9k_debug_memprotectRangeCount;
+	e9k_debug_memprotectRanges[index].addr = addr & 0x00ffffffu;
+	e9k_debug_memprotectRanges[index].size = size;
+	e9k_debug_memprotectRangeCount++;
+	return index;
+}
+
+E9K_DEBUG_EXPORT int
+e9k_debug_memprotect_consume_break(e9k_debug_memprotect_break_t *out)
+{
+	if (!out) {
+		return 0;
+	}
+	if (!e9k_debug_memprotectBreakPending) {
+		return 0;
+	}
+	*out = e9k_debug_memprotectBreak;
+	e9k_debug_memprotectBreakPending = 0;
+	return 1;
+}
+
 E9K_DEBUG_EXPORT void
 e9k_debug_memhook_afterRead(uint32_t addr24, uint32_t value, uint32_t sizeBits)
 {
@@ -1853,6 +2026,7 @@ e9k_debug_memhook_afterWrite(uint32_t addr24, uint32_t value, uint32_t oldValue,
 {
 	addr24 &= 0x00ffffffu;
 	e9k_debug_watchpointWrite(addr24, value, oldValue, sizeBits, oldValueValid);
+	e9k_debug_memprotectCheckWrite(addr24, value, sizeBits);
 }
 
 static int
@@ -1883,6 +2057,8 @@ e9k_debug_instructionHookImpl(uaecptr pc, uae_u16 opcode)
 		}
 		return 0;
 	}
+
+	e9k_debug_memprotect_instrHook(pc24);
 
 	if ((opcode & 0xFFC0u) == 0x4E80u) {
 		int mode = (opcode >> 3) & 7;

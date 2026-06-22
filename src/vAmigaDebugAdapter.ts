@@ -40,6 +40,7 @@ import {
   isExecReadyMessage,
 } from "./vAmiga";
 import { Emulator } from "./emulator";
+import { PuaeEmulator } from "./puaeEmulator";
 import { Hunk, parseHunks } from "./amigaHunkParser";
 import { DWARFData, parseDwarf } from "./dwarfParser";
 import { loadAmigaProgram } from "./amigaHunkLoader";
@@ -1198,6 +1199,22 @@ export class VamigaDebugAdapter extends LoggingDebugSession {
       logger.log(
         `Program loaded at ${formatHex(this.loadedProgram.entryPoint)}`,
       );
+      if (this.emulator instanceof PuaeEmulator) {
+        // Seed the memory protection allow-list with this program's own
+        // hunks + stack budget. Enablement itself is controlled separately,
+        // via the "Write to unallocated memory" exception breakpoint filter
+        // (see breakpointManager.ts's setExceptionBreakpoints).
+        this.emulator.resetMemoryProtectionRanges();
+        for (const alloc of this.loadedProgram.allocations) {
+          this.emulator.addMemoryProtectionRange(alloc.address, alloc.size);
+        }
+        if (this.loadedProgram.stackRange) {
+          this.emulator.addMemoryProtectionRange(
+            this.loadedProgram.stackRange.address,
+            this.loadedProgram.stackRange.size,
+          );
+        }
+      }
       const offsets = this.loadedProgram.allocations.map((s) => s.address);
       this.attach(offsets);
     } catch (error) {

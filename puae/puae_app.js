@@ -166,6 +166,10 @@ export async function main(config = {}) {
     // observe AmigaOS booting from DH0: and running the startup-sequence.
     log('Waiting for exec.library to initialise…');
     for (let i = 0; !isExecReady(M) && i < 1000; i++) M._wasm_tick();
+    // Start the memory-protection AllocMem/FreeMem watch now, independent of
+    // whether enforcement is ever enabled — see ami_debug.c's
+    // e9k_debug_memprotect_start_tracking.
+    M._wasm_memprotect_start_tracking();
   }
 
   // -------- audio setup --------
@@ -668,6 +672,11 @@ export async function main(config = {}) {
       if (r.ready) {
         execReady = true;
         allocMemAddr = r.allocMemAddr;
+        // Non-fastLoad: by the time exec is ready here, nothing's been
+        // loaded yet (the CLI runs the program later via the startup-
+        // sequence), so starting the watch now means LoadSeg's own AllocMem
+        // call for the program's hunks gets tracked like any other.
+        M._wasm_memprotect_start_tracking();
       }
     }
 

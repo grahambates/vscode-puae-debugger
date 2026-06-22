@@ -19,6 +19,7 @@
 #include "puae_debug.h"
 #include "e9k_watchpoint.h"
 #include "e9k_protect.h"
+#include "e9k_memprotect.h"
 
 // Defined in ami9000's libretro-core.c; set to true by e9k_debug_requestBreak()
 // when a breakpoint fires, causing retro_run() to return early.
@@ -811,6 +812,32 @@ EMSCRIPTEN_KEEPALIVE
 void wasm_set_protect_enabled_mask(uint32_t lo, uint32_t hi) {
     e9k_debug_set_protect_enabled_mask(((uint64_t)hi << 32) | (uint64_t)lo);
 }
+
+// --- Memory protection (breaks on writes outside an allow-list of ranges) ---
+// e9k_debug_memprotect_break_t is 4 x uint32 (pc, addr, value, sizeBits).
+static e9k_debug_memprotect_break_t g_memprotect_break_buf;
+
+EMSCRIPTEN_KEEPALIVE
+void wasm_memprotect_set_enabled(int enabled) { e9k_debug_memprotect_set_enabled(enabled); }
+
+EMSCRIPTEN_KEEPALIVE
+void wasm_memprotect_start_tracking(void) { e9k_debug_memprotect_start_tracking(); }
+
+EMSCRIPTEN_KEEPALIVE
+void wasm_memprotect_reset_ranges(void) { e9k_debug_memprotect_reset_ranges(); }
+
+EMSCRIPTEN_KEEPALIVE
+int wasm_memprotect_add_range(uint32_t addr, uint32_t size) {
+    return e9k_debug_memprotect_add_range(addr, size);
+}
+
+EMSCRIPTEN_KEEPALIVE
+int wasm_consume_memprotect_break(void) {
+    return e9k_debug_memprotect_consume_break(&g_memprotect_break_buf);
+}
+
+EMSCRIPTEN_KEEPALIVE
+uint32_t *wasm_get_memprotect_break_buf(void) { return (uint32_t *)&g_memprotect_break_buf; }
 
 // --- Catchpoints (exception-based breakpoints) ---
 // e9k_debug_catchbreak_t is 2 x uint32 (pc, vector).

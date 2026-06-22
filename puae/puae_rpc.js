@@ -264,6 +264,21 @@ export function getCurrentStopMessage(M) {
       payload: { pc: buf[1] >>> 0, vector: 0 },
     };
   }
+  if (M._wasm_consume_memprotect_break()) {
+    const ptr = M._wasm_get_memprotect_break_buf();
+    const buf = new Uint32Array(M.HEAPU32.buffer, ptr, 4);
+    return {
+      hasMessage: true,
+      name: "MEMORY_PROTECTION_VIOLATION",
+      payload: {
+        pc: buf[0] >>> 0,
+        vector: 0,
+        addr: buf[1] >>> 0,
+        value: buf[2] >>> 0,
+        sizeBits: buf[3] >>> 0,
+      },
+    };
+  }
   const n = M._wasm_read_regs();
   const ptr = M._wasm_get_reg_buf();
   const regs = new Uint32Array(M.HEAPU32.buffer, ptr, n);
@@ -812,6 +827,15 @@ export function setupRpcDispatcher(M, postMessage) {
       case "removeCatchpoint":
         M._wasm_remove_catchpoint(args.vector >>> 0);
         break;
+      case "setMemoryProtectionEnabled":
+        M._wasm_memprotect_set_enabled(args.enabled ? 1 : 0);
+        break;
+      case "resetMemoryProtectionRanges":
+        M._wasm_memprotect_reset_ranges();
+        break;
+      case "addMemoryProtectionRange":
+        M._wasm_memprotect_add_range(args.address >>> 0, args.size >>> 0);
+        break;
       case "enableCpuLogging":
         M._wasm_enable_cpu_logging(args.enabled ? 1 : 0);
         break;
@@ -836,6 +860,11 @@ export function setupRpcDispatcher(M, postMessage) {
         // program's RAM/state — restoring them now would be confusing/
         // incorrect, so drop them.
         snapshotHistory.length = 0;
+        // The hard reset invalidated every previously-tracked AllocMem
+        // range (and possibly moved execBase) — drop them and restart the
+        // watch fresh, same as the initial boot path.
+        M._wasm_memprotect_reset_ranges();
+        M._wasm_memprotect_start_tracking();
         postMessage({ type: "exec-ready" });
         break;
 

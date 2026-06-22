@@ -214,7 +214,7 @@ export class AmigaHunkLoader {
    * Sets up registers and jumps to program start
    */
   async setupProgramEntry(program: LoadedProgram): Promise<void> {
-    await this.setupReturnTrampoline();
+    await this.setupReturnTrampoline(program);
     await this.clearInterruptMask();
     // Jump pc to entrypoint
     await this.vAmiga.jump(program.entryPoint);
@@ -254,7 +254,7 @@ export class AmigaHunkLoader {
    * frame there (rather than the dormant USP shadow register when the CPU is
    * in supervisor mode) is what actually makes the landing pad reachable.
    */
-  private async setupReturnTrampoline(): Promise<void> {
+  private async setupReturnTrampoline(program: LoadedProgram): Promise<void> {
     // move.w #$7FFF, $DFF096   ; DMACON - disable all DMA channels
     // move.w #$7FFF, $DFF09A   ; INTENA - disable all interrupts
     // bra.s  *                 ; spin forever
@@ -262,6 +262,10 @@ export class AmigaHunkLoader {
       0x33, 0xfc, 0x7f, 0xff, 0x00, 0xdf, 0xf0, 0x96, 0x33, 0xfc, 0x7f, 0xff,
       0x00, 0xdf, 0xf0, 0x9a, 0x60, 0xfe,
     ]);
+    // Reserved budget below the trampoline for the program's own stack usage
+    // (see LoadedProgram.stackRange) — a fixed approximation, not a real
+    // stack-overflow boundary.
+    const STACK_RESERVE_SIZE = 32 * 1024;
 
     const cpuInfo = await this.vAmiga.getCpuInfo();
     const sp = Number(cpuInfo.a7);
@@ -272,6 +276,11 @@ export class AmigaHunkLoader {
     await this.vAmiga.writeMemory(trampolineAddress, TRAMPOLINE_CODE);
     await this.vAmiga.poke32(returnAddress, trampolineAddress);
     await this.vAmiga.setRegister("a7", returnAddress);
+
+    program.stackRange = {
+      address: trampolineAddress - STACK_RESERVE_SIZE,
+      size: STACK_RESERVE_SIZE + TRAMPOLINE_CODE.length + 4,
+    };
 
     console.log(
       `Set up return trampoline at $${trampolineAddress.toString(16)}, a7=$${returnAddress.toString(16)}`,

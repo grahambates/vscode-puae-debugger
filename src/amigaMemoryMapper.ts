@@ -50,6 +50,14 @@ export interface LoadedProgram {
   entryPoint: number;
   allocations: AllocatedHunk[];
   totalSize: number;
+  /**
+   * Reserved budget below the inherited boot stack pointer for fastLoad's
+   * synthetic return trampoline + the program's own stack usage. Set by
+   * `AmigaHunkLoader.setupProgramEntry`. Used by memory protection (PUAE) to
+   * allow writes there in addition to the program's own hunks — a fixed-size
+   * approximation, not a true stack-overflow boundary.
+   */
+  stackRange?: { address: number; size: number };
 }
 
 // Amiga memory attributes

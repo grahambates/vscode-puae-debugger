@@ -4,7 +4,8 @@ import { CpuInfo, StopMessage } from "./vAmiga";
 import { Emulator } from "./emulator";
 import { SourceMap } from "./sourceMap";
 import { formatHex } from "./numbers";
-import { exceptionBreakpointFilters } from "./hardware";
+import { exceptionBreakpointFilters, MEMORY_PROTECTION_VECTOR } from "./hardware";
+import { PuaeEmulator } from "./puaeEmulator";
 
 /**
  * Internal reference to a breakpoint set in the emulator.
@@ -335,21 +336,55 @@ export class BreakpointManager {
     filters: string[],
   ): DebugProtocol.Breakpoint[] {
     for (const ref of this.exceptionBreakpoints) {
-      this.emulator.removeCatchpoint(ref.address);
+      if (ref.address === MEMORY_PROTECTION_VECTOR) {
+        this.setMemoryProtectionEnabled(false);
+      } else {
+        this.emulator.removeCatchpoint(ref.address);
+      }
     }
     this.exceptionBreakpoints = [];
 
     const breakpoints: DebugProtocol.Breakpoint[] = [];
 
     for (const filter of filters) {
-      const vector = Number(filter);
       const id = this.bpId++;
+
+      if (filter === "memoryProtection") {
+        const supported = this.emulator instanceof PuaeEmulator;
+        this.setMemoryProtectionEnabled(true);
+        this.exceptionBreakpoints.push({
+          id,
+          address: MEMORY_PROTECTION_VECTOR,
+        });
+        breakpoints.push({
+          id,
+          verified: supported,
+          message: supported
+            ? undefined
+            : "Memory protection is only supported by the PUAE backend",
+        });
+        continue;
+      }
+
+      const vector = Number(filter);
       this.emulator.setCatchpoint(vector);
       this.exceptionBreakpoints.push({ id, address: vector });
       breakpoints.push({ id, verified: true });
     }
 
     return breakpoints;
+  }
+
+  /**
+   * Toggles memory protection (PUAE-only — see PuaeEmulator). By the time
+   * this can be called, the program has already been loaded and its
+   * allocation ranges seeded (setExceptionBreakpoints can't run until
+   * attach() has constructed this manager — see vAmigaDebugAdapter.ts).
+   */
+  private setMemoryProtectionEnabled(enabled: boolean): void {
+    if (this.emulator instanceof PuaeEmulator) {
+      this.emulator.setMemoryProtectionEnabled(enabled);
+    }
   }
 
   /**
@@ -386,6 +421,20 @@ export class BreakpointManager {
       };
       bpMatch = this.dataBreakpoints.find(
         (bp) => bp.address === message.payload.pc,
+      );
+      if (bpMatch) {
+        result.hitBreakpointIds = [bpMatch.id];
+      }
+      return result;
+    }
+
+    if (message.name === "MEMORY_PROTECTION_VIOLATION") {
+      const result: BreakpointStopResult = {
+        reason: "exception",
+        text: `Write to unallocated memory at ${formatHex(message.payload.addr ?? 0)}`,
+      };
+      bpMatch = this.exceptionBreakpoints.find(
+        (bp) => bp.address === MEMORY_PROTECTION_VECTOR,
       );
       if (bpMatch) {
         result.hitBreakpointIds = [bpMatch.id];

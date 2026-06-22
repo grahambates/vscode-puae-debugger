@@ -88,3 +88,24 @@ typedef struct e9k_debug_protect
     uint32_t mode;     // E9K_PROTECT_MODE_*
     uint32_t value;    // set value (masked to sizeBits), ignored for BLOCK
 } e9k_debug_protect_t;
+
+
+// Memory protection: breaks on writes outside a dynamic allow-list of
+// ranges (the debugged program's own loaded segments/stack, plus anything
+// it AllocMem's while running), excluding the low-memory exception vector
+// table (always allowed). See e9k_memprotect.h.
+#define E9K_MEMPROTECT_RANGE_COUNT 128
+
+typedef struct e9k_debug_memprotect_range
+{
+    uint32_t addr;
+    uint32_t size;
+} e9k_debug_memprotect_range_t;
+
+typedef struct e9k_debug_memprotect_break
+{
+    uint32_t pc;
+    uint32_t addr;
+    uint32_t value;
+    uint32_t sizeBits;
+} e9k_debug_memprotect_break_t;
