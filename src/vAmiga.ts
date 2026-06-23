@@ -178,6 +178,13 @@ export interface StopMessage {
     addr?: number;
     value?: number;
     sizeBits?: number;
+    /**
+     * What performed the write that triggered a MEMORY_PROTECTION_VIOLATION:
+     * 0 = CPU, 1 = DMA (Blitter/disk DMA). PUAE-only for now — vAmiga's
+     * memory-protection hooks only cover CPU writes, so this is always
+     * undefined (treated as CPU) there.
+     */
+    source?: number;
   };
 }
 

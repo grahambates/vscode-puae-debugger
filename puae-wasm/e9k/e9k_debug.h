@@ -160,5 +160,10 @@ e9k_debug_memhook_afterRead(uint32_t addr24, uint32_t value, uint32_t sizeBits);
 int
 e9k_debug_memhook_filterWrite(uint32_t addr24, uint32_t sizeBits, uint32_t oldValue, int oldValueValid, uint32_t *inoutValue);
 
+// `source` is E9K_MEMPROTECT_SOURCE_CPU/_DMA (e9k-lib.h) — which actually
+// performed the write, the 68k CPU or a DMA-driven unit (Blitter, disk
+// DMA). Callers outside the e9k module (e.g. memory.c) pass the literal
+// 0/1 directly rather than including e9k-lib.h, to keep libretro-uae core
+// files decoupled from the debug module's headers.
 void
-e9k_debug_memhook_afterWrite(uint32_t addr24, uint32_t value, uint32_t oldValue, uint32_t sizeBits, int oldValueValid);
+e9k_debug_memhook_afterWrite(uint32_t addr24, uint32_t value, uint32_t oldValue, uint32_t sizeBits, int oldValueValid, uint32_t source);

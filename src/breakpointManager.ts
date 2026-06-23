@@ -409,11 +409,26 @@ export class BreakpointManager {
     }
 
     if (message.name === "MEMORY_PROTECTION_VIOLATION") {
+      // source is PUAE-only (vAmiga's hooks only cover CPU writes) — when
+      // absent, the write is necessarily from the CPU, so omit the
+      // qualifier rather than print a misleading "(source=CPU)" for a
+      // backend that can't tell the difference yet. For a DMA write, "pc"
+      // is whatever the CPU happens to be running concurrently, not the
+      // instruction that configured the blit (which ran earlier,
+      // asynchronously) — labelled "concurrent pc" to avoid implying
+      // otherwise.
+      const isDma = message.payload.source === 1;
+      const source = isDma
+        ? " from the Blitter/disk DMA"
+        : message.payload.source === 0
+          ? " from the CPU"
+          : "";
+      const pcLabel = isDma ? "concurrent pc" : "pc";
       const result: BreakpointStopResult = {
         reason: "exception",
         text:
-          `Write to unallocated memory at ${formatHex(message.payload.addr ?? 0)}` +
-          ` (pc=${formatHex(message.payload.pc ?? 0)})`,
+          `Write${source} to unallocated memory at ${formatHex(message.payload.addr ?? 0)}` +
+          ` (${pcLabel}=${formatHex(message.payload.pc ?? 0)})`,
       };
       bpMatch = this.exceptionBreakpoints.find(
         (bp) => bp.address === MEMORY_PROTECTION_VECTOR,

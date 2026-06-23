@@ -266,7 +266,7 @@ export function getCurrentStopMessage(M) {
   }
   if (M._wasm_consume_memprotect_break()) {
     const ptr = M._wasm_get_memprotect_break_buf();
-    const buf = new Uint32Array(M.HEAPU32.buffer, ptr, 4);
+    const buf = new Uint32Array(M.HEAPU32.buffer, ptr, 5);
     return {
       hasMessage: true,
       name: "MEMORY_PROTECTION_VIOLATION",
@@ -276,6 +276,9 @@ export function getCurrentStopMessage(M) {
         addr: buf[1] >>> 0,
         value: buf[2] >>> 0,
         sizeBits: buf[3] >>> 0,
+        // 0 = CPU, 1 = DMA (Blitter/disk) — see e9k-lib.h's
+        // E9K_MEMPROTECT_SOURCE_* and memory.c's hook call sites.
+        source: buf[4] >>> 0,
       },
     };
   }

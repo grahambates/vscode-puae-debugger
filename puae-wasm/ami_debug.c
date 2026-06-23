@@ -1868,7 +1868,7 @@ next_write_byte:
 }
 
 static void
-e9k_debug_memprotectBreakRequest(uint32_t pc, uint32_t addr24, uint32_t value, uint32_t sizeBits)
+e9k_debug_memprotectBreakRequest(uint32_t pc, uint32_t addr24, uint32_t value, uint32_t sizeBits, uint32_t source)
 {
 	if (e9k_debug_memprotectBreakPending) {
 		return;
@@ -1877,6 +1877,7 @@ e9k_debug_memprotectBreakRequest(uint32_t pc, uint32_t addr24, uint32_t value, u
 	e9k_debug_memprotectBreak.addr = addr24;
 	e9k_debug_memprotectBreak.value = e9k_debug_maskValue(value, sizeBits);
 	e9k_debug_memprotectBreak.sizeBits = sizeBits;
+	e9k_debug_memprotectBreak.source = source;
 	e9k_debug_memprotectBreakPending = 1;
 	e9k_debug_requestBreak();
 }
@@ -1923,7 +1924,7 @@ e9k_debug_memprotect_instrHook(uint32_t pc24)
 // the bad value at this point — same "let it happen, then halt" semantics
 // as watchpoints).
 static void
-e9k_debug_memprotectCheckWrite(uint32_t addr24, uint32_t value, uint32_t sizeBits)
+e9k_debug_memprotectCheckWrite(uint32_t addr24, uint32_t value, uint32_t sizeBits, uint32_t source)
 {
 	if (!e9k_debug_memprotectEnabled || e9k_debug_memprotectBreakPending) {
 		return;
@@ -1948,7 +1949,7 @@ e9k_debug_memprotectCheckWrite(uint32_t addr24, uint32_t value, uint32_t sizeBit
 			}
 		}
 		if (!allowed) {
-			e9k_debug_memprotectBreakRequest(e9k_debug_maskAddr(m68k_getpc()), addr24, value, sizeBits);
+			e9k_debug_memprotectBreakRequest(e9k_debug_maskAddr(m68k_getpc()), addr24, value, sizeBits, source);
 			return;
 		}
 	}
@@ -2153,11 +2154,11 @@ e9k_debug_memhook_filterWrite(uint32_t addr24, uint32_t sizeBits, uint32_t oldVa
 }
 
 E9K_DEBUG_EXPORT void
-e9k_debug_memhook_afterWrite(uint32_t addr24, uint32_t value, uint32_t oldValue, uint32_t sizeBits, int oldValueValid)
+e9k_debug_memhook_afterWrite(uint32_t addr24, uint32_t value, uint32_t oldValue, uint32_t sizeBits, int oldValueValid, uint32_t source)
 {
 	addr24 &= 0x00ffffffu;
 	e9k_debug_watchpointWrite(addr24, value, oldValue, sizeBits, oldValueValid);
-	e9k_debug_memprotectCheckWrite(addr24, value, sizeBits);
+	e9k_debug_memprotectCheckWrite(addr24, value, sizeBits, source);
 }
 
 static int

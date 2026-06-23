@@ -102,10 +102,18 @@ typedef struct e9k_debug_memprotect_range
     uint32_t size;
 } e9k_debug_memprotect_range_t;
 
+// What actually performed the write: the 68k CPU executing an instruction,
+// or a DMA-driven hardware unit (Blitter, disk DMA) writing chip RAM
+// directly, independent of the CPU. See e9k_debug_memhook_afterWrite's
+// callers in memory.c.
+#define E9K_MEMPROTECT_SOURCE_CPU 0
+#define E9K_MEMPROTECT_SOURCE_DMA 1
+
 typedef struct e9k_debug_memprotect_break
 {
     uint32_t pc;
     uint32_t addr;
     uint32_t value;
     uint32_t sizeBits;
+    uint32_t source; // E9K_MEMPROTECT_SOURCE_*
 } e9k_debug_memprotect_break_t;
