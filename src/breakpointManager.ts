@@ -5,7 +5,6 @@ import { Emulator } from "./emulator";
 import { SourceMap } from "./sourceMap";
 import { formatHex } from "./numbers";
 import { exceptionBreakpointFilters, MEMORY_PROTECTION_VECTOR } from "./hardware";
-import { PuaeEmulator } from "./puaeEmulator";
 
 /**
  * Internal reference to a breakpoint set in the emulator.
@@ -337,7 +336,7 @@ export class BreakpointManager {
   ): DebugProtocol.Breakpoint[] {
     for (const ref of this.exceptionBreakpoints) {
       if (ref.address === MEMORY_PROTECTION_VECTOR) {
-        this.setMemoryProtectionEnabled(false);
+        this.emulator.setMemoryProtectionEnabled(false);
       } else {
         this.emulator.removeCatchpoint(ref.address);
       }
@@ -350,19 +349,12 @@ export class BreakpointManager {
       const id = this.bpId++;
 
       if (filter === "memoryProtection") {
-        const supported = this.emulator instanceof PuaeEmulator;
-        this.setMemoryProtectionEnabled(true);
+        this.emulator.setMemoryProtectionEnabled(true);
         this.exceptionBreakpoints.push({
           id,
           address: MEMORY_PROTECTION_VECTOR,
         });
-        breakpoints.push({
-          id,
-          verified: supported,
-          message: supported
-            ? undefined
-            : "Memory protection is only supported by the PUAE backend",
-        });
+        breakpoints.push({ id, verified: true });
         continue;
       }
 
@@ -373,18 +365,6 @@ export class BreakpointManager {
     }
 
     return breakpoints;
-  }
-
-  /**
-   * Toggles memory protection (PUAE-only — see PuaeEmulator). By the time
-   * this can be called, the program has already been loaded and its
-   * allocation ranges seeded (setExceptionBreakpoints can't run until
-   * attach() has constructed this manager — see vAmigaDebugAdapter.ts).
-   */
-  private setMemoryProtectionEnabled(enabled: boolean): void {
-    if (this.emulator instanceof PuaeEmulator) {
-      this.emulator.setMemoryProtectionEnabled(enabled);
-    }
   }
 
   /**
@@ -431,7 +411,9 @@ export class BreakpointManager {
     if (message.name === "MEMORY_PROTECTION_VIOLATION") {
       const result: BreakpointStopResult = {
         reason: "exception",
-        text: `Write to unallocated memory at ${formatHex(message.payload.addr ?? 0)}`,
+        text:
+          `Write to unallocated memory at ${formatHex(message.payload.addr ?? 0)}` +
+          ` (pc=${formatHex(message.payload.pc ?? 0)})`,
       };
       bpMatch = this.exceptionBreakpoints.find(
         (bp) => bp.address === MEMORY_PROTECTION_VECTOR,

@@ -153,6 +153,11 @@ export async function main(config = {}) {
   const ok = wasm_boot('');
   if (!ok) { log('wasm_boot FAILED — check console'); return; }
 
+  // [vscode-vamiga-debugger mem protect] fastLoad starts this in the
+  // warm-up loop just below, before frame() ever runs; non-fastLoad starts
+  // it from frame() instead, polling from frame 0 — see both below.
+  let memProtectTrackingStarted = false;
+
   if (!programB64) {
     // Warm-up: tick until AmigaOS is ready for fastLoad memory injection —
     // mirrors vAmiga_ui.js's tryExec condition (AllocMem LVO is jmp, GfxBase
@@ -165,11 +170,26 @@ export async function main(config = {}) {
     // loop runs from frame 0 so tryExec/getCurrentProcess polling (below) can
     // observe AmigaOS booting from DH0: and running the startup-sequence.
     log('Waiting for exec.library to initialise…');
-    for (let i = 0; !isExecReady(M) && i < 1000; i++) M._wasm_tick();
-    // Start the memory-protection AllocMem/FreeMem watch now, independent of
-    // whether enforcement is ever enabled — see ami_debug.c's
-    // e9k_debug_memprotect_start_tracking.
-    M._wasm_memprotect_start_tracking();
+    // [vscode-vamiga-debugger mem protect] Poll every tick, not just once at
+    // the end — the C side validates execBase itself and no-ops until ready,
+    // so this starts the AllocMem/FreeMem watch as soon as exec.library
+    // initializes (well before isExecReady's GfxBase+signature heuristic),
+    // catching Kickstart's own boot-time allocations too.
+    for (let i = 0; !isExecReady(M) && i < 1000; i++) {
+      M._wasm_tick();
+      if (!memProtectTrackingStarted) {
+        memProtectTrackingStarted = !!M._wasm_memprotect_start_tracking();
+      }
+    }
+    if (!memProtectTrackingStarted) {
+      memProtectTrackingStarted = !!M._wasm_memprotect_start_tracking();
+    }
+    // [vscode-vamiga-debugger mem protect] GfxBase is confirmed set here
+    // (isExecReady checked it), so its own library list is guaranteed to be
+    // populated — safe to walk now, unlike at the earlier raw-execBase
+    // tracking-start point above (see ami_debug.c's
+    // e9k_debug_memprotect_seed_libraries).
+    if (isExecReady(M)) M._wasm_memprotect_seed_libraries();
   }
 
   // -------- audio setup --------
@@ -664,6 +684,17 @@ export async function main(config = {}) {
       setTimeout(() => rpc.pushSnapshot(), 0);
     }
 
+    // [vscode-vamiga-debugger mem protect] Starts the AllocMem/FreeMem watch
+    // as early as possible — well before tryExec's "user task started"
+    // heuristic below, so Kickstart's own boot-time allocations (graphics.
+    // library's default View/copper lists, etc.) get tracked too. The C side
+    // validates execBase itself and no-ops until it's actually ready, so
+    // it's safe to poll every frame; stop once it succeeds (calling it again
+    // later would discard any AllocMem call currently in-flight).
+    if (!memProtectTrackingStarted) {
+      memProtectTrackingStarted = !!M._wasm_memprotect_start_tracking();
+    }
+
     // Non-fastLoad (programB64) boot: poll for exec/graphics libraries being
     // ready, then arm the AllocMem breakpoint (tryExec) so the next hit can
     // be checked against getCurrentProcess() below.
@@ -672,11 +703,10 @@ export async function main(config = {}) {
       if (r.ready) {
         execReady = true;
         allocMemAddr = r.allocMemAddr;
-        // Non-fastLoad: by the time exec is ready here, nothing's been
-        // loaded yet (the CLI runs the program later via the startup-
-        // sequence), so starting the watch now means LoadSeg's own AllocMem
-        // call for the program's hunks gets tracked like any other.
-        M._wasm_memprotect_start_tracking();
+        // [vscode-vamiga-debugger mem protect] GfxBase is confirmed set here
+        // (tryExec/isExecReady checked it) — safe to walk the library list
+        // now, unlike at the earlier raw-execBase tracking-start point above.
+        M._wasm_memprotect_seed_libraries();
       }
     }
 

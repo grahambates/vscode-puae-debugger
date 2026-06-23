@@ -24,6 +24,12 @@ export function setupRpcDispatcher(M, postMessage, { state, wasmRun, wasmHalt, r
   const wasm_remove_watchpoint = cwrap('wasm_remove_watchpoint', 'boolean', ['number']);
   const wasm_set_catchpoint = cwrap('wasm_set_catchpoint', 'boolean', ['number', 'number']);
   const wasm_remove_catchpoint = cwrap('wasm_remove_catchpoint', 'boolean', ['number']);
+  // [vscode-vamiga-debugger mem protect]
+  const wasm_set_memprotect_enabled = cwrap('wasm_set_memprotect_enabled', 'boolean', ['number']);
+  const wasm_memprotect_reset_ranges = cwrap('wasm_memprotect_reset_ranges', 'boolean');
+  const wasm_memprotect_start_tracking = cwrap('wasm_memprotect_start_tracking', 'boolean');
+  const wasm_memprotect_seed_libraries = cwrap('wasm_memprotect_seed_libraries', 'boolean');
+  const wasm_memprotect_add_range = cwrap('wasm_memprotect_add_range', 'boolean', ['number', 'number']);
   const wasm_enable_cpu_logging = cwrap('wasm_enable_cpu_logging', 'boolean', ['boolean']);
   const wasm_get_cpu_trace = cwrap('wasm_get_cpu_trace', 'string', ['number']);
   const wasm_step_into = cwrap('wasm_step_into', 'undefined');
@@ -230,6 +236,18 @@ export function setupRpcDispatcher(M, postMessage, { state, wasmRun, wasmHalt, r
       case 'removeCatchpoint':
         wasm_remove_catchpoint(args.vector);
         break;
+      case 'setMemoryProtectionEnabled':
+        wasm_set_memprotect_enabled(args.enabled ? 1 : 0);
+        break;
+      case 'resetMemoryProtectionRanges':
+        wasm_memprotect_reset_ranges();
+        break;
+      case 'addMemoryProtectionRange':
+        wasm_memprotect_add_range(args.address, args.size);
+        break;
+      case 'seedMemoryProtectionLibraries':
+        wasm_memprotect_seed_libraries();
+        break;
       case 'eol':
         M._wasm_eol();
         wasmRun();
@@ -400,10 +418,30 @@ export function setupRpcDispatcher(M, postMessage, { state, wasmRun, wasmHalt, r
             wasm_loadfile(filename, new Uint8Array(data));
             wasm_reset();
             wasm_configure('WARP_MODE', 'ALWAYS');
+            // [vscode-vamiga-debugger mem protect] Dropping the old ranges
+            // and re-arming the early tick-level poller (vamiga_app.js's
+            // tryStartMemProtectTracking) so tracking restarts fresh from
+            // the new execBase, same as the initial boot path.
+            wasm_memprotect_reset_ranges();
+            state.memProtectTrackingStarted = false;
           } else if (state.startSnapshot) {
             wasm_loadfile('start.vAmiga', state.startSnapshot);
             wasmHalt(false);
             wasm_configure('WARP_MODE', 'NEVER');
+            // [vscode-vamiga-debugger mem protect] The restored snapshot's
+            // AllocMem ranges belong to the previous debug session — drop
+            // them and restart the watch fresh, same as the initial boot
+            // path (vamiga_app.js's tryExec). execBase is already valid in
+            // the restored snapshot, so this succeeds immediately and the
+            // tick-level poller (gated on memProtectTrackingStarted) won't
+            // re-run it.
+            wasm_memprotect_reset_ranges();
+            state.memProtectTrackingStarted = wasm_memprotect_start_tracking();
+            // The restored snapshot was taken after the original boot's
+            // tryExec succeeded (GfxBase already set then), so it's safe to
+            // re-seed libraries immediately rather than waiting on tryExec
+            // again (which won't re-run — execReady is already true).
+            wasm_memprotect_seed_libraries();
             postMessage({ type: 'exec-ready' });
           }
         });

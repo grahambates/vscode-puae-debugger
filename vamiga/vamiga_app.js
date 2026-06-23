@@ -52,6 +52,10 @@ export async function main(config = {}) {
     breakpoints: new Set(),
     snapshotHistory: [],
     snapshotIndex: -1,
+    // [vscode-vamiga-debugger mem protect] Set once wasm_memprotect_start_tracking
+    // first succeeds (see tryStartMemProtectTracking below and vamiga_rpc.js's
+    // 'load' handler, which both read/write this flag via the shared `state`).
+    memProtectTrackingStarted: false,
   };
 
   // js_set_display is called by the wasm core (bare global, via EM_ASM) as
@@ -140,6 +144,9 @@ export async function main(config = {}) {
     const wasm_set_sample_rate = M.cwrap('wasm_set_sample_rate', 'undefined', ['number']);
     const wasm_get_sound_buffer_address = M.cwrap('wasm_get_sound_buffer_address', 'number');
     const wasm_schedule_key = M.cwrap('wasm_schedule_key', 'undefined', ['number', 'number', 'number', 'number']);
+    // [vscode-vamiga-debugger mem protect]
+    const wasm_memprotect_start_tracking = M.cwrap('wasm_memprotect_start_tracking', 'boolean');
+    const wasm_memprotect_seed_libraries = M.cwrap('wasm_memprotect_seed_libraries', 'boolean');
 
     function wasm_loadfile(fileName, fileBuffer) {
       const ptr = M._malloc(fileBuffer.byteLength);
@@ -165,6 +172,19 @@ export async function main(config = {}) {
       if (pauseEvent) postToHost({ type: 'emulator-state', state: 'paused' });
     };
 
+    // [vscode-vamiga-debugger mem protect] Starts the AllocMem/FreeMem watch
+    // that builds the memory protection allow-list as early as possible —
+    // much earlier than tryExec's "user task started" heuristic below, so
+    // Kickstart's own boot-time allocations (graphics.library's default
+    // View/copper lists, etc.) get tracked too. wasm_memprotect_start_tracking
+    // validates execBase itself and no-ops until it's actually ready, so
+    // this is safe to call every tick; stop once it succeeds (calling it
+    // again later would discard any AllocMem call currently in-flight).
+    const tryStartMemProtectTracking = () => {
+      if (state.memProtectTrackingStarted) return;
+      state.memProtectTrackingStarted = wasm_memprotect_start_tracking();
+    };
+
     // Watch for the debuggee program starting: hook AllocMem (called early
     // and often during boot, but a reliable point to catch our program once
     // execbase is up) to install a breakpoint at, or — for fastLoad — to
@@ -181,6 +201,11 @@ export async function main(config = {}) {
           !isSupervisor) {
         state.execReady = true;
         wasm_enable_cpu_logging(true);
+        // [vscode-vamiga-debugger mem protect] GfxBase is confirmed set here
+        // (checked just above), so its own library list is guaranteed to be
+        // populated — safe to walk now, unlike at the earlier raw-execBase
+        // tracking-start point (see MemProtect.h's seedResidentLibraries).
+        wasm_memprotect_seed_libraries();
         const fastLoad = !state.callParams.url;
         if (fastLoad) {
           state.attached = true;
@@ -291,6 +316,7 @@ export async function main(config = {}) {
       emulationWorker.onmessage = (event) => {
         if (doAnimationFrame) {
           doAnimationFrame(event.data.timestamp);
+          if (!state.memProtectTrackingStarted) tryStartMemProtectTracking();
           if (!state.execReady) tryExec();
         }
       };
@@ -378,8 +404,6 @@ export async function main(config = {}) {
 
     // --- audio ---
     setupAudio({ M, audioToggle, wasm_set_sample_rate, wasm_get_sound_buffer_address, canvas });
-
-    postToHost({ type: 'exec-ready' });
   };
 }
 

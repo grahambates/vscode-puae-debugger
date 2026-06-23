@@ -836,6 +836,9 @@ export function setupRpcDispatcher(M, postMessage) {
       case "addMemoryProtectionRange":
         M._wasm_memprotect_add_range(args.address >>> 0, args.size >>> 0);
         break;
+      case "seedMemoryProtectionLibraries":
+        M._wasm_memprotect_seed_libraries();
+        break;
       case "enableCpuLogging":
         M._wasm_enable_cpu_logging(args.enabled ? 1 : 0);
         break;
@@ -852,19 +855,34 @@ export function setupRpcDispatcher(M, postMessage) {
         // actioned (custom_reset, m68k_reset2, memory_clear) on the second —
         // a couple of extra ticks give margin (see test_reset.mjs).
         for (let i = 0; i < 4; i++) M._wasm_tick();
+        // The hard reset invalidated every previously-tracked AllocMem range
+        // (and possibly moved execBase) — drop them and restart the watch
+        // fresh, same as the initial boot path. Reset first so no stale
+        // range survives even if a tick below catches an AllocMem call
+        // before the reset-ranges call would otherwise have landed.
+        M._wasm_memprotect_reset_ranges();
         // Tick until AmigaOS is ready rather than a fixed count — mirrors
         // vAmiga_ui.js's tryExec condition. 1000 ticks (~20 PAL seconds) is
         // a generous safety ceiling that should never be reached in practice.
-        for (let i = 0; !isExecReady(M) && i < 1000; i++) M._wasm_tick();
+        // Poll the memory-protection watch every tick too (it validates
+        // execBase itself and no-ops until ready), so it starts as soon as
+        // exec.library re-initializes post-reset, not just once this loop's
+        // fuller "user task started" condition is met.
+        let memProtectTrackingStarted = false;
+        for (let i = 0; !isExecReady(M) && i < 1000; i++) {
+          M._wasm_tick();
+          if (!memProtectTrackingStarted) {
+            memProtectTrackingStarted = !!M._wasm_memprotect_start_tracking();
+          }
+        }
+        if (!memProtectTrackingStarted) M._wasm_memprotect_start_tracking();
+        // GfxBase is confirmed set if isExecReady() actually passed (vs. the
+        // loop timing out) — safe to walk the library list now.
+        if (isExecReady(M)) M._wasm_memprotect_seed_libraries();
         // Snapshots captured before the reset reference the previous
         // program's RAM/state — restoring them now would be confusing/
         // incorrect, so drop them.
         snapshotHistory.length = 0;
-        // The hard reset invalidated every previously-tracked AllocMem
-        // range (and possibly moved execBase) — drop them and restart the
-        // watch fresh, same as the initial boot path.
-        M._wasm_memprotect_reset_ranges();
-        M._wasm_memprotect_start_tracking();
         postMessage({ type: "exec-ready" });
         break;
 

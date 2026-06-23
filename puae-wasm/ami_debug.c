@@ -1963,14 +1963,145 @@ e9k_debug_memprotect_set_enabled(int enabled)
 	e9k_debug_memprotectEnabled = enabled ? 1 : 0;
 }
 
-E9K_DEBUG_EXPORT void
+// Validates the ExecBase structure at the given address using the same
+// checksum AmigaOS itself relies on (ChkBase == ~addr, and the words in
+// [0x22, 0x52] sum to 0xFFFF), via raw get_long/get_word peeks only — no
+// intermediate struct, deliberately, so there's nothing left uninitialized
+// for a failed check to fall through to (see the vAmiga backend's
+// MemProtect.cpp, where OSDebugger::getExecBase() had exactly that hazard:
+// it declares an uninitialized struct and only populates it if its own
+// looser pointer check passes, but runs the checksum check regardless).
+// Lets e9k_debug_memprotect_start_tracking be called speculatively on every
+// tick from boot (see puae_app.js), so Kickstart's own boot-time AllocMem
+// calls get tracked too, not just whatever a user task allocates once the
+// "exec ready" heuristic (AllocMem LVO signature + GfxBase set) finally
+// passes.
+static int
+e9k_debug_execBaseValid(uint32_t addr)
+{
+	if ((addr & 1u) != 0u || addr == 0u) {
+		return 0;
+	}
+	if ((uint32_t)~get_long(addr + 0x26u) != addr) { /* ChkBase */
+		return 0;
+	}
+	uint16_t checksum = 0;
+	for (uint32_t offset = 0x22u; offset <= 0x52u; offset += 2u) {
+		checksum = (uint16_t)(checksum + get_word(addr + offset));
+	}
+	return checksum == 0xFFFFu;
+}
+
+// Adds every library currently on ExecBase->LibList to the allow-list, as
+// [base - NegSize, base + PosSize] (the Library struct's documented data
+// bounds — see exec/libraries.h). Library bases (GfxBase, IntuitionBase,
+// DosBase, exec.library itself, ...) are bootstrapped by Kickstart before
+// exec.library ever makes a single trackable AllocMem call — there's no
+// LVO call for the instruction hook to observe, so no amount of "start
+// tracking earlier" can ever see them via the dynamic watch. Writes into
+// their own fields (e.g. graphics.library's LoadView updating GfxBase->
+// ActiView/copper list pointers) need this one-time snapshot instead.
+//
+// List traversal mirrors the standard Exec idiom: ln_Succ of the last real
+// node points at the list's own dummy tail node (whose ln_Succ is always
+// 0), so stopping as soon as a node's ln_Succ reads 0 naturally excludes
+// the tail without needing its address. Every node is sanity-checked
+// (even, plausible size) before being trusted, and traversal stops at the
+// first sign of a corrupt/uninitialized list rather than continuing —
+// execBase's own checksum (see e9k_debug_execBaseValid) only covers a
+// small field range and says nothing about whether LibList itself has
+// been initialized yet, so this must only ever be called once the caller
+// already trusts library state is live (see e9k_debug_memprotect_seed_libraries).
+static void
+e9k_debug_addResidentLibraries(uint32_t execBase)
+{
+	const uint32_t LIB_LIST_OFFSET = 378u;   // ExecBase->LibList
+	const int MAX_LIBRARIES = 128;           // generous — real systems have a few dozen
+	const uint32_t MAX_LIB_SIZE = 0x100000u; // 1MB — real libraries are tiny by comparison
+
+	uint32_t node = get_long(execBase + LIB_LIST_OFFSET);
+	for (int i = 0; i < MAX_LIBRARIES && node != 0; i++) {
+		if ((node & 1u) != 0u) break;
+
+		uint32_t succ = get_long(node); // ln_Succ
+		if (succ == 0) break; // `node` is the dummy tail itself
+		if ((succ & 1u) != 0u) break; // next link doesn't look like a real pointer
+
+		uint16_t negSize = get_word(node + 16); // lib_NegSize
+		uint16_t posSize = get_word(node + 18); // lib_PosSize
+		uint32_t size = (uint32_t)negSize + (uint32_t)posSize;
+		if (size > 0u && size < MAX_LIB_SIZE && negSize <= node) {
+			e9k_debug_memprotect_add_range(node - negSize, size);
+		}
+
+		node = succ;
+	}
+}
+
+// Adds a budget below the supervisor stack pointer (ISP) to the allow-list.
+// Interrupt handlers, exception entry, and TRAP'd OS calls all run in
+// supervisor mode and push onto this stack — it's OS-managed, never
+// AllocMem'd by anyone, so without this every legitimate supervisor-mode
+// push (including the CPU's own automatic exception-frame push, and a
+// user-installed interrupt handler preserving registers) would falsely
+// violate. Mirrors the fixed-budget approximation used for the program's
+// own user-mode stack (see amigaHunkLoader.ts's STACK_RESERVE_SIZE) —
+// deliberately generous, not a precise overflow boundary. Unlike
+// exempting supervisor mode outright (the previous approach here), this
+// still lets a wild write made *from* supervisor-mode code (e.g. a buggy
+// interrupt handler writing somewhere unrelated) be caught, since only
+// this specific stack region is allowed, not supervisor mode as a whole.
+// Only called while in user mode (see e9k_debug_memprotect_seed_libraries's
+// caller), so regs.isp holds the (inactive) supervisor stack shadow — same
+// convention as e9k_debug_read_regs's USP reporting, mirrored.
+static void
+e9k_debug_addSupervisorStack(void)
+{
+	const uint32_t SUPERVISOR_STACK_BUDGET = 16384u;
+
+	uint32_t isp = e9k_debug_maskAddr(regs.isp);
+	if (isp == 0u) return;
+
+	e9k_debug_memprotect_add_range(isp - SUPERVISOR_STACK_BUDGET, SUPERVISOR_STACK_BUDGET + 8u);
+}
+
+// Walks ExecBase->LibList and adds every resident library to the allow-list
+// (see e9k_debug_addResidentLibraries), plus the supervisor stack (see
+// e9k_debug_addSupervisorStack). Deliberately separate from
+// e9k_debug_memprotect_start_tracking: that function's execBase validation
+// only covers a small field range and says nothing about whether LibList
+// itself has been initialized yet, so calling this as early as tracking
+// starts risks walking uninitialized garbage as if it were a real list —
+// burning through the whole range table on bogus entries before the
+// caller's own ranges (program hunks/stack) ever get added. Call this
+// instead once the caller already trusts library state is live — e.g. the
+// same "GfxBase is set" condition puae_app.js's tryExec already uses to
+// gate other graphics-state reads. Safe to call repeatedly (e.g. after a
+// reset); each call just re-adds whatever's currently resident/current.
+E9K_DEBUG_EXPORT int
+e9k_debug_memprotect_seed_libraries(void)
+{
+	uint32_t execBase = get_long(4);
+	if (!e9k_debug_execBaseValid(execBase)) {
+		return 0;
+	}
+	e9k_debug_addResidentLibraries(execBase);
+	e9k_debug_addSupervisorStack();
+	return 1;
+}
+
+E9K_DEBUG_EXPORT int
 e9k_debug_memprotect_start_tracking(void)
 {
 	uint32_t execBase = get_long(4);
+	if (!e9k_debug_execBaseValid(execBase)) {
+		return 0;
+	}
 	e9k_debug_memprotectAllocMemAddr = e9k_debug_maskAddr(execBase - 198u);
 	e9k_debug_memprotectFreeMemAddr = e9k_debug_maskAddr(execBase - 210u);
 	e9k_debug_memprotectAllocPending = 0;
 	e9k_debug_memprotectTracking = 1;
+	return 1;
 }
 
 E9K_DEBUG_EXPORT void

@@ -40,7 +40,6 @@ import {
   isExecReadyMessage,
 } from "./vAmiga";
 import { Emulator } from "./emulator";
-import { PuaeEmulator } from "./puaeEmulator";
 import { Hunk, parseHunks } from "./amigaHunkParser";
 import { DWARFData, parseDwarf } from "./dwarfParser";
 import { loadAmigaProgram } from "./amigaHunkLoader";
@@ -186,6 +185,11 @@ export class VamigaDebugAdapter extends LoggingDebugSession {
   private stackManager?: StackManager;
   private disassemblyManager?: DisassemblyManager;
   private evaluateManager?: EvaluateManager;
+  // setExceptionBreakpoints can arrive before attach() has constructed
+  // breakpointManager (VS Code doesn't wait on our own boot/inject sequence
+  // before sending it) — stashed here so attach() can apply it once ready,
+  // instead of silently dropping the request (see setExceptionBreakPointsRequest).
+  private pendingExceptionFilters?: string[];
 
   private hunks: Hunk[] = [];
   private dwarfData?: DWARFData;
@@ -1068,7 +1072,22 @@ export class VamigaDebugAdapter extends LoggingDebugSession {
     args: DebugProtocol.SetExceptionBreakpointsArguments,
   ): void {
     try {
-      const breakpoints = this.getBreakpointManager().setExceptionBreakpoints(
+      if (!this.breakpointManager) {
+        // attach() hasn't constructed breakpointManager yet (it can race
+        // with our own boot/inject sequence) — stash the filters so attach()
+        // can apply them once it has, rather than silently dropping this
+        // request (which would leave e.g. memory protection enforcement
+        // never enabled for the whole session, with no further retry from
+        // VS Code).
+        this.pendingExceptionFilters = args.filters;
+        response.body = {
+          breakpoints: args.filters.map(() => ({ verified: true })),
+        };
+        this.sendResponse(response);
+        return;
+      }
+
+      const breakpoints = this.breakpointManager.setExceptionBreakpoints(
         args.filters,
       );
 
@@ -1199,22 +1218,39 @@ export class VamigaDebugAdapter extends LoggingDebugSession {
       logger.log(
         `Program loaded at ${formatHex(this.loadedProgram.entryPoint)}`,
       );
-      if (this.emulator instanceof PuaeEmulator) {
-        // Seed the memory protection allow-list with this program's own
-        // hunks + stack budget. Enablement itself is controlled separately,
-        // via the "Write to unallocated memory" exception breakpoint filter
-        // (see breakpointManager.ts's setExceptionBreakpoints).
-        this.emulator.resetMemoryProtectionRanges();
-        for (const alloc of this.loadedProgram.allocations) {
-          this.emulator.addMemoryProtectionRange(alloc.address, alloc.size);
-        }
-        if (this.loadedProgram.stackRange) {
-          this.emulator.addMemoryProtectionRange(
-            this.loadedProgram.stackRange.address,
-            this.loadedProgram.stackRange.size,
-          );
-        }
+      // Seed the memory protection allow-list with this program's own hunks +
+      // stack budget. Enablement itself is controlled separately, via the
+      // "Write to unallocated memory" exception breakpoint filter (see
+      // breakpointManager.ts's setExceptionBreakpoints).
+      this.emulator.resetMemoryProtectionRanges();
+      for (const alloc of this.loadedProgram.allocations) {
+        this.emulator.addMemoryProtectionRange(alloc.address, alloc.size);
       }
+      if (this.loadedProgram.stackRange) {
+        this.emulator.addMemoryProtectionRange(
+          this.loadedProgram.stackRange.address,
+          this.loadedProgram.stackRange.size,
+        );
+      }
+      this.sendEvent(
+        new OutputEvent(
+          `Memory protection ranges seeded: ` +
+            `hunks=${JSON.stringify(this.loadedProgram.allocations.map((a) => ({ address: formatHex(a.address), size: a.size })))} ` +
+            `stackRange=${
+              this.loadedProgram.stackRange
+                ? JSON.stringify({
+                    address: formatHex(this.loadedProgram.stackRange.address),
+                    size: this.loadedProgram.stackRange.size,
+                  })
+                : "undefined"
+            }\n`,
+        ),
+      );
+      // resetMemoryProtectionRanges() above also wiped the resident-library
+      // ranges seeded automatically at boot (see webviewEmulator.ts) — put
+      // them back so writes into GfxBase/IntuitionBase/DosBase/etc. (e.g. a
+      // LoadView call) aren't misflagged alongside this program's own hunks.
+      this.emulator.seedResidentLibraries();
       const offsets = this.loadedProgram.allocations.map((s) => s.address);
       this.attach(offsets);
     } catch (error) {
@@ -1263,6 +1299,12 @@ export class VamigaDebugAdapter extends LoggingDebugSession {
         this.emulator,
         this.sourceMap,
       );
+      if (this.pendingExceptionFilters) {
+        this.breakpointManager.setExceptionBreakpoints(
+          this.pendingExceptionFilters,
+        );
+        this.pendingExceptionFilters = undefined;
+      }
       this.stackManager = new StackManager(this.emulator, this.sourceMap);
       this.disassemblyManager = new DisassemblyManager(
         this.emulator,

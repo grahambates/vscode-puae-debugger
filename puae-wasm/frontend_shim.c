@@ -821,7 +821,10 @@ EMSCRIPTEN_KEEPALIVE
 void wasm_memprotect_set_enabled(int enabled) { e9k_debug_memprotect_set_enabled(enabled); }
 
 EMSCRIPTEN_KEEPALIVE
-void wasm_memprotect_start_tracking(void) { e9k_debug_memprotect_start_tracking(); }
+int wasm_memprotect_start_tracking(void) { return e9k_debug_memprotect_start_tracking(); }
+
+EMSCRIPTEN_KEEPALIVE
+int wasm_memprotect_seed_libraries(void) { return e9k_debug_memprotect_seed_libraries(); }
 
 EMSCRIPTEN_KEEPALIVE
 void wasm_memprotect_reset_ranges(void) { e9k_debug_memprotect_reset_ranges(); }

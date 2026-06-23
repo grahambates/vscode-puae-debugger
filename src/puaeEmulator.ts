@@ -114,21 +114,6 @@ export class PuaeEmulator extends WebviewEmulator {
     );
   }
 
-  // --- Memory protection (PUAE-only — breaks on writes to RAM outside an
-  // allow-list of ranges, excluding the low-memory vector table) ---
-
-  public setMemoryProtectionEnabled(enabled: boolean): void {
-    this.sendCommand("setMemoryProtectionEnabled", { enabled });
-  }
-
-  public resetMemoryProtectionRanges(): void {
-    this.sendCommand("resetMemoryProtectionRanges");
-  }
-
-  public addMemoryProtectionRange(address: number, size: number): void {
-    this.sendCommand("addMemoryProtectionRange", { address, size });
-  }
-
   /**
    * Builds the `.uae`-format config text to inject before boot.
    * Layers in order (later lines win):

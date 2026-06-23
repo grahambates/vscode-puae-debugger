@@ -124,6 +124,33 @@ export interface Emulator {
    */
   removeCatchpoint(vector: number): void;
 
+  // --- Memory protection ---
+
+  /**
+   * Enables/disables breaking on writes to RAM outside the allow-list of
+   * ranges set via addMemoryProtectionRange (excluding the low-memory
+   * vector table, which is always allowed).
+   */
+  setMemoryProtectionEnabled(enabled: boolean): void;
+
+  /** Clears the memory protection allow-list. */
+  resetMemoryProtectionRanges(): void;
+
+  /** Adds a range to the memory protection allow-list. */
+  addMemoryProtectionRange(address: number, size: number): void;
+
+  /**
+   * Re-adds every currently-resident library (GfxBase, IntuitionBase,
+   * DosBase, exec.library itself, ...) to the memory protection allow-list.
+   * Library bases are bootstrapped by Kickstart before exec.library ever
+   * makes a single trackable AllocMem call, so they're seeded once
+   * automatically as soon as it's safe to do so (GfxBase confirmed set) —
+   * but that seeding is wiped by a subsequent resetMemoryProtectionRanges()
+   * call, so callers that reset the allow-list after boot (e.g. to seed a
+   * fastLoad program's own hunks/stack) must call this again afterwards.
+   */
+  seedResidentLibraries(): void;
+
   // --- CPU / registers ---
 
   /**

@@ -204,8 +204,12 @@ export class AmigaMemoryMapper {
     let chunk = firstChunk;
     let chunkCount = 0;
 
-    while (chunk !== 0 && chunkCount < 20) {
-      // Safety limit
+    // Safety limit against a corrupt/circular list — not a realistic cap on
+    // a genuinely fragmented free-chunk list, which a long-running boot can
+    // easily exceed. A lower cap here silently truncates the walk, hiding
+    // any free block (however large) further down the unwalked tail and
+    // causing spurious "no suitable memory block" allocation failures.
+    while (chunk !== 0 && chunkCount < 10000) {
       const size = await this.vAmiga.peek32(chunk + 0x04);
       const nextChunk = await this.vAmiga.peek32(chunk);
 
@@ -353,8 +357,19 @@ export class AmigaMemoryMapper {
 
     const block = await this.findFreeBlock(alignedSize, memType);
     if (!block) {
+      const info = await this.getMemoryInfo();
+      const freeBlocks = info.blocks.filter((b) => b.free);
+      const memListHead = await this.vAmiga.peek32(info.memList);
+      const headNodeType =
+        memListHead !== 0 ? await this.vAmiga.peek8(memListHead + 0x08) : -1;
       throw new Error(
-        `No suitable ${memType} memory block found for ${alignedSize} bytes`,
+        `No suitable ${memType} memory block found for ${alignedSize} bytes. ` +
+          `execBase=0x${info.execBase.toString(16)} memList=0x${info.memList.toString(16)} ` +
+          `memListHead=0x${memListHead.toString(16)} headNodeType=${headNodeType} ` +
+          `totalChip=${info.totalChip} totalFast=${info.totalFast} totalSlow=${info.totalSlow} ` +
+          `freeChip=${info.freeChip} freeFast=${info.freeFast} freeSlow=${info.freeSlow} ` +
+          `regions=${JSON.stringify(info.regions)} ` +
+          `freeBlocks=${JSON.stringify(freeBlocks.map((b) => ({ address: b.address.toString(16), size: b.size, attributes: b.attributes })))}`,
       );
     }
 

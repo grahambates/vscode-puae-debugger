@@ -243,16 +243,24 @@ export class AmigaHunkLoader {
    * fastLoad injects the program directly with no DOS process to return to,
    * so an `rts` at the end of the program would pop a garbage return address
    * and crash the emulator. Instead, build a synthetic call frame at the top
-   * of the *currently active* stack: a return address pointing at a small
-   * landing-pad routine that shuts down DMA and interrupts and then spins
-   * forever - mimicking what a real `jsr` into the program would have left
-   * behind, so `rts` lands somewhere harmless when the program exits.
+   * of the program's stack: a return address pointing at a small landing-pad
+   * routine that shuts down DMA and interrupts and then spins forever -
+   * mimicking what a real `jsr` into the program would have left behind, so
+   * `rts` lands somewhere harmless when the program exits.
    *
-   * "Currently active stack" means A7 as reported by getCpuInfo(), which is
-   * the live stack pointer regardless of CPU mode - USP while in user mode,
-   * SSP while in supervisor mode. `rts` always pops from A7, so building the
-   * frame there (rather than the dormant USP shadow register when the CPU is
-   * in supervisor mode) is what actually makes the landing pad reachable.
+   * Deliberately targets USP, not A7. A7 is the *live*, mode-dependent
+   * register (USP's contents while in user mode, SSP's while in
+   * supervisor) - reading/writing it at injection time only matches what
+   * the program sees at runtime if the CPU happens to be in the same mode
+   * at both points. It isn't: exec-ready detection only guarantees user
+   * mode at the moment it's checked, the CPU can have already moved on to
+   * (or be halted mid-) a supervisor-mode interrupt by the time this runs,
+   * and the caller (see setupProgramEntry) unconditionally forces user mode
+   * before jumping to the program regardless. USP is mode-independent - it
+   * always refers to the user stack pointer whether or not the CPU is
+   * currently in supervisor mode - so it's the only target that's
+   * guaranteed to be where the program (always started in user mode) will
+   * actually look for its stack and where its `rts` will actually pop from.
    */
   private async setupReturnTrampoline(program: LoadedProgram): Promise<void> {
     // move.w #$7FFF, $DFF096   ; DMACON - disable all DMA channels
@@ -268,14 +276,14 @@ export class AmigaHunkLoader {
     const STACK_RESERVE_SIZE = 32 * 1024;
 
     const cpuInfo = await this.vAmiga.getCpuInfo();
-    const sp = Number(cpuInfo.a7);
+    const sp = Number(cpuInfo.usp);
 
-    const trampolineAddress = sp - TRAMPOLINE_CODE.length; // landing pad, ending at the original a7
+    const trampolineAddress = sp - TRAMPOLINE_CODE.length; // landing pad, ending at the original usp
     const returnAddress = trampolineAddress - 4; // synthetic return address, popped by rts
 
     await this.vAmiga.writeMemory(trampolineAddress, TRAMPOLINE_CODE);
     await this.vAmiga.poke32(returnAddress, trampolineAddress);
-    await this.vAmiga.setRegister("a7", returnAddress);
+    await this.vAmiga.setRegister("usp", returnAddress);
 
     program.stackRange = {
       address: trampolineAddress - STACK_RESERVE_SIZE,

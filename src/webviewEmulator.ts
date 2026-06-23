@@ -312,6 +312,25 @@ export abstract class WebviewEmulator implements Emulator {
     this.sendCommand("removeCatchpoint", { vector });
   }
 
+  // --- Memory protection (breaks on writes to RAM outside an allow-list of
+  // ranges, excluding the low-memory vector table) ---
+
+  public setMemoryProtectionEnabled(enabled: boolean): void {
+    this.sendCommand("setMemoryProtectionEnabled", { enabled });
+  }
+
+  public resetMemoryProtectionRanges(): void {
+    this.sendCommand("resetMemoryProtectionRanges");
+  }
+
+  public addMemoryProtectionRange(address: number, size: number): void {
+    this.sendCommand("addMemoryProtectionRange", { address, size });
+  }
+
+  public seedResidentLibraries(): void {
+    this.sendCommand("seedMemoryProtectionLibraries");
+  }
+
   // --- CPU / registers ---
 
   public enableCpuLogging(enabled: boolean): void {
