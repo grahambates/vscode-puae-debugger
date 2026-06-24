@@ -64,6 +64,24 @@ typedef struct e9k_debug_watchbreak
 } e9k_debug_watchbreak_t;
 
 
+// Register watches: break when a CPU register's *own* value changes, as
+// opposed to a memory watchpoint on the address it happens to hold. There's
+// no hardware/hook equivalent of a memory access function for registers —
+// they're written inline by hundreds of opcode handlers — so this works by
+// diffing each watched register's value once per retired instruction
+// (see e9k_debug_instructionHookImpl), not by intercepting individual
+// writes. Indices match UAE's regs.regs[] layout: D0-D7 = 0..7, A0-A7 = 8..15.
+#define E9K_REGWATCH_COUNT 16
+
+typedef struct e9k_debug_regwatchbreak
+{
+    uint32_t reg_index; // 0..15 (D0-D7, A0-A7)
+    uint32_t old_value;
+    uint32_t new_value;
+    uint32_t pc;         // PC of the not-yet-executed instruction when the change was detected
+} e9k_debug_regwatchbreak_t;
+
+
 // 68k exception vector numbers fit in 0..63, matching the bits of the
 // catchpoint-enabled mask (bit N = vector N, e.g. 4 = illegal instruction).
 #define E9K_CATCHPOINT_VECTOR_MAX 64

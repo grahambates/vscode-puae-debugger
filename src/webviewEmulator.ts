@@ -308,6 +308,18 @@ export abstract class WebviewEmulator implements Emulator {
     this.sendCommand("removeWatchpoint", { address });
   }
 
+  public setRegisterWatch(regIndex: number): void {
+    this.sendCommand("setRegisterWatch", { regIndex });
+  }
+
+  public removeRegisterWatch(regIndex: number): void {
+    this.sendCommand("removeRegisterWatch", { regIndex });
+  }
+
+  public resetWatchpoints(): void {
+    this.sendCommand("resetWatchpoints");
+  }
+
   public setCatchpoint(vector: number, ignores = 0): void {
     this.sendCommand("setCatchpoint", { vector, ignores });
   }

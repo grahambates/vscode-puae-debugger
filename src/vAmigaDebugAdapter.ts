@@ -1244,6 +1244,16 @@ export class VamigaDebugAdapter extends LoggingDebugSession {
       // harmless no-op for VAmiga (already halted by its fastLoad snapshot
       // load).
       this.emulator.pause();
+      // Clear any watchpoints/register watches left armed from a previous
+      // debug session — the webview (and its emulator state) can be reused
+      // across sessions, but this session's BreakpointManager starts fresh
+      // and has no record of what an earlier one set, so without this a
+      // stale watch keeps firing despite not being listed anywhere. Must
+      // happen before attach() below (which sends InitializedEvent, the
+      // signal that lets VS Code start sending this session's own
+      // setDataBreakpoints requests) so it can't undo what this session
+      // just armed.
+      this.emulator.resetWatchpoints();
       this.loadedProgram = await loadAmigaProgram(this.emulator, this.hunks);
       logger.log(
         `Program loaded at ${formatHex(this.loadedProgram.entryPoint)}`,

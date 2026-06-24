@@ -738,6 +738,18 @@ static e9k_debug_watchpoint_t g_watchpoint_buf[E9K_WATCHPOINT_COUNT];
 static e9k_debug_watchbreak_t g_watchbreak_buf;
 static uint64_t g_watchpoint_enabled_mask;
 
+// Clears all watchpoints and register watches. Needed because the webview
+// (and its WASM module instance) can be reused across debug sessions while
+// the TS-side bookkeeping (BreakpointManager) is recreated fresh each
+// session — without this, a watch armed in a previous session has no
+// record anywhere that would let the new session remove it, yet it stays
+// live in the engine and keeps firing.
+EMSCRIPTEN_KEEPALIVE
+void wasm_reset_debug_watches(void) {
+    e9k_debug_reset_watchpoints();
+    e9k_debug_reset_regwatches();
+}
+
 EMSCRIPTEN_KEEPALIVE
 int wasm_add_watchpoint(uint32_t addr, uint32_t op_mask, uint32_t diff_operand, uint32_t value_operand,
                          uint32_t old_value_operand, uint32_t size_operand, uint32_t addr_mask_operand) {
@@ -777,6 +789,28 @@ int wasm_consume_watchbreak(void) {
 
 EMSCRIPTEN_KEEPALIVE
 uint32_t *wasm_get_watchbreak_buf(void) { return (uint32_t *)&g_watchbreak_buf; }
+
+// --- Register watches (break when a CPU register's own value changes) ---
+static e9k_debug_regwatchbreak_t g_regwatchbreak_buf;
+
+EMSCRIPTEN_KEEPALIVE
+int wasm_add_regwatch(uint32_t regIndex) {
+    return e9k_debug_add_regwatch(regIndex);
+}
+
+EMSCRIPTEN_KEEPALIVE
+void wasm_remove_regwatch(uint32_t regIndex) { e9k_debug_remove_regwatch(regIndex); }
+
+EMSCRIPTEN_KEEPALIVE
+uint32_t wasm_get_regwatch_enabled_mask(void) { return e9k_debug_get_regwatch_enabled_mask(); }
+
+EMSCRIPTEN_KEEPALIVE
+int wasm_consume_regwatchbreak(void) {
+    return e9k_debug_consume_regwatchbreak(&g_regwatchbreak_buf);
+}
+
+EMSCRIPTEN_KEEPALIVE
+uint32_t *wasm_get_regwatchbreak_buf(void) { return (uint32_t *)&g_regwatchbreak_buf; }
 
 // --- Memory protects (Stage G2) ---
 // e9k_debug_protect_t is 5 x uint32 (addr, addrMask, sizeBits, mode, value).

@@ -170,6 +170,7 @@ export interface StopMessage {
   name:
     | "BREAKPOINT_REACHED"
     | "WATCHPOINT_REACHED"
+    | "REGISTER_WATCHPOINT_REACHED"
     | "CATCHPOINT_REACHED"
     | "MEMORY_PROTECTION_VIOLATION";
   payload: {
@@ -185,6 +186,14 @@ export interface StopMessage {
      * undefined (treated as CPU) there.
      */
     source?: number;
+    /**
+     * REGISTER_WATCHPOINT_REACHED only: which register changed (matches
+     * UAE's regs.regs[] layout — D0-D7 = 0..7, A0-A7 = 8..15), and its
+     * value before/after the change. PUAE-only.
+     */
+    regIndex?: number;
+    oldValue?: number;
+    newValue?: number;
   };
 }
 

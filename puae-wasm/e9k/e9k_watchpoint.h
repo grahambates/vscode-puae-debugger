@@ -26,3 +26,18 @@ e9k_debug_set_watchpoint_enabled_mask(uint64_t mask);
 
 int
 e9k_debug_consume_watchbreak(e9k_debug_watchbreak_t *out);
+
+void
+e9k_debug_reset_regwatches(void);
+
+int
+e9k_debug_add_regwatch(uint32_t regIndex);
+
+void
+e9k_debug_remove_regwatch(uint32_t regIndex);
+
+uint32_t
+e9k_debug_get_regwatch_enabled_mask(void);
+
+int
+e9k_debug_consume_regwatchbreak(e9k_debug_regwatchbreak_t *out);

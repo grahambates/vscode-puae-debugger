@@ -121,6 +121,18 @@ static e9k_debug_watchbreak_t e9k_debug_watchbreak = {0};
 static int e9k_debug_watchbreakPending = 0;
 static int e9k_debug_watchpointSuspend = 0;
 
+// Register watches — see e9k_debug_regwatchCheck for how these fire.
+static uint32_t e9k_debug_regwatchLastValue[E9K_REGWATCH_COUNT];
+static uint32_t e9k_debug_regwatchEnabledMask = 0;
+static e9k_debug_regwatchbreak_t e9k_debug_regwatchbreak = {0};
+static int e9k_debug_regwatchbreakPending = 0;
+// Set whenever replay (stepBack/continueReverse/stepBackFrame) runs, since
+// that bypasses e9k_debug_regwatchCheck entirely — consumed by the next
+// normal-mode check, which re-baselines lastValue instead of comparing
+// (replay legitimately moves register state across time; without this,
+// resuming after it would look like a spurious change).
+static int e9k_debug_regwatchNeedsRebaseline = 0;
+
 // Set while e9k_debug_read_memory/e9k_debug_peek_memory are scanning memory
 // for debugger display purposes. custom_wget_1's write-only-register
 // readback side effect (real OCS/ECS hardware writes the last chip bus value
@@ -212,6 +224,7 @@ static size_t e9k_debug_textTail = 0;
 static size_t e9k_debug_textCount = 0;
 
 static void e9k_debug_requestBreak(void);
+static int e9k_debug_regwatchCheck(uint32_t pc24);
 
 static void
 e9k_debug_profiler_reset(void)
@@ -2199,6 +2212,7 @@ e9k_debug_instructionHookImpl(uaecptr pc, uae_u16 opcode)
 	if (puae_debug_replayMode) {
 		// Bypass all normal step/breakpoint/callstack handling: replay always
 		// runs to an exact instruction count (puae_debug_replayTarget).
+		e9k_debug_regwatchNeedsRebaseline = 1;
 		if (puae_debug_scanMode && e9k_debug_hasBreakpoint(pc24)) {
 			// Record the latest (in forward time) match; continueReverse wants
 			// the most recent breakpoint hit within the replayed range.
@@ -2212,6 +2226,10 @@ e9k_debug_instructionHookImpl(uaecptr pc, uae_u16 opcode)
 	}
 
 	e9k_debug_memprotect_instrHook(pc24);
+
+	if (e9k_debug_regwatchCheck(pc24)) {
+		return 1;
+	}
 
 	if ((opcode & 0xFFC0u) == 0x4E80u) {
 		int mode = (opcode >> 3) & 7;
@@ -2400,6 +2418,100 @@ e9k_debug_consume_watchbreak(e9k_debug_watchbreak_t *out)
 	}
 	*out = e9k_debug_watchbreak;
 	e9k_debug_watchbreakPending = 0;
+	return 1;
+}
+
+E9K_DEBUG_EXPORT void
+e9k_debug_reset_regwatches(void)
+{
+	memset(e9k_debug_regwatchLastValue, 0, sizeof(e9k_debug_regwatchLastValue));
+	e9k_debug_regwatchEnabledMask = 0;
+	memset(&e9k_debug_regwatchbreak, 0, sizeof(e9k_debug_regwatchbreak));
+	e9k_debug_regwatchbreakPending = 0;
+}
+
+E9K_DEBUG_EXPORT int
+e9k_debug_add_regwatch(uint32_t regIndex)
+{
+	if (regIndex >= E9K_REGWATCH_COUNT) {
+		return -1;
+	}
+	// Baseline against the register's current value so the very next
+	// instruction hook doesn't immediately "detect" a stale difference.
+	e9k_debug_regwatchLastValue[regIndex] = regs.regs[regIndex];
+	e9k_debug_regwatchEnabledMask |= (1u << regIndex);
+	return (int)regIndex;
+}
+
+E9K_DEBUG_EXPORT void
+e9k_debug_remove_regwatch(uint32_t regIndex)
+{
+	if (regIndex >= E9K_REGWATCH_COUNT) {
+		return;
+	}
+	e9k_debug_regwatchEnabledMask &= ~(1u << regIndex);
+}
+
+E9K_DEBUG_EXPORT uint32_t
+e9k_debug_get_regwatch_enabled_mask(void)
+{
+	return e9k_debug_regwatchEnabledMask;
+}
+
+E9K_DEBUG_EXPORT int
+e9k_debug_consume_regwatchbreak(e9k_debug_regwatchbreak_t *out)
+{
+	if (!out) {
+		return 0;
+	}
+	if (!e9k_debug_regwatchbreakPending) {
+		return 0;
+	}
+	*out = e9k_debug_regwatchbreak;
+	e9k_debug_regwatchbreakPending = 0;
+	return 1;
+}
+
+// Called once per retired instruction (see e9k_debug_instructionHookImpl).
+// There's no single choke-point function for register writes the way
+// chipmem_lput etc. are for memory — registers are written inline by
+// hundreds of opcode handlers — so this diffs each watched register's
+// current value against what it was the last time this ran. Every watched
+// register's lastValue is refreshed on every call (even when only the
+// first mismatch is reported) so a second register changed by the same
+// instruction doesn't show up as a false positive on the next call.
+static int
+e9k_debug_regwatchCheck(uint32_t pc24)
+{
+	if (e9k_debug_regwatchEnabledMask == 0) {
+		return 0;
+	}
+	int rebaseline = e9k_debug_regwatchNeedsRebaseline;
+	e9k_debug_regwatchNeedsRebaseline = 0;
+	int hitIndex = -1;
+	uint32_t hitOld = 0, hitNew = 0;
+	for (uint32_t i = 0; i < E9K_REGWATCH_COUNT; ++i) {
+		if ((e9k_debug_regwatchEnabledMask & (1u << i)) == 0u) {
+			continue;
+		}
+		uint32_t current = regs.regs[i];
+		uint32_t old = e9k_debug_regwatchLastValue[i];
+		if (!rebaseline && current != old && hitIndex < 0) {
+			hitIndex = (int)i;
+			hitOld = old;
+			hitNew = current;
+		}
+		e9k_debug_regwatchLastValue[i] = current;
+	}
+	if (hitIndex < 0) {
+		return 0;
+	}
+	e9k_debug_regwatchbreak.reg_index = (uint32_t)hitIndex;
+	e9k_debug_regwatchbreak.old_value = hitOld;
+	e9k_debug_regwatchbreak.new_value = hitNew;
+	e9k_debug_regwatchbreak.pc = pc24;
+	e9k_debug_regwatchbreakPending = 1;
+	e9k_debug_requestBreak();
 	return 1;
 }
 

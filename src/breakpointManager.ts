@@ -1,7 +1,7 @@
 import * as vscode from "vscode";
 import { DebugProtocol } from "@vscode/debugprotocol";
 import { logger } from "@vscode/debugadapter";
-import { CpuInfo, StopMessage } from "./vAmiga";
+import { StopMessage } from "./vAmiga";
 import { Emulator } from "./emulator";
 import { SourceMap } from "./sourceMap";
 import { formatHex } from "./numbers";
@@ -29,6 +29,29 @@ interface DataBreakpointRef extends BreakpointRef {
   accessType: DebugProtocol.DataBreakpointAccessType;
   ignores: number;
 }
+
+/**
+ * Internal reference to an active register watch (break when a register's
+ * own value changes — see Emulator.setRegisterWatch). Data/address
+ * registers only; matches UAE's regs.regs[] layout.
+ */
+interface RegisterWatchRef {
+  id: number;
+  regIndex: number;
+  dataId: string;
+}
+
+const REGISTER_WATCH_INDEX: Record<string, number> = {
+  d0: 0, d1: 1, d2: 2, d3: 3, d4: 4, d5: 5, d6: 6, d7: 7,
+  a0: 8, a1: 9, a2: 10, a3: 11, a4: 12, a5: 13, a6: 14, a7: 15,
+};
+const REGISTER_WATCH_NAME: string[] = Object.entries(REGISTER_WATCH_INDEX).reduce(
+  (names, [name, index]) => {
+    names[index] = name.toUpperCase();
+    return names;
+  },
+  [] as string[],
+);
 
 /**
  * Temporary breakpoint used for step operations.
@@ -66,6 +89,7 @@ export class BreakpointManager {
   private instructionBreakpoints: BreakpointRef[] = [];
   private exceptionBreakpoints: BreakpointRef[] = [];
   private dataBreakpoints: DataBreakpointRef[] = [];
+  private registerWatchpoints: RegisterWatchRef[] = [];
   private functionBreakpoints: BreakpointRef[] = [];
   private tmpBreakpoints: TmpBreakpoint[] = [];
   private bpId = 0;
@@ -311,9 +335,20 @@ export class BreakpointManager {
         canPersist: boolean;
       }
     | undefined {
-    // Handle variables that have memory references
-    if (scope === "registers" || scope === "symbols") {
-      // For registers and symbols, we can create data breakpoints
+    // Registers: break when the register's own value changes. Only data/
+    // address registers are supported — there's no hook point for "register
+    // read", so unlike symbols, only "write" (i.e. "changed") makes sense.
+    // PC/SR/USP/etc. aren't in REGISTER_WATCH_INDEX, so they fall through
+    // to "not supported" below, same as any other unrecognized variable.
+    if (scope === "registers" && name in REGISTER_WATCH_INDEX) {
+      return {
+        dataId: `${scope}:${name}`,
+        description: `Break when ${name.toUpperCase()} changes`,
+        accessTypes: ["write"],
+        canPersist: false,
+      };
+    }
+    if (scope === "symbols") {
       const dataId = `${scope}:${name}`;
       return {
         dataId,
@@ -340,33 +375,53 @@ export class BreakpointManager {
       this.emulator.removeWatchpoint(ref.address);
     }
     this.dataBreakpoints = [];
+    for (const ref of this.registerWatchpoints) {
+      logger.log(`Register watch #${ref.id} removed (reg index ${ref.regIndex})`);
+      this.emulator.removeRegisterWatch(ref.regIndex);
+    }
+    this.registerWatchpoints = [];
 
     const resultBreakpoints: DebugProtocol.Breakpoint[] = [];
 
     // Add new data breakpoints
     for (const bp of breakpoints) {
       try {
+        const parts = bp.dataId.split(":");
+
+        // Registers: a fundamentally different mechanism (break when the
+        // register's own value changes, not when memory it points to
+        // changes — see Emulator.setRegisterWatch) with no address/length
+        // concept, so it's handled as its own path rather than forced
+        // through the address-based logic below.
+        if (parts.length === 2 && parts[0] === "registers") {
+          const regIndex = REGISTER_WATCH_INDEX[parts[1]];
+          if (regIndex === undefined) {
+            resultBreakpoints.push({
+              id: this.bpId++,
+              verified: false,
+              message: "Register watches are only supported for data/address registers",
+            });
+            continue;
+          }
+          const id = this.bpId++;
+          this.registerWatchpoints.push({ id, regIndex, dataId: bp.dataId });
+          this.emulator.setRegisterWatch(regIndex);
+          logger.log(`Register watch #${id} set on ${parts[1]} (index ${regIndex})`);
+          resultBreakpoints.push({ id, verified: true });
+          continue;
+        }
+
         let address: number | undefined;
         // Symbols get a derived length (see resolveSymbolLength) so the
         // whole variable is watched, not just its first byte/word.
-        // Registers resolve to whatever address their current value holds
-        // (i.e. "break when the memory this pointer refers to changes") —
-        // there's no associated type/size for that, so length stays at the
-        // single-address default.
         let length: number | undefined;
-        const parts = bp.dataId.split(":");
 
-        if (parts.length === 2) {
-          const [type, name] = parts;
-          if (type === "registers") {
-            const cpuInfo = await this.emulator.getCpuInfo();
-            address = Number(cpuInfo[name as keyof CpuInfo]);
-          } else if (type === "symbols") {
-            const symbols = this.sourceMap.getSymbols();
-            address = symbols?.[name];
-            if (address !== undefined) {
-              length = await this.resolveSymbolLength(name, address);
-            }
+        if (parts.length === 2 && parts[0] === "symbols") {
+          const [, name] = parts;
+          const symbols = this.sourceMap.getSymbols();
+          address = symbols?.[name];
+          if (address !== undefined) {
+            length = await this.resolveSymbolLength(name, address);
           }
         }
         // A manual override (set via "Set Watchpoint Length...") always
@@ -534,7 +589,7 @@ export class BreakpointManager {
    * Handles a breakpoint stop event from the emulator
    */
   public handleBreakpointStop(message: StopMessage): BreakpointStopResult {
-    let bpMatch: BreakpointRef | undefined;
+    let bpMatch: { id: number } | undefined;
 
     if (message.name === "WATCHPOINT_REACHED") {
       // source is PUAE-only (vAmiga doesn't track it for watchpoints) — when
@@ -553,6 +608,22 @@ export class BreakpointManager {
       bpMatch = this.dataBreakpoints.find(
         (bp) => bp.address === message.payload.pc,
       );
+      if (bpMatch) {
+        result.hitBreakpointIds = [bpMatch.id];
+      }
+      return result;
+    }
+
+    if (message.name === "REGISTER_WATCHPOINT_REACHED") {
+      const regIndex = message.payload.regIndex ?? -1;
+      const regName = REGISTER_WATCH_NAME[regIndex] ?? `reg${regIndex}`;
+      const result: BreakpointStopResult = {
+        reason: "data breakpoint",
+        text:
+          `${regName} changed from ${formatHex(message.payload.oldValue ?? 0)}` +
+          ` to ${formatHex(message.payload.newValue ?? 0)}`,
+      };
+      bpMatch = this.registerWatchpoints.find((bp) => bp.regIndex === regIndex);
       if (bpMatch) {
         result.hitBreakpointIds = [bpMatch.id];
       }

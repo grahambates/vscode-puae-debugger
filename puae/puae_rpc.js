@@ -264,6 +264,21 @@ export function getCurrentStopMessage(M) {
       payload: { pc: buf[1] >>> 0, vector: 0, source: buf[14] >>> 0 },
     };
   }
+  if (M._wasm_consume_regwatchbreak()) {
+    const ptr = M._wasm_get_regwatchbreak_buf();
+    const buf = new Uint32Array(M.HEAPU32.buffer, ptr, 4);
+    return {
+      hasMessage: true,
+      name: "REGISTER_WATCHPOINT_REACHED",
+      payload: {
+        pc: buf[3] >>> 0,
+        vector: 0,
+        regIndex: buf[0] >>> 0,
+        oldValue: buf[1] >>> 0,
+        newValue: buf[2] >>> 0,
+      },
+    };
+  }
   if (M._wasm_consume_memprotect_break()) {
     const ptr = M._wasm_get_memprotect_break_buf();
     const buf = new Uint32Array(M.HEAPU32.buffer, ptr, 5);
@@ -757,6 +772,29 @@ export function setupRpcDispatcher(M, postMessage) {
     watchpoints.delete(address);
   }
 
+  // Register watches: break when a CPU register's own value changes (D0-D7/
+  // A0-A7 only — see e9k-lib.h's E9K_REGWATCH_COUNT comment for why there's
+  // no read/write/length distinction the way memory watchpoints have one).
+  function setRegisterWatch(regIndex) {
+    M._wasm_add_regwatch(regIndex >>> 0);
+  }
+
+  function removeRegisterWatch(regIndex) {
+    M._wasm_remove_regwatch(regIndex >>> 0);
+  }
+
+  // Clears all watchpoints/register watches, both in the engine and in this
+  // module's own address->slot bookkeeping. Needed when a new debug session
+  // reuses this same webview/module instance: the new session's
+  // BreakpointManager starts empty and has no record of what a *previous*
+  // session armed, so without an explicit reset here that old watch stays
+  // live (and, for memory watchpoints, the stale `watchpoints` Map entry
+  // would also make a same-address setWatchpoint silently no-op afterward).
+  function resetWatchpoints() {
+    M._wasm_reset_debug_watches();
+    watchpoints.clear();
+  }
+
   function handleMessage(message) {
     if (!message || !message.command) return;
     const args = message.args || {};
@@ -839,6 +877,15 @@ export function setupRpcDispatcher(M, postMessage) {
         break;
       case "removeWatchpoint":
         removeWatchpoint(args.address >>> 0);
+        break;
+      case "setRegisterWatch":
+        setRegisterWatch(args.regIndex >>> 0);
+        break;
+      case "removeRegisterWatch":
+        removeRegisterWatch(args.regIndex >>> 0);
+        break;
+      case "resetWatchpoints":
+        resetWatchpoints();
         break;
       case "setCatchpoint":
         if (args.ignores) {

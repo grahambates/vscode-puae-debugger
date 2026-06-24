@@ -151,24 +151,21 @@ export function activate(context: vscode.ExtensionContext) {
   // auto-derived watchpoint length (DWARF byte size, or assembly directive
   // parsing), applied via a custom DAP request since DAP has no native
   // field for this. Works alongside the normal "Break on Value..." menu:
-  // can be set before or after the data breakpoint itself exists.
+  // can be set before or after the data breakpoint itself exists. Symbols
+  // only — register watches break on the whole register changing, with no
+  // partial-length concept.
   context.subscriptions.push(
     vscode.commands.registerCommand(
       "vamiga-debugger.setWatchpointLength",
       async (item) => {
-        const scope =
-          item?.container?.name === "Symbols"
-            ? "symbols"
-            : item?.container?.name === "CPU Registers"
-              ? "registers"
-              : undefined;
         const name = item?.variable?.name;
-        if (!scope || !name) {
+        if (item?.container?.name !== "Symbols" || !name) {
           vscode.window.showInformationMessage(
-            "Watchpoint length can only be set for symbols or registers",
+            "Watchpoint length can only be set for symbols",
           );
           return;
         }
+        const scope = "symbols";
 
         const session = vscode.debug.activeDebugSession;
         if (!session) return;

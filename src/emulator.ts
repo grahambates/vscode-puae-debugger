@@ -137,6 +137,36 @@ export interface Emulator {
   removeWatchpoint(address: number): void;
 
   /**
+   * Sets a register watch: break when the register's own value changes
+   * (as opposed to setWatchpoint, which watches the memory a register's
+   * *value* happens to point at). Data/address registers only (D0-D7 =
+   * index 0-7, A0-A7 = index 8-15) — there's no hardware/hook equivalent
+   * of a memory access function for registers, so this works by diffing
+   * the register's value once per retired instruction, which also means
+   * no read/write distinction (only "changed" is observable this way).
+   * PUAE-only for now — vAmiga has no backend implementation yet, so this
+   * is a no-op there.
+   */
+  setRegisterWatch(regIndex: number): void;
+
+  /**
+   * Removes a register watch set via setRegisterWatch.
+   * @param regIndex D0-D7 = 0-7, A0-A7 = 8-15
+   */
+  removeRegisterWatch(regIndex: number): void;
+
+  /**
+   * Clears all watchpoints and register watches, in the engine itself —
+   * not just BreakpointManager's own bookkeeping. Needed before loading a
+   * program into a webview that may be reused from a previous debug
+   * session: BreakpointManager starts fresh each session and has no record
+   * of what an earlier session armed, so without this a stale watch from
+   * before stays live and keeps firing even though it's no longer listed
+   * anywhere.
+   */
+  resetWatchpoints(): void;
+
+  /**
    * Sets a catchpoint for the specified exception vector
    * @param vector Exception vector number (e.g. 2 for bus error)
    * @param ignores Number of times to ignore the exception before stopping
