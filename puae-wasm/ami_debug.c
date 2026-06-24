@@ -917,7 +917,7 @@ e9k_debug_watchpointMatch(const e9k_debug_watchpoint_t *wp, uint32_t accessAddr,
 
 static void
 e9k_debug_watchbreakRequest(uint32_t index, uint32_t accessAddr, uint32_t accessKind, uint32_t accessSizeBits,
-                            uint32_t value, uint32_t oldValue, int oldValueValid)
+                            uint32_t value, uint32_t oldValue, int oldValueValid, uint32_t source)
 {
 	if (e9k_debug_watchbreakPending) {
 		return;
@@ -944,6 +944,7 @@ e9k_debug_watchbreakRequest(uint32_t index, uint32_t accessAddr, uint32_t access
 	e9k_debug_watchbreak.value = e9k_debug_maskValue(value, accessSizeBits);
 	e9k_debug_watchbreak.old_value = e9k_debug_maskValue(oldValue, accessSizeBits);
 	e9k_debug_watchbreak.old_value_valid = oldValueValid ? 1u : 0u;
+	e9k_debug_watchbreak.source = source;
 
 	e9k_debug_watchbreakPending = 1;
 	e9k_debug_requestBreak();
@@ -1733,14 +1734,17 @@ e9k_debug_watchpointRead(uint32_t addr24, uint32_t value, uint32_t sizeBits)
 			continue;
 		}
 		if (e9k_debug_watchpointMatch(&e9k_debug_watchpoints[index], addr24, E9K_WATCH_ACCESS_READ, sizeBits, value, value, 1)) {
-			e9k_debug_watchbreakRequest(index, addr24, E9K_WATCH_ACCESS_READ, sizeBits, value, value, 1);
+			// All current read paths (CPU + instruction fetch) are CPU-only —
+			// unlike writes, DMA (Blitter/disk) reads aren't hooked yet, so
+			// there's no real source to report here.
+			e9k_debug_watchbreakRequest(index, addr24, E9K_WATCH_ACCESS_READ, sizeBits, value, value, 1, E9K_MEMPROTECT_SOURCE_CPU);
 			return;
 		}
 	}
 }
 
 static void
-e9k_debug_watchpointWrite(uint32_t addr24, uint32_t value, uint32_t oldValue, uint32_t sizeBits, int oldValueValid)
+e9k_debug_watchpointWrite(uint32_t addr24, uint32_t value, uint32_t oldValue, uint32_t sizeBits, int oldValueValid, uint32_t source)
 {
 	if (e9k_debug_watchpointSuspend > 0) {
 		return;
@@ -1761,7 +1765,7 @@ e9k_debug_watchpointWrite(uint32_t addr24, uint32_t value, uint32_t oldValue, ui
 			continue;
 		}
 		if (e9k_debug_watchpointMatch(&e9k_debug_watchpoints[index], addr24, E9K_WATCH_ACCESS_WRITE, sizeBits, value, oldValue, oldValueValid)) {
-			e9k_debug_watchbreakRequest(index, addr24, E9K_WATCH_ACCESS_WRITE, sizeBits, value, oldValue, oldValueValid);
+			e9k_debug_watchbreakRequest(index, addr24, E9K_WATCH_ACCESS_WRITE, sizeBits, value, oldValue, oldValueValid, source);
 			return;
 		}
 	}
@@ -2174,7 +2178,7 @@ E9K_DEBUG_EXPORT void
 e9k_debug_memhook_afterWrite(uint32_t addr24, uint32_t value, uint32_t oldValue, uint32_t sizeBits, int oldValueValid, uint32_t source)
 {
 	addr24 &= 0x00ffffffu;
-	e9k_debug_watchpointWrite(addr24, value, oldValue, sizeBits, oldValueValid);
+	e9k_debug_watchpointWrite(addr24, value, oldValue, sizeBits, oldValueValid, source);
 	e9k_debug_memprotectCheckWrite(addr24, value, sizeBits, source);
 }
 

@@ -257,11 +257,11 @@ export function getCurrentStopMessage(M) {
   }
   if (M._wasm_consume_watchbreak()) {
     const ptr = M._wasm_get_watchbreak_buf();
-    const buf = new Uint32Array(M.HEAPU32.buffer, ptr, 14);
+    const buf = new Uint32Array(M.HEAPU32.buffer, ptr, 15);
     return {
       hasMessage: true,
       name: "WATCHPOINT_REACHED",
-      payload: { pc: buf[1] >>> 0, vector: 0 },
+      payload: { pc: buf[1] >>> 0, vector: 0, source: buf[14] >>> 0 },
     };
   }
   if (M._wasm_consume_memprotect_break()) {

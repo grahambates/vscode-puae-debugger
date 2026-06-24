@@ -147,6 +147,69 @@ export function activate(context: vscode.ExtensionContext) {
     ),
   );
 
+  // Register "Set Watchpoint Length..." command — an override for the
+  // auto-derived watchpoint length (DWARF byte size, or assembly directive
+  // parsing), applied via a custom DAP request since DAP has no native
+  // field for this. Works alongside the normal "Break on Value..." menu:
+  // can be set before or after the data breakpoint itself exists.
+  context.subscriptions.push(
+    vscode.commands.registerCommand(
+      "vamiga-debugger.setWatchpointLength",
+      async (item) => {
+        const scope =
+          item?.container?.name === "Symbols"
+            ? "symbols"
+            : item?.container?.name === "CPU Registers"
+              ? "registers"
+              : undefined;
+        const name = item?.variable?.name;
+        if (!scope || !name) {
+          vscode.window.showInformationMessage(
+            "Watchpoint length can only be set for symbols or registers",
+          );
+          return;
+        }
+
+        const session = vscode.debug.activeDebugSession;
+        if (!session) return;
+        const dataId = `${scope}:${name}`;
+
+        // Pre-fill with whatever's currently in effect — a previously set
+        // override takes priority, otherwise the auto-detected guess — so
+        // reopening the box shows what's actually being watched rather
+        // than starting blank every time.
+        let info: { override?: number; auto?: number } = {};
+        try {
+          info = await session.customRequest("getWatchpointLength", { dataId });
+        } catch {
+          // Older adapter or no info available — fall back to a blank box.
+        }
+        const current = info.override ?? info.auto;
+        const autoHint =
+          info.auto !== undefined ? ` (auto-detected: ${info.auto})` : "";
+
+        const input = await vscode.window.showInputBox({
+          title: `Watchpoint length for "${name}"`,
+          prompt: `Bytes to watch${autoHint} — leave blank to auto-detect`,
+          value: current !== undefined ? String(current) : "",
+          validateInput: (value) => {
+            if (value.trim() === "") return undefined;
+            const n = Number(value);
+            return Number.isFinite(n) && n > 0
+              ? undefined
+              : "Enter a positive number of bytes, or leave blank to auto-detect";
+          },
+        });
+        if (input === undefined) return; // cancelled
+
+        await session.customRequest("setWatchpointLength", {
+          dataId,
+          length: input.trim() === "" ? undefined : Number(input),
+        });
+      },
+    ),
+  );
+
   // Register state viewer command
   context.subscriptions.push(
     vscode.commands.registerCommand(

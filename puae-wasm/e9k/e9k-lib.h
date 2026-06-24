@@ -60,6 +60,7 @@ typedef struct e9k_debug_watchbreak
     uint32_t value;             // value read/written (size-truncated)
     uint32_t old_value;         // existing value (if known; for reads, equals value)
     uint32_t old_value_valid;   // 1 if old_value is valid
+    uint32_t source;            // E9K_MEMPROTECT_SOURCE_CPU/_DMA (defined below)
 } e9k_debug_watchbreak_t;
 
 

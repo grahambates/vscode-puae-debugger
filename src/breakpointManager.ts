@@ -19,6 +19,18 @@ export interface BreakpointRef {
 }
 
 /**
+ * Internal reference to an active data breakpoint, with enough state to
+ * recreate its underlying watchpoint when its length override changes
+ * without waiting for the next full setDataBreakpoints resync.
+ */
+interface DataBreakpointRef extends BreakpointRef {
+  /** The "scope:name" dataId this breakpoint was created from, e.g. "symbols:Frame". */
+  dataId: string;
+  accessType: DebugProtocol.DataBreakpointAccessType;
+  ignores: number;
+}
+
+/**
  * Temporary breakpoint used for step operations.
  * These are not visible to the client and are automatically removed when hit.
  */
@@ -53,10 +65,17 @@ export class BreakpointManager {
   private sourceBreakpoints: Map<string, BreakpointRef[]> = new Map();
   private instructionBreakpoints: BreakpointRef[] = [];
   private exceptionBreakpoints: BreakpointRef[] = [];
-  private dataBreakpoints: BreakpointRef[] = [];
+  private dataBreakpoints: DataBreakpointRef[] = [];
   private functionBreakpoints: BreakpointRef[] = [];
   private tmpBreakpoints: TmpBreakpoint[] = [];
   private bpId = 0;
+  // Manual watchpoint-length overrides, keyed by dataId ("scope:name"), set
+  // via the "Set Watchpoint Length..." variable context-menu command —
+  // takes precedence over the auto-derived length (resolveSymbolLength).
+  // Lives independently of any specific breakpoint instance so it survives
+  // setDataBreakpoints' full remove-and-recreate cycle, and can be set
+  // before a watchpoint exists yet.
+  private lengthOverrides = new Map<string, number>();
 
   /**
    * Creates a new BreakpointManager instance.
@@ -350,12 +369,21 @@ export class BreakpointManager {
             }
           }
         }
+        // A manual override (set via "Set Watchpoint Length...") always
+        // wins over the auto-derived guess.
+        length = this.lengthOverrides.get(bp.dataId) ?? length;
 
         if (address !== undefined) {
           const id = this.bpId++;
           const accessType = bp.accessType || "readWrite";
-          this.dataBreakpoints.push({ id, address });
           const ignores = this.parseHitCondition(bp.hitCondition);
+          this.dataBreakpoints.push({
+            id,
+            address,
+            dataId: bp.dataId,
+            accessType,
+            ignores,
+          });
 
           this.emulator.setWatchpoint(address, ignores, {
             read: accessType !== "write",
@@ -388,6 +416,57 @@ export class BreakpointManager {
     }
 
     return resultBreakpoints;
+  }
+
+  /**
+   * Reports the current manual override (if any) and the auto-derived
+   * guess for the given "scope:name" dataId, so the "Set Watchpoint
+   * Length..." command can pre-fill its input with whichever is currently
+   * in effect rather than starting blank. Registers have no static size
+   * info, so `auto` is only ever populated for symbols.
+   */
+  public async getWatchpointLengthInfo(
+    dataId: string,
+  ): Promise<{ override?: number; auto?: number }> {
+    const override = this.lengthOverrides.get(dataId);
+    const parts = dataId.split(":");
+    let auto: number | undefined;
+    if (parts.length === 2 && parts[0] === "symbols") {
+      const name = parts[1];
+      const address = this.sourceMap.getSymbols()?.[name];
+      if (address !== undefined) {
+        auto = await this.resolveSymbolLength(name, address);
+      }
+    }
+    return { override, auto };
+  }
+
+  /**
+   * Sets (or clears, if `length` is undefined) a manual watchpoint-length
+   * override for the given "scope:name" dataId, used by the
+   * "Set Watchpoint Length..." variable context-menu command. Takes effect
+   * immediately if a data breakpoint for this dataId is currently active —
+   * otherwise it's picked up the next time setDataBreakpoints creates one.
+   */
+  public setWatchpointLengthOverride(dataId: string, length: number | undefined): void {
+    if (length === undefined) {
+      this.lengthOverrides.delete(dataId);
+    } else {
+      this.lengthOverrides.set(dataId, length);
+    }
+
+    const ref = this.dataBreakpoints.find((bp) => bp.dataId === dataId);
+    if (!ref) return;
+
+    this.emulator.removeWatchpoint(ref.address);
+    this.emulator.setWatchpoint(ref.address, ref.ignores, {
+      read: ref.accessType !== "write",
+      write: ref.accessType !== "read",
+      length,
+    });
+    logger.log(
+      `Data breakpoint #${ref.id} at ${formatHex(ref.address)} length override: ${length ?? "auto"}`,
+    );
   }
 
   /**
@@ -458,8 +537,18 @@ export class BreakpointManager {
     let bpMatch: BreakpointRef | undefined;
 
     if (message.name === "WATCHPOINT_REACHED") {
+      // source is PUAE-only (vAmiga doesn't track it for watchpoints) — when
+      // absent, omit the qualifier rather than print a misleading
+      // "(source=CPU)" for a backend that can't tell the difference.
+      const isDma = message.payload.source === 1;
+      const source = isDma
+        ? " from the Blitter/disk DMA"
+        : message.payload.source === 0
+          ? " from the CPU"
+          : "";
       const result: BreakpointStopResult = {
         reason: "data breakpoint",
+        text: source ? `Data breakpoint hit${source}` : undefined,
       };
       bpMatch = this.dataBreakpoints.find(
         (bp) => bp.address === message.payload.pc,

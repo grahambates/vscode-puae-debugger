@@ -903,6 +903,36 @@ export class VamigaDebugAdapter extends LoggingDebugSession {
     }
   }
 
+  /**
+   * Handles custom (non-DAP-standard) requests from the extension host.
+   * "setWatchpointLength"/"getWatchpointLength" back the "Set Watchpoint
+   * Length..." variable context-menu command (extension.ts) — DAP has no
+   * native field for an editable watchpoint length, so this is a side
+   * channel for it.
+   */
+  protected async customRequest(
+    command: string,
+    response: DebugProtocol.Response,
+    args: { dataId: string; length?: number },
+  ): Promise<void> {
+    if (command === "setWatchpointLength") {
+      this.getBreakpointManager().setWatchpointLengthOverride(
+        args.dataId,
+        args.length,
+      );
+      this.sendResponse(response);
+      return;
+    }
+    if (command === "getWatchpointLength") {
+      response.body = await this.getBreakpointManager().getWatchpointLengthInfo(
+        args.dataId,
+      );
+      this.sendResponse(response);
+      return;
+    }
+    super.customRequest(command, response, args);
+  }
+
   protected async evaluateRequest(
     response: DebugProtocol.EvaluateResponse,
     args: DebugProtocol.EvaluateArguments,
