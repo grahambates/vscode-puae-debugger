@@ -91,21 +91,6 @@ export class BreakpointManager {
   }
 
   /**
-   * Parses a data breakpoint's "condition" field as a manual watchpoint
-   * length override, in bytes. DAP has no dedicated field for this and
-   * nothing else reads `condition` on a data breakpoint today, so it's
-   * free to repurpose — lets a derived/default length be overridden by
-   * typing a byte count, if/when the client's UI exposes a way to edit it.
-   */
-  private parseLengthCondition(condition: string | undefined): number | undefined {
-    if (!condition) {
-      return undefined;
-    }
-    const length = Number(condition);
-    return Number.isFinite(length) && length > 0 ? length : undefined;
-  }
-
-  /**
    * Derives a watched-region length for a symbol: a real DWARF type size
    * when available, otherwise inferred from the data-declaration
    * directive at the symbol's own source line (see
@@ -348,7 +333,7 @@ export class BreakpointManager {
         // Registers resolve to whatever address their current value holds
         // (i.e. "break when the memory this pointer refers to changes") —
         // there's no associated type/size for that, so length stays at the
-        // single-address default unless overridden via `condition`.
+        // single-address default.
         let length: number | undefined;
         const parts = bp.dataId.split(":");
 
@@ -365,7 +350,6 @@ export class BreakpointManager {
             }
           }
         }
-        length = this.parseLengthCondition(bp.condition) ?? length;
 
         if (address !== undefined) {
           const id = this.bpId++;
