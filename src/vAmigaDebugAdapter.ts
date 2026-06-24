@@ -1509,6 +1509,11 @@ export class VamigaDebugAdapter extends LoggingDebugSession {
     evt.body.reason = result.reason;
     if (result.text) {
       evt.body.text = result.text;
+      // StoppedEvent.body.text isn't reliably surfaced anywhere visible by
+      // VS Code's built-in UI — also write it to the Debug Console, which
+      // is guaranteed to show up, for cases like a DMA/Copper-sourced
+      // watchpoint hit where the call stack alone would be misleading.
+      this.sendEvent(new OutputEvent(`${result.text}\n`));
     }
     if (result.hitBreakpointIds) {
       evt.body.hitBreakpointIds = result.hitBreakpointIds;

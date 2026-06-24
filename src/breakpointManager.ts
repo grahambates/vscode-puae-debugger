@@ -5,7 +5,12 @@ import { StopMessage } from "./vAmiga";
 import { Emulator } from "./emulator";
 import { SourceMap } from "./sourceMap";
 import { formatHex } from "./numbers";
-import { exceptionBreakpointFilters, MEMORY_PROTECTION_VECTOR } from "./hardware";
+import {
+  customAddresses,
+  exceptionBreakpointFilters,
+  isCustomRegisterAddress,
+  MEMORY_PROTECTION_VECTOR,
+} from "./hardware";
 import { symbolDeclaredSize } from "./sourceParsing";
 
 /**
@@ -20,10 +25,18 @@ export interface BreakpointRef {
 
 /**
  * Internal reference to an active data breakpoint, with enough state to
- * recreate its underlying watchpoint when its length override changes
+ * recreate its underlying watchpoint(s) when its length override changes
  * without waiting for the next full setDataBreakpoints resync.
+ *
+ * Usually a single address (symbols, registers-as-pointer), but custom
+ * chipset registers can need two: several have a read side and a write
+ * side at *different* physical addresses, merged into one DAP variable
+ * name (e.g. DMACON's write address is $DFF096; its read counterpart is
+ * $DFF002) — "readWrite"/access on one of those arms a watchpoint at each.
  */
-interface DataBreakpointRef extends BreakpointRef {
+interface DataBreakpointRef {
+  id: number;
+  addresses: number[];
   /** The "scope:name" dataId this breakpoint was created from, e.g. "symbols:Frame". */
   dataId: string;
   accessType: DebugProtocol.DataBreakpointAccessType;
@@ -357,6 +370,27 @@ export class BreakpointManager {
         canPersist: false,
       };
     }
+    // Custom (chipset) registers: offer only the access types that are
+    // actually meaningful for this specific register — several have a
+    // read side and write side at different physical addresses merged
+    // into one variable name (see customAddresses' doc comment), and a
+    // purely write-only or read-only register shouldn't offer the
+    // direction it doesn't have.
+    if (scope === "custom") {
+      const custom = customAddresses[name];
+      if (custom) {
+        const accessTypes: DebugProtocol.DataBreakpointAccessType[] = [];
+        if (custom.readAddress !== undefined) accessTypes.push("read");
+        if (custom.writeAddress !== undefined) accessTypes.push("write");
+        if (accessTypes.length === 2) accessTypes.push("readWrite");
+        return {
+          dataId: `${scope}:${name}`,
+          description: `Break on access to ${name}`,
+          accessTypes,
+          canPersist: false,
+        };
+      }
+    }
   }
 
   /**
@@ -370,9 +404,11 @@ export class BreakpointManager {
     // Remove existing data breakpoints
     for (const ref of this.dataBreakpoints) {
       logger.log(
-        `Data breakpoint #${ref.id} removed at ${formatHex(ref.address)}`,
+        `Data breakpoint #${ref.id} removed at ${ref.addresses.map(formatHex).join(", ")}`,
       );
-      this.emulator.removeWatchpoint(ref.address);
+      for (const address of ref.addresses) {
+        this.emulator.removeWatchpoint(address);
+      }
     }
     this.dataBreakpoints = [];
     for (const ref of this.registerWatchpoints) {
@@ -411,6 +447,57 @@ export class BreakpointManager {
           continue;
         }
 
+        // Custom (chipset) registers: a single DAP variable can need up
+        // to two underlying watchpoints, since several merge a read
+        // address and a write address (different physical locations)
+        // into one name — see customAddresses' doc comment. "write"/
+        // "read" arm just the relevant one; "readWrite" (or no
+        // accessType) arms whichever of the two actually exist.
+        if (parts.length === 2 && parts[0] === "custom") {
+          const custom = customAddresses[parts[1]];
+          const accessType = bp.accessType || "readWrite";
+          const plans: { addr: number; read: boolean; write: boolean }[] = [];
+          if (custom) {
+            if (accessType !== "read" && custom.writeAddress !== undefined) {
+              plans.push({ addr: custom.writeAddress, read: false, write: true });
+            }
+            if (accessType !== "write" && custom.readAddress !== undefined) {
+              plans.push({ addr: custom.readAddress, read: true, write: false });
+            }
+          }
+          if (plans.length === 0) {
+            resultBreakpoints.push({
+              id: this.bpId++,
+              verified: false,
+              message: "Unknown or unsupported custom register",
+            });
+            continue;
+          }
+          const id = this.bpId++;
+          const ignores = this.parseHitCondition(bp.hitCondition);
+          const length = custom!.long ? 4 : 2;
+          for (const plan of plans) {
+            this.emulator.setWatchpoint(plan.addr, ignores, {
+              read: plan.read,
+              write: plan.write,
+              length,
+            });
+          }
+          this.dataBreakpoints.push({
+            id,
+            addresses: plans.map((p) => p.addr),
+            dataId: bp.dataId,
+            accessType,
+            ignores,
+          });
+          logger.log(
+            `Data breakpoint #${id} set on ${parts[1]} (${accessType}) at ` +
+              plans.map((p) => formatHex(p.addr)).join(", "),
+          );
+          resultBreakpoints.push({ id, verified: true });
+          continue;
+        }
+
         let address: number | undefined;
         // Symbols get a derived length (see resolveSymbolLength) so the
         // whole variable is watched, not just its first byte/word.
@@ -434,7 +521,7 @@ export class BreakpointManager {
           const ignores = this.parseHitCondition(bp.hitCondition);
           this.dataBreakpoints.push({
             id,
-            address,
+            addresses: [address],
             dataId: bp.dataId,
             accessType,
             ignores,
@@ -513,14 +600,21 @@ export class BreakpointManager {
     const ref = this.dataBreakpoints.find((bp) => bp.dataId === dataId);
     if (!ref) return;
 
-    this.emulator.removeWatchpoint(ref.address);
-    this.emulator.setWatchpoint(ref.address, ref.ignores, {
-      read: ref.accessType !== "write",
-      write: ref.accessType !== "read",
-      length,
-    });
+    // Only reachable for symbols today (the "Set Watchpoint Length..."
+    // command is restricted to the Symbols scope — custom registers have
+    // a fixed, known length and registers-as-pointer have no length
+    // concept at all), so this is always a single address in practice,
+    // but loop generically rather than assuming.
+    for (const address of ref.addresses) {
+      this.emulator.removeWatchpoint(address);
+      this.emulator.setWatchpoint(address, ref.ignores, {
+        read: ref.accessType !== "write",
+        write: ref.accessType !== "read",
+        length,
+      });
+    }
     logger.log(
-      `Data breakpoint #${ref.id} at ${formatHex(ref.address)} length override: ${length ?? "auto"}`,
+      `Data breakpoint #${ref.id} at ${ref.addresses.map(formatHex).join(", ")} length override: ${length ?? "auto"}`,
     );
   }
 
@@ -595,18 +689,33 @@ export class BreakpointManager {
       // source is PUAE-only (vAmiga doesn't track it for watchpoints) — when
       // absent, omit the qualifier rather than print a misleading
       // "(source=CPU)" for a backend that can't tell the difference.
+      // Custom chipset registers and chip RAM each have a distinct, fixed
+      // set of possible non-CPU writers — registers can only ever be
+      // written by the Copper (Blitter/disk DMA target chip RAM, not
+      // registers), so a DMA-sourced hit there is unambiguous. For either,
+      // the CPU is just whatever it happens to be running concurrently
+      // when a non-CPU source hits, not the thing that configured the
+      // access (which ran earlier, asynchronously) — labelled
+      // "concurrent pc" so the call stack/disassembly the user lands on
+      // isn't mistaken for the actual cause.
       const isDma = message.payload.source === 1;
+      const dmaSource = isCustomRegisterAddress(message.payload.pc)
+        ? "the Copper"
+        : "the Blitter/disk DMA";
       const source = isDma
-        ? " from the Blitter/disk DMA"
+        ? ` from ${dmaSource}`
         : message.payload.source === 0
           ? " from the CPU"
           : "";
+      const pcLabel = isDma ? "concurrent pc" : "pc";
       const result: BreakpointStopResult = {
         reason: "data breakpoint",
-        text: source ? `Data breakpoint hit${source}` : undefined,
+        text: source
+          ? `Data breakpoint hit${source} (${pcLabel}=${formatHex(message.payload.cpuPc ?? 0)})`
+          : undefined,
       };
-      bpMatch = this.dataBreakpoints.find(
-        (bp) => bp.address === message.payload.pc,
+      bpMatch = this.dataBreakpoints.find((bp) =>
+        bp.addresses.includes(message.payload.pc),
       );
       if (bpMatch) {
         result.hitBreakpointIds = [bpMatch.id];
@@ -776,9 +885,17 @@ export class BreakpointManager {
 
     // Clear data breakpoints
     for (const ref of this.dataBreakpoints) {
-      this.emulator.removeWatchpoint(ref.address);
+      for (const address of ref.addresses) {
+        this.emulator.removeWatchpoint(address);
+      }
     }
     this.dataBreakpoints = [];
+
+    // Clear register watches
+    for (const ref of this.registerWatchpoints) {
+      this.emulator.removeRegisterWatch(ref.regIndex);
+    }
+    this.registerWatchpoints = [];
 
     // Clear exception breakpoints
     for (const ref of this.exceptionBreakpoints) {

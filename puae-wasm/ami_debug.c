@@ -958,6 +958,7 @@ e9k_debug_watchbreakRequest(uint32_t index, uint32_t accessAddr, uint32_t access
 	e9k_debug_watchbreak.old_value = e9k_debug_maskValue(oldValue, accessSizeBits);
 	e9k_debug_watchbreak.old_value_valid = oldValueValid ? 1u : 0u;
 	e9k_debug_watchbreak.source = source;
+	e9k_debug_watchbreak.cpu_pc = e9k_debug_maskAddr(m68k_getpc());
 
 	e9k_debug_watchbreakPending = 1;
 	e9k_debug_requestBreak();

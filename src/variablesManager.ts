@@ -168,11 +168,14 @@ export class VariablesManager {
   public async writeRegister(name: string, value: number): Promise<string> {
     const custom = customAddresses[name as keyof typeof customAddresses];
     if (custom) {
+      if (custom.writeAddress === undefined) {
+        throw new Error(`${name} is a read-only register`);
+      }
       if (custom.long) {
-        await this.vAmiga.pokeCustom32(custom.address, value);
+        await this.vAmiga.pokeCustom32(custom.writeAddress, value);
         return formatHex(value);
       }
-      await this.vAmiga.pokeCustom16(custom.address, value);
+      await this.vAmiga.pokeCustom16(custom.writeAddress, value);
       return formatHex(value, 4);
     }
     const res = await this.vAmiga.setRegister(name, value);

@@ -180,12 +180,23 @@ export interface StopMessage {
     value?: number;
     sizeBits?: number;
     /**
-     * What performed the write that triggered a MEMORY_PROTECTION_VIOLATION:
-     * 0 = CPU, 1 = DMA (Blitter/disk DMA). PUAE-only for now — vAmiga's
-     * memory-protection hooks only cover CPU writes, so this is always
-     * undefined (treated as CPU) there.
+     * What performed the access that triggered a MEMORY_PROTECTION_VIOLATION
+     * or WATCHPOINT_REACHED: 0 = CPU, 1 = DMA (Blitter/disk DMA, or — for
+     * custom chipset registers — the Copper). PUAE-only for now — vAmiga's
+     * hooks only cover CPU access, so this is always undefined (treated as
+     * CPU) there.
      */
     source?: number;
+    /**
+     * WATCHPOINT_REACHED only: m68k_getpc() at the moment of the hit. For a
+     * DMA/Copper-sourced hit (source === 1) this is whatever the CPU
+     * happens to be running concurrently — unrelated to what configured
+     * the access, which ran earlier, asynchronously — same caveat as
+     * MEMORY_PROTECTION_VIOLATION's `pc`. (`payload.pc` itself is reused
+     * for the *watched address*, for breakpoint-id matching — this is the
+     * separate, real CPU program counter.) PUAE-only.
+     */
+    cpuPc?: number;
     /**
      * REGISTER_WATCHPOINT_REACHED only: which register changed (matches
      * UAE's regs.regs[] layout — D0-D7 = 0..7, A0-A7 = 8..15), and its

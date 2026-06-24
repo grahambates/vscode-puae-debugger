@@ -61,6 +61,10 @@ typedef struct e9k_debug_watchbreak
     uint32_t old_value;         // existing value (if known; for reads, equals value)
     uint32_t old_value_valid;   // 1 if old_value is valid
     uint32_t source;            // E9K_MEMPROTECT_SOURCE_CPU/_DMA (defined below)
+    uint32_t cpu_pc;            // m68k_getpc() at the moment of the hit — for a DMA/Copper-
+                                 // sourced access this is whatever the CPU happens to be running
+                                 // concurrently, unrelated to what configured the access (which
+                                 // ran earlier, asynchronously) — same caveat as memprotect's pc.
 } e9k_debug_watchbreak_t;
 
 
