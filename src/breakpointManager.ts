@@ -391,6 +391,22 @@ export class BreakpointManager {
         };
       }
     }
+    // Exception vector table entries: nothing special about these vs. any
+    // other memory address — variablesManager.ts's vectorVariables()
+    // names each one "NN: NAME" (NN = hex byte offset from VBR), so the
+    // offset is parsed back out of that rather than re-deriving it from a
+    // separate lookup table.
+    if (scope === "vectors") {
+      const offset = parseInt(name.split(":")[0], 16);
+      if (!Number.isNaN(offset)) {
+        return {
+          dataId: `${scope}:${offset}`,
+          description: `Break on access to ${name}`,
+          accessTypes: ["read", "write", "readWrite"],
+          canPersist: false,
+        };
+      }
+    }
   }
 
   /**
@@ -510,6 +526,14 @@ export class BreakpointManager {
           if (address !== undefined) {
             length = await this.resolveSymbolLength(name, address);
           }
+        } else if (parts.length === 2 && parts[0] === "vectors") {
+          // Vector table entries are just memory addresses (VBR + a fixed
+          // byte offset, per the offset encoded in getDataBreakpointInfo)
+          // — nothing to guess: every entry is a 4-byte address.
+          const offset = Number(parts[1]);
+          const cpuInfo = await this.emulator.getCpuInfo();
+          address = Number(cpuInfo.vbr) + offset;
+          length = 4;
         }
         // A manual override (set via "Set Watchpoint Length...") always
         // wins over the auto-derived guess.
