@@ -10,6 +10,23 @@ import {
 } from "./vAmiga";
 
 /**
+ * Access-type filter and watched-region length for setWatchpoint. `length`
+ * is rounded up to the next power of 2 by the backend (PUAE's
+ * addr_mask_operand is a bitmask comparison, so it can only express
+ * power-of-2-aligned ranges) — the effective watched region is
+ * [address rounded down to that boundary, + the rounded-up size), which
+ * may start slightly before `address` rather than exactly at it.
+ */
+export interface WatchpointOptions {
+  /** Break on reads. Default true. */
+  read?: boolean;
+  /** Break on writes. Default true. */
+  write?: boolean;
+  /** Bytes to watch, rounded up to the next power of 2. Default 1. */
+  length?: number;
+}
+
+/**
  * Generic interface for an Amiga 68k emulator backend running in a VS Code
  * webview. `VAmiga` is the current implementation; a future PUAE/ami9000
  * backend would also implement this interface.
@@ -102,8 +119,16 @@ export interface Emulator {
    * Sets a watchpoint at the specified memory address
    * @param address Memory address for the watchpoint
    * @param ignores Number of times to ignore the watchpoint before stopping
+   * @param options Access-type filter and watched-region length. PUAE-only
+   * for now — vamiga_rpc.js's "setWatchpoint" handler doesn't look at these
+   * fields, so vAmiga always watches a single address for both read and
+   * write regardless of what's passed here.
    */
-  setWatchpoint(address: number, ignores?: number): void;
+  setWatchpoint(
+    address: number,
+    ignores?: number,
+    options?: WatchpointOptions,
+  ): void;
 
   /**
    * Removes a watchpoint at the specified memory address

@@ -1955,6 +1955,22 @@ e9k_debug_memprotectCheckWrite(uint32_t addr24, uint32_t value, uint32_t sizeBit
 	}
 }
 
+// Banks flagged ABFLAG_DIRECTACCESS (chip/fast/bogo RAM, ROM) bypass
+// chipmem_lget/lput (etc) — and therefore e9k_debug_memhook_afterRead/Write
+// — via a raw-pointer fast path whenever any of these features is inactive.
+// Keep direct access suppressed for as long as at least one of them needs
+// the hooks to fire.
+extern void e9k_debug_set_direct_access_suppressed(int suppressed);
+
+static void
+e9k_debug_updateDirectAccessSuppression(void)
+{
+	int suppressed = e9k_debug_memprotectEnabled
+		|| e9k_debug_watchpointEnabledMask != 0ull
+		|| e9k_debug_protectEnabledMask != 0ull;
+	e9k_debug_set_direct_access_suppressed(suppressed);
+}
+
 E9K_DEBUG_EXPORT void
 e9k_debug_memprotect_set_enabled(int enabled)
 {
@@ -1962,6 +1978,7 @@ e9k_debug_memprotect_set_enabled(int enabled)
 	// breaks). Tracking (the AllocMem/FreeMem watch that builds the
 	// allow-list) is independent — see e9k_debug_memprotect_start_tracking.
 	e9k_debug_memprotectEnabled = enabled ? 1 : 0;
+	e9k_debug_updateDirectAccessSuppression();
 }
 
 // Validates the ExecBase structure at the given address using the same
@@ -2293,6 +2310,7 @@ e9k_debug_reset_watchpoints(void)
 	memset(&e9k_debug_watchbreak, 0, sizeof(e9k_debug_watchbreak));
 	e9k_debug_watchbreakPending = 0;
 	e9k_debug_watchpointSuspend = 0;
+	e9k_debug_updateDirectAccessSuppression();
 }
 
 E9K_DEBUG_EXPORT int
@@ -2318,6 +2336,7 @@ e9k_debug_add_watchpoint(uint32_t addr, uint32_t op_mask, uint32_t diff_operand,
 		e9k_debug_watchpoints[i].size_operand = size_operand;
 		e9k_debug_watchpoints[i].addr_mask_operand = addr_mask_operand;
 		e9k_debug_watchpointEnabledMask |= bit;
+		e9k_debug_updateDirectAccessSuppression();
 		return (int)i;
 	}
 	return -1;
@@ -2331,6 +2350,7 @@ e9k_debug_remove_watchpoint(uint32_t index)
 	}
 	e9k_debug_watchpointEnabledMask &= ~(1ull << index);
 	memset(&e9k_debug_watchpoints[index], 0, sizeof(e9k_debug_watchpoints[index]));
+	e9k_debug_updateDirectAccessSuppression();
 }
 
 E9K_DEBUG_EXPORT size_t
@@ -2362,6 +2382,7 @@ e9k_debug_set_watchpoint_enabled_mask(uint64_t mask)
 		}
 	}
 	e9k_debug_watchpointEnabledMask = mask;
+	e9k_debug_updateDirectAccessSuppression();
 }
 
 E9K_DEBUG_EXPORT int
@@ -2383,6 +2404,7 @@ e9k_debug_reset_protects(void)
 {
 	memset(e9k_debug_protects, 0, sizeof(e9k_debug_protects));
 	e9k_debug_protectEnabledMask = 0;
+	e9k_debug_updateDirectAccessSuppression();
 }
 
 E9K_DEBUG_EXPORT int
@@ -2426,6 +2448,7 @@ e9k_debug_add_protect(uint32_t addr, uint32_t size_bits, uint32_t mode, uint32_t
 		e9k_debug_protects[i].mode = mode;
 		e9k_debug_protects[i].value = maskedValue;
 		e9k_debug_protectEnabledMask |= (1ull << i);
+		e9k_debug_updateDirectAccessSuppression();
 		return (int)i;
 	}
 
@@ -2440,6 +2463,7 @@ e9k_debug_remove_protect(uint32_t index)
 	}
 	memset(&e9k_debug_protects[index], 0, sizeof(e9k_debug_protects[index]));
 	e9k_debug_protectEnabledMask &= ~(1ull << index);
+	e9k_debug_updateDirectAccessSuppression();
 }
 
 E9K_DEBUG_EXPORT size_t
@@ -2471,6 +2495,7 @@ e9k_debug_set_protect_enabled_mask(uint64_t mask)
 		}
 	}
 	e9k_debug_protectEnabledMask = mask;
+	e9k_debug_updateDirectAccessSuppression();
 }
 
 E9K_DEBUG_EXPORT void

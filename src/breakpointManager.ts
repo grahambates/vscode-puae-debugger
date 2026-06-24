@@ -1,3 +1,4 @@
+import * as vscode from "vscode";
 import { DebugProtocol } from "@vscode/debugprotocol";
 import { logger } from "@vscode/debugadapter";
 import { CpuInfo, StopMessage } from "./vAmiga";
@@ -5,6 +6,7 @@ import { Emulator } from "./emulator";
 import { SourceMap } from "./sourceMap";
 import { formatHex } from "./numbers";
 import { exceptionBreakpointFilters, MEMORY_PROTECTION_VECTOR } from "./hardware";
+import { symbolDeclaredSize } from "./sourceParsing";
 
 /**
  * Internal reference to a breakpoint set in the emulator.
@@ -86,6 +88,66 @@ export class BreakpointManager {
       return 0;
     }
     return ignores;
+  }
+
+  /**
+   * Parses a data breakpoint's "condition" field as a manual watchpoint
+   * length override, in bytes. DAP has no dedicated field for this and
+   * nothing else reads `condition` on a data breakpoint today, so it's
+   * free to repurpose — lets a derived/default length be overridden by
+   * typing a byte count, if/when the client's UI exposes a way to edit it.
+   */
+  private parseLengthCondition(condition: string | undefined): number | undefined {
+    if (!condition) {
+      return undefined;
+    }
+    const length = Number(condition);
+    return Number.isFinite(length) && length > 0 ? length : undefined;
+  }
+
+  /**
+   * Derives a watched-region length for a symbol: a real DWARF type size
+   * when available, otherwise inferred from the data-declaration
+   * directive at the symbol's own source line (see
+   * sourceParsing.ts's symbolDeclaredSize) — deliberately *not*
+   * sourceMap.getSymbolLengths()'s inter-label distance, which is too
+   * unreliable here (no end-label often means a wildly over-broad watch,
+   * and two labels aliasing the same address give exactly 0). Falls back
+   * to undefined — caller then watches a single address, same as before
+   * this feature existed — whenever neither source gives a confident
+   * answer.
+   */
+  private async resolveSymbolLength(
+    name: string,
+    address: number,
+  ): Promise<number | undefined> {
+    const dwarfSize = this.sourceMap
+      .getGlobalVariables()
+      .find((v) => v.name === name)?.byteSize;
+    if (dwarfSize) {
+      return dwarfSize;
+    }
+
+    const loc = this.sourceMap.lookupAddress(address);
+    if (!loc) {
+      return undefined;
+    }
+
+    try {
+      const document = await vscode.workspace.openTextDocument(loc.path);
+      const size = symbolDeclaredSize(document.lineAt(loc.line - 1).text);
+      if (size !== undefined) {
+        return size;
+      }
+      // A bare label line (directive on the next physical line) parses
+      // with no mnemonic at all — check there too before giving up.
+      if (loc.line < document.lineCount) {
+        return symbolDeclaredSize(document.lineAt(loc.line).text);
+      }
+    } catch {
+      // Source file not available — fall back to no length.
+    }
+    return undefined;
   }
 
   /**
@@ -252,7 +314,7 @@ export class BreakpointManager {
       return {
         dataId,
         description: `Break on access to ${name}`,
-        accessTypes: ["readWrite"],
+        accessTypes: ["read", "write", "readWrite"],
         canPersist: false,
       };
     }
@@ -281,6 +343,13 @@ export class BreakpointManager {
     for (const bp of breakpoints) {
       try {
         let address: number | undefined;
+        // Symbols get a derived length (see resolveSymbolLength) so the
+        // whole variable is watched, not just its first byte/word.
+        // Registers resolve to whatever address their current value holds
+        // (i.e. "break when the memory this pointer refers to changes") —
+        // there's no associated type/size for that, so length stays at the
+        // single-address default unless overridden via `condition`.
+        let length: number | undefined;
         const parts = bp.dataId.split(":");
 
         if (parts.length === 2) {
@@ -291,18 +360,27 @@ export class BreakpointManager {
           } else if (type === "symbols") {
             const symbols = this.sourceMap.getSymbols();
             address = symbols?.[name];
+            if (address !== undefined) {
+              length = await this.resolveSymbolLength(name, address);
+            }
           }
         }
+        length = this.parseLengthCondition(bp.condition) ?? length;
 
         if (address !== undefined) {
           const id = this.bpId++;
-          const accessType = bp.accessType || "access";
+          const accessType = bp.accessType || "readWrite";
           this.dataBreakpoints.push({ id, address });
           const ignores = this.parseHitCondition(bp.hitCondition);
 
-          this.emulator.setWatchpoint(address, ignores);
+          this.emulator.setWatchpoint(address, ignores, {
+            read: accessType !== "write",
+            write: accessType !== "read",
+            length,
+          });
           logger.log(
-            `Data breakpoint #${id} set at ${formatHex(address)} (${accessType})`,
+            `Data breakpoint #${id} set at ${formatHex(address)} (${accessType})` +
+              (length ? `, length ${length}` : ""),
           );
 
           resultBreakpoints.push({

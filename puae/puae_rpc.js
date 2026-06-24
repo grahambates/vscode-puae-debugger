@@ -719,14 +719,29 @@ export function setupRpcDispatcher(M, postMessage) {
     return trace;
   }
 
-  function setWatchpoint(address) {
+  // addr_mask_operand is a bitmask comparison in e9k_debug_watchpointMatch
+  // ((accessAddr & mask) == (wp->addr & mask)), not an arbitrary byte-range
+  // check — so `length` can only be expressed by rounding up to the next
+  // power of 2 and masking off its low bits. The *effective* watched
+  // region is [address rounded down to that boundary, +size), which can
+  // start slightly before `address` rather than exactly at it. length=1
+  // (the default) gives mask=0xFFFFFFFF, i.e. the original exact-address
+  // behaviour.
+  function watchpointAddrMask(length) {
+    if (!length || length <= 1) return 0xffffffff;
+    const size = 1 << Math.ceil(Math.log2(length));
+    return (~(size - 1)) >>> 0;
+  }
+
+  function setWatchpoint(address, { read = true, write = true, length = 1 } = {}) {
     if (watchpoints.has(address)) return;
-    // E9K_WATCH_OP_ADDR_COMPARE_MASK + addr_mask_operand=0xFFFFFFFF gives an
-    // exact-address match (see e9k_debug_watchpointMatch).
+    let opMask = E9K_WATCH_OP_ADDR_COMPARE_MASK;
+    if (read) opMask |= E9K_WATCH_OP_READ;
+    if (write) opMask |= E9K_WATCH_OP_WRITE;
     const index = M._wasm_add_watchpoint(
       address >>> 0,
-      E9K_WATCH_OP_READ | E9K_WATCH_OP_WRITE | E9K_WATCH_OP_ADDR_COMPARE_MASK,
-      0, 0, 0, 0, 0xffffffff,
+      opMask,
+      0, 0, 0, 0, watchpointAddrMask(length),
     );
     if (index < 0) {
       console.warn(`[puae_rpc] setWatchpoint: no free watchpoint slots for 0x${address.toString(16)}`);
@@ -816,7 +831,11 @@ export function setupRpcDispatcher(M, postMessage) {
         if (args.ignores) {
           console.warn("[puae_rpc] setWatchpoint: ignore counts not supported, watchpoint will fire every time");
         }
-        setWatchpoint(args.address >>> 0);
+        setWatchpoint(args.address >>> 0, {
+          read: args.read,
+          write: args.write,
+          length: args.length,
+        });
         break;
       case "removeWatchpoint":
         removeWatchpoint(args.address >>> 0);

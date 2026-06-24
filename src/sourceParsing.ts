@@ -232,3 +232,56 @@ export function instructionAttrs(line: string): {
 
   return { byteLength, signed };
 }
+
+const dataDirectiveSizes: Record<Size, number> = { s: 1, b: 1, w: 2, l: 4 };
+
+/**
+ * Determines the byte size of a data declaration line (dc/ds/dcb), for
+ * inferring how much memory a label covers. Unlike instructionAttrs()
+ * (which sizes an *instruction referencing* a symbol), this sizes a
+ * symbol's *own declaration* — used for watchpoint length, not value
+ * formatting.
+ *
+ * Returns undefined for anything that isn't a recognized data directive
+ * (a real instruction, an unrecognized directive, or a bare label with no
+ * mnemonic at all) — callers should fall back to a safe default (e.g. a
+ * single address) rather than guess further.
+ *
+ * @param line Assembly source line to analyze
+ * @returns Declared size in bytes, or undefined if not a sizeable directive
+ */
+export function symbolDeclaredSize(line: string): number | undefined {
+  const parsed = parseLine(line);
+  const mnemonic = parsed.mnemonic?.value.toLowerCase();
+  if (!mnemonic) return undefined;
+
+  // dc(.b/.w/.l) defaults to word-sized elements when no suffix is given,
+  // matching real 68k assemblers.
+  const size = (parsed.size?.value.toLowerCase() as Size) || "w";
+  const unitSize = dataDirectiveSizes[size];
+  if (!unitSize) return undefined;
+
+  if (mnemonic === "dc") {
+    if (!parsed.operands?.length) return undefined;
+    let total = 0;
+    for (const op of parsed.operands) {
+      // A quoted string in a dc.b is one byte per character, not one
+      // unit per operand (e.g. dc.b 'Hello',0 is 6 bytes, not 2).
+      const quoted =
+        unitSize === 1 && op.value.match(/^(?:"([^"]*)"|'([^']*)')$/);
+      total += quoted
+        ? Math.max(1, (quoted[1] ?? quoted[2] ?? "").length)
+        : unitSize;
+    }
+    return total;
+  }
+
+  if (mnemonic === "ds" || mnemonic === "dcb") {
+    // ds.x <count> reserves <count> units; dcb.x <count>,<fill> likewise
+    // (the fill value doesn't affect size).
+    const count = Number(parsed.operands?.[0]?.value);
+    return Number.isFinite(count) && count > 0 ? count * unitSize : undefined;
+  }
+
+  return undefined;
+}

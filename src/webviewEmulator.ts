@@ -1,7 +1,7 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import * as vscode from "vscode";
 import { u32, u16, u8 } from "./numbers";
-import { Emulator } from "./emulator";
+import { Emulator, WatchpointOptions } from "./emulator";
 import {
   CpuInfo,
   CpuTraceItem,
@@ -296,8 +296,12 @@ export abstract class WebviewEmulator implements Emulator {
     this.sendCommand("removeBreakpoint", { address });
   }
 
-  public setWatchpoint(address: number, ignores = 0): void {
-    this.sendCommand("setWatchpoint", { address, ignores });
+  public setWatchpoint(
+    address: number,
+    ignores = 0,
+    options?: WatchpointOptions,
+  ): void {
+    this.sendCommand("setWatchpoint", { address, ignores, ...options });
   }
 
   public removeWatchpoint(address: number): void {

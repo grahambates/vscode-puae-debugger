@@ -1,5 +1,43 @@
-import { parseLine } from "../sourceParsing";
+import { parseLine, symbolDeclaredSize } from "../sourceParsing";
 describe("parse", () => {
+  describe("#symbolDeclaredSize()", () => {
+    it("sizes a single dc.w as 2 bytes", () => {
+      expect(symbolDeclaredSize("counter: dc.w 0")).toBe(2);
+    });
+
+    it("sizes a multi-operand dc.w by operand count", () => {
+      expect(symbolDeclaredSize("table: dc.w 0,1,2,3")).toBe(8);
+    });
+
+    it("defaults dc with no size suffix to word-sized elements", () => {
+      expect(symbolDeclaredSize("table: dc 0,1")).toBe(4);
+    });
+
+    it("sizes a dc.b string by character count, not operand count", () => {
+      expect(symbolDeclaredSize("msg: dc.b 'Hello',0")).toBe(6);
+    });
+
+    it("sizes ds.w by count operand", () => {
+      expect(symbolDeclaredSize("buf: ds.w 4")).toBe(8);
+    });
+
+    it("sizes dcb.l by count operand, ignoring the fill value", () => {
+      expect(symbolDeclaredSize("buf: dcb.l 3,0")).toBe(12);
+    });
+
+    it("returns undefined for a bare label with no directive", () => {
+      expect(symbolDeclaredSize("loop:")).toBeUndefined();
+    });
+
+    it("returns undefined for a real instruction", () => {
+      expect(symbolDeclaredSize("loop: move.w d0,d1")).toBeUndefined();
+    });
+
+    it("returns undefined for an unrecognized directive", () => {
+      expect(symbolDeclaredSize("foo: even")).toBeUndefined();
+    });
+  });
+
   describe("#parseLine()", () => {
     it("parses a complete instruction line", () => {
       const line = parseLine(
