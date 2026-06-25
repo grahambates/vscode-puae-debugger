@@ -374,6 +374,64 @@ describe("VamigaDebugAdapter - Simplified Tests", () => {
 
       assert.strictEqual(response.body?.supportsSetVariable, true);
       assert.strictEqual(response.body?.supportsSetExpression, true);
+      assert.strictEqual(response.body?.supportsConditionalBreakpoints, true);
+    });
+  });
+
+  describe("Conditional Breakpoints", () => {
+    function stubBreakpointManager(condition: string) {
+      const mockBreakpointManager = sinon.createStubInstance(BreakpointManager);
+      mockBreakpointManager.handleBreakpointStop.returns({
+        reason: "breakpoint",
+        hitBreakpointIds: [1],
+      });
+      mockBreakpointManager.getCondition.returns(condition);
+      (adapter as any).breakpointManager = mockBreakpointManager;
+      return mockBreakpointManager;
+    }
+
+    it("stops and reports the breakpoint when the condition is true", async () => {
+      setupMockCpuState({ d0: "0x10" });
+      const mockSourceMap = setupMockSourceMap();
+      const mockVariablesManager = setupMockVariablesManager({ d0: 0x10 });
+      const mockDisassemblyManager = setupMockDisassemblyManager();
+      (adapter as any).evaluateManager = new EvaluateManager(
+        mockVAmiga,
+        mockSourceMap,
+        mockVariablesManager,
+        mockDisassemblyManager,
+      );
+      stubBreakpointManager("d0 > 5");
+      const sendEventSpy = sinon.spy(adapter as any, "sendEvent");
+
+      await (adapter as any).handleStop({ name: "BREAKPOINT_REACHED", payload: { pc: 0x1000 } });
+
+      assert.ok(mockVAmiga.run.notCalled);
+      assert.ok(
+        sendEventSpy.args.some(
+          ([evt]) => evt.event === "stopped" && evt.body.hitBreakpointIds?.[0] === 1,
+        ),
+      );
+    });
+
+    it("silently resumes without stopping when the condition is false", async () => {
+      setupMockCpuState({ d0: "0x0" });
+      const mockSourceMap = setupMockSourceMap();
+      const mockVariablesManager = setupMockVariablesManager({ d0: 0x0 });
+      const mockDisassemblyManager = setupMockDisassemblyManager();
+      (adapter as any).evaluateManager = new EvaluateManager(
+        mockVAmiga,
+        mockSourceMap,
+        mockVariablesManager,
+        mockDisassemblyManager,
+      );
+      stubBreakpointManager("d0 > 5");
+      const sendEventSpy = sinon.spy(adapter as any, "sendEvent");
+
+      await (adapter as any).handleStop({ name: "BREAKPOINT_REACHED", payload: { pc: 0x1000 } });
+
+      assert.ok(mockVAmiga.run.calledOnce);
+      assert.ok(sendEventSpy.args.every(([evt]) => evt.event !== "stopped"));
     });
   });
 

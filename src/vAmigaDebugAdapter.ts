@@ -283,6 +283,7 @@ export class VamigaDebugAdapter extends LoggingDebugSession {
     response.body.supportsDataBreakpoints = true;
     response.body.supportsConfigurationDoneRequest = true;
     response.body.supportsHitConditionalBreakpoints = true;
+    response.body.supportsConditionalBreakpoints = true;
     response.body.supportsEvaluateForHovers = true;
     response.body.supportsCompletionsRequest = true;
     response.body.supportsFunctionBreakpoints = true;
@@ -1501,6 +1502,33 @@ export class VamigaDebugAdapter extends LoggingDebugSession {
       this.lineStepStart = null;
       this.sendEvent(new StoppedEvent("step", VamigaDebugAdapter.THREAD_ID));
       return;
+    }
+
+    // Conditional breakpoints: evaluated here (rather than emulator-side)
+    // since PUAE has no native condition support and fires every hit
+    // regardless - same REPL expression syntax as the Debug Console.
+    // A falsy result resumes silently, before any StoppedEvent reaches the
+    // client, so the user never sees the emulator stop.
+    if (result.hitBreakpointIds?.length === 1) {
+      const condition = this.breakpointManager.getCondition(
+        result.hitBreakpointIds[0],
+      );
+      if (condition) {
+        let shouldStop = true;
+        try {
+          const { value } = await this.getEvaluateManager().evaluate(condition);
+          shouldStop = Boolean(value);
+        } catch (error) {
+          this.sendEvent(
+            new OutputEvent(`Breakpoint condition error: ${this.errorString(error)}\n`),
+          );
+        }
+        if (!shouldStop) {
+          this.lineStepStart = null;
+          this.emulator.run();
+          return;
+        }
+      }
     }
 
     // Any other stop: clear line-step state.

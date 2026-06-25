@@ -21,6 +21,8 @@ export interface BreakpointRef {
   id: number;
   /** Memory address where the breakpoint is set */
   address: number;
+  /** Conditional breakpoint expression (REPL syntax), evaluated on hit */
+  condition?: string;
 }
 
 /**
@@ -41,6 +43,8 @@ interface DataBreakpointRef {
   dataId: string;
   accessType: DebugProtocol.DataBreakpointAccessType;
   ignores: number;
+  /** Conditional breakpoint expression (REPL syntax), evaluated on hit */
+  condition?: string;
 }
 
 /**
@@ -52,6 +56,8 @@ interface RegisterWatchRef {
   id: number;
   regIndex: number;
   dataId: string;
+  /** Conditional breakpoint expression (REPL syntax), evaluated on hit */
+  condition?: string;
 }
 
 const REGISTER_WATCH_INDEX: Record<string, number> = {
@@ -224,7 +230,7 @@ export class BreakpointManager {
         const id = this.bpId++;
         const ignores = this.parseHitCondition(bp.hitCondition);
 
-        refs.push({ id, address });
+        refs.push({ id, address, condition: bp.condition });
         this.emulator.setBreakpoint(address, ignores);
         logger.log(
           `Breakpoint #${id} at ${path}:${bp.line} set at ${instructionReference}`,
@@ -275,7 +281,7 @@ export class BreakpointManager {
       const id = this.bpId++;
       const ignores = this.parseHitCondition(bp.hitCondition);
 
-      this.instructionBreakpoints.push({ id, address });
+      this.instructionBreakpoints.push({ id, address, condition: bp.condition });
       this.emulator.setBreakpoint(address, ignores);
       logger.log(
         `Instruction breakpoint #${id} set at ${bp.instructionReference}`,
@@ -316,7 +322,7 @@ export class BreakpointManager {
       if (address) {
         const ignores = this.parseHitCondition(bp.hitCondition);
 
-        this.functionBreakpoints.push({ id, address });
+        this.functionBreakpoints.push({ id, address, condition: bp.condition });
         this.emulator.setBreakpoint(address, ignores);
         logger.log(
           `Function breakpoint #${id} set at ${formatHex(address)} for ${bp.name}`,
@@ -456,7 +462,7 @@ export class BreakpointManager {
             continue;
           }
           const id = this.bpId++;
-          this.registerWatchpoints.push({ id, regIndex, dataId: bp.dataId });
+          this.registerWatchpoints.push({ id, regIndex, dataId: bp.dataId, condition: bp.condition });
           this.emulator.setRegisterWatch(regIndex);
           logger.log(`Register watch #${id} set on ${parts[1]} (index ${regIndex})`);
           resultBreakpoints.push({ id, verified: true });
@@ -505,6 +511,7 @@ export class BreakpointManager {
             dataId: bp.dataId,
             accessType,
             ignores,
+            condition: bp.condition,
           });
           logger.log(
             `Data breakpoint #${id} set on ${parts[1]} (${accessType}) at ` +
@@ -549,6 +556,7 @@ export class BreakpointManager {
             dataId: bp.dataId,
             accessType,
             ignores,
+            condition: bp.condition,
           });
 
           this.emulator.setWatchpoint(address, ignores, {
@@ -874,6 +882,26 @@ export class BreakpointManager {
     return {
       reason: "breakpoint",
     };
+  }
+
+  /**
+   * Returns the conditional-breakpoint expression (REPL evaluation syntax)
+   * for the given breakpoint id, if one was set - searched across every
+   * breakpoint kind that carries a `condition` field (source, instruction,
+   * function, data, and register watches). Temporary/step breakpoints
+   * never have one.
+   */
+  public getCondition(id: number): string | undefined {
+    for (const refs of this.sourceBreakpoints.values()) {
+      const ref = refs.find((bp) => bp.id === id);
+      if (ref) return ref.condition;
+    }
+    return (
+      this.instructionBreakpoints.find((bp) => bp.id === id)?.condition ??
+      this.functionBreakpoints.find((bp) => bp.id === id)?.condition ??
+      this.dataBreakpoints.find((bp) => bp.id === id)?.condition ??
+      this.registerWatchpoints.find((bp) => bp.id === id)?.condition
+    );
   }
 
   /**
