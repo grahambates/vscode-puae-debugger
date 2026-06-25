@@ -23,6 +23,13 @@ export interface BreakpointRef {
   address: number;
   /** Conditional breakpoint expression (REPL syntax), evaluated on hit */
   condition?: string;
+  /**
+   * Logpoint message (source breakpoints only - DAP doesn't define this
+   * field for instruction/function breakpoints). When set, a hit never
+   * stops execution: the message is logged (with `{expr}` runs evaluated
+   * via the REPL syntax) and the emulator resumes immediately.
+   */
+  logMessage?: string;
 }
 
 /**
@@ -265,7 +272,7 @@ export class BreakpointManager {
         const id = this.bpId++;
         const ignores = this.parseHitCondition(bp.hitCondition);
 
-        refs.push({ id, address, condition: bp.condition });
+        refs.push({ id, address, condition: bp.condition, logMessage: bp.logMessage });
         this.emulator.setBreakpoint(address, this.armHitCount(id, ignores));
         logger.log(
           `Breakpoint #${id} at ${path}:${bp.line} set at ${instructionReference}`,
@@ -943,6 +950,19 @@ export class BreakpointManager {
       this.dataBreakpoints.find((bp) => bp.id === id)?.condition ??
       this.registerWatchpoints.find((bp) => bp.id === id)?.condition
     );
+  }
+
+  /**
+   * Returns the logpoint message for the given breakpoint id, if one was
+   * set - source breakpoints only, per DAP (`SourceBreakpoint.logMessage`
+   * has no equivalent on instruction/function/data breakpoints).
+   */
+  public getLogMessage(id: number): string | undefined {
+    for (const refs of this.sourceBreakpoints.values()) {
+      const ref = refs.find((bp) => bp.id === id);
+      if (ref) return ref.logMessage;
+    }
+    return undefined;
   }
 
   /**

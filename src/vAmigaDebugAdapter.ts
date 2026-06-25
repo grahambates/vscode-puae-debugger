@@ -284,6 +284,7 @@ export class VamigaDebugAdapter extends LoggingDebugSession {
     response.body.supportsConfigurationDoneRequest = true;
     response.body.supportsHitConditionalBreakpoints = true;
     response.body.supportsConditionalBreakpoints = true;
+    response.body.supportsLogPoints = true;
     response.body.supportsEvaluateForHovers = true;
     response.body.supportsCompletionsRequest = true;
     response.body.supportsFunctionBreakpoints = true;
@@ -1510,9 +1511,8 @@ export class VamigaDebugAdapter extends LoggingDebugSession {
     // A falsy result resumes silently, before any StoppedEvent reaches the
     // client, so the user never sees the emulator stop.
     if (result.hitBreakpointIds?.length === 1) {
-      const condition = this.breakpointManager.getCondition(
-        result.hitBreakpointIds[0],
-      );
+      const hitId = result.hitBreakpointIds[0];
+      const condition = this.breakpointManager.getCondition(hitId);
       if (condition) {
         let shouldStop = true;
         try {
@@ -1536,7 +1536,20 @@ export class VamigaDebugAdapter extends LoggingDebugSession {
       // Emulator.supportsHitCounts). Checked after condition so a
       // condition-false hit never counts against the hit count, per DAP's
       // setBreakpoints semantics.
-      if (this.breakpointManager.consumeIgnore(result.hitBreakpointIds[0])) {
+      if (this.breakpointManager.consumeIgnore(hitId)) {
+        this.lineStepStart = null;
+        this.emulator.run();
+        return;
+      }
+
+      // Logpoints: condition/hitCondition (above) have already passed, so
+      // this hit "counts" - but a logMessage means never actually stopping.
+      // Log to the Debug Console and resume immediately instead.
+      const logMessage = this.breakpointManager.getLogMessage(hitId);
+      if (logMessage !== undefined) {
+        this.sendEvent(
+          new OutputEvent(`${await this.formatLogMessage(logMessage)}\n`),
+        );
         this.lineStepStart = null;
         this.emulator.run();
         return;
@@ -1577,6 +1590,30 @@ export class VamigaDebugAdapter extends LoggingDebugSession {
     }
 
     this.sendEvent(evt);
+  }
+
+  /**
+   * Formats a DAP logpoint message: each `{expr}` run is evaluated with the
+   * same REPL syntax as the Debug Console and substituted with its value.
+   * An expression that fails to evaluate is replaced with an inline error
+   * rather than aborting the whole message, so one bad `{...}` doesn't
+   * silently swallow the rest of the log line.
+   */
+  private async formatLogMessage(message: string): Promise<string> {
+    const evaluateManager = this.getEvaluateManager();
+    let result = "";
+    let lastIndex = 0;
+    for (const match of message.matchAll(/\{([^}]*)\}/g)) {
+      result += message.slice(lastIndex, match.index);
+      try {
+        const { value } = await evaluateManager.evaluate(match[1]);
+        result += value === undefined ? "" : String(value);
+      } catch (error) {
+        result += `<${this.errorString(error)}>`;
+      }
+      lastIndex = match.index + match[0].length;
+    }
+    return result + message.slice(lastIndex);
   }
 
   /**

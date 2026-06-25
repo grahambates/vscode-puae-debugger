@@ -104,3 +104,25 @@ describe("BreakpointManager - conditions", () => {
     assert.strictEqual(bpManager.getCondition(bp.id!), undefined);
   });
 });
+
+describe("BreakpointManager - logpoints", () => {
+  it("stores and retrieves a source breakpoint's logMessage", async () => {
+    const { emulator } = createFakeEmulator(true);
+    const bpManager = new BreakpointManager(emulator, createFakeSourceMap());
+
+    const [bp] = await bpManager.setSourceBreakpoints("/test.s", [
+      { line: 10, logMessage: "d0 is {d0}" },
+    ]);
+
+    assert.strictEqual(bpManager.getLogMessage(bp.id!), "d0 is {d0}");
+  });
+
+  it("returns undefined when no logMessage was set", async () => {
+    const { emulator } = createFakeEmulator(true);
+    const bpManager = new BreakpointManager(emulator, createFakeSourceMap());
+
+    const [bp] = await bpManager.setSourceBreakpoints("/test.s", [{ line: 10 }]);
+
+    assert.strictEqual(bpManager.getLogMessage(bp.id!), undefined);
+  });
+});

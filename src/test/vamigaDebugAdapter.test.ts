@@ -435,6 +435,65 @@ describe("VamigaDebugAdapter - Simplified Tests", () => {
     });
   });
 
+  describe("Logpoints", () => {
+    function stubBreakpointManager(logMessage: string) {
+      const mockBreakpointManager = sinon.createStubInstance(BreakpointManager);
+      mockBreakpointManager.handleBreakpointStop.returns({
+        reason: "breakpoint",
+        hitBreakpointIds: [1],
+      });
+      mockBreakpointManager.getLogMessage.returns(logMessage);
+      (adapter as any).breakpointManager = mockBreakpointManager;
+      return mockBreakpointManager;
+    }
+
+    it("logs the interpolated message and resumes without stopping", async () => {
+      setupMockCpuState({ d0: "0x2a" });
+      const mockSourceMap = setupMockSourceMap();
+      const mockVariablesManager = setupMockVariablesManager({ d0: 0x2a });
+      const mockDisassemblyManager = setupMockDisassemblyManager();
+      (adapter as any).evaluateManager = new EvaluateManager(
+        mockVAmiga,
+        mockSourceMap,
+        mockVariablesManager,
+        mockDisassemblyManager,
+      );
+      stubBreakpointManager("d0 is {d0}");
+      const sendEventSpy = sinon.spy(adapter as any, "sendEvent");
+
+      await (adapter as any).handleStop({ name: "BREAKPOINT_REACHED", payload: { pc: 0x1000 } });
+
+      assert.ok(mockVAmiga.run.calledOnce);
+      assert.ok(sendEventSpy.args.every(([evt]) => evt.event !== "stopped"));
+      assert.ok(
+        sendEventSpy.args.some(
+          ([evt]) => evt.event === "output" && evt.body.output === "d0 is 42\n",
+        ),
+      );
+    });
+
+    it("logs an inline error and keeps resuming when an expression fails", async () => {
+      setupMockCpuState();
+      const mockSourceMap = setupMockSourceMap();
+      const mockVariablesManager = setupMockVariablesManager();
+      const mockDisassemblyManager = setupMockDisassemblyManager();
+      (adapter as any).evaluateManager = new EvaluateManager(
+        mockVAmiga,
+        mockSourceMap,
+        mockVariablesManager,
+        mockDisassemblyManager,
+      );
+      stubBreakpointManager("oops {not_a_real_var}");
+      const sendEventSpy = sinon.spy(adapter as any, "sendEvent");
+
+      await (adapter as any).handleStop({ name: "BREAKPOINT_REACHED", payload: { pc: 0x1000 } });
+
+      assert.ok(mockVAmiga.run.calledOnce);
+      const outputEvt = sendEventSpy.args.find(([evt]) => evt.event === "output");
+      assert.ok(outputEvt?.[0].body.output.startsWith("oops <"));
+    });
+  });
+
   describe("Stepping and Execution Control", () => {
     it("should handle stepIn request", async () => {
       // Setup: Mock stepInto functionality
