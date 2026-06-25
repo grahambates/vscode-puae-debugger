@@ -1529,6 +1529,18 @@ export class VamigaDebugAdapter extends LoggingDebugSession {
           return;
         }
       }
+
+      // Hit-count (hitCondition): a no-op on backends where the emulator
+      // already counts ignores natively (consumeIgnore only has an entry
+      // to consume on backends like PUAE that don't - see
+      // Emulator.supportsHitCounts). Checked after condition so a
+      // condition-false hit never counts against the hit count, per DAP's
+      // setBreakpoints semantics.
+      if (this.breakpointManager.consumeIgnore(result.hitBreakpointIds[0])) {
+        this.lineStepStart = null;
+        this.emulator.run();
+        return;
+      }
     }
 
     // Any other stop: clear line-step state.

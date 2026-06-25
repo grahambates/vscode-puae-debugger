@@ -119,6 +119,12 @@ export class BreakpointManager {
   // setDataBreakpoints' full remove-and-recreate cycle, and can be set
   // before a watchpoint exists yet.
   private lengthOverrides = new Map<string, number>();
+  // Remaining ignore counts for backends where the emulator itself doesn't
+  // honor `ignores` (see Emulator.supportsHitCounts, e.g. PUAE) - keyed by
+  // breakpoint id, populated only for breakpoints with a hitCondition on
+  // such a backend. Checked/decremented by consumeIgnore() on every hit;
+  // never populated (so always a no-op) when the backend counts natively.
+  private hitCounters = new Map<number, number>();
 
   /**
    * Creates a new BreakpointManager instance.
@@ -150,6 +156,35 @@ export class BreakpointManager {
       return 0;
     }
     return ignores;
+  }
+
+  /**
+   * Arms a hit count for breakpoint `id`: on backends that count natively
+   * (Emulator.supportsHitCounts), returns `ignores` unchanged for the
+   * caller to pass straight to the emulator. On backends that don't (PUAE
+   * fires on every hit), instead stashes it in `hitCounters` for
+   * consumeIgnore() to decrement at stop time, and returns 0 so the
+   * emulator doesn't see a count it would otherwise ignore-and-warn-about.
+   */
+  private armHitCount(id: number, ignores: number): number {
+    if (ignores <= 0) return 0;
+    if (this.emulator.supportsHitCounts) return ignores;
+    this.hitCounters.set(id, ignores);
+    return 0;
+  }
+
+  /**
+   * Called once per matched hit (from handleStop, after any `condition` has
+   * already evaluated true) for breakpoint `id`. Returns true if this hit
+   * should be silently ignored (TS-emulated hit count not yet exhausted),
+   * decrementing the remaining count; returns false (every time, including
+   * for ids with no entry) once it's time to actually stop.
+   */
+  public consumeIgnore(id: number): boolean {
+    const remaining = this.hitCounters.get(id);
+    if (!remaining) return false;
+    this.hitCounters.set(id, remaining - 1);
+    return true;
   }
 
   /**
@@ -231,7 +266,7 @@ export class BreakpointManager {
         const ignores = this.parseHitCondition(bp.hitCondition);
 
         refs.push({ id, address, condition: bp.condition });
-        this.emulator.setBreakpoint(address, ignores);
+        this.emulator.setBreakpoint(address, this.armHitCount(id, ignores));
         logger.log(
           `Breakpoint #${id} at ${path}:${bp.line} set at ${instructionReference}`,
         );
@@ -282,7 +317,7 @@ export class BreakpointManager {
       const ignores = this.parseHitCondition(bp.hitCondition);
 
       this.instructionBreakpoints.push({ id, address, condition: bp.condition });
-      this.emulator.setBreakpoint(address, ignores);
+      this.emulator.setBreakpoint(address, this.armHitCount(id, ignores));
       logger.log(
         `Instruction breakpoint #${id} set at ${bp.instructionReference}`,
       );
@@ -323,7 +358,7 @@ export class BreakpointManager {
         const ignores = this.parseHitCondition(bp.hitCondition);
 
         this.functionBreakpoints.push({ id, address, condition: bp.condition });
-        this.emulator.setBreakpoint(address, ignores);
+        this.emulator.setBreakpoint(address, this.armHitCount(id, ignores));
         logger.log(
           `Function breakpoint #${id} set at ${formatHex(address)} for ${bp.name}`,
         );
@@ -462,6 +497,11 @@ export class BreakpointManager {
             continue;
           }
           const id = this.bpId++;
+          // setRegisterWatch has no native ignores concept on either
+          // backend (it's PUAE-only and the wasm call takes no count) -
+          // hit counting for it is always TS-side.
+          const ignores = this.parseHitCondition(bp.hitCondition);
+          if (ignores > 0) this.hitCounters.set(id, ignores);
           this.registerWatchpoints.push({ id, regIndex, dataId: bp.dataId, condition: bp.condition });
           this.emulator.setRegisterWatch(regIndex);
           logger.log(`Register watch #${id} set on ${parts[1]} (index ${regIndex})`);
@@ -497,9 +537,10 @@ export class BreakpointManager {
           }
           const id = this.bpId++;
           const ignores = this.parseHitCondition(bp.hitCondition);
+          const nativeIgnores = this.armHitCount(id, ignores);
           const length = custom!.long ? 4 : 2;
           for (const plan of plans) {
-            this.emulator.setWatchpoint(plan.addr, ignores, {
+            this.emulator.setWatchpoint(plan.addr, nativeIgnores, {
               read: plan.read,
               write: plan.write,
               length,
@@ -559,7 +600,7 @@ export class BreakpointManager {
             condition: bp.condition,
           });
 
-          this.emulator.setWatchpoint(address, ignores, {
+          this.emulator.setWatchpoint(address, this.armHitCount(id, ignores), {
             read: accessType !== "write",
             write: accessType !== "read",
             length,
@@ -639,7 +680,7 @@ export class BreakpointManager {
     // but loop generically rather than assuming.
     for (const address of ref.addresses) {
       this.emulator.removeWatchpoint(address);
-      this.emulator.setWatchpoint(address, ref.ignores, {
+      this.emulator.setWatchpoint(address, this.armHitCount(ref.id, ref.ignores), {
         read: ref.accessType !== "write",
         write: ref.accessType !== "read",
         length,
@@ -960,6 +1001,8 @@ export class BreakpointManager {
       this.emulator.removeBreakpoint(tmp.address);
     }
     this.tmpBreakpoints = [];
+
+    this.hitCounters.clear();
   }
 
   /**

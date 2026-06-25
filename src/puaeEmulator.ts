@@ -36,7 +36,9 @@ import { WebviewEmulator } from "./webviewEmulator";
  *  - `getCpuTrace()` returns up to 256 most-recently-executed instructions.
  *  - `stepBack()`/`continueReverse()` use a ring buffer of full-state
  *    snapshots (`retro_serialize`/`retro_unserialize`).
- *  - Breakpoint `ignores` counts are not supported.
+ *  - Breakpoint `ignores` counts are not honored by the wasm engine itself
+ *    (`supportsHitCounts` is false) - BreakpointManager emulates hit
+ *    counting in TS instead.
  *
  * Session restart / panel reuse: `open()` while a panel is already open sends
  * a "load" command (hard reset + warm-up) rather than re-instantiating the
@@ -45,6 +47,7 @@ import { WebviewEmulator } from "./webviewEmulator";
  */
 export class PuaeEmulator extends WebviewEmulator {
   public static readonly viewType = "vamiga-debugger.puaeWebview";
+  public readonly supportsHitCounts = false;
   private openOptions?: Record<string, unknown>;
   // Options that were used to generate the current panel's HTML — used to
   // detect when a config change requires a full panel reinitialisation.

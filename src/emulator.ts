@@ -103,6 +103,15 @@ export interface Emulator {
   // --- Breakpoints, watchpoints, catchpoints ---
 
   /**
+   * True if this backend's `ignores` counts (passed to setBreakpoint/
+   * setWatchpoint/setCatchpoint) are honored natively by the emulator
+   * itself. False means the emulator fires on every hit regardless of
+   * `ignores` - callers (BreakpointManager) emulate hit counting in TS
+   * instead, on top of `condition` evaluation.
+   */
+  readonly supportsHitCounts: boolean;
+
+  /**
    * Sets a breakpoint at the specified memory address
    * @param address Memory address for the breakpoint
    * @param ignores Number of times to ignore the breakpoint before stopping

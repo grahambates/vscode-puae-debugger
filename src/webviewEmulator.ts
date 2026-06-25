@@ -46,6 +46,10 @@ export abstract class WebviewEmulator implements Emulator {
   cpuInfo?: CpuInfo;
   customRegisters?: CustomRegisters;
 
+  // Native ignores support is the common case (vAmiga); PuaeEmulator
+  // overrides this to false.
+  public readonly supportsHitCounts: boolean = true;
+
   constructor(protected readonly extensionUri: vscode.Uri) {}
 
   // --- Lifecycle ---
