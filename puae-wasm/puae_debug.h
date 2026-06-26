@@ -153,3 +153,13 @@ puae_debug_get_chip_mem_size(void);
 // readback side effects in custom_wget_1 (suppresses real-hardware echo behavior
 // so that debugger memory inspection cannot corrupt chipset registers like DDFSTRT).
 extern int puae_debug_inspect_active;
+
+// Returns custom.c's cop_state.ip (the Copper's current list pointer) and
+// sets *valid to 1 if the access in progress is a custom-register write made
+// by the Copper (custom.c's copper_access flag), else 0 (and the returned
+// value is meaningless). Lets ami_debug.c attribute a DMA-sourced watchpoint
+// hit on a custom register to the actual Copper instruction responsible,
+// rather than just the CPU's unrelated concurrent PC — cop_state/copper_access
+// are static to custom.c, hence this accessor.
+uint32_t
+puae_debug_get_copper_pc(int *valid);

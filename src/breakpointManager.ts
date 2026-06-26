@@ -1,3 +1,4 @@
+import { basename } from "path";
 import * as vscode from "vscode";
 import { DebugProtocol } from "@vscode/debugprotocol";
 import { logger } from "@vscode/debugadapter";
@@ -779,19 +780,32 @@ export class BreakpointManager {
       // "concurrent pc" so the call stack/disassembly the user lands on
       // isn't mistaken for the actual cause.
       const isDma = message.payload.source === 1;
-      const dmaSource = isCustomRegisterAddress(message.payload.pc)
-        ? "the Copper"
-        : "the Blitter/disk DMA";
+      const isCopper = isDma && isCustomRegisterAddress(message.payload.pc);
+      const dmaSource = isCopper ? "the Copper" : "the Blitter/disk DMA";
       const source = isDma
         ? ` from ${dmaSource}`
         : message.payload.source === 0
           ? " from the CPU"
           : "";
+      // copperPc, when present, is the actual Copper list address that wrote
+      // the register — unlike cpuPc/"concurrent pc" (whatever the CPU
+      // happens to be running at the same time), this is the real cause, so
+      // it gets its own unqualified "pc=" label plus a source-line if one
+      // resolves.
+      const copperPc = isCopper ? message.payload.copperPc : undefined;
+      const copperLoc =
+        copperPc !== undefined ? this.sourceMap.lookupAddress(copperPc) : undefined;
+      const copperLabel =
+        copperPc !== undefined
+          ? ` (copperLoc=${formatHex(copperPc)}${
+              copperLoc ? ` ${basename(copperLoc.path)}:${copperLoc.line}` : ""
+            })`
+          : "";
       const pcLabel = isDma ? "concurrent pc" : "pc";
       const result: BreakpointStopResult = {
         reason: "data breakpoint",
         text: source
-          ? `Data breakpoint hit${source} (${pcLabel}=${formatHex(message.payload.cpuPc ?? 0)})`
+          ? `Data breakpoint hit${source} (${pcLabel}=${formatHex(message.payload.cpuPc ?? 0)})${copperLabel}`
           : undefined,
       };
       bpMatch = this.dataBreakpoints.find((bp) =>

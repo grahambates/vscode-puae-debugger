@@ -960,6 +960,13 @@ e9k_debug_watchbreakRequest(uint32_t index, uint32_t accessAddr, uint32_t access
 	e9k_debug_watchbreak.source = source;
 	e9k_debug_watchbreak.cpu_pc = e9k_debug_maskAddr(m68k_getpc());
 
+	{
+		int copperPcValid = 0;
+		uint32_t copperPc = puae_debug_get_copper_pc(&copperPcValid);
+		e9k_debug_watchbreak.copper_pc = e9k_debug_maskAddr(copperPc);
+		e9k_debug_watchbreak.copper_pc_valid = copperPcValid ? 1u : 0u;
+	}
+
 	e9k_debug_watchbreakPending = 1;
 	e9k_debug_requestBreak();
 }

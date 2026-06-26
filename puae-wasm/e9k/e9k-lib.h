@@ -65,6 +65,12 @@ typedef struct e9k_debug_watchbreak
                                  // sourced access this is whatever the CPU happens to be running
                                  // concurrently, unrelated to what configured the access (which
                                  // ran earlier, asynchronously) — same caveat as memprotect's pc.
+    uint32_t copper_pc;         // cop_state.ip (the Copper's own list pointer) at the moment of
+                                 // the hit. Only meaningful when copper_pc_valid is set — unlike
+                                 // cpu_pc, this *is* the address of the instruction that actually
+                                 // caused a Copper-sourced custom-register write.
+    uint32_t copper_pc_valid;   // 1 if this access was a custom-register write made by the
+                                 // Copper (so copper_pc is meaningful), else 0.
 } e9k_debug_watchbreak_t;
 
 

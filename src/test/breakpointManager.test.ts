@@ -126,3 +126,40 @@ describe("BreakpointManager - logpoints", () => {
     assert.strictEqual(bpManager.getLogMessage(bp.id!), undefined);
   });
 });
+
+describe("BreakpointManager - copper-sourced watchpoint attribution", () => {
+  it("includes the copper's pc and source line for a copper-sourced register write", () => {
+    const { emulator } = createFakeEmulator(true);
+    const sourceMap = createFakeSourceMap();
+    sourceMap.lookupAddress = sinon
+      .stub()
+      .withArgs(0x4000)
+      .returns({ path: "/copperlist.s", line: 42 });
+    const bpManager = new BreakpointManager(emulator, sourceMap);
+
+    const result = bpManager.handleBreakpointStop({
+      hasMessage: true,
+      name: "WATCHPOINT_REACHED",
+      payload: { pc: 0xdff180, vector: 0, source: 1, cpuPc: 0x1234, copperPc: 0x4000 },
+    });
+
+    assert.ok(result.text?.includes("from the Copper"));
+    assert.ok(result.text?.includes("copperLoc=0x00004000"));
+    assert.ok(result.text?.includes("copperlist.s:42"));
+  });
+
+  it("omits the copper pc/source-line for a Blitter/disk-sourced chip RAM write", () => {
+    const { emulator } = createFakeEmulator(true);
+    const sourceMap = createFakeSourceMap();
+    const bpManager = new BreakpointManager(emulator, sourceMap);
+
+    const result = bpManager.handleBreakpointStop({
+      hasMessage: true,
+      name: "WATCHPOINT_REACHED",
+      payload: { pc: 0x2000, vector: 0, source: 1, cpuPc: 0x1234 },
+    });
+
+    assert.ok(result.text?.includes("from the Blitter/disk DMA"));
+    assert.ok(!result.text?.includes("copperlist.s"));
+  });
+});

@@ -198,6 +198,16 @@ export interface StopMessage {
      */
     cpuPc?: number;
     /**
+     * WATCHPOINT_REACHED only: for a Copper-sourced custom-register write
+     * (source === 1 and the watched address is a custom register), the
+     * Copper's own list pointer (cop_state.ip) at the moment of the write —
+     * i.e. the address of the actual MOVE instruction in the copper list
+     * responsible, unlike `cpuPc`. Undefined whenever not applicable
+     * (CPU/Blitter/disk-sourced hits, or on backends that don't track it).
+     * PUAE-only.
+     */
+    copperPc?: number;
+    /**
      * REGISTER_WATCHPOINT_REACHED only: which register changed (matches
      * UAE's regs.regs[] layout — D0-D7 = 0..7, A0-A7 = 8..15), and its
      * value before/after the change. PUAE-only.
