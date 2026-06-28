@@ -654,7 +654,9 @@ export async function main(config: MainConfig = {}): Promise<void> {
 
   // Channel visibility panel (#channel-visibility, optional).
   // Numbered toggle squares to disable individual bitplanes, sprites, and
-  // audio channels.
+  // audio channels, plus a single toggle for the blitter (one channel, no
+  // index — see wasm_set_blitter_enabled's comment for what "disable" means
+  // for it specifically).
   const channelVisPanel = document.getElementById("channel-visibility");
   if (channelVisPanel) {
     function makeIndexedGroup(
@@ -682,6 +684,11 @@ export async function main(config: MainConfig = {}): Promise<void> {
       "Audio", 4,
       i => String(i),
       (i, v) => M._wasm_set_audio_channel_enabled(i, v),
+    ));
+    // Single channel, unlike the indexed groups above — one toggle square.
+    channelVisPanel.appendChild(makeToggleGroup(
+      "Blitter", [{ key: 0, text: "BLT" }],
+      (_item, active) => M._wasm_set_blitter_enabled(active ? 1 : 0),
     ));
   }
 

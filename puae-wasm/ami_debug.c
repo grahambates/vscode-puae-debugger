@@ -792,10 +792,11 @@ wasm_dma_overlay_set_opacity(int opacity)
 	g_dmaOverlayOpacity = opacity;
 }
 
-// ---- Channel visibility: bitplanes, sprites, audio ----
+// ---- Channel visibility: bitplanes, sprites, audio, blitter ----
 extern int debug_bpl_mask;   /* drawing.c: bits 0-5 = BPL1-6, default 0xff */
 extern int debug_sprite_mask; /* debug.c: bits 0-7 = SPR0-7, default 0xff */
 extern int audio_channel_mask; /* audio.c: bits 0-3 = AUD0-3, default 0xf */
+extern int debug_blitter_enabled; /* blitter.c: 0/1, default 1 */
 
 E9K_DEBUG_EXPORT void
 wasm_set_bitplane_enabled(int index, int enabled)
@@ -825,6 +826,20 @@ wasm_set_audio_channel_enabled(int index, int enabled)
 		audio_channel_mask |=  (1 << index);
 	else
 		audio_channel_mask &= ~(1 << index);
+}
+
+// Unlike the bitplane/sprite/audio toggles above, "disabling" the blitter
+// can't just blank its final output — the blitter doesn't draw pixels
+// itself, it writes results into chip memory that bitplane DMA later reads.
+// debug_blitter_enabled (blitter.c) instead mutes only the D-channel chip
+// memory write at its single funnel point, leaving DMA timing, BBUSY, and
+// the completion interrupt untouched — so toggling it shows what the screen
+// would look like without the blitter's memory writes, without otherwise
+// disrupting program timing.
+E9K_DEBUG_EXPORT void
+wasm_set_blitter_enabled(int enabled)
+{
+	debug_blitter_enabled = enabled ? 1 : 0;
 }
 
 static void
