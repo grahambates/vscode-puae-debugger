@@ -8,8 +8,8 @@
 // channel/read-write/data/address plus the overall blit configuration;
 // refresh/audio/bitplane/sprite/disk (always plain reads except disk, no
 // configuration to summarize) just get the channel and memory address.
-// DMARECORD_CONFLICT is intentionally unhandled — see the DMARECORD_REFRESH
-// comment below for why.
+// DmaRecordType.CONFLICT is intentionally unhandled — see the
+// channelLabelFor comment below for why.
 //
 // All lookups read the *last completed frame* live (not the separate
 // wasm_dma_get_grid_ptr/size grid, which is profiler-only — it's only
@@ -34,7 +34,7 @@
 // between an instruction's two word fetches isn't reliably exactly 1 DMA
 // cycle once other channels can contend for the bus.
 import { disassembleCopperInstruction } from "../../shared/copperDisassembler";
-import { DMA_HPOS, DMA_VPOS } from "../../shared/profilerTypes";
+import { DMA_HPOS, DMA_VPOS, DmaRecordType } from "../../shared/profilerTypes";
 import { BLTCON0Flags, BLTCON1Flags, BlitOp } from "../profilerViewer/blitMinterm";
 import { customRegisterLabel } from "../shared/customRegisters";
 import type { PuaeModule } from "./types";
@@ -42,24 +42,17 @@ import type { PuaeModule } from "./types";
 // addr:u32, w1:u16, w2:u16, hpos:u16, vpos:u16 — see e9k_copper_serialize.
 const COPPER_RECORD_BYTES = 12;
 
-// DMARECORD_* (puae-wasm/libretro-uae/sources/src/include/debug.h) — the
-// values wasm_dma_get_cell_type returns. DMARECORD_CONFLICT (9) is
-// deliberately not handled here: verified it's unreachable in practice —
-// every known hardware DMA-priority quirk this emulator models (the
-// bitplane/sprite chipset bug, strobe/refresh slot conflicts; see
-// custom.c:2733/2879/2947) computes its merged result and logs it as a
-// single ordinary BITPLANE/REFRESH record, deliberately avoiding the
-// generic conflict-detection path (two of them call record_dma_clear_2()
-// first specifically to prevent it firing). Those quirks already show up
-// here as a normal BITPLANE/REFRESH entry with merged/unusual values.
-const DMARECORD_REFRESH = 1;
-const DMARECORD_CPU = 2;
-const DMARECORD_AUDIO = 4;
-const DMARECORD_COPPER = 3;
-const DMARECORD_BLITTER = 5;
-const DMARECORD_BITPLANE = 6;
-const DMARECORD_SPRITE = 7;
-const DMARECORD_DISK = 8;
+// DmaRecordType (src/shared/profilerTypes.ts) mirrors debug.h's DMARECORD_*
+// exactly — these are the values wasm_dma_get_cell_type returns.
+// DmaRecordType.CONFLICT is deliberately not handled here: verified it's
+// unreachable in practice — every known hardware DMA-priority quirk this
+// emulator models (the bitplane/sprite chipset bug, strobe/refresh slot
+// conflicts; see custom.c:2733/2879/2947) computes its merged result and
+// logs it as a single ordinary BITPLANE/REFRESH record, deliberately
+// avoiding the generic conflict-detection path (two of them call
+// record_dma_clear_2() first specifically to prevent it firing). Those
+// quirks already show up here as a normal BITPLANE/REFRESH entry with
+// merged/unusual values.
 
 // "No data" sentinels for the cell getters.
 const NO_ADDR = 0xffffffff;
@@ -343,12 +336,16 @@ function blitterInfoAtSlot(M: PuaeModule, hpos: number, vpos: number): BlitterHo
 // index), so it's always just "DSK". Refresh's extra is a positional slot
 // index on the current line (not a stable per-channel identity the way
 // audio/sprite/bitplane numbers are), so it's also just a fixed label.
+//
+// DmaRecordType.CONFLICT has no case here either, for the same reason it's
+// unhandled at the dmaHoverInfoAtPixel dispatch below — it's dead code in
+// this emulator (see the file-header comment).
 function channelLabelFor(cellType: number, extra: number): string | undefined {
-  if (cellType === DMARECORD_REFRESH) return "REFRESH";
-  if (cellType === DMARECORD_AUDIO) return `AUD${extra & 3}`;
-  if (cellType === DMARECORD_BITPLANE) return `BPL${(extra & 7) + 1}`;
-  if (cellType === DMARECORD_SPRITE) return `SPR${extra & 7}`;
-  if (cellType === DMARECORD_DISK) return "DSK";
+  if (cellType === DmaRecordType.REFRESH) return "REFRESH";
+  if (cellType === DmaRecordType.AUDIO) return `AUD${extra & 3}`;
+  if (cellType === DmaRecordType.BITPLANE) return `BPL${(extra & 7) + 1}`;
+  if (cellType === DmaRecordType.SPRITE) return `SPR${extra & 7}`;
+  if (cellType === DmaRecordType.DISK) return "DSK";
   return undefined;
 }
 
@@ -424,23 +421,23 @@ function dmaHoverInfoAtPixel(
   if (!slot) return undefined;
   const cellType = M._wasm_dma_get_cell_type(slot.hpos, slot.vpos);
   if (!isChannelTypeEnabled(cellType)) return undefined;
-  if (cellType === DMARECORD_COPPER) {
+  if (cellType === DmaRecordType.COPPER) {
     const fetchAddr = M._wasm_dma_get_cell_addr(slot.hpos, slot.vpos);
     if (fetchAddr === NO_ADDR) return undefined;
     return findCopperInstructionByAddr(M, fetchAddr >>> 0, slot.hpos, slot.vpos);
   }
-  if (cellType === DMARECORD_BLITTER) {
+  if (cellType === DmaRecordType.BLITTER) {
     return blitterInfoAtSlot(M, slot.hpos, slot.vpos);
   }
-  if (cellType === DMARECORD_CPU) {
+  if (cellType === DmaRecordType.CPU) {
     return cpuInfoAtSlot(M, slot.hpos, slot.vpos);
   }
   if (
-    cellType === DMARECORD_REFRESH ||
-    cellType === DMARECORD_AUDIO ||
-    cellType === DMARECORD_BITPLANE ||
-    cellType === DMARECORD_SPRITE ||
-    cellType === DMARECORD_DISK
+    cellType === DmaRecordType.REFRESH ||
+    cellType === DmaRecordType.AUDIO ||
+    cellType === DmaRecordType.BITPLANE ||
+    cellType === DmaRecordType.SPRITE ||
+    cellType === DmaRecordType.DISK
   ) {
     return channelInfoAtSlot(M, slot.hpos, slot.vpos, cellType);
   }

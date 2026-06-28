@@ -67,6 +67,25 @@ export enum BusOwner {
   COPPER = 22, BLITTER = 23, BLOCKED = 24,
 }
 
+// PUAE's own DMA-record type tag — mirrors `DMARECORD_*` in
+// puae-wasm/libretro-uae/sources/src/include/debug.h exactly (values, not just
+// order: e9k_dma_get_cell_type() returns these directly). Distinct from
+// BusOwner above, which is vAmiga's bus-owner ordinal used for the profiler's
+// baked Cell[] grid format — DmaRecordType is what the PUAE webview's live
+// DMA-overlay hover tooltip (dmaHover.ts) gets back from the single-cell
+// getters. Keep in sync with debug.h if it ever changes.
+export enum DmaRecordType {
+  REFRESH = 1,
+  CPU = 2,
+  COPPER = 3,
+  AUDIO = 4,
+  BLITTER = 5,
+  BITPLANE = 6,
+  SPRITE = 7,
+  DISK = 8,
+  CONFLICT = 9,
+}
+
 // IDmaModel.flags bit layout (mirrors DmaProfiler::DMA_* / COP_SUB_*).
 export const DMA_WRITE = 1 << 0;
 export const DMA_BYTE = 1 << 1;

@@ -7,6 +7,7 @@
 import { setupRpcDispatcher, getCurrentStopMessage, tryExec, getCurrentProcess, isExecReady } from "./rpc";
 import { installDmaHoverTooltip, handleDmaHoverMessage } from "./dmaHover";
 import { installMouseCapture } from "./mouseCapture";
+import { DmaRecordType } from "../../shared/profilerTypes";
 import type { PuaeModule } from "./types";
 
 // The Amiga's PAL frame rate — both the render loop's due-frames accounting
@@ -504,24 +505,22 @@ export async function main(config: MainConfig = {}): Promise<void> {
   // are off. All wired directly to the WASM overlay functions (no RPC
   // round-trip needed).
   //
-  // No "Conflict" (DMARECORD_CONFLICT=9) entry: verified unreachable in
+  // No "Conflict" (DmaRecordType.CONFLICT) entry: verified unreachable in
   // practice — every known hardware DMA-priority quirk this emulator models
   // computes its merged result and logs it as an ordinary BITPLANE/REFRESH
   // record instead of ever triggering the generic conflict-detection path
-  // (see dmaHover.ts's DMARECORD_REFRESH comment). The toggle never
+  // (see dmaHover.ts's channelLabelFor comment). The toggle never
   // highlighted anything.
   const DMA_CHANNELS = [
-    { type: 1, label: "Refresh", abbr: "REF", color: "#444444" },
-    { type: 2, label: "CPU", abbr: "CPU", color: "#a25342" },
-    { type: 3, label: "Copper", abbr: "COP", color: "#eeee00" },
-    { type: 4, label: "Audio", abbr: "AUD", color: "#ff0000" },
-    { type: 5, label: "Blitter", abbr: "BLT", color: "#008888" },
-    { type: 6, label: "Bitplane", abbr: "BPL", color: "#0000ff" },
-    { type: 7, label: "Sprite", abbr: "SPR", color: "#ff00ff" },
-    { type: 8, label: "Disk", abbr: "DSK", color: "#ffffff" },
+    { type: DmaRecordType.REFRESH, label: "Refresh", abbr: "REF", color: "#444444" },
+    { type: DmaRecordType.CPU, label: "CPU", abbr: "CPU", color: "#a25342" },
+    { type: DmaRecordType.COPPER, label: "Copper", abbr: "COP", color: "#eeee00" },
+    { type: DmaRecordType.AUDIO, label: "Audio", abbr: "AUD", color: "#ff0000" },
+    { type: DmaRecordType.BLITTER, label: "Blitter", abbr: "BLT", color: "#008888" },
+    { type: DmaRecordType.BITPLANE, label: "Bitplane", abbr: "BPL", color: "#0000ff" },
+    { type: DmaRecordType.SPRITE, label: "Sprite", abbr: "SPR", color: "#ff00ff" },
+    { type: DmaRecordType.DISK, label: "Disk", abbr: "DSK", color: "#ffffff" },
   ];
-  // DMARECORD_COPPER (puae-wasm/libretro-uae/sources/src/include/debug.h).
-  const DMARECORD_COPPER = 3;
 
   // Whether the COPPER channel toggle is currently on — gates
   // wasm_copper_tracking_enable so cop_record[] (needed for the copper
@@ -577,7 +576,7 @@ export async function main(config: MainConfig = {}): Promise<void> {
       M._wasm_dma_overlay_set_channel(ch.type, active ? 1 : 0);
       if (active) enabledChannelTypes.add(ch.type);
       else enabledChannelTypes.delete(ch.type);
-      if (ch.type === DMARECORD_COPPER) {
+      if (ch.type === DmaRecordType.COPPER) {
         copperChannelActive = active;
         M._wasm_copper_tracking_enable(active ? 1 : 0);
       }
