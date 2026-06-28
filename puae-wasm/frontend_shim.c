@@ -28,11 +28,10 @@
 // buffer's size (see comment there). Can't include xwin.h directly here —
 // it needs STATIC_INLINE/MAX_AMIGADISPLAYS etc. from sysconfig.h/uae.h,
 // which this minimal libretro shim deliberately doesn't pull in — so the
-// actual struct access lives in ami_debug.c (e9k_get_drawbuffer_diag),
+// actual struct access lives in ami_debug.c (e9k_get_drawbuffer_shape),
 // which already has that full include context for the rest of the e9k
 // debug module; we just call it as a plain function.
-extern void e9k_get_drawbuffer_diag(int *rowbytes, int *width_allocated, int *height_allocated,
-    int *pixbytes, const void **bufmem, const void **realbufmem);
+extern void e9k_get_drawbuffer_shape(int *rowbytes, int *width_allocated, int *height_allocated);
 
 // Defined in ami9000's libretro-core.c; set to true by e9k_debug_requestBreak()
 // when a breakpoint fires, causing retro_run() to return early.
@@ -174,9 +173,10 @@ static void shim_video_refresh(const void *data, unsigned width, unsigned height
         return;
     }
 
-    // Confirmed by direct instrumentation (comparing `data` against
-    // gfxvidinfo->drawbuffer.bufmem/rowbytes/width_allocated): `width`/
-    // `height`/`pitch` here are *retro_set_geometry()'s reported* values
+    // Confirmed by direct instrumentation (data == gfxvidinfo->drawbuffer.
+    // bufmem, but rowbytes/width_allocated still describing the *old*
+    // geometry): `width`/`height`/`pitch` here are *retro_set_geometry()'s
+    // reported* values
     // (e.g. wasm_dma_overlay_enable switching defaultw/defaulth to the
     // 912x626 raw raster), which update independently of — and can run
     // ahead of — the *actual* allocated render buffer's size. The real
@@ -194,10 +194,8 @@ static void shim_video_refresh(const void *data, unsigned width, unsigned height
     // these always describe what's actually safe to read from `data`,
     // regardless of whether retro_set_geometry's reported size has caught
     // up yet.
-    int db_rowbytes = 0, db_width_allocated = 0, db_height_allocated = 0, db_pixbytes = 0;
-    const void *db_bufmem = NULL, *db_realbufmem = NULL;
-    e9k_get_drawbuffer_diag(&db_rowbytes, &db_width_allocated, &db_height_allocated,
-        &db_pixbytes, &db_bufmem, &db_realbufmem);
+    int db_rowbytes = 0, db_width_allocated = 0, db_height_allocated = 0;
+    e9k_get_drawbuffer_shape(&db_rowbytes, &db_width_allocated, &db_height_allocated);
     if (db_width_allocated > 0 && db_height_allocated > 0 && db_rowbytes > 0) {
         width = (unsigned)db_width_allocated;
         height = (unsigned)db_height_allocated;

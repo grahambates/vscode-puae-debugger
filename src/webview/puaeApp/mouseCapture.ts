@@ -46,7 +46,7 @@ export function installMouseCapture(canvas: HTMLCanvasElement, M: PuaeModule): v
 
   document.addEventListener("pointerlockchange", lockChangeAlert);
 
-  // Registered after installCopperHoverTooltip's click listener (app.ts
+  // Registered after installDmaHoverTooltip's click listener (app.ts
   // installs this second) — that listener calls stopImmediatePropagation
   // when it opens a source file, so a click that opens source doesn't also
   // request pointer lock on the same click.

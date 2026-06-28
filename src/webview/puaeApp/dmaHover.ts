@@ -575,6 +575,16 @@ function buildPositionLine(info: DmaHoverPosition): HTMLDivElement {
   return line;
 }
 
+// Appends "path:line" for `address`'s source location, if known — shared by
+// copper (always a code fetch) and CPU instruction-fetch cells.
+function appendLocationLine(tooltip: HTMLDivElement, address: number): void {
+  const location = symbolCache.get(address)?.location;
+  if (!location) return;
+  const line = document.createElement("div");
+  line.textContent = `${location.path}:${location.line}`;
+  tooltip.appendChild(line);
+}
+
 function renderTooltipContent(tooltip: HTMLDivElement, info: DmaHoverInfo): void {
   if (info.kind === "copper") {
     tooltip.replaceChildren(buildCopperLine(info));
@@ -583,12 +593,7 @@ function renderTooltipContent(tooltip: HTMLDivElement, info: DmaHoverInfo): void
       line.textContent = info.comment;
       tooltip.appendChild(line);
     }
-    const location = symbolCache.get(info.address)?.location;
-    if (location) {
-      const line = document.createElement("div");
-      line.textContent = `${location.path}:${location.line}`;
-      tooltip.appendChild(line);
-    }
+    appendLocationLine(tooltip, info.address);
   } else if (info.kind === "channel") {
     const line = document.createElement("div");
     line.textContent = `${info.channelLabel}: ${addressLabel(info.address)}`;
@@ -596,14 +601,7 @@ function renderTooltipContent(tooltip: HTMLDivElement, info: DmaHoverInfo): void
   } else if (info.kind === "cpu") {
     const [main, data] = buildCpuLines(info);
     tooltip.replaceChildren(main, data);
-    if (info.isCode) {
-      const location = symbolCache.get(info.address)?.location;
-      if (location) {
-        const line = document.createElement("div");
-        line.textContent = `${location.path}:${location.line}`;
-        tooltip.appendChild(line);
-      }
-    }
+    if (info.isCode) appendLocationLine(tooltip, info.address);
   } else {
     tooltip.replaceChildren(buildBlitterLine(info));
     if (info.mode) {

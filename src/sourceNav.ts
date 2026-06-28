@@ -4,8 +4,8 @@ import { isAbsolute } from "path";
 /**
  * Opens `file` (absolute, or resolved against the first workspace folder)
  * and reveals `line` (1-based). Used for "jump to source" actions triggered
- * from a webview click (e.g. the PUAE copper-overlay hover tooltip resolving
- * a copper-list address to file:line via WebviewEmulator's symbolizeAddress
+ * from a webview click (e.g. the PUAE DMA overlay's copper/CPU hover tooltip
+ * resolving an address to file:line via WebviewEmulator's symbolizeAddress
  * handling).
  */
 export async function openSourceLocation(file: string, line: number): Promise<void> {

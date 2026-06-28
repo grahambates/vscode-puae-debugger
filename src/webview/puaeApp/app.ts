@@ -643,8 +643,8 @@ export async function main(config: MainConfig = {}): Promise<void> {
   // active, restricted to cells whose channel is actually toggled on (see
   // enabledChannelTypes — debug_dma records every channel regardless of
   // which ones the overlay is drawing). Passing `vscode` (undefined outside
-  // the real webview, e.g. debug.html) enables copper's source-location
-  // lookup and click-to-open.
+  // the real webview, e.g. debug.html) enables copper's and CPU instruction
+  // fetches' source-location lookup and click-to-open.
   installDmaHoverTooltip(canvas, M, () => dmaOverlayActive, (type) => enabledChannelTypes.has(type), vscode);
 
   // Mouse capture (pointer lock) for the emulated Amiga mouse: left click

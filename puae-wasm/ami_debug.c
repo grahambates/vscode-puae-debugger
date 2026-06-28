@@ -598,31 +598,28 @@ wasm_dma_get_cell_extra(int hpos, int vpos) { return e9k_dma_get_cell_extra(hpos
 E9K_DEBUG_EXPORT int
 wasm_dma_get_cell_reg(int hpos, int vpos) { return e9k_dma_get_cell_reg(hpos, vpos); }
 
-// e9k: temporary diagnostic for the overlay-toggle skew/blank-frame bug —
-// exposes PUAE's *actual* allocated render buffer (gfxvidinfo->drawbuffer,
-// xwin.h) so frontend_shim.c can compare its real rowbytes/width_allocated/
-// bufmem against what video_cb() reports, instead of inferring it
-// indirectly. Not a wasm export (no E9K_DEBUG_EXPORT) — called directly
-// from frontend_shim.c, which can't include xwin.h itself (it needs
-// STATIC_INLINE/MAX_AMIGADISPLAYS etc. from sysconfig.h/uae.h that this
-// minimal libretro shim deliberately doesn't pull in). Remove once the
-// real cause of the skew/blank-frame bug is found.
+// e9k: exposes PUAE's *actual* allocated render buffer's shape
+// (gfxvidinfo->drawbuffer, xwin.h) — frontend_shim.c's shim_video_refresh
+// uses these as the source of truth for g_fb_width/g_fb_height/g_fb_pitch,
+// since video_cb()'s own width/height/pitch parameters can report a new
+// geometry before the real buffer catches up (only reallocated once per
+// real VSYNC, via check_prefs_changed_gfx). Not a wasm export (no
+// E9K_DEBUG_EXPORT) — called directly from frontend_shim.c, which can't
+// include xwin.h itself (it needs STATIC_INLINE/MAX_AMIGADISPLAYS etc. from
+// sysconfig.h/uae.h that this minimal libretro shim deliberately doesn't
+// pull in).
 // xwin.h forward-declares/defines the type but the global itself is
 // declared in libretro/libretro-glue.h (not on this file's include path,
 // and defined there as `gfxvidinfo = &adisplays[0].gfxvidinfo`) — redeclare
 // it directly rather than pull that whole header in.
 extern struct vidbuf_description *gfxvidinfo;
 
-void e9k_get_drawbuffer_diag(int *rowbytes, int *width_allocated, int *height_allocated,
-    int *pixbytes, const void **bufmem, const void **realbufmem)
+void e9k_get_drawbuffer_shape(int *rowbytes, int *width_allocated, int *height_allocated)
 {
 	struct vidbuffer *db = &gfxvidinfo->drawbuffer;
 	*rowbytes = db->rowbytes;
 	*width_allocated = db->width_allocated;
 	*height_allocated = db->height_allocated;
-	*pixbytes = db->pixbytes;
-	*bufmem = db->bufmem;
-	*realbufmem = db->realbufmem;
 }
 
 // ---- Copper instruction trace (live tooltip) ----
