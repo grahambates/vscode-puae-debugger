@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import createPuaeModule from "../../puae/puae.js";
-import { setupRpcDispatcher } from "../../puae/puae_rpc.js";
+import { setupRpcDispatcher } from "../../out/puaeRpc.mjs";
 import { parseHunksFromFile } from "./test_g4_hunkparser.mjs";
 import { loadAmigaProgram } from "./test_g4_hunkloader.mjs";
 import { AmigaMemoryMapper } from "./test_g4_memmapper.mjs";

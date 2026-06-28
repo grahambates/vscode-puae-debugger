@@ -1335,6 +1335,10 @@ export class VamigaDebugAdapter extends LoggingDebugSession {
         );
       }
 
+      // Lets the emulator backend symbolize addresses for itself on webview
+      // request (e.g. PuaeEmulator's copper-overlay hover tooltip).
+      this.emulator.setSourceMap(this.sourceMap);
+
       // Initialize specialized manager classes for debugging functionality:
       this.variablesManager = new VariablesManager(this.emulator, this.sourceMap);
       this.breakpointManager = new BreakpointManager(

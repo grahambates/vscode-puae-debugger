@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import createPuaeModule from "../../puae/puae.js";
-import { tryExec, getCurrentProcess } from "../../puae/puae_rpc.js";
+import { tryExec, getCurrentProcess } from "../../out/puaeRpc.mjs";
 
 const M = await createPuaeModule();
 

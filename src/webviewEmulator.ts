@@ -13,6 +13,8 @@ import {
   isValidMemoryAddress,
   getMemoryRegionForAddress,
 } from "./vAmiga";
+import { SourceMap } from "./sourceMap";
+import { openSourceLocation } from "./sourceNav";
 
 /**
  * A pending request/response RPC awaiting its reply from the webview.
@@ -50,7 +52,17 @@ export abstract class WebviewEmulator implements Emulator {
   // overrides this to false.
   public readonly supportsHitCounts: boolean = true;
 
+  // Set by VamigaDebugAdapter once the session's SourceMap is built, so
+  // handlePanelMessage's `symbolizeAddress` handling below can answer
+  // address->source-line queries from the webview (e.g. the PUAE copper
+  // hover tooltip) without round-tripping through the adapter.
+  protected sourceMap?: SourceMap;
+
   constructor(protected readonly extensionUri: vscode.Uri) {}
+
+  public setSourceMap(sourceMap: SourceMap | undefined): void {
+    this.sourceMap = sourceMap;
+  }
 
   // --- Lifecycle ---
 
@@ -203,6 +215,24 @@ export abstract class WebviewEmulator implements Emulator {
         .catch((error) => {
           console.error("Failed to fetch memory info on exec-ready:", error);
         });
+    } else if (message.type === "symbolizeAddress") {
+      // Webview-initiated request (e.g. PUAE's copper hover tooltip) for the
+      // source location of an address — answered directly here rather than
+      // bounced through the debug adapter, since setSourceMap already gave
+      // us what we need. Path is relativized to the workspace folder (when
+      // one is open) so the tooltip can stay short — openSource resolves a
+      // relative path against the workspace folder too, so the round trip
+      // still works.
+      const loc = this.sourceMap?.lookupAddress(message.address);
+      this.panel?.webview.postMessage({
+        type: "symbolizeResult",
+        requestId: message.requestId,
+        location: loc
+          ? { path: vscode.workspace.asRelativePath(loc.path, false), line: loc.line }
+          : undefined,
+      });
+    } else if (message.type === "openSource") {
+      void openSourceLocation(message.path, message.line);
     }
 
     // Notify all registered listeners about this message

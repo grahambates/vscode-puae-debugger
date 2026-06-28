@@ -164,6 +164,24 @@ export function CopperView({
       });
       x += 60;
 
+      // Color swatch (MOVE to a COLORnn register) — drawn before the value
+      // so it reads as "this operand is this color". Aligned relative to
+      // the text's own anchor (y + 2, textBaseline "top") rather than
+      // centered in the full LINE_HEIGHT row box — the 14px text's visible
+      // ink sits in the row's upper portion (top-anchored, not vertically
+      // centered), so centering on the row box alone reads as too low.
+      if (instr.color) {
+        const [r, g, b] = instr.color;
+        const swatchSize = 10;
+        const swatchY = y + 3;
+        ctx.fillStyle = `rgb(${r}, ${g}, ${b})`;
+        ctx.fillRect(x, swatchY, swatchSize, swatchSize);
+        ctx.strokeStyle = "rgba(255, 255, 255, 0.4)";
+        ctx.lineWidth = 1;
+        ctx.strokeRect(x + 0.5, swatchY + 0.5, swatchSize - 1, swatchSize - 1);
+        x += swatchSize + 4;
+      }
+
       // Operands
       drawOperands(ctx, instr.operands, x, y + 2, {
         register: registerColor,

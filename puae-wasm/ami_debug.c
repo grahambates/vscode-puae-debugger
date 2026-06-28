@@ -578,6 +578,47 @@ wasm_dma_get_grid_ptr(void) { return g_dmaGrid; }
 E9K_DEBUG_EXPORT uint32_t
 wasm_dma_get_grid_size(void) { return g_dmaGridSize; }
 
+// Live single-cell query (last completed frame), for the copper-overlay
+// hover tooltip (copperHover.ts) — cheap enough to call on every mousemove,
+// unlike wasm_dma_serialize_grid's full-grid repack (which is also only
+// populated on-demand for the profiler, not continuously).
+E9K_DEBUG_EXPORT int
+wasm_dma_get_cell_type(int hpos, int vpos) { return e9k_dma_get_cell_type(hpos, vpos); }
+
+E9K_DEBUG_EXPORT uint32_t
+wasm_dma_get_cell_addr(int hpos, int vpos) { return e9k_dma_get_cell_addr(hpos, vpos); }
+
+// ---- Copper instruction trace (live tooltip) ----
+// Populated by record_copper() (debug.c) while debug_copper is enabled —
+// gated separately from the DMA grid's debug_dma so plain DMA-overlay use of
+// other channels doesn't pay the extra bookkeeping cost. Toggled by
+// puaeApp's DMA overlay panel alongside the COPPER channel button (see
+// app.ts's setChannel). 40000 * 12 bytes = ~469KB, sized generously above
+// the worst case (half of 313*227 DMA cycles, since each copper instruction
+// takes 2 cycles).
+extern int debug_copper;
+#define E9K_COPPER_RECORD_BYTES 12
+#define E9K_COPPER_MAX_RECORDS 40000
+static uint8_t g_copperRecords[E9K_COPPER_MAX_RECORDS * E9K_COPPER_RECORD_BYTES];
+static uint32_t g_copperRecordsSize;
+
+E9K_DEBUG_EXPORT void
+wasm_copper_tracking_enable(int on) { debug_copper = on ? 1 : 0; }
+
+// Re-serializes on every call (cheap — bounded by the actual instruction
+// count for one frame) so the data is always fresh as of this call. Callers
+// (copperHover.ts) call this first, then wasm_copper_get_records_size() for
+// the byte count of that same pass.
+E9K_DEBUG_EXPORT const uint8_t *
+wasm_copper_get_records_ptr(void)
+{
+	g_copperRecordsSize = e9k_copper_serialize(g_copperRecords);
+	return g_copperRecords;
+}
+
+E9K_DEBUG_EXPORT uint32_t
+wasm_copper_get_records_size(void) { return g_copperRecordsSize; }
+
 // Chip and slow RAM wasm-heap pointers for the profiler memory-reconstruction snapshot.
 E9K_DEBUG_EXPORT uint32_t
 wasm_dma_get_chip_ptr(void)  { return (uint32_t)chipmem_bank.baseaddr; }

@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import createPuaeModule from "../../puae/puae.js";
-import { setupRpcDispatcher } from "../../puae/puae_rpc.js";
+import { setupRpcDispatcher } from "../../out/puaeRpc.mjs";
 
 const M = await createPuaeModule();
 

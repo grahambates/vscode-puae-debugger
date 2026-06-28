@@ -32,8 +32,9 @@ async function main() {
   if (fs.existsSync('out') && !watch) {
     const files = fs.readdirSync('out');
     for (const file of files) {
-      if (file.endsWith('.js') && !file.startsWith('extension') || 
+      if (file.endsWith('.js') && !file.startsWith('extension') ||
           file.endsWith('.js.map') && !file.startsWith('extension') ||
+          file.endsWith('.mjs') ||
           file.endsWith('.d.ts')) {
         try {
           fs.unlinkSync(`out/${file}`);
@@ -85,14 +86,73 @@ async function main() {
       esbuildProblemMatcherPlugin,
     ],
   });
+  // PUAE webview app bundle — loaded via `<script type="module">` from
+  // puae/index.html / puae/debug.html (see PuaeEmulator.getHtmlForWebview).
+  // Format 'esm' (not the React webviews' 'iife') so it can keep exporting
+  // `main`/`REG_NAMES` the same way the page's inline module script expects.
+  const puaeAppCtx = await esbuild.context({
+    entryPoints: ['src/webview/puaeApp/app.ts'],
+    bundle: true,
+    format: 'esm',
+    minify: production,
+    sourcemap: production ? false : 'inline',
+    sourcesContent: !production,
+    platform: 'browser',
+    outfile: 'out/puaeApp.js',
+    logLevel: 'silent',
+    plugins: [
+      esbuildProblemMatcherPlugin,
+    ],
+  });
+
+  // PUAE audio worklet processor — loaded via audioWorklet.addModule(), runs
+  // in AudioWorkletGlobalScope (no imports/exports, just registerProcessor).
+  const puaeAudioCtx = await esbuild.context({
+    entryPoints: ['src/webview/puaeApp/audioProcessor.ts'],
+    bundle: true,
+    format: 'iife',
+    minify: production,
+    sourcemap: production ? false : 'inline',
+    platform: 'browser',
+    outfile: 'out/puaeAudioProcessor.js',
+    logLevel: 'silent',
+    plugins: [
+      esbuildProblemMatcherPlugin,
+    ],
+  });
+
+  // PUAE RPC dispatcher, built standalone (not inlined into puaeApp.js) so
+  // puae-wasm/test/*.mjs can `import` it directly under plain Node, the way
+  // they imported puae/puae_rpc.js before the TypeScript port.
+  const puaeRpcCtx = await esbuild.context({
+    entryPoints: ['src/webview/puaeApp/rpc.ts'],
+    bundle: true,
+    format: 'esm',
+    platform: 'neutral',
+    outfile: 'out/puaeRpc.mjs',
+    logLevel: 'silent',
+    plugins: [
+      esbuildProblemMatcherPlugin,
+    ],
+  });
+
   if (watch) {
     await extensionCtx.watch();
     await webviewCtx.watch();
+    await puaeAppCtx.watch();
+    await puaeAudioCtx.watch();
+    await puaeRpcCtx.watch();
   } else {
     await extensionCtx.rebuild();
     await webviewCtx.rebuild();
+    await puaeAppCtx.rebuild();
+    await puaeAudioCtx.rebuild();
+    await puaeRpcCtx.rebuild();
     await extensionCtx.dispose();
     await webviewCtx.dispose();
+    await puaeAppCtx.dispose();
+    await puaeAudioCtx.dispose();
+    await puaeRpcCtx.dispose();
   }
 }
 

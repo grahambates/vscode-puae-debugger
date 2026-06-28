@@ -13,7 +13,6 @@ const vscode = acquireVsCodeApi();
 
 export function App() {
   useModelVersion(); // re-render when the model changes (the model lives in modelStore, not state)
-  // eslint-disable-next-line react-hooks/purity -- model is read from an external store (modelStore)
   const model = getProfileModel();
   const [error, setError] = useState<string | null>(null);
   // Starts busy: the extension auto-captures one frame as soon as we signal "ready",

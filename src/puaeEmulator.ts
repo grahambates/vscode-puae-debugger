@@ -6,10 +6,12 @@ import { WebviewEmulator } from "./webviewEmulator";
 /**
  * PUAE/ami9000 wasm backend, implementing the same `Emulator` interface as
  * `VAmiga`. Backed by `puae/`'s `index.html` (boot/render loop logic shared
- * via `puae_app.js`) + `puae_rpc.js`, which expose the `e9k_debug` debugging
- * layer grafted onto libretro-uae. `puae/debug.html` is a standalone variant
- * with manual breakpoint/memory/watchpoint/disassembly test UI, for
- * development outside the extension — not used by `getHtmlForWebview`.
+ * via `src/webview/puaeApp/app.ts`, bundled by esbuild.js to
+ * `out/puaeApp.js`) + `src/webview/puaeApp/rpc.ts`, which expose the
+ * `e9k_debug` debugging layer grafted onto libretro-uae. `puae/debug.html` is
+ * a standalone variant with manual breakpoint/memory/watchpoint/disassembly
+ * test UI, for development outside the extension — not used by
+ * `getHtmlForWebview`.
  *
  * `emulatorOptions` is a flat object of raw WinUAE-format `.uae` key=value
  * pairs (e.g. `chipmem_size`, `cpu_model`, `chipset`). Two keys are handled
@@ -21,7 +23,7 @@ import { WebviewEmulator } from "./webviewEmulator";
  *    (AROS is incompatible with fast loading).
  *  - `programPath` (internal, added by the debug adapter): host path to the
  *    Amiga executable. The file is base64-injected as `programB64` and
- *    `puae_app.js` writes it into MEMFS, mounted as a bootable DH0: hard
+ *    `app.ts` writes it into MEMFS, mounted as a bootable DH0: hard
  *    disk via `filesystem=rw,dh0:/uae_system/dh0`.
  *
  * All other keys are written to `puae_libretro_global.uae` (last-line-wins).
@@ -29,7 +31,7 @@ import { WebviewEmulator } from "./webviewEmulator";
  * `cpu_memory_cycle_exact`, `blitter_cycle_exact` (all `true`) — override
  * by specifying the same key in `emulatorOptions`.
  *
- * Documented gaps vs. `VAmiga` (see `puae_rpc.js` for the implementation):
+ * Documented gaps vs. `VAmiga` (see `src/webview/puaeApp/rpc.ts` for the implementation):
  *  - `getCpuInfo()`'s isp/msp/vbr/irc/sfc/dfc/cacr/caar fields are always
  *    "0x00000000".
  *  - `setRegister()`/`jump()` only support d0-d7/a0-a7/sr/pc/usp.
@@ -99,6 +101,7 @@ export class PuaeEmulator extends WebviewEmulator {
         retainContextWhenHidden: true,
         localResourceRoots: [
           puaeDir,
+          vscode.Uri.joinPath(this.extensionUri, "out"),
           vscode.Uri.joinPath(this.extensionUri, "node_modules", "@vscode/codicons"),
         ],
       },
@@ -162,8 +165,14 @@ export class PuaeEmulator extends WebviewEmulator {
 
     const puaeJsUri = uri("puae.js");
     const puaeWasmUri = uri("puae.wasm");
-    const workletUri = uri("puae_audioprocessor.js");
-    const appUri = uri("puae_app.js");
+    // Bundled from src/webview/puaeApp/ (TypeScript) by esbuild.js, not
+    // shipped from puae/ itself — see esbuild.js's puaeAppCtx/puaeAudioCtx.
+    const workletUri = webview
+      .asWebviewUri(vscode.Uri.joinPath(this.extensionUri, "out", "puaeAudioProcessor.js"))
+      .toString();
+    const appUri = webview
+      .asWebviewUri(vscode.Uri.joinPath(this.extensionUri, "out", "puaeApp.js"))
+      .toString();
     const codiconsUri = webview.asWebviewUri(
       vscode.Uri.joinPath(
         this.extensionUri,
@@ -232,9 +241,9 @@ export class PuaeEmulator extends WebviewEmulator {
     // Patch external script src to webview URI.
     html = html.replace('src="puae.js"', `src="${puaeJsUri}"`);
 
-    // Patch the shared app module's import to a webview URI — puae_app.js's
-    // own relative import of puae_rpc.js then resolves correctly against
-    // that URI without any further patching.
+    // Patch the bundled app module's import to a webview URI. The bundle
+    // (out/puaeApp.js, see esbuild.js) already inlines rpc.ts/copperHover.ts/
+    // shared code — no further import patching needed.
     html = html.replace(
       "from './puae_app.js';",
       `from '${appUri}';`,

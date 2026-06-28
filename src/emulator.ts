@@ -8,6 +8,7 @@ import {
   MemoryInfo,
   RegisterSetStatus,
 } from "./vAmiga";
+import { SourceMap } from "./sourceMap";
 
 /**
  * Access-type filter and watched-region length for setWatchpoint. `length`
@@ -56,6 +57,16 @@ export interface Emulator {
   onDidDispose(callback: () => void): vscode.Disposable | undefined;
 
   dispose(): void;
+
+  /**
+   * Gives the backend the session's active SourceMap, so it can symbolize
+   * addresses for itself on webview request (e.g. PuaeEmulator's
+   * copper-overlay hover tooltip resolving a copper-list address to
+   * file:line — see WebviewEmulator's `symbolizeAddress` message handling).
+   * Called once the debug session has built/loaded its SourceMap;
+   * `undefined` clears it.
+   */
+  setSourceMap(sourceMap: SourceMap | undefined): void;
 
   // --- Execution control ---
 

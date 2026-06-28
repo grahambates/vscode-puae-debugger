@@ -116,7 +116,7 @@
 
 <script src="puae.js"></script>
 <script type="module">
-import { main, REG_NAMES } from './puae_app.js';
+import { main, REG_NAMES } from '../out/puaeApp.js';
 
 // ---------- debug UI (Stages D, G1, G2) ----------
 // Returns an API used by main()'s onBreakpoint hook to refresh these views
@@ -381,7 +381,7 @@ main({
   wasmLocateFile: undefined,
   romUrl: './kick34005.A500',
   extraConfigB64: '',
-  audioWorkletUrl: './puae_audioprocessor.js',
+  audioWorkletUrl: '../out/puaeAudioProcessor.js',
   onModuleReady: (M) => { debugApi = debugSetup(M); },
   onBreakpoint: () => {
     debugApi.readRegs();
