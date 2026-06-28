@@ -1,12 +1,15 @@
 // Hover tooltip for the live DMA overlay: maps a mouse position over the
 // video canvas to whatever owned that DMA cycle and shows brief info about
 // it. Copper gets full instruction disassembly (+ source-location lookup);
-// CPU gets the profiler-style Address/Register + Data + Access breakdown;
-// blitter gets per-cycle channel/read-write/data/address plus the overall
-// blit configuration; refresh/audio/bitplane/sprite/disk (always plain
-// reads except disk, no configuration to summarize) just get the channel
-// and memory address. DMARECORD_CONFLICT is intentionally unhandled — see
-// the DMARECORD_REFRESH comment below for why.
+// CPU gets the profiler-style Address/Register + Data + Access breakdown,
+// plus the same source-location lookup/click-to-open as copper when the
+// cycle was an instruction fetch (isCode) — a data read/write's address
+// isn't a code location, so it gets no source line; blitter gets per-cycle
+// channel/read-write/data/address plus the overall blit configuration;
+// refresh/audio/bitplane/sprite/disk (always plain reads except disk, no
+// configuration to summarize) just get the channel and memory address.
+// DMARECORD_CONFLICT is intentionally unhandled — see the DMARECORD_REFRESH
+// comment below for why.
 //
 // All lookups read the *last completed frame* live (not the separate
 // wasm_dma_get_grid_ptr/size grid, which is profiler-only — it's only
@@ -593,6 +596,14 @@ function renderTooltipContent(tooltip: HTMLDivElement, info: DmaHoverInfo): void
   } else if (info.kind === "cpu") {
     const [main, data] = buildCpuLines(info);
     tooltip.replaceChildren(main, data);
+    if (info.isCode) {
+      const location = symbolCache.get(info.address)?.location;
+      if (location) {
+        const line = document.createElement("div");
+        line.textContent = `${location.path}:${location.line}`;
+        tooltip.appendChild(line);
+      }
+    }
   } else {
     tooltip.replaceChildren(buildBlitterLine(info));
     if (info.mode) {
@@ -616,8 +627,9 @@ function renderTooltipContent(tooltip: HTMLDivElement, info: DmaHoverInfo): void
 // channel is enabled) but `isActive` gates the whole tooltip for simplicity.
 // `vscodeApi` (acquireVsCodeApi(), undefined outside the real VS Code
 // webview e.g. debug.html) enables the source-location lookup and
-// click-to-open for copper; without it the tooltip still shows the
-// disassembly, just with no source line.
+// click-to-open for copper and CPU instruction-fetch cells; without it the
+// tooltip still shows the disassembly/access info, just with no source
+// line.
 export function installDmaHoverTooltip(
   canvas: HTMLCanvasElement,
   M: PuaeModule,
@@ -731,7 +743,10 @@ export function installDmaHoverTooltip(
   // would-be pointer-lock request on the same click — opening a source file
   // shouldn't also grab the mouse into the canvas.
   canvas.addEventListener("click", (event) => {
-    if (!vscodeApi || !current || current.info.kind !== "copper") return;
+    if (!vscodeApi || !current) return;
+    const isCopper = current.info.kind === "copper";
+    const isCpuCode = current.info.kind === "cpu" && current.info.isCode;
+    if (!isCopper && !isCpuCode) return;
     const location = symbolCache.get(current.info.address)?.location;
     if (location) {
       event.stopImmediatePropagation();
