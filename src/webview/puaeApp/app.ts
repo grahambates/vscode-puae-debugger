@@ -5,7 +5,7 @@
 // #status is optional (used for boot/fps diagnostics if present).
 
 import { setupRpcDispatcher, getCurrentStopMessage, tryExec, getCurrentProcess, isExecReady } from "./rpc";
-import { installCopperHoverTooltip, handleCopperHoverMessage } from "./copperHover";
+import { installDmaHoverTooltip, handleDmaHoverMessage } from "./dmaHover";
 import { installMouseCapture } from "./mouseCapture";
 import type { PuaeModule } from "./types";
 
@@ -346,11 +346,11 @@ export async function main(config: MainConfig = {}): Promise<void> {
     vscode = acquireVsCodeApi();
     rpc = setupRpcDispatcher(M, (msg) => vscode!.postMessage(msg));
     window.addEventListener("message", (event) => rpc!.handleMessage(event.data));
-    // Handles symbolizeAddress replies for the copper hover tooltip's
-    // source-location lookup (see installCopperHoverTooltip below) — a
+    // Handles symbolizeAddress replies for the DMA hover tooltip's
+    // source-location lookup (see installDmaHoverTooltip below) — a
     // separate listener since these aren't {command,args}-shaped RPC
     // messages, just ignored by rpc.handleMessage.
-    window.addEventListener("message", (event) => handleCopperHoverMessage(event.data));
+    window.addEventListener("message", (event) => handleDmaHoverMessage(event.data));
     // Tells PuaeEmulator the wasm module is ready, so it can fetch and cache
     // getMemoryInfo() — mirrors VAmiga's webview-ready handshake.
     vscode.postMessage({ type: "exec-ready" });
@@ -503,6 +503,13 @@ export async function main(config: MainConfig = {}): Promise<void> {
   // enabled whenever at least one channel is active, and disabled when all
   // are off. All wired directly to the WASM overlay functions (no RPC
   // round-trip needed).
+  //
+  // No "Conflict" (DMARECORD_CONFLICT=9) entry: verified unreachable in
+  // practice — every known hardware DMA-priority quirk this emulator models
+  // computes its merged result and logs it as an ordinary BITPLANE/REFRESH
+  // record instead of ever triggering the generic conflict-detection path
+  // (see dmaHover.ts's DMARECORD_REFRESH comment). The toggle never
+  // highlighted anything.
   const DMA_CHANNELS = [
     { type: 1, label: "Refresh", abbr: "REF", color: "#444444" },
     { type: 2, label: "CPU", abbr: "CPU", color: "#a25342" },
@@ -512,16 +519,26 @@ export async function main(config: MainConfig = {}): Promise<void> {
     { type: 6, label: "Bitplane", abbr: "BPL", color: "#0000ff" },
     { type: 7, label: "Sprite", abbr: "SPR", color: "#ff00ff" },
     { type: 8, label: "Disk", abbr: "DSK", color: "#ffffff" },
-    { type: 9, label: "Conflict", abbr: "CON", color: "#ffb840" },
   ];
   // DMARECORD_COPPER (puae-wasm/libretro-uae/sources/src/include/debug.h).
   const DMARECORD_COPPER = 3;
 
-  // Whether the COPPER channel toggle is currently on — gates the hover
-  // tooltip (see installCopperHoverTooltip below) so it only does lookups
-  // while the wasm side is actually tracking copper instructions
-  // (wasm_copper_tracking_enable, toggled alongside this channel).
+  // Whether the COPPER channel toggle is currently on — gates
+  // wasm_copper_tracking_enable so cop_record[] (needed for the copper
+  // hover tooltip's instruction lookup) is only populated while it's
+  // actually wanted.
   let copperChannelActive = false;
+  // Whether any DMA overlay channel is on — gates the hover tooltip itself
+  // (see installDmaHoverTooltip below): copper hovers additionally need
+  // copperChannelActive, but other channels' (e.g. blitter) per-cycle info
+  // only needs debug_dma, already on whenever any channel is enabled.
+  let dmaOverlayActive = false;
+  // DMARECORD_* types (DMA_CHANNELS' `type` values match these 1:1) whose
+  // overlay toggle is currently on — the hover tooltip must only show info
+  // for cells the overlay is actually drawing, not every DMA cycle that
+  // happens to be recorded (debug_dma records every channel regardless of
+  // which ones are toggled for the visual overlay).
+  const enabledChannelTypes = new Set<number>();
 
   const dmaOverlayPanel = document.getElementById("dma-overlay");
   if (dmaOverlayPanel) {
@@ -542,17 +559,33 @@ export async function main(config: MainConfig = {}): Promise<void> {
     allBtn.title = "Toggle all DMA channels";
     grid.appendChild(allBtn);
 
+    // wasm_dma_overlay_set_channel/enable/set_opacity only flip C-side
+    // state — the actual RGBA recompositing normally only happens inside
+    // shim_video_refresh, which needs a real wasm_tick() to run. While
+    // paused, no ticks happen, so without this the overlay wouldn't visibly
+    // update until the next step/resume. wasm_redraw_frame() re-applies the
+    // current settings to the already-rendered frame and bumps the frame
+    // counter, which frame()'s existing "redraw if framebuffer changed while
+    // paused" path (below) then picks up on its next scheduled callback.
+    function redrawOverlayIfPaused(): void {
+      if (M._wasm_is_paused()) M._wasm_redraw_frame();
+    }
+
     function setChannel(idx: number, active: boolean): void {
       const ch = DMA_CHANNELS[idx];
       channelBtns[idx].classList.toggle("active", active);
       M._wasm_dma_overlay_set_channel(ch.type, active ? 1 : 0);
+      if (active) enabledChannelTypes.add(ch.type);
+      else enabledChannelTypes.delete(ch.type);
       if (ch.type === DMARECORD_COPPER) {
         copperChannelActive = active;
         M._wasm_copper_tracking_enable(active ? 1 : 0);
       }
       const anyActive = channelBtns.some(b => b.classList.contains("active"));
+      dmaOverlayActive = anyActive;
       M._wasm_dma_overlay_enable(anyActive ? 1 : 0);
       dmaOverlayPanel!.classList.toggle("disabled", !anyActive);
+      redrawOverlayIfPaused();
     }
 
     function syncAllBtn(): void {
@@ -598,17 +631,21 @@ export async function main(config: MainConfig = {}): Promise<void> {
     opacitySlider.value = "128";
     opacitySlider.addEventListener("input", () => {
       M._wasm_dma_overlay_set_opacity(parseInt(opacitySlider.value, 10));
+      redrawOverlayIfPaused();
     });
     opacityRow.appendChild(opacityLbl);
     opacityRow.appendChild(opacitySlider);
     dmaOverlayPanel.appendChild(opacityRow);
   }
 
-  // Copper DMA overlay hover tooltip: shows the disassembled copper
-  // instruction under the cursor while the COPPER channel toggle is active.
-  // Passing `vscode` (undefined outside the real webview, e.g. debug.html)
-  // enables the source-location lookup and click-to-open.
-  installCopperHoverTooltip(canvas, M, () => copperChannelActive, vscode);
+  // DMA overlay hover tooltip: shows brief info (disassembly for copper,
+  // channel/data for blitter) under the cursor while any DMA channel is
+  // active, restricted to cells whose channel is actually toggled on (see
+  // enabledChannelTypes — debug_dma records every channel regardless of
+  // which ones the overlay is drawing). Passing `vscode` (undefined outside
+  // the real webview, e.g. debug.html) enables copper's source-location
+  // lookup and click-to-open.
+  installDmaHoverTooltip(canvas, M, () => dmaOverlayActive, (type) => enabledChannelTypes.has(type), vscode);
 
   // Mouse capture (pointer lock) for the emulated Amiga mouse: left click
   // captures, middle click releases. Installed after the tooltip above so

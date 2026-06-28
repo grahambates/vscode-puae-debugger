@@ -41,6 +41,7 @@
 #include "newcpu.h"
 #include "debug.h"
 #include "drawing.h"
+#include "xwin.h"
 
 #define E9K_DEBUG_CALLSTACK_MAX 256
 #define E9K_DEBUG_BREAKPOINT_MAX 4096
@@ -578,15 +579,51 @@ wasm_dma_get_grid_ptr(void) { return g_dmaGrid; }
 E9K_DEBUG_EXPORT uint32_t
 wasm_dma_get_grid_size(void) { return g_dmaGridSize; }
 
-// Live single-cell query (last completed frame), for the copper-overlay
-// hover tooltip (copperHover.ts) — cheap enough to call on every mousemove,
-// unlike wasm_dma_serialize_grid's full-grid repack (which is also only
-// populated on-demand for the profiler, not continuously).
+// Live single-cell query (last completed frame), for the DMA-overlay hover
+// tooltip (dmaHover.ts) — cheap enough to call on every mousemove, unlike
+// wasm_dma_serialize_grid's full-grid repack (which is also only populated
+// on-demand for the profiler, not continuously).
 E9K_DEBUG_EXPORT int
 wasm_dma_get_cell_type(int hpos, int vpos) { return e9k_dma_get_cell_type(hpos, vpos); }
 
 E9K_DEBUG_EXPORT uint32_t
 wasm_dma_get_cell_addr(int hpos, int vpos) { return e9k_dma_get_cell_addr(hpos, vpos); }
+
+E9K_DEBUG_EXPORT uint32_t
+wasm_dma_get_cell_data(int hpos, int vpos) { return e9k_dma_get_cell_data(hpos, vpos); }
+
+E9K_DEBUG_EXPORT int
+wasm_dma_get_cell_extra(int hpos, int vpos) { return e9k_dma_get_cell_extra(hpos, vpos); }
+
+E9K_DEBUG_EXPORT int
+wasm_dma_get_cell_reg(int hpos, int vpos) { return e9k_dma_get_cell_reg(hpos, vpos); }
+
+// e9k: temporary diagnostic for the overlay-toggle skew/blank-frame bug —
+// exposes PUAE's *actual* allocated render buffer (gfxvidinfo->drawbuffer,
+// xwin.h) so frontend_shim.c can compare its real rowbytes/width_allocated/
+// bufmem against what video_cb() reports, instead of inferring it
+// indirectly. Not a wasm export (no E9K_DEBUG_EXPORT) — called directly
+// from frontend_shim.c, which can't include xwin.h itself (it needs
+// STATIC_INLINE/MAX_AMIGADISPLAYS etc. from sysconfig.h/uae.h that this
+// minimal libretro shim deliberately doesn't pull in). Remove once the
+// real cause of the skew/blank-frame bug is found.
+// xwin.h forward-declares/defines the type but the global itself is
+// declared in libretro/libretro-glue.h (not on this file's include path,
+// and defined there as `gfxvidinfo = &adisplays[0].gfxvidinfo`) — redeclare
+// it directly rather than pull that whole header in.
+extern struct vidbuf_description *gfxvidinfo;
+
+void e9k_get_drawbuffer_diag(int *rowbytes, int *width_allocated, int *height_allocated,
+    int *pixbytes, const void **bufmem, const void **realbufmem)
+{
+	struct vidbuffer *db = &gfxvidinfo->drawbuffer;
+	*rowbytes = db->rowbytes;
+	*width_allocated = db->width_allocated;
+	*height_allocated = db->height_allocated;
+	*pixbytes = db->pixbytes;
+	*bufmem = db->bufmem;
+	*realbufmem = db->realbufmem;
+}
 
 // ---- Copper instruction trace (live tooltip) ----
 // Populated by record_copper() (debug.c) while debug_copper is enabled —
@@ -618,6 +655,28 @@ wasm_copper_get_records_ptr(void)
 
 E9K_DEBUG_EXPORT uint32_t
 wasm_copper_get_records_size(void) { return g_copperRecordsSize; }
+
+// ---- Register-write log (blitter-overview hover tooltip) ----
+// Populated whenever debug_dma is on (no separate toggle — see
+// record_reg_write in debug.c) — dmaHover.ts backward-scans this for the
+// last write to BLTCON0/1/BLTSIZE/pointers/modulos at-or-before the hovered
+// DMA cycle, instead of reading the live (possibly-newer-blit) custom
+// register shadow. (256 baseline + 20000) * 8 bytes = ~158KB.
+extern uint32_t e9k_regwrite_serialize(uint8_t *out);
+#define E9K_REGWRITE_RECORD_BYTES 8
+#define E9K_REGWRITE_MAX_RECORDS (256 + 20000)
+static uint8_t g_regwriteRecords[E9K_REGWRITE_MAX_RECORDS * E9K_REGWRITE_RECORD_BYTES];
+static uint32_t g_regwriteRecordsSize;
+
+E9K_DEBUG_EXPORT const uint8_t *
+wasm_regwrite_get_records_ptr(void)
+{
+	g_regwriteRecordsSize = e9k_regwrite_serialize(g_regwriteRecords);
+	return g_regwriteRecords;
+}
+
+E9K_DEBUG_EXPORT uint32_t
+wasm_regwrite_get_records_size(void) { return g_regwriteRecordsSize; }
 
 // Chip and slow RAM wasm-heap pointers for the profiler memory-reconstruction snapshot.
 E9K_DEBUG_EXPORT uint32_t

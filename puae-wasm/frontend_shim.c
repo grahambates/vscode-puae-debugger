@@ -21,6 +21,19 @@
 #include "e9k_protect.h"
 #include "e9k_memprotect.h"
 
+// e9k: read-only access to PUAE's *actual* allocated render buffer
+// (gfxvidinfo->drawbuffer) — its rowbytes/width_allocated/height_allocated
+// are the source of truth used in shim_video_refresh() below, since
+// video_cb()'s own width/height/pitch parameters can run ahead of the real
+// buffer's size (see comment there). Can't include xwin.h directly here —
+// it needs STATIC_INLINE/MAX_AMIGADISPLAYS etc. from sysconfig.h/uae.h,
+// which this minimal libretro shim deliberately doesn't pull in — so the
+// actual struct access lives in ami_debug.c (e9k_get_drawbuffer_diag),
+// which already has that full include context for the rest of the e9k
+// debug module; we just call it as a plain function.
+extern void e9k_get_drawbuffer_diag(int *rowbytes, int *width_allocated, int *height_allocated,
+    int *pixbytes, const void **bufmem, const void **realbufmem);
+
 // Defined in ami9000's libretro-core.c; set to true by e9k_debug_requestBreak()
 // when a breakpoint fires, causing retro_run() to return early.
 extern bool libretro_frame_end;
@@ -65,75 +78,139 @@ extern int  g_dmaOverlayEnabled;
 extern int  g_dmaOverlayOpacity;
 extern void e9k_dma_draw_overlay(uint8_t *rgba, int width, int height, int opacity);
 
+// Converts the last-received core framebuffer (g_fb_data/g_fb_width/
+// g_fb_height/g_fb_pitch) to RGBA8888 and, if enabled, composites the DMA
+// overlay on top, writing into g_rgba_buf. Shared by shim_video_refresh
+// (after a real tick produces a new frame) and wasm_redraw_frame (re-runs
+// this against the *same* cached frame without ticking — used when overlay
+// channels/opacity are toggled while paused, where no new tick happens to
+// otherwise trigger a redraw).
+static void convert_and_overlay_frame(void) {
+    if (!g_fb_data) return;
+    const uint8_t *src_row = (const uint8_t *)g_fb_data;
+    uint8_t *dst = g_rgba_buf;
+    unsigned safe_w = g_fb_width  < MAX_FB_WIDTH  ? g_fb_width  : MAX_FB_WIDTH;
+    unsigned safe_h = g_fb_height < MAX_FB_HEIGHT ? g_fb_height : MAX_FB_HEIGHT;
+    size_t pitch = g_fb_pitch;
+
+    // Convert whatever pixel format the core chose → RGBA8888 for putImageData().
+    if (g_pixel_format == RETRO_PIXEL_FORMAT_XRGB8888) {
+        // 32 bpp: 0x00RRGGBB (X byte ignored)
+        for (unsigned y = 0; y < safe_h; y++) {
+            const uint32_t *row32 = (const uint32_t *)src_row;
+            for (unsigned x = 0; x < safe_w; x++) {
+                uint32_t px = row32[x];
+                *dst++ = (px >> 16) & 0xFF; // R
+                *dst++ = (px >>  8) & 0xFF; // G
+                *dst++ =  px        & 0xFF; // B
+                *dst++ = 255;
+            }
+            src_row += pitch;
+        }
+    } else if (g_pixel_format == RETRO_PIXEL_FORMAT_RGB565) {
+        // 16 bpp: RRRRR GGGGGG BBBBB
+        for (unsigned y = 0; y < safe_h; y++) {
+            const uint16_t *row16 = (const uint16_t *)src_row;
+            for (unsigned x = 0; x < safe_w; x++) {
+                uint16_t px = row16[x];
+                uint8_t r5 = (px >> 11) & 0x1F;
+                uint8_t g6 = (px >>  5) & 0x3F;
+                uint8_t b5 =  px        & 0x1F;
+                *dst++ = (r5 << 3) | (r5 >> 2); // 5→8 bit
+                *dst++ = (g6 << 2) | (g6 >> 4); // 6→8 bit
+                *dst++ = (b5 << 3) | (b5 >> 2); // 5→8 bit
+                *dst++ = 255;
+            }
+            src_row += pitch;
+        }
+    } else {
+        // 0RGB1555 fallback: shouldn't be used but handle it
+        for (unsigned y = 0; y < safe_h; y++) {
+            const uint16_t *row16 = (const uint16_t *)src_row;
+            for (unsigned x = 0; x < safe_w; x++) {
+                uint16_t px = row16[x];
+                uint8_t r5 = (px >> 10) & 0x1F;
+                uint8_t g5 = (px >>  5) & 0x1F;
+                uint8_t b5 =  px        & 0x1F;
+                *dst++ = (r5 << 3) | (r5 >> 2);
+                *dst++ = (g5 << 3) | (g5 >> 2);
+                *dst++ = (b5 << 3) | (b5 >> 2);
+                *dst++ = 255;
+            }
+            src_row += pitch;
+        }
+    }
+
+    if (g_dmaOverlayEnabled)
+        e9k_dma_draw_overlay(g_rgba_buf, (int)safe_w, (int)safe_h, g_dmaOverlayOpacity);
+}
+
+// Re-applies the current DMA overlay settings to the last-received frame
+// without ticking — call after changing overlay channels/opacity while
+// paused (wasm_dma_overlay_set_channel/set_opacity only flip C-side state;
+// the actual recompositing normally only happens inside shim_video_refresh,
+// which needs a real wasm_tick() to run). Bumping g_frame_count makes the
+// existing "framebuffer changed while paused" redraw path in app.ts's
+// frame() (already used for stepBack/continueReverse's replay landing) pick
+// this up on its next scheduled callback.
+EMSCRIPTEN_KEEPALIVE
+void wasm_redraw_frame(void) {
+    convert_and_overlay_frame();
+    g_frame_count++;
+}
+
 static void shim_video_refresh(const void *data, unsigned width, unsigned height, size_t pitch) {
     if (puae_debug_is_replaying() && !puae_debug_is_replay_video_enabled()) {
         // Suppress frame-count/pixel-buffer/profiler updates during replay —
         // this frame doesn't correspond to real elapsed wall-clock time.
         return;
     }
+
+    // libretro-core.c's retro_run() can pass data=NULL (its `old_frame`
+    // counter, e.g. for PAL/NTSC region changes) for a "settling" frame.
+    // Skip entirely rather than updating dimensions with no matching pixel
+    // data.
+    if (!data) {
+        return;
+    }
+
+    // Confirmed by direct instrumentation (comparing `data` against
+    // gfxvidinfo->drawbuffer.bufmem/rowbytes/width_allocated): `width`/
+    // `height`/`pitch` here are *retro_set_geometry()'s reported* values
+    // (e.g. wasm_dma_overlay_enable switching defaultw/defaulth to the
+    // 912x626 raw raster), which update independently of — and can run
+    // ahead of — the *actual* allocated render buffer's size. The real
+    // reallocation only happens in PUAE's check_prefs_changed_gfx(),
+    // called once per frame from vsync_handle_check() (drawing.c) — i.e.
+    // only when a real vsync is actually crossed. Single-instruction
+    // stepping never crosses one, so `data` can keep reporting a
+    // *reported* width/pitch that doesn't match its *real* allocated
+    // stride indefinitely (not just for one transitional frame) — reading
+    // it at the reported pitch/width walks past real row boundaries
+    // (shearing) and eventually past the buffer's true allocated end
+    // (garbage/blank). Fix: trust the buffer's actual allocated shape
+    // (width_allocated/height_allocated/rowbytes), not video_cb's
+    // parameters, for both the conversion and what's reported to JS —
+    // these always describe what's actually safe to read from `data`,
+    // regardless of whether retro_set_geometry's reported size has caught
+    // up yet.
+    int db_rowbytes = 0, db_width_allocated = 0, db_height_allocated = 0, db_pixbytes = 0;
+    const void *db_bufmem = NULL, *db_realbufmem = NULL;
+    e9k_get_drawbuffer_diag(&db_rowbytes, &db_width_allocated, &db_height_allocated,
+        &db_pixbytes, &db_bufmem, &db_realbufmem);
+    if (db_width_allocated > 0 && db_height_allocated > 0 && db_rowbytes > 0) {
+        width = (unsigned)db_width_allocated;
+        height = (unsigned)db_height_allocated;
+        pitch = (size_t)db_rowbytes;
+    }
+
     g_fb_data = data;
     g_fb_width = width;
     g_fb_height = height;
     g_fb_pitch = pitch;
     g_frame_count++;
 
-    // Convert whatever pixel format the core chose → RGBA8888 for putImageData().
-    if (data) {
-        const uint8_t *src_row = (const uint8_t *)data;
-        uint8_t *dst = g_rgba_buf;
-        unsigned safe_w = width  < MAX_FB_WIDTH  ? width  : MAX_FB_WIDTH;
-        unsigned safe_h = height < MAX_FB_HEIGHT ? height : MAX_FB_HEIGHT;
-
-        if (g_pixel_format == RETRO_PIXEL_FORMAT_XRGB8888) {
-            // 32 bpp: 0x00RRGGBB (X byte ignored)
-            for (unsigned y = 0; y < safe_h; y++) {
-                const uint32_t *row32 = (const uint32_t *)src_row;
-                for (unsigned x = 0; x < safe_w; x++) {
-                    uint32_t px = row32[x];
-                    *dst++ = (px >> 16) & 0xFF; // R
-                    *dst++ = (px >>  8) & 0xFF; // G
-                    *dst++ =  px        & 0xFF; // B
-                    *dst++ = 255;
-                }
-                src_row += pitch;
-            }
-        } else if (g_pixel_format == RETRO_PIXEL_FORMAT_RGB565) {
-            // 16 bpp: RRRRR GGGGGG BBBBB
-            for (unsigned y = 0; y < safe_h; y++) {
-                const uint16_t *row16 = (const uint16_t *)src_row;
-                for (unsigned x = 0; x < safe_w; x++) {
-                    uint16_t px = row16[x];
-                    uint8_t r5 = (px >> 11) & 0x1F;
-                    uint8_t g6 = (px >>  5) & 0x3F;
-                    uint8_t b5 =  px        & 0x1F;
-                    *dst++ = (r5 << 3) | (r5 >> 2); // 5→8 bit
-                    *dst++ = (g6 << 2) | (g6 >> 4); // 6→8 bit
-                    *dst++ = (b5 << 3) | (b5 >> 2); // 5→8 bit
-                    *dst++ = 255;
-                }
-                src_row += pitch;
-            }
-        } else {
-            // 0RGB1555 fallback: shouldn't be used but handle it
-            for (unsigned y = 0; y < safe_h; y++) {
-                const uint16_t *row16 = (const uint16_t *)src_row;
-                for (unsigned x = 0; x < safe_w; x++) {
-                    uint16_t px = row16[x];
-                    uint8_t r5 = (px >> 10) & 0x1F;
-                    uint8_t g5 = (px >>  5) & 0x1F;
-                    uint8_t b5 =  px        & 0x1F;
-                    *dst++ = (r5 << 3) | (r5 >> 2);
-                    *dst++ = (g5 << 3) | (g5 >> 2);
-                    *dst++ = (b5 << 3) | (b5 >> 2);
-                    *dst++ = 255;
-                }
-                src_row += pitch;
-            }
-        }
-
-        if (g_dmaOverlayEnabled)
-            e9k_dma_draw_overlay(g_rgba_buf, (int)safe_w, (int)safe_h, g_dmaOverlayOpacity);
-    }
+    convert_and_overlay_frame();
 
     if (puae_debug_is_replaying()) {
         // Pixel buffer refreshed above (puae_debug_replay_instructions_video),
