@@ -6,6 +6,7 @@
 
 import { setupRpcDispatcher, getCurrentStopMessage, tryExec, getCurrentProcess, isExecReady } from "./rpc";
 import { installCopperHoverTooltip, handleCopperHoverMessage } from "./copperHover";
+import { installMouseCapture } from "./mouseCapture";
 import type { PuaeModule } from "./types";
 
 // The Amiga's PAL frame rate — both the render loop's due-frames accounting
@@ -608,6 +609,12 @@ export async function main(config: MainConfig = {}): Promise<void> {
   // Passing `vscode` (undefined outside the real webview, e.g. debug.html)
   // enables the source-location lookup and click-to-open.
   installCopperHoverTooltip(canvas, M, () => copperChannelActive, vscode);
+
+  // Mouse capture (pointer lock) for the emulated Amiga mouse: left click
+  // captures, middle click releases. Installed after the tooltip above so
+  // its click listener runs second — the tooltip suppresses this one (via
+  // stopImmediatePropagation) when a click instead opens a source file.
+  installMouseCapture(canvas, M);
 
   // Channel visibility panel (#channel-visibility, optional).
   // Numbered toggle squares to disable individual bitplanes, sprites, and

@@ -328,10 +328,15 @@ export function installCopperHoverTooltip(
 
   canvas.addEventListener("mouseleave", hide);
 
-  canvas.addEventListener("click", () => {
+  // Registered before installMouseCapture's click listener (app.ts installs
+  // that after this), so stopImmediatePropagation here suppresses a
+  // would-be pointer-lock request on the same click — opening a source file
+  // shouldn't also grab the mouse into the canvas.
+  canvas.addEventListener("click", (event) => {
     if (!vscodeApi || !current) return;
     const location = symbolCache.get(current.info.address);
     if (location) {
+      event.stopImmediatePropagation();
       vscodeApi.postMessage({ type: "openSource", path: location.path, line: location.line });
     }
   });

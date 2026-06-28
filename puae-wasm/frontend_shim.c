@@ -179,10 +179,47 @@ static void shim_audio_sample(int16_t left, int16_t right) {
     g_audio_frames_total++;
 }
 
+// --- Mouse input ---
+// JS (app.ts's setupMouse, mirroring vamiga_app.js's pointer-lock handling)
+// accumulates relative movement and button state here; shim_input_state
+// answers libretro-mapper.c's RETRO_DEVICE_MOUSE polling for port 0 (gated
+// on opt_physicalmouse, default-enabled in libretro-core.c), which forwards
+// into UAE's mouse emulation via retro_mouse()/retro_mouse_button()
+// (libretro-glue.c) — no .uae joyport config needed, those hardwire the
+// Amiga port directly. X/Y deltas are consumed (reset to 0) once read,
+// since RETRO_DEVICE_ID_MOUSE_X/_Y are relative-per-poll values.
+static int16_t g_mouseDx = 0, g_mouseDy = 0;
+static bool g_mouseLeft = false, g_mouseRight = false, g_mouseMiddle = false;
+
+EMSCRIPTEN_KEEPALIVE
+void wasm_set_mouse_delta(int dx, int dy) {
+    g_mouseDx += (int16_t)dx;
+    g_mouseDy += (int16_t)dy;
+}
+
+// `button` matches DOM MouseEvent.button: 0=left, 1=middle, 2=right.
+EMSCRIPTEN_KEEPALIVE
+void wasm_set_mouse_button(int button, int pressed) {
+    bool down = pressed != 0;
+    switch (button) {
+        case 0: g_mouseLeft = down; break;
+        case 1: g_mouseMiddle = down; break;
+        case 2: g_mouseRight = down; break;
+    }
+}
+
 static void shim_input_poll(void) {}
 
 static int16_t shim_input_state(unsigned port, unsigned device, unsigned index, unsigned id) {
-    return 0;
+    if (port != 0 || device != RETRO_DEVICE_MOUSE) return 0;
+    switch (id) {
+        case RETRO_DEVICE_ID_MOUSE_X: { int16_t v = g_mouseDx; g_mouseDx = 0; return v; }
+        case RETRO_DEVICE_ID_MOUSE_Y: { int16_t v = g_mouseDy; g_mouseDy = 0; return v; }
+        case RETRO_DEVICE_ID_MOUSE_LEFT:   return g_mouseLeft ? 1 : 0;
+        case RETRO_DEVICE_ID_MOUSE_RIGHT:  return g_mouseRight ? 1 : 0;
+        case RETRO_DEVICE_ID_MOUSE_MIDDLE: return g_mouseMiddle ? 1 : 0;
+        default: return 0;
+    }
 }
 
 static void shim_log(enum retro_log_level level, const char *fmt, ...) {
