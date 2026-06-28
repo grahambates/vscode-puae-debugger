@@ -58,46 +58,24 @@ export function disassembleCopperInstruction(
 
   // WAIT or SKIP instruction (bit 0 = 1)
   const isSkip = (word2 & 0x0001) === 1;
+  base.mnemonic = isSkip ? 'SKIP' : 'WAIT';
 
-  if (isSkip) {
-    // SKIP instruction
-    const vp = (word1 >> 8) & 0xFF; // Vertical position
-    const hp = word1 & 0xFE;        // Horizontal position
-    const veMask = (word2 >> 8) & 0x7F; // Vertical enable mask
-    const heMask = word2 & 0xFE;        // Horizontal enable mask
-    const bfd = (word2 >> 15) & 0x01;   // Blitter finished disable
-
-    base.mnemonic = 'SKIP';
-    base.operands = `${vp},${hp}`;
-
-    if (veMask !== 0x7F || heMask !== 0xFE) {
-      base.comment = `VE=$${veMask.toString(16).toUpperCase()}, HE=$${heMask.toString(16).toUpperCase()}`;
-    }
-    if (!bfd) {
-      base.comment = (base.comment ? base.comment + ', ' : '') + 'Wait blitter';
-    }
-
-    return base;
-  }
-
-  // WAIT instruction
   const vp = (word1 >> 8) & 0xFF; // Vertical position
   const hp = word1 & 0xFE;        // Horizontal position
   const veMask = (word2 >> 8) & 0x7F; // Vertical enable mask
   const heMask = word2 & 0xFE;        // Horizontal enable mask
   const bfd = (word2 >> 15) & 0x01;   // Blitter finished disable
+  const hasMask = veMask !== 0x7F || heMask !== 0xFE;
 
-  // Check for common wait patterns
-  if (vp === 0xFF && hp === 0xFE && veMask === 0x7F && heMask === 0xFE) {
-    base.mnemonic = 'WAIT';
+  // Check for end copper wait
+  if (!isSkip && vp === 0xFF && hp === 0xFE && veMask === 0x7F && heMask === 0xFE) {
     base.operands = 'end';
     return base;
   }
 
-  base.mnemonic = 'WAIT';
   base.operands = `${vp},${hp}`;
 
-  if (veMask !== 0x7F || heMask !== 0xFE) {
+  if (hasMask) {
     base.comment = `VE=$${veMask.toString(16).toUpperCase()}, HE=$${heMask.toString(16).toUpperCase()}`;
   }
   if (!bfd) {
