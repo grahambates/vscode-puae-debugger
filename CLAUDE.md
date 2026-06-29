@@ -28,27 +28,35 @@ focus, branch `puae-spike`).
   `out/puaeAudioProcessor.js` / `out/puaeRpc.mjs` (the last one is a
   standalone non-bundled-with-app build, importable directly under plain
   Node — see `puae-wasm/test/*.mjs`).
-- `puae-wasm/` — the C source for the PUAE wasm backend: `ami_debug.c` /
-  `frontend_shim.c` (the "e9k" debug-bridge glue this project adds),
-  `e9k/` (small e9k-specific headers/helpers), `libretro-uae/` (a **git
-  submodule**, patched fork of libretro-uae, branch
-  `vscode_vamiga_debugger`), `build.sh` (builds `puae.js`/`puae.wasm`),
-  `test/*.mjs` (Node-driven integration tests, run by `npm run test:wasm`).
+- `puae-wasm/` — the C source for the PUAE wasm backend: `puae_debug.c`/
+  `puae_debug.h` (the debug-bridge glue this project adds, labeled
+  `puae_debug:` in comments) / `frontend_shim.c` (the minimal libretro
+  frontend driving it from JS), `libretro-uae/` (a **git submodule**,
+  patched fork of libretro-uae, branch `vscode_vamiga_debugger`),
+  `build.sh` (builds `puae.js`/`puae.wasm`, normally invoked via `npm run
+  build:wasm`), `test/*.mjs` (Node-driven integration tests, run by `npm
+  run test:wasm`).
 - `vamigaweb_fork/` — the C++ vAmiga core (a fork, not a submodule — check
   `git log` there before assuming it's pristine upstream vAmiga).
 
 ## Building/rebuilding the PUAE wasm binary
 
 **`puae/puae.js`/`puae/puae.wasm` are prebuilt, checked-in binaries.**
-Any change to `puae-wasm/` C sources (`ami_debug.c`, `frontend_shim.c`,
-`puae-wasm/libretro-uae/**`, `puae-wasm/e9k/**`) requires rebuilding them —
-the source change alone does nothing at runtime until rebuilt.
+Any change to `puae-wasm/` C sources (`puae_debug.c`/`.h`, `frontend_shim.c`,
+`puae-wasm/libretro-uae/**`) requires rebuilding them — the source change
+alone does nothing at runtime until rebuilt.
 
 There is **no Emscripten toolchain on the Windows/PowerShell/Git-Bash side**.
 The toolchain lives in **WSL2** (Ubuntu), with emsdk already installed at
 `~/emsdk` (already activated/built — `~/emsdk/upstream/emscripten/emcc`
-exists). Invoke it from a Windows-side Bash/PowerShell tool via `wsl -e bash
--lc "..."`, e.g.:
+exists).
+
+Run **`npm run build:wasm`** to build — it wraps `scripts/build-wasm.mjs`,
+which on Windows shells out to `wsl -e bash -lc "source ~/emsdk/emsdk_env.sh
+&& cd <repo path translated via wslpath> && bash build.sh"` automatically (on
+non-Windows platforms it just runs `build.sh` directly, assuming emsdk is
+already on `PATH`). Equivalent manual invocation, if you need to tweak
+something the wrapper doesn't expose:
 
 ```bash
 wsl -e bash -lc "source ~/emsdk/emsdk_env.sh > /dev/null 2>&1 && cd /mnt/c/Users/hello/Documents/projects/vscode-vamiga-debugger/puae-wasm && bash build.sh"

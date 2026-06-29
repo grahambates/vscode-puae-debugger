@@ -794,6 +794,7 @@
     "test:unit": "jest",
     "test:wasm": "node puae-wasm/test/test_g1.mjs && node puae-wasm/test/test_g2.mjs && node puae-wasm/test/test_g3.mjs && node puae-wasm/test/test_g4.mjs && node puae-wasm/test/test_g5.mjs && node puae-wasm/test/test_g6.mjs && node puae-wasm/test/test_reset.mjs && node puae-wasm/test/test_reverse.mjs",
     "test:coverage": "jest --coverage",
+    "build:wasm": "node scripts/build-wasm.mjs",
     "format": "prettier --write \"src/**/*.{ts,tsx}\"",
     "format:check": "prettier --check \"src/**/*.{ts,tsx}\"",
     "gen:kickstart-symbols": "node scripts/gen-kickstart-symbols.mjs"
