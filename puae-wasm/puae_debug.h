@@ -112,24 +112,11 @@ typedef struct puae_debug_catchbreak
 } puae_debug_catchbreak_t;
 
 
-#define PUAE_PROTECT_COUNT 64
-#define PUAE_PROTECT_MODE_BLOCK 0u
-#define PUAE_PROTECT_MODE_SET   1u
-
-typedef struct puae_debug_protect
-{
-    uint32_t addr;
-    uint32_t addrMask;
-    uint32_t sizeBits; // protected region size: 8/16/32 (bits)
-    uint32_t mode;     // PUAE_PROTECT_MODE_*
-    uint32_t value;    // set value (masked to sizeBits), ignored for BLOCK
-} puae_debug_protect_t;
-
-
 // Memory protection: breaks on writes outside a dynamic allow-list of
 // ranges (the debugged program's own loaded segments/stack, plus anything
 // it AllocMem's while running), excluding the low-memory exception vector
-// table (always allowed). See puae_memprotect.h.
+// table (always allowed). See the puae_debug_memprotect_* declarations
+// below.
 #define PUAE_MEMPROTECT_RANGE_COUNT 128
 
 typedef struct puae_debug_memprotect_range
@@ -207,8 +194,8 @@ puae_debug_read_memory(uint32_t addr, uint8_t *out, size_t cap);
 int
 puae_debug_write_memory(uint32_t addr, uint32_t value, size_t size);
 
-// Bulk write of an arbitrary-length buffer, watchpoint/protect-suspended
-// like puae_debug_write_memory. Used for loading program data.
+// Bulk write of an arbitrary-length buffer, watchpoint-suspended like
+// puae_debug_write_memory. Used for loading program data.
 size_t
 puae_debug_write_memory_buf(uint32_t addr, const uint8_t *data, size_t len);
 
@@ -223,7 +210,7 @@ size_t
 puae_debug_read_memory_map(uint8_t *out, size_t cap);
 
 // Like read/write_memory, but go through the normal CPU-visible accessors
-// without suspending watchpoint/protect checks (see puae_debug.c for why).
+// without suspending watchpoint checks (see puae_debug.c for why).
 int
 puae_debug_poke_memory(uint32_t addr, uint32_t value, size_t size);
 
@@ -304,13 +291,10 @@ puae_debug_set_hblank_callback(void (*cb)(void *), void *user);
 void
 puae_hsync_notify(void);
 
-// Memory-access hooks called from the chip-RAM bank accessors (see
-// libretro-uae.patch's memory.c changes) to drive watchpoints/protects.
+// Memory-access hooks called from the chip-RAM bank accessors (memory.c/
+// memory.h, custom.c) to drive watchpoints/memprotect.
 void
 puae_debug_memhook_afterRead(uint32_t addr24, uint32_t value, uint32_t sizeBits);
-
-int
-puae_debug_memhook_filterWrite(uint32_t addr24, uint32_t sizeBits, uint32_t oldValue, int oldValueValid, uint32_t *inoutValue);
 
 // `source` is PUAE_MEMPROTECT_SOURCE_CPU/_DMA — which actually
 // performed the write, the 68k CPU or a DMA-driven unit (Blitter, disk
@@ -356,28 +340,6 @@ puae_debug_memprotect_add_range(uint32_t addr, uint32_t size);
 
 int
 puae_debug_memprotect_consume_break(puae_debug_memprotect_break_t *out);
-
-
-
-/* Protect */
-
-void
-puae_debug_reset_protects(void);
-
-int
-puae_debug_add_protect(uint32_t addr, uint32_t size_bits, uint32_t mode, uint32_t value);
-
-void
-puae_debug_remove_protect(uint32_t index);
-
-size_t
-puae_debug_read_protects(puae_debug_protect_t *out, size_t cap);
-
-uint64_t
-puae_debug_get_protect_enabled_mask(void);
-
-void
-puae_debug_set_protect_enabled_mask(uint64_t mask);
 
 
 

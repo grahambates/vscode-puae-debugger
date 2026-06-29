@@ -120,9 +120,6 @@ static int puae_debug_regwatchNeedsRebaseline = 0;
 // chipset registers like DDFSTRT.
 int puae_debug_inspect_active = 0;
 
-static puae_debug_protect_t puae_debug_protects[PUAE_PROTECT_COUNT];
-static uint64_t puae_debug_protectEnabledMask = 0;
-
 // Memory protection: breaks on writes to RAM outside puae_debug_memprotect_ranges
 // (and outside the always-allowed low-memory vector table). Ranges are seeded
 // by the debug adapter with fastLoad's directly-injected program segments/
@@ -1773,8 +1770,6 @@ puae_debug_set_hblank_callback(void (*cb)(void *), void *user)
 PUAE_DEBUG_EXPORT void
 puae_vblank_notify(void)
 {
-	if (puae_debug_protectEnabledMask || puae_debug_watchpointEnabledMask) {
-	}
 	if (puae_debug_profilerEnabled && !puae_debug_paused) {
 		if (puae_debug_prof_tick == puae_debug_prof_lastTickAtFrame) {
 			uaecptr pc = m68k_getpc();
@@ -1882,106 +1877,6 @@ puae_debug_watchpointWrite(uint32_t addr24, uint32_t value, uint32_t oldValue, u
 	}
 }
 
-static int
-puae_debug_protectFilterWrite(uint32_t addr24, uint32_t sizeBits, uint32_t oldValue, int oldValueValid, uint32_t *inoutValue)
-{
-	if (!inoutValue) {
-		return 1;
-	}
-	if (puae_debug_watchpointSuspend > 0) {
-		return 1;
-	}
-	if (puae_debug_protectEnabledMask == 0) {
-		return 1;
-	}
-
-	uint32_t sizeBytes = puae_debug_sizeBytes(sizeBits);
-	if (sizeBytes == 0u) {
-		return 1;
-	}
-
-	uint8_t bytes[4] = {0};
-	uint8_t oldBytes[4] = {0};
-	uint32_t v = puae_debug_maskValue(*inoutValue, sizeBits);
-	uint32_t ov = puae_debug_maskValue(oldValue, sizeBits);
-
-	for (uint32_t i = 0; i < sizeBytes; ++i) {
-		uint32_t shift = (sizeBytes - 1u - i) * 8u;
-		bytes[i] = (uint8_t)((v >> shift) & 0xffu);
-		if (oldValueValid) {
-			oldBytes[i] = (uint8_t)((ov >> shift) & 0xffu);
-		}
-	}
-
-	for (uint32_t entryIndex = 0; entryIndex < PUAE_PROTECT_COUNT; ++entryIndex) {
-		if ((puae_debug_protectEnabledMask & (1ull << entryIndex)) == 0ull) {
-			continue;
-		}
-		const puae_debug_protect_t *p = &puae_debug_protects[entryIndex];
-		if (p->mode != PUAE_PROTECT_MODE_BLOCK) {
-			continue;
-		}
-		uint32_t pSizeBytes = puae_debug_sizeBytes(p->sizeBits);
-		if (pSizeBytes == 0u) {
-			continue;
-		}
-		uint32_t mask = p->addrMask ? p->addrMask : 0x00ffffffu;
-		for (uint32_t writeIndex = 0; writeIndex < sizeBytes; ++writeIndex) {
-			uint32_t writeAddr = (addr24 + writeIndex) & 0x00ffffffu;
-			for (uint32_t byteIndex = 0; byteIndex < pSizeBytes; ++byteIndex) {
-				uint32_t pa = (p->addr + byteIndex) & 0x00ffffffu;
-				if ((writeAddr & mask) == (pa & mask)) {
-					if (oldValueValid) {
-						*inoutValue = ov;
-						return 1;
-					}
-					return 0;
-				}
-			}
-		}
-	}
-
-	for (uint32_t writeIndex = 0; writeIndex < sizeBytes; ++writeIndex) {
-		uint32_t writeAddr = (addr24 + writeIndex) & 0x00ffffffu;
-		for (uint32_t entryIndex = 0; entryIndex < PUAE_PROTECT_COUNT; ++entryIndex) {
-			if ((puae_debug_protectEnabledMask & (1ull << entryIndex)) == 0ull) {
-				continue;
-			}
-			const puae_debug_protect_t *p = &puae_debug_protects[entryIndex];
-			if (p->mode != PUAE_PROTECT_MODE_SET) {
-				continue;
-			}
-			uint32_t pSizeBytes = puae_debug_sizeBytes(p->sizeBits);
-			if (pSizeBytes == 0u) {
-				continue;
-			}
-
-			uint32_t mask = p->addrMask ? p->addrMask : 0x00ffffffu;
-			for (uint32_t byteIndex = 0; byteIndex < pSizeBytes; ++byteIndex) {
-				uint32_t pa = (p->addr + byteIndex) & 0x00ffffffu;
-				if ((writeAddr & mask) != (pa & mask)) {
-					continue;
-				}
-
-				if (p->mode == PUAE_PROTECT_MODE_SET) {
-					uint32_t pshift = (pSizeBytes - 1u - byteIndex) * 8u;
-					bytes[writeIndex] = (uint8_t)((p->value >> pshift) & 0xffu);
-				}
-				goto next_write_byte;
-			}
-		}
-next_write_byte:
-		;
-	}
-
-	uint32_t outValue = 0;
-	for (uint32_t i = 0; i < sizeBytes; ++i) {
-		outValue = (outValue << 8) | (uint32_t)bytes[i];
-	}
-	*inoutValue = outValue;
-	return 1;
-}
-
 static void
 puae_debug_memprotectBreakRequest(uint32_t pc, uint32_t addr24, uint32_t value, uint32_t sizeBits, uint32_t source)
 {
@@ -2081,8 +1976,7 @@ static void
 puae_debug_updateDirectAccessSuppression(void)
 {
 	int suppressed = puae_debug_memprotectEnabled
-		|| puae_debug_watchpointEnabledMask != 0ull
-		|| puae_debug_protectEnabledMask != 0ull;
+		|| puae_debug_watchpointEnabledMask != 0ull;
 	puae_debug_set_direct_access_suppressed(suppressed);
 }
 
@@ -2276,13 +2170,6 @@ puae_debug_memhook_afterRead(uint32_t addr24, uint32_t value, uint32_t sizeBits)
 {
 	addr24 &= 0x00ffffffu;
 	puae_debug_watchpointRead(addr24, value, sizeBits);
-}
-
-PUAE_DEBUG_EXPORT int
-puae_debug_memhook_filterWrite(uint32_t addr24, uint32_t sizeBits, uint32_t oldValue, int oldValueValid, uint32_t *inoutValue)
-{
-	addr24 &= 0x00ffffffu;
-	return puae_debug_protectFilterWrite(addr24, sizeBits, oldValue, oldValueValid, inoutValue);
 }
 
 PUAE_DEBUG_EXPORT void
@@ -2611,105 +2498,6 @@ puae_debug_regwatchCheck(uint32_t pc24)
 	puae_debug_regwatchbreakPending = 1;
 	puae_debug_requestBreak();
 	return 1;
-}
-
-PUAE_DEBUG_EXPORT void
-puae_debug_reset_protects(void)
-{
-	memset(puae_debug_protects, 0, sizeof(puae_debug_protects));
-	puae_debug_protectEnabledMask = 0;
-	puae_debug_updateDirectAccessSuppression();
-}
-
-PUAE_DEBUG_EXPORT int
-puae_debug_add_protect(uint32_t addr, uint32_t size_bits, uint32_t mode, uint32_t value)
-{
-	if (!puae_debug_memhooksEnabled) {
-		return -1;
-	}
-	if (size_bits != 8u && size_bits != 16u && size_bits != 32u) {
-		return -1;
-	}
-	if (mode != PUAE_PROTECT_MODE_BLOCK && mode != PUAE_PROTECT_MODE_SET) {
-		return -1;
-	}
-
-	uint32_t addr24 = addr & 0x00ffffffu;
-	uint32_t addrMask = 0x00ffffffu;
-	uint32_t maskedValue = puae_debug_maskValue(value, size_bits);
-
-	for (uint32_t i = 0; i < PUAE_PROTECT_COUNT; ++i) {
-		if ((puae_debug_protectEnabledMask & (1ull << i)) == 0ull) {
-			continue;
-		}
-		const puae_debug_protect_t *p = &puae_debug_protects[i];
-		if (p->addr == addr24 &&
-		    p->addrMask == addrMask &&
-		    p->sizeBits == size_bits &&
-		    p->mode == mode &&
-		    p->value == maskedValue) {
-			return (int)i;
-		}
-	}
-
-	for (uint32_t i = 0; i < PUAE_PROTECT_COUNT; ++i) {
-		if (puae_debug_protects[i].sizeBits != 0u) {
-			continue;
-		}
-		puae_debug_protects[i].addr = addr24;
-		puae_debug_protects[i].addrMask = addrMask;
-		puae_debug_protects[i].sizeBits = size_bits;
-		puae_debug_protects[i].mode = mode;
-		puae_debug_protects[i].value = maskedValue;
-		puae_debug_protectEnabledMask |= (1ull << i);
-		puae_debug_updateDirectAccessSuppression();
-		return (int)i;
-	}
-
-	return -1;
-}
-
-PUAE_DEBUG_EXPORT void
-puae_debug_remove_protect(uint32_t index)
-{
-	if (index >= PUAE_PROTECT_COUNT) {
-		return;
-	}
-	memset(&puae_debug_protects[index], 0, sizeof(puae_debug_protects[index]));
-	puae_debug_protectEnabledMask &= ~(1ull << index);
-	puae_debug_updateDirectAccessSuppression();
-}
-
-PUAE_DEBUG_EXPORT size_t
-puae_debug_read_protects(puae_debug_protect_t *out, size_t cap)
-{
-	if (!out || cap == 0) {
-		return 0;
-	}
-	size_t count = PUAE_PROTECT_COUNT;
-	if (count > cap) {
-		count = cap;
-	}
-	memcpy(out, puae_debug_protects, count * sizeof(out[0]));
-	return count;
-}
-
-PUAE_DEBUG_EXPORT uint64_t
-puae_debug_get_protect_enabled_mask(void)
-{
-	return puae_debug_protectEnabledMask;
-}
-
-PUAE_DEBUG_EXPORT void
-puae_debug_set_protect_enabled_mask(uint64_t mask)
-{
-	if (mask) {
-		if (!puae_debug_memhooksEnabled) {
-			return;
-		}
-	}
-	puae_debug_protectEnabledMask = mask;
-	puae_debug_updateDirectAccessSuppression();
 }
 
 PUAE_DEBUG_EXPORT void

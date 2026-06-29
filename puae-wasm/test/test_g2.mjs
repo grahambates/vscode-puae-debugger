@@ -18,8 +18,6 @@ const PUAE_WATCH_OP_READ = 1 << 0;
 const PUAE_WATCH_OP_WRITE = 1 << 1;
 const PUAE_WATCH_ACCESS_READ = 1;
 const PUAE_WATCH_ACCESS_WRITE = 2;
-const PUAE_PROTECT_MODE_BLOCK = 0;
-const PUAE_PROTECT_MODE_SET = 1;
 
 let failures = 0;
 function check(label, cond, detail) {
@@ -35,13 +33,6 @@ function enabledMask(loFn, hiFn) {
   const lo = loFn() >>> 0;
   const hi = hiFn() >>> 0;
   return (BigInt(hi) << 32n) | BigInt(lo);
-}
-
-function peekByte(addr) {
-  const n = M._wasm_peek_memory(addr >>> 0, 1);
-  const ptr = M._wasm_get_mem_buf();
-  const buf = new Uint8Array(M.HEAPU8.buffer, ptr, n);
-  return buf[0];
 }
 
 function readWatchbreak() {
@@ -99,44 +90,12 @@ if (gotBreak) {
 M._wasm_resume();
 M._wasm_remove_watchpoint(wpReadIndex);
 
-// --- 5. BLOCK protect ---
-const before5 = peekByte(0x20100);
-const prBlockIndex = M._wasm_add_protect(0x20100, 8, PUAE_PROTECT_MODE_BLOCK, 0);
-console.log("add_protect(BLOCK @0x20100) -> index", prBlockIndex);
-check("add BLOCK protect returns valid index", prBlockIndex >= 0);
-
-M._wasm_poke_memory(0x20100, 0xff, 1);
-const after5 = peekByte(0x20100);
-check("BLOCK protect prevents write", after5 === before5, `before=0x${before5.toString(16)} after=0x${after5.toString(16)}`);
-
-// --- 6. SET protect ---
-const prSetIndex = M._wasm_add_protect(0x20200, 8, PUAE_PROTECT_MODE_SET, 0x55);
-console.log("add_protect(SET @0x20200, value=0x55) -> index", prSetIndex);
-check("add SET protect returns valid index", prSetIndex >= 0);
-
-M._wasm_poke_memory(0x20200, 0x12, 1);
-const after6 = peekByte(0x20200);
-check("SET protect forces value to 0x55", after6 === 0x55, "0x" + after6.toString(16));
-
-// --- 7. Remove protects, confirm normal writes work again ---
-M._wasm_remove_protect(prBlockIndex);
-M._wasm_remove_protect(prSetIndex);
-M._wasm_poke_memory(0x20100, 0xaa, 1);
-const after7 = peekByte(0x20100);
-check("write succeeds after removing BLOCK protect", after7 === 0xaa, "0x" + after7.toString(16));
-
-// --- 8. Read watchpoints/protects buffers and sanity-check fields ---
+// --- 5. Read watchpoints buffer and sanity-check fields ---
 const wpCount = M._wasm_read_watchpoints();
 check("read_watchpoints returns PUAE_WATCHPOINT_COUNT", wpCount === 64, String(wpCount));
 M._wasm_read_watchpoint_enabled_mask();
 wpMask = enabledMask(M._wasm_get_watchpoint_enabled_mask_lo, M._wasm_get_watchpoint_enabled_mask_hi);
 check("watchpoint enabled mask is 0 after removals", wpMask === 0n, wpMask.toString(16));
-
-const prCount = M._wasm_read_protects();
-check("read_protects returns PUAE_PROTECT_COUNT", prCount === 64, String(prCount));
-M._wasm_read_protect_enabled_mask();
-const prMask = enabledMask(M._wasm_get_protect_enabled_mask_lo, M._wasm_get_protect_enabled_mask_hi);
-check("protect enabled mask is 0 after removals", prMask === 0n, prMask.toString(16));
 
 console.log("");
 console.log(failures === 0 ? `All checks passed.` : `${failures} check(s) FAILED.`);

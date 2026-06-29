@@ -921,41 +921,6 @@ int wasm_consume_regwatchbreak(void) {
 EMSCRIPTEN_KEEPALIVE
 uint32_t *wasm_get_regwatchbreak_buf(void) { return (uint32_t *)&g_regwatchbreak_buf; }
 
-// --- Memory protects (Stage G2) ---
-// puae_debug_protect_t is 5 x uint32 (addr, addrMask, sizeBits, mode, value).
-static puae_debug_protect_t g_protect_buf[PUAE_PROTECT_COUNT];
-static uint64_t g_protect_enabled_mask;
-
-EMSCRIPTEN_KEEPALIVE
-int wasm_add_protect(uint32_t addr, uint32_t size_bits, uint32_t mode, uint32_t value) {
-    return puae_debug_add_protect(addr, size_bits, mode, value);
-}
-
-EMSCRIPTEN_KEEPALIVE
-void wasm_remove_protect(uint32_t index) { puae_debug_remove_protect(index); }
-
-EMSCRIPTEN_KEEPALIVE
-int wasm_read_protects(void) {
-    return (int)puae_debug_read_protects(g_protect_buf, PUAE_PROTECT_COUNT);
-}
-
-EMSCRIPTEN_KEEPALIVE
-uint32_t *wasm_get_protect_buf(void) { return (uint32_t *)g_protect_buf; }
-
-EMSCRIPTEN_KEEPALIVE
-void wasm_read_protect_enabled_mask(void) { g_protect_enabled_mask = puae_debug_get_protect_enabled_mask(); }
-
-EMSCRIPTEN_KEEPALIVE
-uint32_t wasm_get_protect_enabled_mask_lo(void) { return (uint32_t)(g_protect_enabled_mask & 0xFFFFFFFFu); }
-
-EMSCRIPTEN_KEEPALIVE
-uint32_t wasm_get_protect_enabled_mask_hi(void) { return (uint32_t)(g_protect_enabled_mask >> 32); }
-
-EMSCRIPTEN_KEEPALIVE
-void wasm_set_protect_enabled_mask(uint32_t lo, uint32_t hi) {
-    puae_debug_set_protect_enabled_mask(((uint64_t)hi << 32) | (uint64_t)lo);
-}
-
 // --- Memory protection (breaks on writes outside an allow-list of ranges) ---
 // puae_debug_memprotect_break_t is 4 x uint32 (pc, addr, value, sizeBits).
 static puae_debug_memprotect_break_t g_memprotect_break_buf;
