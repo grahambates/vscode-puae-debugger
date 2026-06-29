@@ -15,32 +15,29 @@
 #include <unistd.h>
 #include <emscripten.h>
 #include "libretro.h"
-#include "e9k_debug.h"
 #include "puae_debug.h"
-#include "e9k_watchpoint.h"
-#include "e9k_protect.h"
-#include "e9k_memprotect.h"
+#include "puae_debug.h"
 
-// e9k: read-only access to PUAE's *actual* allocated render buffer
+// Read-only access to PUAE's *actual* allocated render buffer
 // (gfxvidinfo->drawbuffer) — its rowbytes/width_allocated/height_allocated
 // are the source of truth used in shim_video_refresh() below, since
 // video_cb()'s own width/height/pitch parameters can run ahead of the real
 // buffer's size (see comment there). Can't include xwin.h directly here —
 // it needs STATIC_INLINE/MAX_AMIGADISPLAYS etc. from sysconfig.h/uae.h,
 // which this minimal libretro shim deliberately doesn't pull in — so the
-// actual struct access lives in ami_debug.c (e9k_get_drawbuffer_shape),
-// which already has that full include context for the rest of the e9k
+// actual struct access lives in puae_debug.c (puae_get_drawbuffer_shape),
+// which already has that full include context for the rest of the
 // debug module; we just call it as a plain function.
-extern void e9k_get_drawbuffer_shape(int *rowbytes, int *width_allocated, int *height_allocated);
+extern void puae_get_drawbuffer_shape(int *rowbytes, int *width_allocated, int *height_allocated);
 
-// Defined in ami9000's libretro-core.c; set to true by e9k_debug_requestBreak()
+// Defined in ami9000's libretro-core.c; set to true by puae_debug_requestBreak()
 // when a breakpoint fires, causing retro_run() to return early.
 extern bool libretro_frame_end;
 
 // Max PUAE PAL framebuffer: normally 720×574 (PUAE_VIDEO_WIDTH x
 // PUAE_VIDEO_HEIGHT_PAL in libretro-core.h), but retro_set_geometry()
 // reports 912x626 (the true full raw raster) while the DMA overlay is
-// active — see wasm_dma_overlay_enable (ami_debug.c). Size for that case.
+// active — see wasm_dma_overlay_enable (puae_debug.c). Size for that case.
 #define MAX_FB_WIDTH  912
 #define MAX_FB_HEIGHT 626
 #define MAX_FB_PIXELS (MAX_FB_WIDTH * MAX_FB_HEIGHT)
@@ -72,10 +69,10 @@ static int   g_audio_accum_n = 0; // frames accumulated, not yet packed into slo
 // JS reads this via wasm_get_fb_rgba() and feeds it straight into putImageData.
 static uint8_t g_rgba_buf[MAX_FB_PIXELS * 4];
 
-// DMA live overlay — state lives in ami_debug.c, draw function in debug.c.
+// DMA live overlay — state lives in puae_debug.c, draw function in debug.c.
 extern int  g_dmaOverlayEnabled;
 extern int  g_dmaOverlayOpacity;
-extern void e9k_dma_draw_overlay(uint8_t *rgba, int width, int height, int opacity);
+extern void puae_dma_draw_overlay(uint8_t *rgba, int width, int height, int opacity);
 
 // Converts the last-received core framebuffer (g_fb_data/g_fb_width/
 // g_fb_height/g_fb_pitch) to RGBA8888 and, if enabled, composites the DMA
@@ -141,7 +138,7 @@ static void convert_and_overlay_frame(void) {
     }
 
     if (g_dmaOverlayEnabled)
-        e9k_dma_draw_overlay(g_rgba_buf, (int)safe_w, (int)safe_h, g_dmaOverlayOpacity);
+        puae_dma_draw_overlay(g_rgba_buf, (int)safe_w, (int)safe_h, g_dmaOverlayOpacity);
 }
 
 // Re-applies the current DMA overlay settings to the last-received frame
@@ -195,7 +192,7 @@ static void shim_video_refresh(const void *data, unsigned width, unsigned height
     // regardless of whether retro_set_geometry's reported size has caught
     // up yet.
     int db_rowbytes = 0, db_width_allocated = 0, db_height_allocated = 0;
-    e9k_get_drawbuffer_shape(&db_rowbytes, &db_width_allocated, &db_height_allocated);
+    puae_get_drawbuffer_shape(&db_rowbytes, &db_width_allocated, &db_height_allocated);
     if (db_width_allocated > 0 && db_height_allocated > 0 && db_rowbytes > 0) {
         width = (unsigned)db_width_allocated;
         height = (unsigned)db_height_allocated;
@@ -218,9 +215,9 @@ static void shim_video_refresh(const void *data, unsigned width, unsigned height
         return;
     }
 
-    // Drives e9k_debug's per-frame hooks (memhook re-arming, profiler
+    // Drives puae_debug's per-frame hooks (memhook re-arming, profiler
     // sampling, and the one-shot wasm_eof() callback below).
-    e9k_vblank_notify();
+    puae_vblank_notify();
 }
 
 static size_t shim_audio_sample_batch(const int16_t *data, size_t frames) {
@@ -359,7 +356,7 @@ static bool shim_environment(unsigned cmd, void *data) {
                 if (strcmp(var->key, "puae_video_resolution")== 0) { var->value = "hires";        return true; }
                 // "disabled": the standard 720x574 PAL-with-padding view
                 // (no extra crop beyond PUAE's own preset). While the DMA
-                // overlay is active, wasm_dma_overlay_enable() (ami_debug.c)
+                // overlay is active, wasm_dma_overlay_enable() (puae_debug.c)
                 // overrides crop_id directly to CROP_NONE *and* widens
                 // retrow/retroh themselves (retro_set_geometry, libretro-
                 // core.c) to the true full raw raster (912x626) — that's
@@ -521,7 +518,7 @@ void wasm_reset_audio_accum(void) { g_audio_accum_n = 0; }
 // The JS loop checks wasm_is_paused() after each tick to detect the halt.
 
 EMSCRIPTEN_KEEPALIVE
-int wasm_is_paused(void) { return e9k_debug_is_paused(); }
+int wasm_is_paused(void) { return puae_debug_is_paused(); }
 
 // Register layout (19 × uint32_t): D0-D7 (regs[0..7]), A0-A7 (regs[8..15]), SR, PC, USP.
 #define WASM_REG_COUNT 19
@@ -530,26 +527,26 @@ static uint32_t g_reg_buf[WASM_REG_COUNT];
 // Populate g_reg_buf from live CPU state; returns the number of registers written.
 EMSCRIPTEN_KEEPALIVE
 int wasm_read_regs(void) {
-    return (int)e9k_debug_read_regs(g_reg_buf, WASM_REG_COUNT);
+    return (int)puae_debug_read_regs(g_reg_buf, WASM_REG_COUNT);
 }
 
 EMSCRIPTEN_KEEPALIVE
 uint32_t *wasm_get_reg_buf(void) { return g_reg_buf; }
 
 EMSCRIPTEN_KEEPALIVE
-void wasm_add_breakpoint(uint32_t addr) { e9k_debug_add_breakpoint(addr); }
+void wasm_add_breakpoint(uint32_t addr) { puae_debug_add_breakpoint(addr); }
 
 EMSCRIPTEN_KEEPALIVE
-void wasm_remove_breakpoint(uint32_t addr) { e9k_debug_remove_breakpoint(addr); }
+void wasm_remove_breakpoint(uint32_t addr) { puae_debug_remove_breakpoint(addr); }
 
 EMSCRIPTEN_KEEPALIVE
-void wasm_resume(void) { e9k_debug_resume(); }
+void wasm_resume(void) { puae_debug_resume(); }
 
 EMSCRIPTEN_KEEPALIVE
-void wasm_pause(void) { e9k_debug_pause(); }
+void wasm_pause(void) { puae_debug_pause(); }
 
 EMSCRIPTEN_KEEPALIVE
-int wasm_set_reg(uint32_t regnum, uint32_t value) { return e9k_debug_write_reg(regnum, value); }
+int wasm_set_reg(uint32_t regnum, uint32_t value) { return puae_debug_write_reg(regnum, value); }
 
 // Defined in main.c. Requests a hard reset (reboot from Kickstart, RAM
 // cleared) — processed by m68k_go() over the next couple of wasm_tick()
@@ -559,7 +556,7 @@ extern void uae_reset(int hardreset, int keyboardreset);
 
 EMSCRIPTEN_KEEPALIVE
 void wasm_reset(void) {
-    e9k_debug_resume(); // clear any debugger-halt state so ticks actually run
+    puae_debug_resume(); // clear any debugger-halt state so ticks actually run
     uae_reset(1, 0);
 }
 
@@ -567,39 +564,39 @@ void wasm_reset(void) {
 // frame, then de-registers itself.
 static void wasm_eof_vblank_cb(void *user) {
     (void)user;
-    e9k_debug_pause();
-    e9k_debug_set_vblank_callback(NULL, NULL);
+    puae_debug_pause();
+    puae_debug_set_vblank_callback(NULL, NULL);
 }
 
 // Resumes execution and arranges for it to pause again once the current
 // frame finishes rendering (i.e. "run to end of frame").
 EMSCRIPTEN_KEEPALIVE
 void wasm_eof(void) {
-    e9k_debug_set_vblank_callback(wasm_eof_vblank_cb, NULL);
-    e9k_debug_resume();
+    puae_debug_set_vblank_callback(wasm_eof_vblank_cb, NULL);
+    puae_debug_resume();
 }
 
 // One-shot hblank callback for wasm_eol(): pauses on the next completed
 // scanline, then de-registers itself.
 static void wasm_eol_hblank_cb(void *user) {
     (void)user;
-    e9k_debug_pause();
-    e9k_debug_set_hblank_callback(NULL, NULL);
+    puae_debug_pause();
+    puae_debug_set_hblank_callback(NULL, NULL);
 }
 
 // Resumes execution and arranges for it to pause again once the current
 // scanline finishes (i.e. "run to end of line").
 EMSCRIPTEN_KEEPALIVE
 void wasm_eol(void) {
-    e9k_debug_set_hblank_callback(wasm_eol_hblank_cb, NULL);
-    e9k_debug_resume();
+    puae_debug_set_hblank_callback(wasm_eol_hblank_cb, NULL);
+    puae_debug_resume();
 }
 
 EMSCRIPTEN_KEEPALIVE
-void wasm_add_temp_breakpoint(uint32_t addr) { e9k_debug_add_temp_breakpoint(addr); }
+void wasm_add_temp_breakpoint(uint32_t addr) { puae_debug_add_temp_breakpoint(addr); }
 
 EMSCRIPTEN_KEEPALIVE
-void wasm_remove_temp_breakpoint(uint32_t addr) { e9k_debug_remove_temp_breakpoint(addr); }
+void wasm_remove_temp_breakpoint(uint32_t addr) { puae_debug_remove_temp_breakpoint(addr); }
 
 // --- Debug exports (Stage G1) ---
 
@@ -610,7 +607,7 @@ static uint8_t g_mem_buf[MEM_BUF_CAP];
 EMSCRIPTEN_KEEPALIVE
 int wasm_read_memory(uint32_t addr, uint32_t len) {
     if (len > MEM_BUF_CAP) len = MEM_BUF_CAP;
-    return (int)e9k_debug_read_memory(addr, g_mem_buf, len);
+    return (int)puae_debug_read_memory(addr, g_mem_buf, len);
 }
 
 EMSCRIPTEN_KEEPALIVE
@@ -618,14 +615,14 @@ uint8_t *wasm_get_mem_buf(void) { return g_mem_buf; }
 
 EMSCRIPTEN_KEEPALIVE
 int wasm_write_memory(uint32_t addr, uint32_t value, uint32_t size) {
-    return e9k_debug_write_memory(addr, value, size);
+    return puae_debug_write_memory(addr, value, size);
 }
 
 // Bulk write of an arbitrary-length buffer (e.g. program segments). Caller
 // mallocs `data` in the wasm heap, HEAPU8.set()s the bytes, then frees it.
 EMSCRIPTEN_KEEPALIVE
 int wasm_write_memory_buf(uint32_t addr, const uint8_t *data, uint32_t len) {
-    return (int)e9k_debug_write_memory_buf(addr, data, len);
+    return (int)puae_debug_write_memory_buf(addr, data, len);
 }
 
 // Like wasm_read_memory/wasm_write_memory, but don't suspend
@@ -633,13 +630,13 @@ int wasm_write_memory_buf(uint32_t addr, const uint8_t *data, uint32_t len) {
 // deterministically (e.g. from test_g2.mjs).
 EMSCRIPTEN_KEEPALIVE
 int wasm_poke_memory(uint32_t addr, uint32_t value, uint32_t size) {
-    return e9k_debug_poke_memory(addr, value, size);
+    return puae_debug_poke_memory(addr, value, size);
 }
 
 EMSCRIPTEN_KEEPALIVE
 int wasm_peek_memory(uint32_t addr, uint32_t len) {
     if (len > MEM_BUF_CAP) len = MEM_BUF_CAP;
-    return (int)e9k_debug_peek_memory(addr, g_mem_buf, len);
+    return (int)puae_debug_peek_memory(addr, g_mem_buf, len);
 }
 
 // --- Memory bank map (Stage G3) ---
@@ -648,39 +645,39 @@ static uint8_t g_memory_map_buf[MEMORY_MAP_BUF_CAP];
 
 EMSCRIPTEN_KEEPALIVE
 int wasm_read_memory_map(void) {
-    return (int)e9k_debug_read_memory_map(g_memory_map_buf, MEMORY_MAP_BUF_CAP);
+    return (int)puae_debug_read_memory_map(g_memory_map_buf, MEMORY_MAP_BUF_CAP);
 }
 
 EMSCRIPTEN_KEEPALIVE
 uint8_t *wasm_get_memory_map_buf(void) { return g_memory_map_buf; }
 
 // --- Display-control registers (write-only on the 68k bus) ---
-static uint16_t g_display_regs_buf[E9K_DISPLAY_REG_COUNT];
+static uint16_t g_display_regs_buf[PUAE_DISPLAY_REG_COUNT];
 
 EMSCRIPTEN_KEEPALIVE
 int wasm_read_display_regs(void) {
-    return (int)e9k_debug_read_display_regs(g_display_regs_buf, E9K_DISPLAY_REG_COUNT);
+    return (int)puae_debug_read_display_regs(g_display_regs_buf, PUAE_DISPLAY_REG_COUNT);
 }
 
 EMSCRIPTEN_KEEPALIVE
 uint16_t *wasm_get_display_regs_buf(void) { return g_display_regs_buf; }
 
 // --- Raw custom-register image + audio registers (write-only on the 68k bus) ---
-static uint8_t g_custom_regs_raw_buf[E9K_CUSTOM_REGS_RAW_SIZE];
+static uint8_t g_custom_regs_raw_buf[PUAE_CUSTOM_REGS_RAW_SIZE];
 
 EMSCRIPTEN_KEEPALIVE
 int wasm_read_custom_regs_raw(void) {
-    return (int)e9k_debug_read_custom_regs_raw(g_custom_regs_raw_buf, E9K_CUSTOM_REGS_RAW_SIZE);
+    return (int)puae_debug_read_custom_regs_raw(g_custom_regs_raw_buf, PUAE_CUSTOM_REGS_RAW_SIZE);
 }
 
 EMSCRIPTEN_KEEPALIVE
 uint8_t *wasm_get_custom_regs_raw_buf(void) { return g_custom_regs_raw_buf; }
 
-static uint8_t g_audio_regs_buf[E9K_AUDIO_REGS_SIZE];
+static uint8_t g_audio_regs_buf[PUAE_AUDIO_REGS_SIZE];
 
 EMSCRIPTEN_KEEPALIVE
 int wasm_read_audio_regs(void) {
-    return (int)e9k_debug_read_audio_regs(g_audio_regs_buf, E9K_AUDIO_REGS_SIZE);
+    return (int)puae_debug_read_audio_regs(g_audio_regs_buf, PUAE_AUDIO_REGS_SIZE);
 }
 
 EMSCRIPTEN_KEEPALIVE
@@ -692,7 +689,7 @@ static char g_disasm_buf[DISASM_BUF_CAP];
 
 EMSCRIPTEN_KEEPALIVE
 int wasm_disassemble(uint32_t pc) {
-    return (int)e9k_debug_disassemble_quick(pc, g_disasm_buf, sizeof(g_disasm_buf));
+    return (int)puae_debug_disassemble_quick(pc, g_disasm_buf, sizeof(g_disasm_buf));
 }
 
 EMSCRIPTEN_KEEPALIVE
@@ -715,20 +712,20 @@ EMSCRIPTEN_KEEPALIVE
 uint32_t *wasm_get_cpu_trace_buf(void) { return g_cpu_trace_buf; }
 
 // --- Step variants ---
-// Each clears e9k_debug_is_paused(); caller must loop wasm_tick() until it
+// Each clears puae_debug_is_paused(); caller must loop wasm_tick() until it
 // reports paused again, mirroring the breakpoint flow.
 
 EMSCRIPTEN_KEEPALIVE
-void wasm_step_instr(void) { e9k_debug_step_instr(); }
+void wasm_step_instr(void) { puae_debug_step_instr(); }
 
 EMSCRIPTEN_KEEPALIVE
-void wasm_step_line(void) { e9k_debug_step_line(); }
+void wasm_step_line(void) { puae_debug_step_line(); }
 
 EMSCRIPTEN_KEEPALIVE
-void wasm_step_next(void) { e9k_debug_step_next(); }
+void wasm_step_next(void) { puae_debug_step_next(); }
 
 EMSCRIPTEN_KEEPALIVE
-void wasm_step_out(void) { e9k_debug_step_out(); }
+void wasm_step_out(void) { puae_debug_step_out(); }
 
 // --- Callstack ---
 #define CALLSTACK_BUF_CAP 256
@@ -736,7 +733,7 @@ static uint32_t g_callstack_buf[CALLSTACK_BUF_CAP];
 
 EMSCRIPTEN_KEEPALIVE
 int wasm_read_callstack(void) {
-    return (int)e9k_debug_read_callstack(g_callstack_buf, CALLSTACK_BUF_CAP);
+    return (int)puae_debug_read_callstack(g_callstack_buf, CALLSTACK_BUF_CAP);
 }
 
 EMSCRIPTEN_KEEPALIVE
@@ -747,7 +744,7 @@ uint32_t *wasm_get_callstack_buf(void) { return g_callstack_buf; }
 static uint64_t g_cycle_count;
 
 EMSCRIPTEN_KEEPALIVE
-void wasm_read_cycle_count(void) { g_cycle_count = e9k_debug_read_cycle_count(); }
+void wasm_read_cycle_count(void) { g_cycle_count = puae_debug_read_cycle_count(); }
 
 EMSCRIPTEN_KEEPALIVE
 uint32_t wasm_get_cycle_count_lo(void) { return (uint32_t)(g_cycle_count & 0xFFFFFFFFu); }
@@ -803,7 +800,7 @@ int wasm_profile_start(int numFrames)
     return 1;
 }
 
-// DMA grid, chip/slow RAM ptrs — implemented in ami_debug.c (has PUAE headers).
+// DMA grid, chip/slow RAM ptrs — implemented in puae_debug.c (has PUAE headers).
 extern const uint8_t *wasm_dma_get_grid_ptr(void);
 extern uint32_t       wasm_dma_get_grid_size(void);
 extern uint32_t       wasm_dma_get_chip_ptr(void);
@@ -844,10 +841,10 @@ EMSCRIPTEN_KEEPALIVE
 uint32_t wasm_get_replay_scan_match_hi(void) { return (uint32_t)(g_replay_scan_match >> 32); }
 
 // --- Watchpoints (Stage G2) ---
-// e9k_debug_watchpoint_t is 7 x uint32 (addr, op_mask, diff_operand,
+// puae_debug_watchpoint_t is 7 x uint32 (addr, op_mask, diff_operand,
 // value_operand, old_value_operand, size_operand, addr_mask_operand).
-static e9k_debug_watchpoint_t g_watchpoint_buf[E9K_WATCHPOINT_COUNT];
-static e9k_debug_watchbreak_t g_watchbreak_buf;
+static puae_debug_watchpoint_t g_watchpoint_buf[PUAE_WATCHPOINT_COUNT];
+static puae_debug_watchbreak_t g_watchbreak_buf;
 static uint64_t g_watchpoint_enabled_mask;
 
 // Clears all watchpoints and register watches. Needed because the webview
@@ -858,30 +855,30 @@ static uint64_t g_watchpoint_enabled_mask;
 // live in the engine and keeps firing.
 EMSCRIPTEN_KEEPALIVE
 void wasm_reset_debug_watches(void) {
-    e9k_debug_reset_watchpoints();
-    e9k_debug_reset_regwatches();
+    puae_debug_reset_watchpoints();
+    puae_debug_reset_regwatches();
 }
 
 EMSCRIPTEN_KEEPALIVE
 int wasm_add_watchpoint(uint32_t addr, uint32_t op_mask, uint32_t diff_operand, uint32_t value_operand,
                          uint32_t old_value_operand, uint32_t size_operand, uint32_t addr_mask_operand) {
-    return e9k_debug_add_watchpoint(addr, op_mask, diff_operand, value_operand,
+    return puae_debug_add_watchpoint(addr, op_mask, diff_operand, value_operand,
                                      old_value_operand, size_operand, addr_mask_operand);
 }
 
 EMSCRIPTEN_KEEPALIVE
-void wasm_remove_watchpoint(uint32_t index) { e9k_debug_remove_watchpoint(index); }
+void wasm_remove_watchpoint(uint32_t index) { puae_debug_remove_watchpoint(index); }
 
 EMSCRIPTEN_KEEPALIVE
 int wasm_read_watchpoints(void) {
-    return (int)e9k_debug_read_watchpoints(g_watchpoint_buf, E9K_WATCHPOINT_COUNT);
+    return (int)puae_debug_read_watchpoints(g_watchpoint_buf, PUAE_WATCHPOINT_COUNT);
 }
 
 EMSCRIPTEN_KEEPALIVE
 uint32_t *wasm_get_watchpoint_buf(void) { return (uint32_t *)g_watchpoint_buf; }
 
 EMSCRIPTEN_KEEPALIVE
-void wasm_read_watchpoint_enabled_mask(void) { g_watchpoint_enabled_mask = e9k_debug_get_watchpoint_enabled_mask(); }
+void wasm_read_watchpoint_enabled_mask(void) { g_watchpoint_enabled_mask = puae_debug_get_watchpoint_enabled_mask(); }
 
 EMSCRIPTEN_KEEPALIVE
 uint32_t wasm_get_watchpoint_enabled_mask_lo(void) { return (uint32_t)(g_watchpoint_enabled_mask & 0xFFFFFFFFu); }
@@ -891,62 +888,62 @@ uint32_t wasm_get_watchpoint_enabled_mask_hi(void) { return (uint32_t)(g_watchpo
 
 EMSCRIPTEN_KEEPALIVE
 void wasm_set_watchpoint_enabled_mask(uint32_t lo, uint32_t hi) {
-    e9k_debug_set_watchpoint_enabled_mask(((uint64_t)hi << 32) | (uint64_t)lo);
+    puae_debug_set_watchpoint_enabled_mask(((uint64_t)hi << 32) | (uint64_t)lo);
 }
 
 EMSCRIPTEN_KEEPALIVE
 int wasm_consume_watchbreak(void) {
-    return e9k_debug_consume_watchbreak(&g_watchbreak_buf);
+    return puae_debug_consume_watchbreak(&g_watchbreak_buf);
 }
 
 EMSCRIPTEN_KEEPALIVE
 uint32_t *wasm_get_watchbreak_buf(void) { return (uint32_t *)&g_watchbreak_buf; }
 
 // --- Register watches (break when a CPU register's own value changes) ---
-static e9k_debug_regwatchbreak_t g_regwatchbreak_buf;
+static puae_debug_regwatchbreak_t g_regwatchbreak_buf;
 
 EMSCRIPTEN_KEEPALIVE
 int wasm_add_regwatch(uint32_t regIndex) {
-    return e9k_debug_add_regwatch(regIndex);
+    return puae_debug_add_regwatch(regIndex);
 }
 
 EMSCRIPTEN_KEEPALIVE
-void wasm_remove_regwatch(uint32_t regIndex) { e9k_debug_remove_regwatch(regIndex); }
+void wasm_remove_regwatch(uint32_t regIndex) { puae_debug_remove_regwatch(regIndex); }
 
 EMSCRIPTEN_KEEPALIVE
-uint32_t wasm_get_regwatch_enabled_mask(void) { return e9k_debug_get_regwatch_enabled_mask(); }
+uint32_t wasm_get_regwatch_enabled_mask(void) { return puae_debug_get_regwatch_enabled_mask(); }
 
 EMSCRIPTEN_KEEPALIVE
 int wasm_consume_regwatchbreak(void) {
-    return e9k_debug_consume_regwatchbreak(&g_regwatchbreak_buf);
+    return puae_debug_consume_regwatchbreak(&g_regwatchbreak_buf);
 }
 
 EMSCRIPTEN_KEEPALIVE
 uint32_t *wasm_get_regwatchbreak_buf(void) { return (uint32_t *)&g_regwatchbreak_buf; }
 
 // --- Memory protects (Stage G2) ---
-// e9k_debug_protect_t is 5 x uint32 (addr, addrMask, sizeBits, mode, value).
-static e9k_debug_protect_t g_protect_buf[E9K_PROTECT_COUNT];
+// puae_debug_protect_t is 5 x uint32 (addr, addrMask, sizeBits, mode, value).
+static puae_debug_protect_t g_protect_buf[PUAE_PROTECT_COUNT];
 static uint64_t g_protect_enabled_mask;
 
 EMSCRIPTEN_KEEPALIVE
 int wasm_add_protect(uint32_t addr, uint32_t size_bits, uint32_t mode, uint32_t value) {
-    return e9k_debug_add_protect(addr, size_bits, mode, value);
+    return puae_debug_add_protect(addr, size_bits, mode, value);
 }
 
 EMSCRIPTEN_KEEPALIVE
-void wasm_remove_protect(uint32_t index) { e9k_debug_remove_protect(index); }
+void wasm_remove_protect(uint32_t index) { puae_debug_remove_protect(index); }
 
 EMSCRIPTEN_KEEPALIVE
 int wasm_read_protects(void) {
-    return (int)e9k_debug_read_protects(g_protect_buf, E9K_PROTECT_COUNT);
+    return (int)puae_debug_read_protects(g_protect_buf, PUAE_PROTECT_COUNT);
 }
 
 EMSCRIPTEN_KEEPALIVE
 uint32_t *wasm_get_protect_buf(void) { return (uint32_t *)g_protect_buf; }
 
 EMSCRIPTEN_KEEPALIVE
-void wasm_read_protect_enabled_mask(void) { g_protect_enabled_mask = e9k_debug_get_protect_enabled_mask(); }
+void wasm_read_protect_enabled_mask(void) { g_protect_enabled_mask = puae_debug_get_protect_enabled_mask(); }
 
 EMSCRIPTEN_KEEPALIVE
 uint32_t wasm_get_protect_enabled_mask_lo(void) { return (uint32_t)(g_protect_enabled_mask & 0xFFFFFFFFu); }
@@ -956,41 +953,41 @@ uint32_t wasm_get_protect_enabled_mask_hi(void) { return (uint32_t)(g_protect_en
 
 EMSCRIPTEN_KEEPALIVE
 void wasm_set_protect_enabled_mask(uint32_t lo, uint32_t hi) {
-    e9k_debug_set_protect_enabled_mask(((uint64_t)hi << 32) | (uint64_t)lo);
+    puae_debug_set_protect_enabled_mask(((uint64_t)hi << 32) | (uint64_t)lo);
 }
 
 // --- Memory protection (breaks on writes outside an allow-list of ranges) ---
-// e9k_debug_memprotect_break_t is 4 x uint32 (pc, addr, value, sizeBits).
-static e9k_debug_memprotect_break_t g_memprotect_break_buf;
+// puae_debug_memprotect_break_t is 4 x uint32 (pc, addr, value, sizeBits).
+static puae_debug_memprotect_break_t g_memprotect_break_buf;
 
 EMSCRIPTEN_KEEPALIVE
-void wasm_memprotect_set_enabled(int enabled) { e9k_debug_memprotect_set_enabled(enabled); }
+void wasm_memprotect_set_enabled(int enabled) { puae_debug_memprotect_set_enabled(enabled); }
 
 EMSCRIPTEN_KEEPALIVE
-int wasm_memprotect_start_tracking(void) { return e9k_debug_memprotect_start_tracking(); }
+int wasm_memprotect_start_tracking(void) { return puae_debug_memprotect_start_tracking(); }
 
 EMSCRIPTEN_KEEPALIVE
-int wasm_memprotect_seed_libraries(void) { return e9k_debug_memprotect_seed_libraries(); }
+int wasm_memprotect_seed_libraries(void) { return puae_debug_memprotect_seed_libraries(); }
 
 EMSCRIPTEN_KEEPALIVE
-void wasm_memprotect_reset_ranges(void) { e9k_debug_memprotect_reset_ranges(); }
+void wasm_memprotect_reset_ranges(void) { puae_debug_memprotect_reset_ranges(); }
 
 EMSCRIPTEN_KEEPALIVE
 int wasm_memprotect_add_range(uint32_t addr, uint32_t size) {
-    return e9k_debug_memprotect_add_range(addr, size);
+    return puae_debug_memprotect_add_range(addr, size);
 }
 
 EMSCRIPTEN_KEEPALIVE
 int wasm_consume_memprotect_break(void) {
-    return e9k_debug_memprotect_consume_break(&g_memprotect_break_buf);
+    return puae_debug_memprotect_consume_break(&g_memprotect_break_buf);
 }
 
 EMSCRIPTEN_KEEPALIVE
 uint32_t *wasm_get_memprotect_break_buf(void) { return (uint32_t *)&g_memprotect_break_buf; }
 
 // --- Catchpoints (exception-based breakpoints) ---
-// e9k_debug_catchbreak_t is 2 x uint32 (pc, vector).
-static e9k_debug_catchbreak_t g_catchbreak_buf;
+// puae_debug_catchbreak_t is 2 x uint32 (pc, vector).
+static puae_debug_catchbreak_t g_catchbreak_buf;
 
 EMSCRIPTEN_KEEPALIVE
 void wasm_set_catchpoint(uint32_t vector) { puae_debug_set_catchpoint(vector); }
@@ -1016,7 +1013,7 @@ uint32_t wasm_get_chip_mem_size(void) { return puae_debug_get_chip_mem_size(); }
 // PUAE_DEBUG_EVENT_PHASE_WORDS extra uint32_t's appended after the regular libretro
 // savestate blob, preserving eventtab[ev_hsync/ev_hsynch/ev_misc] phase info
 // that retro_serialize/retro_unserialize don't (see puae_debug_capture_event_phase
-// / puae_debug_restore_event_phase in e9k_debug.c for why this is needed).
+// / puae_debug_restore_event_phase in puae_debug.c for why this is needed).
 #define EVENT_PHASE_BYTES (PUAE_DEBUG_EVENT_PHASE_WORDS * sizeof(uint32_t))
 
 EMSCRIPTEN_KEEPALIVE

@@ -225,7 +225,7 @@ check("getAllCustomRegisters returns the write-only display/colour registers",
 check("getAllCustomRegisters BPLCON0 has HOMOD/hires bits set after Kickstart boot screen",
   parseInt(customRegs.BPLCON0.value, 16) !== 0, customRegs.BPLCON0.value);
 
-// --- 13b. raw custom-register image + audio registers (e9k_get_custom_regs_raw / e9k_get_audio_regs_raw) ---
+// --- 13b. raw custom-register image + audio registers (puae_get_custom_regs_raw / puae_get_audio_regs_raw) ---
 const HEX32 = /^0x[0-9a-f]{8}$/;
 const RAW_CUSTOM_REGS_16 = [
   "BLTDDAT", "DSKLEN", "COPCON", "SERDAT", "SERPER",

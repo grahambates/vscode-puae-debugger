@@ -5,7 +5,6 @@
 #   - emsdk activated in the current shell (emcc/emar/emranlib on PATH)
 #   - libretro-uae/ submodule checked out (vscode_vamiga_debugger branch,
 #     already includes the patches needed for this build)
-#     (no other external repos needed — e9k sources are in e9k/)
 #
 # Usage:
 #   cd puae-wasm/
@@ -18,7 +17,6 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 OUT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)/puae"
-E9K="$SCRIPT_DIR/e9k"
 LUAE="$SCRIPT_DIR/libretro-uae"
 EMCC="${EMCC:-emcc}"
 EMAR="${EMAR:-emar}"
@@ -42,7 +40,7 @@ make platform=emscripten STATIC_LINKING=1 STATIC_LINKING_LINK=1 NO_LIBRETRO_VFS=
 cp puae_libretro_emscripten.bc "$SCRIPT_DIR/libpuae.a"
 echo "  → $SCRIPT_DIR/libpuae.a"
 
-echo "=== Stage 2: e9k graft objects ==="
+echo "=== Stage 2: graft objects ==="
 
 cd "$SCRIPT_DIR"
 
@@ -56,12 +54,11 @@ GRAFT_FLAGS=(
     -I "$LUAE"
     -I "$LUAE/retrodep"
     -I "$LUAE/libretro-common/include"
-    -I "$E9K"
 )
 
-echo "  Compiling ami_debug.c…"
+echo "  Compiling puae_debug.c…"
 "$EMCC" "${GRAFT_FLAGS[@]}" \
-    -c -o e9k_debug.o "$SCRIPT_DIR/ami_debug.c"
+    -c -o puae_debug.o "$SCRIPT_DIR/puae_debug.c"
 
 echo "=== Stage 2b: libretro-common/deps file/path/VFS/zlib/7z objects ==="
 
@@ -128,10 +125,10 @@ done
 echo "=== Stage 3: assemble libami9000.a ==="
 
 cp libpuae.a libami9000.a
-# libpuae.a's newcpu.o already calls e9k_debug_instructionHook at each
+# libpuae.a's newcpu.o already calls puae_debug_instructionHook at each
 # instruction (the hooks live directly in the libretro-uae submodule); just
 # add the debug layer and grafted deps.
-"$EMAR" r libami9000.a e9k_debug.o "${GRAFT_DEPS_OBJS[@]}"
+"$EMAR" r libami9000.a puae_debug.o "${GRAFT_DEPS_OBJS[@]}"
 echo "  → $SCRIPT_DIR/libami9000.a"
 
 echo "=== Stage 4: final emcc link → puae.js ==="
@@ -144,7 +141,6 @@ EXPORTED_FUNCTIONS='["_main","_wasm_boot","_wasm_tick","_wasm_get_frame_count","
     -include emscripten/emscripten.h \
     -I "$LUAE/libretro-common/include" \
     -I "$LUAE/sources/src/include" \
-    -I "$E9K" \
     -O2 \
     -s MODULARIZE=1 \
     -s EXPORT_NAME=createPuaeModule \
