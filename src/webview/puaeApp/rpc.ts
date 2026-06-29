@@ -995,9 +995,7 @@ export function setupRpcDispatcher(
         rpcRequest(() => getCpuInfo());
         break;
       case "setRegister":
-        rpcRequest(() => {
-          setRegister(args.name, args.value);
-        });
+        rpcRequest(() => setRegister(args.name, args.value));
         break;
       case "jump":
         rpcRequest(() => {
