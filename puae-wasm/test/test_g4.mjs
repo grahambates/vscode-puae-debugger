@@ -1,15 +1,17 @@
-import fs from "node:fs";
 import { fileURLToPath } from "node:url";
 import createPuaeModule from "../../puae/puae.js";
 import { setupRpcDispatcher } from "../../out/puaeRpc.mjs";
 import { parseHunksFromFile } from "./test_g4_hunkparser.mjs";
 import { loadAmigaProgram } from "./test_g4_hunkloader.mjs";
 import { AmigaMemoryMapper } from "./test_g4_memmapper.mjs";
+import { readFixture } from "./fixtures.mjs";
+
+const kickRom = readFixture("kick34005.A500");
 
 const M = await createPuaeModule();
 
 M.FS.mkdir("/uae_system");
-M.FS.writeFile("/uae_system/kick34005.A500", fs.readFileSync(fileURLToPath(new URL("../../puae/kick34005.A500", import.meta.url))));
+M.FS.writeFile("/uae_system/kick34005.A500", kickRom);
 
 // Boot with no disk inserted, matching index.html's fastLoad boot sequence.
 const ok = M.ccall("wasm_boot", "number", ["string"], [""]);

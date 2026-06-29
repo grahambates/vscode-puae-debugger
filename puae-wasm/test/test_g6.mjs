@@ -2,11 +2,14 @@ import fs from "node:fs";
 import { fileURLToPath } from "node:url";
 import createPuaeModule from "../../puae/puae.js";
 import { tryExec, getCurrentProcess } from "../../out/puaeRpc.mjs";
+import { readFixture } from "./fixtures.mjs";
+
+const kickRom = readFixture("kick34005.A500");
 
 const M = await createPuaeModule();
 
 M.FS.mkdir("/uae_system");
-M.FS.writeFile("/uae_system/kick34005.A500", fs.readFileSync(fileURLToPath(new URL("../../puae/kick34005.A500", import.meta.url))));
+M.FS.writeFile("/uae_system/kick34005.A500", kickRom);
 
 // Mount /uae_system/dh0 as a bootable DH0: hard disk (filesystem=rw,dh0:...,
 // the directory-mount approach from puaeEmulator.ts's buildExtraConfig).

@@ -1,6 +1,5 @@
-import fs from "node:fs";
-import { fileURLToPath } from "node:url";
 import createPuaeModule from "../../puae/puae.js";
+import { readFixture } from "./fixtures.mjs";
 
 let failures = 0;
 function check(label, cond, detail) {
@@ -15,7 +14,7 @@ function check(label, cond, detail) {
 // MemSrc enum values (src/vAmiga.ts).
 const MEM_SRC_FAST = 5;
 
-const kickRom = fs.readFileSync(fileURLToPath(new URL("../../puae/kick34005.A500", import.meta.url)));
+const kickRom = readFixture("kick34005.A500");
 
 // Boots a fresh module, optionally writing /uae_system/puae_libretro_global.uae
 // (PuaeEmulator.buildExtraConfig's mechanism) before wasm_boot(), and returns

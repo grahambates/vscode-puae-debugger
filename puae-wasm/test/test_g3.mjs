@@ -1,13 +1,15 @@
-import fs from "node:fs";
-import { fileURLToPath } from "node:url";
 import createPuaeModule from "../../puae/puae.js";
 import { setupRpcDispatcher, getCurrentStopMessage } from "../../out/puaeRpc.mjs";
+import { readFixture } from "./fixtures.mjs";
+
+const kickRom = readFixture("kick34005.A500");
+const demoAdf = readFixture("demo.adf");
 
 const M = await createPuaeModule();
 
 M.FS.mkdir("/uae_system");
-M.FS.writeFile("/uae_system/kick34005.A500", fs.readFileSync(fileURLToPath(new URL("../../puae/kick34005.A500", import.meta.url))));
-M.FS.writeFile("/uae_system/game.adf", fs.readFileSync(fileURLToPath(new URL("../../puae/demo.adf", import.meta.url))));
+M.FS.writeFile("/uae_system/kick34005.A500", kickRom);
+M.FS.writeFile("/uae_system/game.adf", demoAdf);
 
 const ok = M.ccall("wasm_boot", "number", ["string"], ["/uae_system/game.adf"]);
 console.log("wasm_boot ->", ok);

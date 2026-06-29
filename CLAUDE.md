@@ -99,9 +99,10 @@ Notes/gotchas, all hit during the first attempt at this:
 - `npm run test:wasm` — runs `puae-wasm/test/*.mjs` directly under Node
   against the built `puae.wasm`. **Requires local-only files not committed to
   the repo**: `puae/kick34005.A500` (a real Kickstart ROM) and `puae/demo.adf`
-  — copyrighted, so you need to supply your own. Without them, several of
-  these scripts fail with `ENOENT` reading those paths — that's an
-  environment gap, not a regression, if you don't have the files.
+  — copyrighted, so you need to supply your own. Without them, each script
+  prints a `SKIP ...` line and exits 0 (via `puae-wasm/test/fixtures.mjs`'s
+  `readFixture`) rather than failing — that's an environment gap, not a
+  regression, if you don't have the files.
 - `npm test` runs both, with `pretest` (`compile` + `lint`) auto-running
   first via npm's lifecycle hook.
 

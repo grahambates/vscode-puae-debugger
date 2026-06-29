@@ -1,6 +1,5 @@
-import fs from "node:fs";
-import { fileURLToPath } from "node:url";
 import createPuaeModule from "../../puae/puae.js";
+import { readFixture } from "./fixtures.mjs";
 
 let failures = 0;
 function check(label, cond, detail) {
@@ -39,9 +38,11 @@ const WARM_UP_TICKS = 200;
 // touches during the first few post-reset ticks.
 const MARKER_ADDR = 0x40000;
 
+const kickRom = readFixture("kick34005.A500");
+
 const M = await createPuaeModule();
 M.FS.mkdir("/uae_system");
-M.FS.writeFile("/uae_system/kick34005.A500", fs.readFileSync(fileURLToPath(new URL("../../puae/kick34005.A500", import.meta.url))));
+M.FS.writeFile("/uae_system/kick34005.A500", kickRom);
 
 const ok = M.ccall("wasm_boot", "number", ["string"], [""]);
 console.log("wasm_boot ->", ok);
