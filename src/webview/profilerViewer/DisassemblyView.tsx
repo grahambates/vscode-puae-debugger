@@ -1,9 +1,12 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { List, ListImperativeAPI, RowComponentProps } from "react-window";
 import { getProfileModel } from "./modelStore";
 import { buildColumns, columnIndexAtX } from "./columns";
 import { IDisassembledInstruction, REG_COUNT, REG_D0, REG_A0, REG_SR, REG_PC, REG_USP } from "../../shared/profilerTypes";
 import { srFlags } from "../shared/cpuFlags";
+import { createSymbolizer, Symbolizer } from "./symbols";
+import { interpretDataReg, interpretAddressReg } from "./registerInterpret";
+import { Tooltip } from "./Tooltip";
 
 // Props shared across every row via the v2 rowProps channel (must not contain
 // ariaAttributes/index/style — see TimeView.tsx).
@@ -48,29 +51,60 @@ function RowRenderer({ index, style, instructions, maxCycles, currentAddress, on
 
 const hex = (v: number, digits = 8) => `$${(v >>> 0).toString(16).padStart(digits, "0")}`;
 
+type RegKind = "data" | "address";
+type RegHover = { kind: RegKind; value: number; x: number; y: number };
+
 // D0-D7/A0-A7/SR/PC/USP at the current sample, with changed-since-the-previous-sample highlighted
 // (mirroring Custom Registers' changed-this-cycle highlight). `regs`/`prev` are REG_COUNT-length
 // slices of model.registers (see shared/profilerTypes.ts's REG_* layout) — `prev` is undefined at
-// the very first sample (nothing to diff against).
-function RegistersPanel({ regs, prev }: { regs: Uint32Array; prev: Uint32Array | undefined }) {
+// the very first sample (nothing to diff against). Hovering a register shows a tooltip with its
+// value interpreted at every width (the same i8/u8/i16/u16/i32/u32 breakdown the live Variables
+// view shows as expandable child items — see registerInterpret.ts) — a tooltip rather than
+// expandable rows, since this panel isn't a tree view. Address-like registers (A0-A7, PC, USP)
+// skip the byte-sized interpretations (no byte-sized address arithmetic on the 68000) and get a
+// symbol+offset line instead, when the value resolves to one. The register name itself isn't
+// repeated in the tooltip (already shown on the cell being hovered).
+function RegistersPanel({ regs, prev, symbolize }: { regs: Uint32Array; prev: Uint32Array | undefined; symbolize: Symbolizer }) {
+  const [hover, setHover] = useState<RegHover | undefined>(undefined);
   const changed = (i: number) => prev !== undefined && regs[i] !== prev[i];
-  const cell = (label: string, i: number, digits = 8) => (
-    <div key={label} className={"reg-cell" + (changed(i) ? " reg-changed" : "")}>
+  const onEnter = (kind: RegKind, i: number) => (e: { clientX: number; clientY: number }) =>
+    setHover({ kind, value: regs[i], x: e.clientX, y: e.clientY });
+  const onLeave = () => setHover(undefined);
+
+  const cell = (label: string, i: number, kind: RegKind, digits = 8) => (
+    <div
+      key={label}
+      className={"reg-cell" + (changed(i) ? " reg-changed" : "") + " reg-hoverable"}
+      onMouseEnter={onEnter(kind, i)}
+      onMouseLeave={onLeave}
+    >
       <span className="reg-label">{label}</span>
       <span className="reg-val">{hex(regs[i], digits)}</span>
     </div>
   );
+
+  const interp = hover ? (hover.kind === "data" ? interpretDataReg(hover.value) : interpretAddressReg(hover.value)) : undefined;
+  const offset = hover && hover.kind === "address" ? symbolize(hover.value) : undefined;
+
   return (
     <div className="registerspanel">
       <div className="reg-grid">
-        {Array.from({ length: 8 }, (_, n) => cell(`D${n}`, REG_D0 + n))}
-        {Array.from({ length: 8 }, (_, n) => cell(`A${n}`, REG_A0 + n))}
+        {Array.from({ length: 8 }, (_, n) => cell(`D${n}`, REG_D0 + n, "data"))}
+        {Array.from({ length: 8 }, (_, n) => cell(`A${n}`, REG_A0 + n, "address"))}
       </div>
-      <div className="reg-flags">
+      <div
+        className="reg-flags reg-hoverable"
+        onMouseEnter={onEnter("address", REG_PC)}
+        onMouseLeave={onLeave}
+      >
         <span className="reg-label">PC</span>
         <span className="reg-val">{hex(regs[REG_PC], 6)}</span>
       </div>
-      <div className="reg-flags">
+      <div
+        className="reg-flags reg-hoverable"
+        onMouseEnter={onEnter("address", REG_USP)}
+        onMouseLeave={onLeave}
+      >
         <span className="reg-label">USP</span>
         <span className="reg-val">{hex(regs[REG_USP], 6)}</span>
       </div>
@@ -78,6 +112,19 @@ function RegistersPanel({ regs, prev }: { regs: Uint32Array; prev: Uint32Array |
         <span className="reg-label">SR</span>
         <span className="reg-val reg-sr">{srFlags(regs[REG_SR])}</span>
       </div>
+      {hover && interp && (
+        <Tooltip x={hover.x} y={hover.y} width={180}>
+          {offset && <div className="tt-offset">{offset}</div>}
+          <div className="tip-grid">
+            {interp.map((r) => (
+              <Fragment key={r.label}>
+                <span className="tip-label">{r.label}</span>
+                <span className="tip-val">{r.value}</span>
+              </Fragment>
+            ))}
+          </div>
+        </Tooltip>
+      )}
     </div>
   );
 }
@@ -100,6 +147,7 @@ export function DisassemblyView({
   const [selectedFn, setSelectedFn] = useState<number | undefined>(undefined); // index into `functions`
   const [follow, setFollow] = useState(true);
   const listRef = useRef<ListImperativeAPI>(null);
+  const symbolize = useMemo(() => createSymbolizer(model?.symbols), [model]);
 
   // Functions sorted by total cycles descending (hottest first — matches the old extension's
   // "jump to the hottest function" default).
@@ -204,7 +252,7 @@ export function DisassemblyView({
             rowHeight={18}
           />
         </div>
-        {currentRegs && <RegistersPanel regs={currentRegs} prev={prevRegs} />}
+        {currentRegs && <RegistersPanel regs={currentRegs} prev={prevRegs} symbolize={symbolize} />}
       </div>
     </div>
   );

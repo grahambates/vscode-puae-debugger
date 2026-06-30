@@ -230,6 +230,14 @@ body {
   word-break: break-word;
 }
 
+/* Registers panel tooltip's symbol+offset line: unlabelled (the tooltip is already scoped to one
+   register) and full-width rather than a tip-grid value cell, so a long symbol name wraps instead
+   of being squeezed/truncated by the label column. */
+.tooltip .tt-offset {
+  margin-bottom: 3px;
+  word-break: break-word;
+}
+
 .tooltip .tt-hint {
   margin-top: 4px;
   color: var(--vscode-descriptionForeground);
@@ -939,6 +947,10 @@ body {
   gap: 6px;
   padding: 1px 2px;
   white-space: nowrap;
+}
+
+.reg-cell.reg-hoverable:hover {
+  background: var(--vscode-list-hoverBackground);
 }
 
 .reg-cell .reg-val,
