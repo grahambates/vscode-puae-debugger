@@ -17,6 +17,13 @@ import { IRichFilter } from "./filter";
 
 const vscode = acquireVsCodeApi();
 
+type TabId = "time" | "customregs" | "copper" | "blitter" | "memory" | "disasm";
+const TAB_LABELS: Record<TabId, string> = {
+  time: "Time View", customregs: "Custom Registers", copper: "Copper",
+  blitter: "Blitter", memory: "Memory", disasm: "Disassembly",
+};
+const ALL_TABS: TabId[] = ["time", "customregs", "copper", "blitter", "memory", "disasm"];
+
 export function App() {
   useModelVersion(); // re-render when the model changes (the model lives in modelStore, not state)
   const model = getProfileModel();
@@ -31,7 +38,12 @@ export function App() {
   // The pinned DMA-cycle cursor, shared between the flame graph (which sets it on click) and the
   // custom-registers view (which reads it). Reset on a fresh capture, below.
   const [selectedSlot, setSelectedSlot] = useState<number | undefined>(undefined);
-  const [rightTab, setRightTab] = useState<"time" | "customregs" | "copper" | "blitter" | "memory" | "disasm">("time");
+  const [leftTab, setLeftTab] = useState<TabId>("time");
+  const [rightTab, setRightTab] = useState<TabId>("memory");
+  // Vertical split of the right pane into two independent tab panels.
+  const [split, setSplit] = useState(false);
+  const [splitRatio, setSplitRatio] = useState(0.5); // fraction of width for the left panel
+  const panelContainerRef = useRef<HTMLDivElement>(null);
   // Time View's tree direction: top-down (call-tree, "what does main() spend time in") or
   // bottom-up (leaf→callers, "what does Foo's time actually come from").
   const [treeMode, setTreeMode] = useState<"top" | "bottom">("top");
@@ -120,6 +132,86 @@ export function App() {
     [model, treeMode],
   );
 
+  // Drag the vertical panel divider to resize the split.
+  const onPanelDividerMouseDown = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    const container = panelContainerRef.current;
+    if (!container) return;
+    document.body.style.cursor = "col-resize";
+    document.body.style.userSelect = "none";
+    const { left, width } = container.getBoundingClientRect();
+    const onMove = (me: MouseEvent) => {
+      setSplitRatio(Math.max(0.2, Math.min(0.8, (me.clientX - left) / width)));
+    };
+    const onUp = () => {
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+      document.removeEventListener("mousemove", onMove);
+      document.removeEventListener("mouseup", onUp);
+    };
+    document.addEventListener("mousemove", onMove);
+    document.addEventListener("mouseup", onUp);
+  }, []);
+
+  // Render the content for a given tab (shared between left and right panels).
+  const renderTabContent = (tab: TabId) => {
+    if (tab === "time") return (
+      <div className="time-mode-wrap">
+        <div className="time-mode-toggle">
+          <button
+            className={"time-mode-btn" + (treeMode === "top" ? " active" : "")}
+            onClick={() => setTreeMode("top")}
+            title="Call tree from the root down — what each function spends its time in"
+          >
+            Top Down
+          </button>
+          <button
+            className={"time-mode-btn" + (treeMode === "bottom" ? " active" : "")}
+            onClick={() => setTreeMode("bottom")}
+            title="Reversed call tree from each leaf up — where each function's time actually comes from"
+          >
+            Bottom Up
+          </button>
+        </div>
+        <TimeView data={dataTable} filter={filter} displayUnit={unit} timing={timing} onOpenSource={openSource} hideTotalTime={treeMode === "bottom"} />
+      </div>
+    );
+    if (tab === "customregs") return <CustomRegsView selectedSlot={selectedSlot} onSelectSlot={setSelectedSlot} />;
+    if (tab === "copper") return <CopperView selectedSlot={selectedSlot} onSelectSlot={setSelectedSlot} onOpenSource={openSource} />;
+    if (tab === "blitter") return <BlitterView selectedSlot={selectedSlot} onSelectSlot={setSelectedSlot} displayUnit={unit} timing={timing} />;
+    if (tab === "memory") return <MemoryView selectedSlot={selectedSlot} onSelectSlot={setSelectedSlot} onOpenSource={openSource} />;
+    return <DisassemblyView selectedSlot={selectedSlot} onSelectSlot={setSelectedSlot} onOpenSource={openSource} />;
+  };
+
+  // Render a single tab panel (tab bar + content). `isLeft` controls which panel
+  // carries the split toggle button (only the left/only panel should show it).
+  // `panelStyle` sets the panel's width (explicit % when split, flex:1 otherwise).
+  const renderPanel = (tab: TabId, setTab: (t: TabId) => void, isLeft: boolean, panelStyle?: React.CSSProperties) => (
+    <div className="right-panel" style={panelStyle}>
+      <div className="right-tabs">
+        {ALL_TABS.map((id) => (
+          <button
+            key={id}
+            className={"right-tab" + (tab === id ? " active" : "")}
+            onClick={() => setTab(id)}
+          >
+            {TAB_LABELS[id]}
+          </button>
+        ))}
+        {isLeft && (
+          <button
+            className={"right-tab right-tab-split" + (split ? " active" : "")}
+            onClick={() => setSplit((s) => !s)}
+            title={split ? "Close split panel" : "Open split panel"}
+          >
+            <span className="codicon codicon-split-horizontal" />
+          </button>
+        )}
+      </div>
+      {renderTabContent(tab)}
+    </div>
+  );
+
   return (
     <div className="profiler">
       <div className="toolbar">
@@ -183,75 +275,14 @@ export function App() {
             onSelectSlot={setSelectedSlot}
           />
           <div className="split-divider" />
-          <div className="right-pane">
-            <div className="right-tabs">
-              <button
-                className={"right-tab" + (rightTab === "time" ? " active" : "")}
-                onClick={() => setRightTab("time")}
-              >
-                Time View
-              </button>
-              <button
-                className={"right-tab" + (rightTab === "customregs" ? " active" : "")}
-                onClick={() => setRightTab("customregs")}
-              >
-                Custom Registers
-              </button>
-              <button
-                className={"right-tab" + (rightTab === "copper" ? " active" : "")}
-                onClick={() => setRightTab("copper")}
-              >
-                Copper
-              </button>
-              <button
-                className={"right-tab" + (rightTab === "blitter" ? " active" : "")}
-                onClick={() => setRightTab("blitter")}
-              >
-                Blitter
-              </button>
-              <button
-                className={"right-tab" + (rightTab === "memory" ? " active" : "")}
-                onClick={() => setRightTab("memory")}
-              >
-                Memory
-              </button>
-              <button
-                className={"right-tab" + (rightTab === "disasm" ? " active" : "")}
-                onClick={() => setRightTab("disasm")}
-              >
-                Disassembly
-              </button>
-            </div>
-            {rightTab === "time" ? (
-              <div className="time-mode-wrap">
-                <div className="time-mode-toggle">
-                  <button
-                    className={"time-mode-btn" + (treeMode === "top" ? " active" : "")}
-                    onClick={() => setTreeMode("top")}
-                    title="Call tree from the root down — what each function spends its time in"
-                  >
-                    Top Down
-                  </button>
-                  <button
-                    className={"time-mode-btn" + (treeMode === "bottom" ? " active" : "")}
-                    onClick={() => setTreeMode("bottom")}
-                    title="Reversed call tree from each leaf up — where each function's time actually comes from"
-                  >
-                    Bottom Up
-                  </button>
-                </div>
-                <TimeView data={dataTable} filter={filter} displayUnit={unit} timing={timing} onOpenSource={openSource} hideTotalTime={treeMode === "bottom"} />
-              </div>
-            ) : rightTab === "customregs" ? (
-              <CustomRegsView selectedSlot={selectedSlot} onSelectSlot={setSelectedSlot} />
-            ) : rightTab === "copper" ? (
-              <CopperView selectedSlot={selectedSlot} onSelectSlot={setSelectedSlot} onOpenSource={openSource} />
-            ) : rightTab === "blitter" ? (
-              <BlitterView selectedSlot={selectedSlot} onSelectSlot={setSelectedSlot} displayUnit={unit} timing={timing} />
-            ) : rightTab === "memory" ? (
-              <MemoryView selectedSlot={selectedSlot} onSelectSlot={setSelectedSlot} onOpenSource={openSource} />
-            ) : (
-              <DisassemblyView selectedSlot={selectedSlot} onSelectSlot={setSelectedSlot} onOpenSource={openSource} />
+          <div className="right-pane" ref={panelContainerRef}>
+            {renderPanel(leftTab, setLeftTab, true,
+              split ? { width: `${splitRatio * 100}%` } : { flex: 1 })}
+            {split && (
+              <>
+                <div className="panel-divider-v" onMouseDown={onPanelDividerMouseDown} />
+                {renderPanel(rightTab, setRightTab, false, { flex: 1 })}
+              </>
             )}
           </div>
         </div>

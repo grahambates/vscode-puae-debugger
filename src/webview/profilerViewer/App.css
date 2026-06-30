@@ -364,19 +364,41 @@ body {
   font-weight: 600;
 }
 
-/* Right pane (Time View / Custom Registers tabs), sibling of .flame in .split-pane. */
+/* Right pane — holds one or two tab panels side by side; direction is always row
+   so the vertical panel divider splits it cleanly. */
 .right-pane {
   flex: 1;
+  display: flex;
+  flex-direction: row;
+  min-height: 0;
+  overflow: hidden;
+}
+
+/* One tab panel (tab bar + content). Width is set inline when split, flex:1 otherwise. */
+.right-panel {
   display: flex;
   flex-direction: column;
   min-height: 0;
   overflow: hidden;
 }
 
+/* Vertical drag handle between two split panels. */
+.panel-divider-v {
+  flex: 0 0 4px;
+  background: var(--vscode-panel-border);
+  cursor: col-resize;
+  transition: background 0.1s;
+}
+
+.panel-divider-v:hover {
+  background: var(--vscode-focusBorder);
+}
+
 .right-tabs {
   display: flex;
   flex-shrink: 0;
   border-bottom: 1px solid var(--vscode-panel-border);
+  overflow: hidden; /* prevent wrapping pushing the split button out of view */
 }
 
 .right-tab {
@@ -387,6 +409,7 @@ body {
   padding: 5px 10px;
   cursor: pointer;
   font-size: var(--vscode-font-size);
+  white-space: nowrap;
 }
 
 .right-tab:hover {
@@ -396,6 +419,24 @@ body {
 .right-tab.active {
   border-bottom-color: var(--vscode-focusBorder);
   font-weight: 600;
+}
+
+/* Split-panel toggle button — flush to the right of the tab bar. */
+.right-tab-split {
+  margin-left: auto;
+  border-left: 1px solid var(--vscode-panel-border);
+  padding: 5px 8px;
+  flex-shrink: 0;
+  opacity: 0.7;
+}
+
+.right-tab-split:hover {
+  opacity: 1;
+}
+
+.right-tab-split.active {
+  border-bottom-color: var(--vscode-focusBorder);
+  opacity: 1;
 }
 
 /* ── Custom registers view ───────────────────────────────────────────────── */
