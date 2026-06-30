@@ -41,6 +41,13 @@ type RowListProps = {
   onByteLeave: () => void;
 };
 
+// Last-viewed region/options/scroll position, kept at module scope — NOT React state — so it
+// survives MemoryView unmounting. The right pane only ever renders the active tab (see
+// App.tsx's tab ternary), so switching away and back fully remounts this component; without
+// this, every return trip would reset to region=chip/address $0 regardless of where the user
+// last looked. Same "outside React" trick modelStore.ts uses for the profile model itself.
+let savedView: { region: Region; follow: boolean; colorCode: boolean; topAddress: number | undefined } | undefined;
+
 const toAscii = (b: number): string => (b >= 0x20 && b < 0x7f ? String.fromCharCode(b) : ".");
 
 // Nibble color-coding class for a byte value, or undefined when color-coding is off — only the
@@ -120,13 +127,22 @@ export function MemoryView({
   const model = getProfileModel();
   const dma = model?.dma;
   const snapshot = model?.dmaSnapshot;
-  const [region, setRegion] = useState<Region>("chip");
-  const [follow, setFollow] = useState(true);
-  const [colorCode, setColorCode] = useState(true); // matches the live memory viewer's default
+  // Captured once, on this instance's first render, before any of its own effects can touch
+  // `savedView` — the stable "what to restore on mount" snapshot (see the restore effect below).
+  const initialSavedViewRef = useRef(savedView);
+  const [region, setRegion] = useState<Region>(savedView?.region ?? "chip");
+  const [follow, setFollow] = useState(savedView?.follow ?? true);
+  const [colorCode, setColorCode] = useState(savedView?.colorCode ?? true); // live memory viewer's default
   const [comboQuery, setComboQuery] = useState("");
   const [browseAll, setBrowseAll] = useState(false); // dropdown-button click: bypass the suggestion cap
   const [hover, setHover] = useState<{ addr: number; x: number; y: number } | undefined>(undefined);
   const listRef = useRef<ListImperativeAPI>(null);
+
+  // Keep savedView's region/follow/colorCode current as they change (topAddress is updated
+  // separately, by the List's onRowsRendered below, since it changes far more often).
+  useEffect(() => {
+    savedView = { region, follow, colorCode, topAddress: savedView?.topAddress };
+  }, [region, follow, colorCode]);
 
   const slot = selectedSlot ?? (dma ? dma.owner.length - 1 : 0);
 
@@ -147,14 +163,20 @@ export function MemoryView({
 
   // The reconstructed buffers, kept OUT of props (see RowListProps' comment) behind refs that
   // rows read through `getByte`/`getFadeOpacity`. Refs may only be written in effects/handlers,
-  // not during render (react-hooks/refs). `debouncedSlot` stands in for a version number in
-  // rowProps below: it's guaranteed to change exactly when `recon` does (recon's only non-stable
-  // dependency), so it forces a row repaint without a separate counter.
+  // not during render (react-hooks/refs) — so updating them alone does NOT trigger a repaint;
+  // `chipVersion` is bumped in the same effect, right after the refs are updated, to force one.
+  // (A previous version relied on `debouncedSlot` for this, on the assumption that it "changes
+  // exactly when recon does" — true after mount, but NOT on the very first render, where both
+  // settle together with no further transition to repaint from. That left the view showing
+  // blank rows — chipRef.current still its empty initial value — until something else happened
+  // to force a render, e.g. scrubbing to a slot whose markChanges diff was non-empty, which is
+  // what fed the fade-tick loop below. Bumping chipVersion directly removes that dependency.)
   const chipRef = useRef<Uint8Array>(new Uint8Array(0));
   const slowRef = useRef<Uint8Array>(new Uint8Array(0));
   const chipChangedRef = useRef<Map<number, number>>(new Map());
   const slowChangedRef = useRef<Map<number, number>>(new Map());
   const hasReconciledRef = useRef(false); // skip diffing against the initial empty buffers
+  const [chipVersion, setChipVersion] = useState(0);
   useEffect(() => {
     if (!recon) return;
     if (hasReconciledRef.current) {
@@ -166,6 +188,7 @@ export function MemoryView({
     }
     chipRef.current = recon.chip;
     slowRef.current = recon.slow;
+    setChipVersion((v) => v + 1);
   }, [recon]);
 
   // Animation tick for the change-fade: self-restarting requestAnimationFrame loop that bumps
@@ -225,6 +248,47 @@ export function MemoryView({
   const baseAddr = region === "chip" ? 0 : SLOW_BASE;
   const rowCount = bufLength ? Math.ceil(bufLength / BYTES_PER_ROW) : 0;
 
+  // On first mount: restore the previous scroll position if this tab has been opened before
+  // this session (initialSavedViewRef — region was already restored via the state initializers
+  // above). Otherwise (genuinely first-ever open), if Follow Writes is on but there's no current
+  // write at the selected slot (e.g. no slot selected yet), scan backward from the current
+  // position to find the last RAM write in the frame and scroll there — much more useful than
+  // defaulting to address 0. Intentionally mount-only: subsequent follow/region changes are
+  // handled by the effect above; re-running this on every slot change would fight the user
+  // whenever they scrub to a non-write slot. Defers entirely to the effect above when there's an
+  // actively-pinned write (currentWrite) — that's more relevant right now than either a stale
+  // saved position or the "last write in the frame" fallback.
+  //
+  // The scroll itself is deferred a frame (requestAnimationFrame): calling List's scrollToRow
+  // synchronously in a mount-time effect is a known failure mode for virtualized lists — the
+  // List's own internal scroll-container sizing isn't always settled at that exact point, even
+  // though useEffect runs after paint (this is a freshly-mounted List, right after a tab switch,
+  // not an already-stable one) — whereas the identical scrollToRow call from a user-initiated
+  // combo-box jump (after the List has been live for a while) works fine.
+  useEffect(() => {
+    if (currentWrite) return; // existing effect already handles the "is a write" case
+    const saved = initialSavedViewRef.current;
+    if (saved?.topAddress !== undefined && saved.region === region) {
+      const idx = Math.floor((saved.topAddress - baseAddr) / BYTES_PER_ROW);
+      if (idx >= 0 && idx < rowCount) {
+        const raf = requestAnimationFrame(() => listRef.current?.scrollToRow({ index: idx, align: "start" }));
+        return () => cancelAnimationFrame(raf);
+      }
+    }
+    if (!follow || !dma || !snapshot) return;
+    for (let i = Math.min(slot, dma.owner.length) - 1; i >= 0; i--) {
+      const flags = dma.flags[i];
+      if (!(flags & DMA_WRITE)) continue;
+      if (dmaIsCustomReg(dma.owner[i], flags, dma.addr[i])) continue;
+      const resolved = resolveMemoryRegion(dma.addr[i], snapshot);
+      if (!resolved || resolved.region !== region) continue;
+      const target = Math.floor(resolved.offset / BYTES_PER_ROW);
+      const raf = requestAnimationFrame(() => listRef.current?.scrollToRow({ index: target, align: "smart" }));
+      return () => cancelAnimationFrame(raf);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const getByte = useCallback(
     (off: number): number | undefined => {
       const buf = region === "chip" ? chipRef.current : slowRef.current;
@@ -268,7 +332,7 @@ export function MemoryView({
       getByte,
       getFadeOpacity,
       bufLength: bufLength ?? 0,
-      bufVersion: debouncedSlot,
+      bufVersion: chipVersion,
       fadeTick,
       baseAddr,
       highlightOffset: currentWrite && currentWrite.region === region ? currentWrite.offset : undefined,
@@ -277,7 +341,7 @@ export function MemoryView({
       onByteHover,
       onByteLeave,
     }),
-    [getByte, getFadeOpacity, bufLength, debouncedSlot, fadeTick, baseAddr, currentWrite, region, colorCode, onByteClick, onByteHover, onByteLeave],
+    [getByte, getFadeOpacity, bufLength, chipVersion, fadeTick, baseAddr, currentWrite, region, colorCode, onByteClick, onByteHover, onByteLeave],
   );
 
   // Address/symbol + byte/word/long (signed and unsigned) interpretations for the hovered byte,
@@ -298,8 +362,8 @@ export function MemoryView({
     const word = b1 !== undefined ? (b0 << 8) | b1 : undefined;
     const long = b1 !== undefined && b2 !== undefined && b3 !== undefined ? (((b0 << 24) | (b1 << 16) | (b2 << 8) | b3) >>> 0) : undefined;
     return { byte: b0, word, long };
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- re-reads on bufVersion (data changed), not just hover
-  }, [hover, baseAddr, getByte, debouncedSlot]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- re-reads on chipVersion (data changed), not just hover
+  }, [hover, baseAddr, getByte, chipVersion]);
 
   const hoverSourceLoc = useMemo(
     () => (hover ? sourceLookup(hover.addr) : undefined),
@@ -436,7 +500,16 @@ export function MemoryView({
         </label>
       </div>
       <div className="mem-rows">
-        <List listRef={listRef} rowComponent={RowRenderer} rowProps={rowProps} rowCount={rowCount} rowHeight={18} />
+        <List
+          listRef={listRef}
+          rowComponent={RowRenderer}
+          rowProps={rowProps}
+          rowCount={rowCount}
+          rowHeight={18}
+          onRowsRendered={(visible) => {
+            savedView = { region, follow, colorCode, topAddress: baseAddr + visible.startIndex * BYTES_PER_ROW };
+          }}
+        />
       </div>
       {hover && hoverInfo && (
         <Tooltip x={hover.x} y={hover.y} width={220}>
