@@ -8,7 +8,7 @@ import {
   ISymbol,
   Category,
 } from "./shared/profilerTypes";
-import { decodeDmaGrid, decodeCustomRegs, decodeCopperRecords } from "./dma";
+import { decodeDmaGrid, decodeCustomRegs, decodeCopperRecords, decodeDmaEvents } from "./dma";
 
 export type { ProfileFrame, IProfileModel };
 
@@ -320,6 +320,7 @@ export interface RawCapture {
   // file at capture start, used for DMACON / register reconstruction).
   snapshot?: { chip: Uint8Array; slow: Uint8Array; custom: Uint8Array };
   copper?: Uint8Array; // raw copper-instruction-trace bytes (absent if unsupported/empty)
+  dmaEvents?: Uint8Array; // raw per-cycle event-bitfield bytes, parallel to `dma` (absent if unsupported/empty)
 }
 
 // Pure transform: RawCapture + SourceMap → IProfileModel (+ the decoded samples, retained
@@ -353,6 +354,12 @@ export function buildModelFromCapture(
           slow: raw.snapshot.slow,
           custom: decodeCustomRegs(raw.snapshot.custom),
         };
+      }
+      // Only attach if it lines up with the grid — a mismatched length (stale/corrupt capture)
+      // must not desync events[slot] from owner[slot] elsewhere.
+      if (raw.dmaEvents) {
+        const events = decodeDmaEvents(raw.dmaEvents);
+        if (events && events.length === dma.owner.length) dma.events = events;
       }
     }
   }
@@ -464,6 +471,9 @@ export class ProfilerManager {
           "getDmaSnapshot",
         );
         raw.snapshot = { chip: u8(snap.chip), slow: u8(snap.slow), custom: u8(snap.custom) };
+        const eventsRes = await rpc.sendRpcCommand<{ data: Uint8Array }>("getDmaEvents");
+        const eventsBytes = u8(eventsRes.data);
+        if (eventsBytes.length) raw.dmaEvents = eventsBytes;
       }
     } catch (e) {
       console.warn("[profiler] DMA capture failed (CPU profile unaffected):", e);

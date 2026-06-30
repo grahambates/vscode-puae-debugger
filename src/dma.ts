@@ -9,6 +9,7 @@ import { IDmaModel, ICopperModel } from "./shared/profilerTypes";
 
 const CELL_BYTES = 8;
 const COPPER_RECORD_BYTES = 12;
+const EVENT_BYTES = 4;
 
 // Decode the interleaved Cell[8] byte stream into the four parallel typed arrays.
 // Grid geometry is the fixed PAL DMA_HPOS×DMA_VPOS (no runtime dimension). Returns
@@ -58,6 +59,20 @@ export function decodeCopperRecords(bytes: Uint8Array): ICopperModel | undefined
     vpos[i] = view.getUint16(o + 10, true);
   }
   return { addr, w1, w2, hpos, vpos };
+}
+
+// Decode the per-cycle DMA event bitfield (puae_dma_serialize_events): one little-endian u32 per
+// slot, same index/order as decodeDmaGrid's grid. Returns undefined for an empty/too-small buffer
+// (callers treat that as "no event data" — older captures / a backend without it).
+export function decodeDmaEvents(bytes: Uint8Array): Uint32Array | undefined {
+  if (!bytes || bytes.byteLength < EVENT_BYTES) return undefined;
+  const count = (bytes.byteLength / EVENT_BYTES) | 0;
+  if (count === 0) return undefined;
+
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const events = new Uint32Array(count);
+  for (let i = 0; i < count; i++) events[i] = view.getUint32(i * EVENT_BYTES, true);
+  return events;
 }
 
 // Decode the custom-register baseline (the DmaProfiler spypeek snapshot) — 256 u16,

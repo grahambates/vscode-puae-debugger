@@ -1,4 +1,4 @@
-import { decodeDmaGrid, decodeCustomRegs } from "../dma";
+import { decodeDmaGrid, decodeCustomRegs, decodeDmaEvents } from "../dma";
 import { createSymbolizer } from "../webview/profilerViewer/symbols";
 import {
   reconstructMemoryAt,
@@ -9,7 +9,18 @@ import {
   SLOW_BASE,
 } from "../webview/profilerViewer/reconstruct";
 import { createTopDownGraph } from "../webview/profilerViewer/topDownGraph";
-import { channelStyle, dmaconChannels, ownerRegister, DMACON_REG_INDEX } from "../webview/profilerViewer/dma";
+import {
+  channelStyle,
+  dmaconChannels,
+  ownerRegister,
+  DMACON_REG_INDEX,
+  dmaEventNames,
+  DMA_EVENT_COPPERWAKE,
+  DMA_EVENT_BLITIRQ,
+  DMA_EVENT_CPUINS,
+  DMA_EVENT_VB,
+  DMA_EVENT_VS,
+} from "../webview/profilerViewer/dma";
 import { customRegisterName, CUSTOM_REGISTER_OFFSETS } from "../webview/shared/customRegisters";
 import { getCustomRegDoc } from "../webview/shared/customRegisterDocs";
 import { buildProfileModel, InstructionSample } from "../profilerManager";
@@ -82,6 +93,27 @@ describe("decodeDmaGrid", () => {
   it("returns undefined for an empty/too-small buffer", () => {
     expect(decodeDmaGrid(new Uint8Array(0))).toBeUndefined();
     expect(decodeDmaGrid(new Uint8Array(4))).toBeUndefined();
+  });
+});
+
+describe("decodeDmaEvents", () => {
+  // Pack a u32[] into the little-endian 4-byte-per-slot stream puae_dma_serialize_events emits.
+  function packEvents(values: number[]): Uint8Array {
+    const bytes = new Uint8Array(values.length * 4);
+    const view = new DataView(bytes.buffer);
+    values.forEach((v, i) => view.setUint32(i * 4, v, true));
+    return bytes;
+  }
+
+  it("round-trips the packed u32 stream, including the bit-31 (CPUINS) case", () => {
+    const events = decodeDmaEvents(packEvents([0, 0x80000000, 0x12345678]))!;
+    expect(events).toBeDefined();
+    expect(Array.from(events)).toEqual([0, 0x80000000, 0x12345678]);
+  });
+
+  it("returns undefined for an empty/too-small buffer", () => {
+    expect(decodeDmaEvents(new Uint8Array(0))).toBeUndefined();
+    expect(decodeDmaEvents(new Uint8Array(2))).toBeUndefined();
   });
 });
 
@@ -235,6 +267,22 @@ describe("dmaconChannels", () => {
     expect(on.Sprite).toBe(false);
     expect(on.Aud0).toBe(true);
     expect(on.Aud1).toBe(false);
+  });
+});
+
+describe("dmaEventNames", () => {
+  it("returns an empty list for the (overwhelmingly common) no-event cycle", () => {
+    expect(dmaEventNames(0)).toEqual([]);
+  });
+
+  it("names every set bit, including bit 31 (CPUINS)", () => {
+    expect(dmaEventNames(DMA_EVENT_COPPERWAKE | DMA_EVENT_BLITIRQ)).toEqual(["BLITIRQ", "COPPERWAKE"]);
+    expect(dmaEventNames(DMA_EVENT_CPUINS)).toEqual(["CPUINS"]);
+  });
+
+  it("doesn't cross-match adjacent bits", () => {
+    expect(dmaEventNames(DMA_EVENT_VB)).toEqual(["VB"]);
+    expect(dmaEventNames(DMA_EVENT_VS)).toEqual(["VS"]);
   });
 });
 

@@ -85,7 +85,10 @@ webview-filled `memory?` (Memory), `copper?` (Copper[]), `blits?` (Blit[]).
   COPPERWAKE, CPUIRQ, INTREQ, COPPERWANTED, NOONEGETS, CPUBLITTERSTEAL/STOLEN, COPPERSKIP,
   DDFSTRT/STOP, VB/VS/LOF/LOL, HBS/HBE, HDIWS/HDIWE, VDIW, HSS/HSE, CIAA/CIAB_IRQ, CPUSTOP(IPL).
 - `dmaTypes: Map<type,{name, subtypes:Map<sub,{color(0xAARRGGBB), name?}>}>` — the colour palette.
-→ **Ours:** `BusOwner` ordinals + `channelStyle()` (colours copied) ✅; `DmaEvents` ⬜ (tooltip-only in old, deferred); subtype mapping owner+flags ✅.
+→ **Ours:** `BusOwner` ordinals + `channelStyle()` (colours copied) ✅; `DmaEvents` ✅ (PUAE's own
+`dma_rec.evt` — already computed every cycle by the core for its internal debug log, just exposed
+via a new wasm export rather than re-derived; `DMA_EVENT_*` + `dmaEventNames()` in
+`webview/profilerViewer/dma.ts`; `evt2`/IPL bits not included); subtype mapping owner+flags ✅.
 
 ### `Blit` (`client/dma.ts`)
 `{cycleStart, vposStart, hposStart, cycleEnd?, vposEnd?, hposEnd?, BLTSIZH, BLTSIZV,
@@ -164,7 +167,7 @@ CPU: self/total/aggregate + file:line. DMA: symbolized **Address** (callstack fo
 table, per-channel A/B/C/D ptr+modulo+masks, start/end line/clock/cycle, duration.
 → **Ours:** DMA tooltip ✅ (channel, symbolized Address w/ callstack-from-columns, Register
 name+doc from the static table, Data, Access, Line/ColorClock, DMACON chips via
-`reconstructCustomRegs`); Events ⬜ (no wasm export for `dma_rec.evt` yet); blit tooltip ✅
+`reconstructCustomRegs`); Events ✅ (chips row, same style as DMA Control — see §1's `DmaEvents`); blit tooltip ✅
 (`BlitDetailGrid`, shared verbatim with the Blitter view's detail pane).
 
 ### 2.5 Filter box — `filter.tsx` ✅ · 2.6 Unit dropdown — `unit-select.tsx` ✅
@@ -253,9 +256,8 @@ consumed by Custom Registers/Copper/Blitter/Memory.
    (3.2/3.3/3.4/3.6) — all four wired to the shared playhead.
 6. ⬜ **gfx-resource registry** (emulator-side) → resources/screen. **Next big lift.**
 7. ⬜ **Screen reconstruction** (`getScreen`) — largest; OCS/ECS first, AGA ⛔. Depends on #6.
-8. ⬜ Multi-frame capture + thumbnails; DMACON/Events tooltip detail (the Events bitfield needs a
-   small wasm export — `dma_rec.evt` isn't exposed yet). ✅ bottom-up tree and code lenses done.
-   The rest are independent items, cheap relative to 6–7.
+8. ⬜ Multi-frame capture + thumbnails. ✅ bottom-up tree, code lenses, and the Events bitfield
+   done. Multi-frame is the only item left here, and it's independent of 6–7.
 
 What's left is screen reconstruction + the gfx-resource registry it depends on (6–7, by far the
 largest remaining work), and a handful of small independent items (8). Also worth noting: PUAE's

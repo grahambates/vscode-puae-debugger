@@ -7,7 +7,7 @@ import { binarySearch } from "./array";
 import { dataName, DisplayUnit, formatValue, scaleValue, Timing } from "./display";
 import { compileFilter, IRichFilter } from "./filter";
 import Markdown from "markdown-to-jsx/react";
-import { channelStyle, blitStyle, dmaconChannels, ownerRegister, DMACON_REG_INDEX, ChannelStyle } from "./dma";
+import { channelStyle, blitStyle, dmaconChannels, dmaEventNames, ownerRegister, DMACON_REG_INDEX, ChannelStyle } from "./dma";
 import { getBlits, blitLabel, blitTooltip, Blit } from "./blits";
 import { BlitDetailGrid } from "./BlitDetail";
 import { reconstructCustomRegs } from "./reconstruct";
@@ -908,6 +908,7 @@ export function FlameGraph({
       data,
       access: `${isWrite ? "Write" : "Read"}${isByte ? ".B" : ".W"}`,
       channels: dmacon !== undefined ? dmaconChannels(dmacon) : [],
+      events: dma.events ? dmaEventNames(dma.events[slot]) : [],
       doc: regOff !== undefined ? getCustomRegDoc(regOff) : undefined,
       line: Math.floor(slot / DMA_HPOS),
       colorClock: slot % DMA_HPOS,
@@ -1042,6 +1043,17 @@ export function FlameGraph({
                 <span className="tip-val bt-chips">
                   {dmaInfo.channels.map((c) => (
                     <span key={c.name} className={c.on ? "tt-bit on" : "tt-bit"}>{c.name}</span>
+                  ))}
+                </span>
+              </>
+            )}
+
+            {dmaInfo.events.length > 0 && (
+              <>
+                <span className="tip-label">Events</span>
+                <span className="tip-val bt-chips">
+                  {dmaInfo.events.map((e) => (
+                    <span key={e} className="tt-bit on">{e}</span>
                   ))}
                 </span>
               </>

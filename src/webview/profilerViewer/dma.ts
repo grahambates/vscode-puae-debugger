@@ -165,3 +165,86 @@ export function channelStyle(owner: number, flags: number): ChannelStyle | null 
       return OWNER_STYLE[owner] ?? null;
   }
 }
+
+// Per-cycle hardware-event bitfield (PUAE/WinUAE's dma_rec.evt — debug.h's DMA_EVENT_* defines,
+// libretro-uae/sources/src/include/debug.h:251-282). Most cycles set none of these; a set bit
+// means something notable coincided with that exact cycle (an IRQ fired, the copper woke up,
+// a display-timing boundary was crossed, ...), distinct from `owner`/`flags` which only say who
+// used the bus and whether it was a read/write. `evt2` (IPL/IPLSAMPLE/COPPERUSE) isn't captured.
+export const DMA_EVENT_BLITIRQ = 1 << 0;
+export const DMA_EVENT_BLITFINALD = 1 << 1;
+export const DMA_EVENT_BLITSTARTFINISH = 1 << 2;
+export const DMA_EVENT_BPLFETCHUPDATE = 1 << 3;
+export const DMA_EVENT_COPPERWAKE = 1 << 4;
+export const DMA_EVENT_CPUIRQ = 1 << 5;
+export const DMA_EVENT_INTREQ = 1 << 6;
+export const DMA_EVENT_COPPERWANTED = 1 << 7;
+export const DMA_EVENT_NOONEGETS = 1 << 8;
+export const DMA_EVENT_CPUBLITTERSTEAL = 1 << 9;
+export const DMA_EVENT_CPUBLITTERSTOLEN = 1 << 10;
+export const DMA_EVENT_COPPERSKIP = 1 << 11;
+export const DMA_EVENT_DDFSTRT = 1 << 12;
+export const DMA_EVENT_DDFSTOP = 1 << 13;
+export const DMA_EVENT_DDFSTOP2 = 1 << 14;
+export const DMA_EVENT_SPECIAL = 1 << 15;
+export const DMA_EVENT_VB = 0x00010000;
+export const DMA_EVENT_VS = 0x00020000;
+export const DMA_EVENT_LOF = 0x00040000;
+export const DMA_EVENT_LOL = 0x00080000;
+export const DMA_EVENT_HBS = 0x00100000;
+export const DMA_EVENT_HBE = 0x00200000;
+export const DMA_EVENT_HDIWS = 0x00400000;
+export const DMA_EVENT_HDIWE = 0x00800000;
+export const DMA_EVENT_VDIW = 0x01000000;
+export const DMA_EVENT_HSS = 0x02000000;
+export const DMA_EVENT_HSE = 0x04000000;
+export const DMA_EVENT_CIAA_IRQ = 0x08000000;
+export const DMA_EVENT_CIAB_IRQ = 0x10000000;
+export const DMA_EVENT_CPUSTOP = 0x20000000;
+export const DMA_EVENT_CPUSTOPIPL = 0x40000000;
+export const DMA_EVENT_CPUINS = 0x80000000;
+
+// (bit, short label) in debug.h declaration order — drives the DMA tooltip's Events chip row.
+const DMA_EVENT_LIST: readonly [number, string][] = [
+  [DMA_EVENT_BLITIRQ, "BLITIRQ"],
+  [DMA_EVENT_BLITFINALD, "BLITFINALD"],
+  [DMA_EVENT_BLITSTARTFINISH, "BLITSTARTFINISH"],
+  [DMA_EVENT_BPLFETCHUPDATE, "BPLFETCHUPDATE"],
+  [DMA_EVENT_COPPERWAKE, "COPPERWAKE"],
+  [DMA_EVENT_CPUIRQ, "CPUIRQ"],
+  [DMA_EVENT_INTREQ, "INTREQ"],
+  [DMA_EVENT_COPPERWANTED, "COPPERWANTED"],
+  [DMA_EVENT_NOONEGETS, "NOONEGETS"],
+  [DMA_EVENT_CPUBLITTERSTEAL, "CPUBLITTERSTEAL"],
+  [DMA_EVENT_CPUBLITTERSTOLEN, "CPUBLITTERSTOLEN"],
+  [DMA_EVENT_COPPERSKIP, "COPPERSKIP"],
+  [DMA_EVENT_DDFSTRT, "DDFSTRT"],
+  [DMA_EVENT_DDFSTOP, "DDFSTOP"],
+  [DMA_EVENT_DDFSTOP2, "DDFSTOP2"],
+  [DMA_EVENT_SPECIAL, "SPECIAL"],
+  [DMA_EVENT_VB, "VB"],
+  [DMA_EVENT_VS, "VS"],
+  [DMA_EVENT_LOF, "LOF"],
+  [DMA_EVENT_LOL, "LOL"],
+  [DMA_EVENT_HBS, "HBS"],
+  [DMA_EVENT_HBE, "HBE"],
+  [DMA_EVENT_HDIWS, "HDIWS"],
+  [DMA_EVENT_HDIWE, "HDIWE"],
+  [DMA_EVENT_VDIW, "VDIW"],
+  [DMA_EVENT_HSS, "HSS"],
+  [DMA_EVENT_HSE, "HSE"],
+  [DMA_EVENT_CIAA_IRQ, "CIAA_IRQ"],
+  [DMA_EVENT_CIAB_IRQ, "CIAB_IRQ"],
+  [DMA_EVENT_CPUSTOP, "CPUSTOP"],
+  [DMA_EVENT_CPUSTOPIPL, "CPUSTOPIPL"],
+  [DMA_EVENT_CPUINS, "CPUINS"],
+];
+
+// The set bits' names, in declaration order — empty for the (overwhelmingly common) no-event cycle.
+export function dmaEventNames(bits: number): string[] {
+  const names: string[] = [];
+  for (const [bit, name] of DMA_EVENT_LIST) {
+    if (bits & bit) names.push(name);
+  }
+  return names;
+}

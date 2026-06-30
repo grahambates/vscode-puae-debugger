@@ -554,6 +554,28 @@ wasm_dma_get_grid_ptr(void) { return g_dmaGrid; }
 PUAE_DEBUG_EXPORT uint32_t
 wasm_dma_get_grid_size(void) { return g_dmaGridSize; }
 
+// ---- DMA per-cycle event bitfield (parallel to the grid above, same index) ----
+// Populated by wasm_dma_serialize_events() alongside wasm_dma_serialize_grid(). One u32 LE per
+// cell (DMA_EVENT_* bits from debug.h) instead of widening the 8-byte Cell format itself.
+// 227 * 313 * 4 bytes = ~284KB; serialised by puae_dma_serialize_events() in debug.c.
+#define PUAE_DMA_EVENT_BYTES 4
+static uint8_t g_dmaEvents[227 * 313 * PUAE_DMA_EVENT_BYTES];
+static uint32_t g_dmaEventsSize;
+
+extern uint32_t puae_dma_serialize_events(uint8_t *out);
+
+void
+wasm_dma_serialize_events(void)
+{
+	g_dmaEventsSize = puae_dma_serialize_events(g_dmaEvents);
+}
+
+PUAE_DEBUG_EXPORT const uint8_t *
+wasm_dma_get_events_ptr(void) { return g_dmaEvents; }
+
+PUAE_DEBUG_EXPORT uint32_t
+wasm_dma_get_events_size(void) { return g_dmaEventsSize; }
+
 // Live single-cell query (last completed frame), for the DMA-overlay hover
 // tooltip (dmaHover.ts) — cheap enough to call on every mousemove, unlike
 // wasm_dma_serialize_grid's full-grid repack (which is also only populated

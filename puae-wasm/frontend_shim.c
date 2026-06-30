@@ -778,6 +778,7 @@ extern int  g_wprofActive;
 extern void wasm_profile_prepare(void);
 extern void wasm_profile_finish(int numFrames);
 extern void wasm_dma_serialize_grid(void);
+extern void wasm_dma_serialize_events(void);
 
 extern int  debug_dma;
 extern void record_dma_reset(int start);
@@ -797,6 +798,7 @@ int wasm_profile_start(int numFrames)
     debug_dma = 0;
     wasm_profile_finish(numFrames);
     wasm_dma_serialize_grid();
+    wasm_dma_serialize_events();
     return 1;
 }
 

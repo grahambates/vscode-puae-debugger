@@ -106,6 +106,11 @@ export interface IDmaModel {
   flags: Uint8Array; // bits0-2 WRITE|BYTE|CODE; bits3-4 Copper sub-state (MOVE/WAIT/SKIP)
   addr: Uint32Array; // bus address (tooltips + reconstruction routing)
   value: Uint16Array; // bus data (tooltips + reconstruction)
+  // Per-cycle hardware-event bitfield (DMA_EVENT_* — BLITIRQ/COPPERWAKE/VB/etc., see
+  // webview/profilerViewer/dma.ts's DMA_EVENT_NAMES), parallel to the arrays above. Absent for
+  // captures predating this field (older .vamigaprofile files) or a backend that doesn't supply
+  // it (vAmiga) — tooltip Events row just doesn't render.
+  events?: Uint32Array;
 }
 
 // Fixed PAL DMA-grid geometry (matches the emulator's DmaProfiler DMA_HPOS/VPOS and the old

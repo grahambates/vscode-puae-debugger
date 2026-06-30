@@ -74,6 +74,7 @@ export function encodeCapture(raw: RawCapture, opts: EncodeOptions = {}): Buffer
     sections.push({ name: "custom", bytes: raw.snapshot.custom });
   }
   if (raw.copper) sections.push({ name: "copper", bytes: raw.copper });
+  if (raw.dmaEvents) sections.push({ name: "dmaEvents", bytes: raw.dmaEvents });
   if (opts.elf) sections.push({ name: "elf", bytes: opts.elf });
 
   let offset = 0;
@@ -166,6 +167,7 @@ export function decodeCapture(file: Uint8Array): DecodedCapture {
     // decodeCustomRegs() tolerates an empty array, so default it rather than dropping the snapshot.
     snapshot: chip && slow ? { chip, slow, custom: get("custom") ?? new Uint8Array(0) } : undefined,
     copper: get("copper"), // absent in pre-copper-trace documents
+    dmaEvents: get("dmaEvents"), // absent in pre-events documents
   };
   return { raw, elf: get("elf"), manifest };
 }
