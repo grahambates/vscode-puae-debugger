@@ -292,6 +292,24 @@ export function DisassemblyView({
           <input type="checkbox" checked={follow} onChange={(e) => setFollow(e.target.checked)} />
           Follow execution
         </label>
+        {columns.length > 0 && dmaSlots && (
+          <span className="cr-nav">
+            <button
+              onClick={() => {
+                const target = currentIdx !== undefined ? currentIdx - 1 : columns.length - 1;
+                if (target >= 0) onSelectSlot(columnIndexToSlot(columns, target, dmaSlots));
+              }}
+              title="Previous instruction"
+            >◀</button>
+            <button
+              onClick={() => {
+                const target = currentIdx !== undefined ? currentIdx + 1 : 0;
+                if (target < columns.length) onSelectSlot(columnIndexToSlot(columns, target, dmaSlots));
+              }}
+              title="Next instruction"
+            >▶</button>
+          </span>
+        )}
       </div>
       <div className="disasm-body">
         <div className="disasm-rows">

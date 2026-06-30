@@ -82,10 +82,19 @@ export function CopperView({
     if (!copper) return [];
     const out: CopperRow[] = [];
     for (let i = 0; i < copper.addr.length; i++) {
-      const slot = copper.vpos[i] * DMA_HPOS + copper.hpos[i];
+      // Clamp hpos to [0, DMA_HPOS-1]: cop_record stores raw hardware hpos which can reach
+      // up to NR_DMA_REC_HPOS-1 = 287 (e.g. COP1JMP/COP2JMP strobes fired during HBlank).
+      // Without clamping, slot = vpos*227 + hpos would overflow into the *next* line's slot
+      // space, making slots non-monotonic and breaking the binary floor search for currentIndex
+      // (the strobe appears to come *after* the first instruction of the restarted list).
+      const hpos = Math.min(copper.hpos[i], DMA_HPOS - 1);
+      const slot = copper.vpos[i] * DMA_HPOS + hpos;
       const insn = disassembleCopperInstruction(copper.addr[i], copper.w1[i], copper.w2[i]);
       out.push({ slot, insn, loc: sourceLookup(insn.address) });
     }
+    // Sort by slot as a safety net: should already be ordered post-clamp, but if any other
+    // edge cases cause non-monotonicity the binary floor search for currentIndex requires it.
+    out.sort((a, b) => a.slot - b.slot);
     return out;
   }, [copper, sourceLookup]);
 
@@ -118,8 +127,29 @@ export function CopperView({
     return <div className="hint">No copper trace for this frame.</div>;
   }
 
+  const stepTo = (idx: number) => {
+    if (idx >= 0 && idx < rows.length) onSelectSlot(rows[idx].slot);
+  };
+
   return (
     <div className="copperview">
+      <div className="cop-toolbar">
+        <span className="cr-nav">
+          <button
+            onClick={() => stepTo(currentIndex > 0 ? currentIndex - 1 : 0)}
+            disabled={currentIndex <= 0}
+            title="Previous copper instruction"
+          >◀</button>
+          <button
+            onClick={() => stepTo(currentIndex < 0 ? 0 : currentIndex + 1)}
+            disabled={currentIndex >= rows.length - 1}
+            title="Next copper instruction"
+          >▶</button>
+        </span>
+        <span className="cop-toolbar-pos">
+          {currentIndex >= 0 ? `${currentIndex + 1} / ${rows.length}` : `— / ${rows.length}`}
+        </span>
+      </div>
       <List listRef={listRef} rowComponent={RowRenderer} rowProps={rowProps} rowCount={rows.length} rowHeight={20} />
     </div>
   );
