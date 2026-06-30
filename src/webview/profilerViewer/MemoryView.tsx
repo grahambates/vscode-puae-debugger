@@ -539,7 +539,8 @@ export function MemoryView({
               );
             })}
           </div>
-          <div className="tt-hint">Click: jump to previous write · Shift+Click: jump to next write</div>
+          <div className="tt-hint">Click: jump to previous write</div>
+          <div className="tt-hint">Shift+Click: jump to next write</div>
           {hoverSourceLoc && (
             <div className="tt-hint">{isMac ? "Cmd" : "Ctrl"}+Click to open source</div>
           )}
