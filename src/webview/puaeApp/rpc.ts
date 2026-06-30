@@ -1182,6 +1182,23 @@ export function setupRpcDispatcher(
         }));
         break;
       }
+      // Toggles debug_copper — the same flag the live DMA-overlay's COPPER channel button
+      // uses (app.ts's setChannel), but called directly here so the profiler can record the
+      // executed copper instruction trace without enabling the visual overlay.
+      case "copperTrackingEnable":
+        M._wasm_copper_tracking_enable(args.enabled ? 1 : 0);
+        rpcRequest(() => ({ ok: true }));
+        break;
+      case "getCopperData": {
+        const ptr = M._wasm_copper_get_records_ptr(); // re-serializes on every call
+        const size = M._wasm_copper_get_records_size();
+        rpcRequest(() => ({
+          data: size > 0
+            ? new Uint8Array(M.HEAPU8.buffer, ptr, size).slice()
+            : new Uint8Array(0),
+        }));
+        break;
+      }
       case "getDmaSnapshot": {
         const chipPtr = M._wasm_dma_get_chip_ptr();
         const chipSize = M._wasm_dma_get_chip_size();

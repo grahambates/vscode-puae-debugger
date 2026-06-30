@@ -38,6 +38,7 @@ function sampleRaw(withDma: boolean): RawCapture {
       slow: new Uint8Array([]),
       custom: new Uint8Array([0x96, 0x03, 0x80, 0x7f]), // DMACONR=0x0396, ... (LE u16 pairs)
     };
+    raw.copper = new Uint8Array([0x00, 0x10, 0x00, 0x00, 0x96, 0x00, 0x00, 0x82, 0x0a, 0x00, 0x05, 0x00]); // one 12-byte record
   }
   return raw;
 }
@@ -69,6 +70,7 @@ describe("vamigaProfile codec", () => {
     eq(out.snapshot!.chip, raw.snapshot!.chip);
     eq(out.snapshot!.slow, raw.snapshot!.slow);
     eq(out.snapshot!.custom, raw.snapshot!.custom);
+    eq(out.copper, raw.copper);
     eq(outElf, elf);
 
     expect(manifest.program.name).toBe("a.elf");
@@ -84,6 +86,7 @@ describe("vamigaProfile codec", () => {
     eq(out.profile.data, raw.profile.data);
     expect(out.dma).toBeUndefined();
     expect(out.snapshot).toBeUndefined();
+    expect(out.copper).toBeUndefined();
     expect(elf).toBeUndefined();
     expect(manifest.program.elfEmbedded).toBe(false);
     // kickstart omitted at encode → written as the empty sentinel, never undefined.

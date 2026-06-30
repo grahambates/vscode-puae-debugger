@@ -5,6 +5,8 @@ import { unpackBulk } from "../../profilerBulk";
 import { setProfileModel, getProfileModel, useModelVersion } from "./modelStore";
 import { FlameGraph } from "./FlameGraph";
 import { TimeView } from "./TimeView";
+import { CustomRegsView } from "./CustomRegsView";
+import { CopperView } from "./CopperView";
 import { createTopDownGraph } from "./topDownGraph";
 import { DisplayUnit, unitOptions, Timing } from "./display";
 import { IRichFilter } from "./filter";
@@ -22,6 +24,10 @@ export function App() {
   const [filterText, setFilterText] = useState("");
   const [caseSensitive, setCaseSensitive] = useState(false);
   const [useRegex, setUseRegex] = useState(false);
+  // The pinned DMA-cycle cursor, shared between the flame graph (which sets it on click) and the
+  // custom-registers view (which reads it). Reset on a fresh capture, below.
+  const [selectedSlot, setSelectedSlot] = useState<number | undefined>(undefined);
+  const [rightTab, setRightTab] = useState<"time" | "customregs" | "copper">("time");
   // "file" = a loaded .vamigaprofile (read-only): no live Capture/Save. The host bakes the
   // mode into #root so it's known at init and holds even if no model ever arrives.
   const [mode] = useState<"live" | "file">(() =>
@@ -39,6 +45,7 @@ export function App() {
     const handle = (event: MessageEvent) => {
       const m = event.data as ProfilerOutboundMessage;
       if (m.command === "captureResult") {
+        setSelectedSlot(undefined);
         if (m.model.symbols) symbolsRef.current = m.model.symbols;
         const base = symbolsRef.current ? { ...m.model, symbols: symbolsRef.current } : m.model;
         const bulkUri = m.bulkUri;
@@ -52,8 +59,8 @@ export function App() {
         void fetch(bulkUri)
           .then((r) => r.arrayBuffer())
           .then((buf) => {
-            const { dma, dmaSnapshot } = unpackBulk(buf);
-            setProfileModel({ ...base, dma, dmaSnapshot });
+            const { dma, dmaSnapshot, copper } = unpackBulk(buf);
+            setProfileModel({ ...base, dma, dmaSnapshot, copper });
           })
           .catch((e) => {
             console.warn("[profiler] bulk fetch failed:", e);
@@ -158,9 +165,43 @@ export function App() {
       {error && <div className="error">{error}</div>}
       {model ? (
         <div className="split-pane">
-          <FlameGraph displayUnit={unit} filter={filter} onOpenSource={openSource} />
+          <FlameGraph
+            displayUnit={unit}
+            filter={filter}
+            onOpenSource={openSource}
+            selectedSlot={selectedSlot}
+            onSelectSlot={setSelectedSlot}
+          />
           <div className="split-divider" />
-          <TimeView data={dataTable} filter={filter} displayUnit={unit} timing={timing} onOpenSource={openSource} />
+          <div className="right-pane">
+            <div className="right-tabs">
+              <button
+                className={"right-tab" + (rightTab === "time" ? " active" : "")}
+                onClick={() => setRightTab("time")}
+              >
+                Time View
+              </button>
+              <button
+                className={"right-tab" + (rightTab === "customregs" ? " active" : "")}
+                onClick={() => setRightTab("customregs")}
+              >
+                Custom Registers
+              </button>
+              <button
+                className={"right-tab" + (rightTab === "copper" ? " active" : "")}
+                onClick={() => setRightTab("copper")}
+              >
+                Copper
+              </button>
+            </div>
+            {rightTab === "time" ? (
+              <TimeView data={dataTable} filter={filter} displayUnit={unit} timing={timing} onOpenSource={openSource} />
+            ) : rightTab === "customregs" ? (
+              <CustomRegsView selectedSlot={selectedSlot} onSelectSlot={setSelectedSlot} />
+            ) : (
+              <CopperView selectedSlot={selectedSlot} onSelectSlot={setSelectedSlot} />
+            )}
+          </div>
         </div>
       ) : (
         !error && (

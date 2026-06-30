@@ -5,9 +5,10 @@
 // little-endian: { u8 owner; u8 flags; u16 data; u32 addr }. See
 // vamigaweb_fork/Core/Profiler/DmaProfiler.h.
 
-import { IDmaModel } from "./shared/profilerTypes";
+import { IDmaModel, ICopperModel } from "./shared/profilerTypes";
 
 const CELL_BYTES = 8;
+const COPPER_RECORD_BYTES = 12;
 
 // Decode the interleaved Cell[8] byte stream into the four parallel typed arrays.
 // Grid geometry is the fixed PAL DMA_HPOS×DMA_VPOS (no runtime dimension). Returns
@@ -31,6 +32,32 @@ export function decodeDmaGrid(bytes: Uint8Array): IDmaModel | undefined {
     addr[i] = view.getUint32(o + 4, true);
   }
   return { owner, flags, addr, value };
+}
+
+// Decode the emulator's copper-instruction trace (puae_copper_serialize): 12-byte
+// little-endian records { u32 addr; u16 w1; u16 w2; u16 hpos; u16 vpos }, one per executed
+// instruction. Returns undefined for an empty/too-small buffer.
+export function decodeCopperRecords(bytes: Uint8Array): ICopperModel | undefined {
+  if (!bytes || bytes.byteLength < COPPER_RECORD_BYTES) return undefined;
+  const count = (bytes.byteLength / COPPER_RECORD_BYTES) | 0;
+  if (count === 0) return undefined;
+
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const addr = new Uint32Array(count);
+  const w1 = new Uint16Array(count);
+  const w2 = new Uint16Array(count);
+  const hpos = new Uint16Array(count);
+  const vpos = new Uint16Array(count);
+
+  for (let i = 0; i < count; i++) {
+    const o = i * COPPER_RECORD_BYTES;
+    addr[i] = view.getUint32(o, true);
+    w1[i] = view.getUint16(o + 4, true);
+    w2[i] = view.getUint16(o + 6, true);
+    hpos[i] = view.getUint16(o + 8, true);
+    vpos[i] = view.getUint16(o + 10, true);
+  }
+  return { addr, w1, w2, hpos, vpos };
 }
 
 // Decode the custom-register baseline (the DmaProfiler spypeek snapshot) — 256 u16,

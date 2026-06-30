@@ -8,7 +8,7 @@ import {
   ISymbol,
   Category,
 } from "./shared/profilerTypes";
-import { decodeDmaGrid, decodeCustomRegs } from "./dma";
+import { decodeDmaGrid, decodeCustomRegs, decodeCopperRecords } from "./dma";
 
 export type { ProfileFrame, IProfileModel };
 
@@ -319,6 +319,7 @@ export interface RawCapture {
   // Reconstruction baseline (raw bytes; `custom` is 256 little-endian u16 = the custom-register
   // file at capture start, used for DMACON / register reconstruction).
   snapshot?: { chip: Uint8Array; slow: Uint8Array; custom: Uint8Array };
+  copper?: Uint8Array; // raw copper-instruction-trace bytes (absent if unsupported/empty)
 }
 
 // Pure transform: RawCapture + SourceMap → IProfileModel (+ the decoded samples, retained
@@ -355,6 +356,7 @@ export function buildModelFromCapture(
       }
     }
   }
+  if (raw.copper) model.copper = decodeCopperRecords(raw.copper);
   return { model, samples };
 }
 
@@ -416,6 +418,14 @@ export class ProfilerManager {
       });
     }
 
+    // Enable the copper-instruction trace for the captured frame(s) — best-effort, a backend
+    // without it (e.g. an older PUAE build) just won't produce raw.copper below.
+    try {
+      await rpc.sendRpcCommand("copperTrackingEnable", { enabled: true });
+    } catch {
+      // unsupported — fine, the CPU/DMA profile doesn't depend on it
+    }
+
     // Capture runs N frames synchronously in the emulator; allow generous time.
     await rpc.sendRpcCommand("startProfiling", { numFrames }, 30000);
 
@@ -457,6 +467,23 @@ export class ProfilerManager {
       }
     } catch (e) {
       console.warn("[profiler] DMA capture failed (CPU profile unaffected):", e);
+    }
+
+    // Fetch the copper trace recorded over the same frame(s), then turn tracking back off —
+    // it costs real per-cycle overhead in the live emulator, so it shouldn't stay on past
+    // this capture. Best-effort, like the DMA grid above.
+    try {
+      const copperRes = await rpc.sendRpcCommand<{ data: Uint8Array }>("getCopperData");
+      const copperBytes = u8(copperRes.data);
+      if (copperBytes.length) raw.copper = copperBytes;
+    } catch (e) {
+      console.warn("[profiler] copper trace capture failed (CPU profile unaffected):", e);
+    } finally {
+      try {
+        await rpc.sendRpcCommand("copperTrackingEnable", { enabled: false });
+      } catch {
+        // unsupported — already a no-op
+      }
     }
 
     const { model, samples } = buildModelFromCapture(raw, sourceMap);

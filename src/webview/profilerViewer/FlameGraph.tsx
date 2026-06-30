@@ -215,10 +215,16 @@ export function FlameGraph({
   displayUnit,
   filter,
   onOpenSource,
+  selectedSlot,
+  onSelectSlot,
 }: {
   displayUnit: DisplayUnit;
   filter: IRichFilter;
   onOpenSource: (file: string, line: number, toSide: boolean) => void;
+  // The pinned DMA-cycle cursor (shared with the custom-registers view): set by clicking the
+  // DMA band. Persists across hover, unlike `dmaHover` — drawn as a vertical marker line.
+  selectedSlot?: number;
+  onSelectSlot?: (slot: number) => void;
 }) {
   // The model is read from the external store (not a prop) so its large arrays never go through
   // React's serializer. FlameGraph is only rendered when a model exists (App guards it), and it
@@ -238,6 +244,7 @@ export function FlameGraph({
   const [blitHover, setBlitHover] = useState<{ blit: Blit; x: number; y: number } | undefined>(undefined);
   const [focused, setFocused] = useState<IBox | undefined>(undefined);
   const [drag, setDrag] = useState<IDrag | undefined>(undefined);
+  const [scrubbing, setScrubbing] = useState(false);
 
   // DMA channel line (captured in the same frame). A band of DMA_BAND_H sits between
   // the timeline ruler and the CPU rows, which are shifted down by the band height. The
@@ -584,7 +591,21 @@ export function FlameGraph({
         drawClippedLabel(ctx, b.text, cx, b.y1, cw, ROW_H, dim ? "rgba(255,255,255,0.4)" : b.textDark ? "#000" : "#fff");
       }
     }
-  }, [boxes, width, height, bounds, hovered, focused, duration, displayUnit, timing, matches, dma, dmaSlots, dmaData, dmaHover, bandH, blits, blitH, blitHover, blitResult]);
+
+    // Pinned time-cursor: a vertical marker at the selected DMA cycle (set by clicking the DMA
+    // band), spanning the whole chart — drives the custom-registers view.
+    if (dma && selectedSlot !== undefined) {
+      const mx = toX(selectedSlot / dmaSlots);
+      if (mx >= -1 && mx <= width + 1) {
+        ctx.strokeStyle = "#e8c547";
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(mx + 0.5, 0);
+        ctx.lineTo(mx + 0.5, height);
+        ctx.stroke();
+      }
+    }
+  }, [boxes, width, height, bounds, hovered, focused, duration, displayUnit, timing, matches, dma, dmaSlots, dmaData, dmaHover, bandH, blits, blitH, blitHover, blitResult, selectedSlot]);
 
   // --- horizontal pan scrollbar (synced to `bounds`) ----------------------------
   // The scroll child's width is canvasWidth/range, so when zoomed in it overflows
@@ -682,6 +703,32 @@ export function FlameGraph({
     [blits, blitH, bandH, bounds, width, dmaSlots],
   );
 
+  // --- scrubbable playhead: a dedicated strip over the timeline ruler, separate from the
+  // canvas pan-drag below, so dragging it continuously moves `selectedSlot` instead of panning
+  // (ported from the old extension's timeBack/timeHandle). ---------------------------------
+  const slotFromClientX = useCallback(
+    (clientX: number): number => {
+      const rect = canvasRef.current!.getBoundingClientRect();
+      const range = bounds.maxX - bounds.minX || 1;
+      const frac = bounds.minX + ((clientX - rect.left) / width) * range;
+      return clamp(0, Math.round(frac * dmaSlots), Math.max(dmaSlots - 1, 0));
+    },
+    [bounds, width, dmaSlots],
+  );
+
+  const onScrubPointerDown = (e: ReactPointerEvent<HTMLDivElement>) => {
+    if (!dma || !onSelectSlot) return;
+    e.currentTarget.setPointerCapture(e.pointerId);
+    onSelectSlot(slotFromClientX(e.clientX));
+    setScrubbing(true);
+    e.stopPropagation();
+  };
+  const onScrubPointerMove = (e: ReactPointerEvent<HTMLDivElement>) => {
+    if (!scrubbing || !onSelectSlot) return;
+    onSelectSlot(slotFromClientX(e.clientX));
+  };
+  const onScrubPointerUp = () => setScrubbing(false);
+
   // --- drag to pan with pointer capture, with click-vs-drag detection -----------
   // setPointerCapture routes all pointermove/up to the canvas even when the cursor
   // leaves the webview, so the drag always ends on release. Plain mouse events lose
@@ -737,6 +784,8 @@ export function FlameGraph({
         // lineNumber is 0-based; openProfilerSource expects 1-based. Normalize unknown (-1) to 1.
         onOpenSource(loc.callFrame.url, loc.callFrame.lineNumber >= 0 ? loc.callFrame.lineNumber + 1 : 1, e.altKey);
       }
+    } else if (isClick && dmaHover && onSelectSlot) {
+      onSelectSlot(dmaHover.slot);
     }
     setDrag(undefined);
   };
@@ -877,6 +926,31 @@ export function FlameGraph({
             if (!drag) { setHovered(undefined); setDmaHover(undefined); setBlitHover(undefined); }
           }}
         />
+        {dma && onSelectSlot && (
+          <>
+            <div
+              className="time-ruler"
+              style={{ height: TIMELINE_H }}
+              onPointerDown={onScrubPointerDown}
+              onPointerMove={onScrubPointerMove}
+              onPointerUp={onScrubPointerUp}
+              onLostPointerCapture={onScrubPointerUp}
+            />
+            {selectedSlot !== undefined && (
+              <div
+                className="time-handle"
+                style={{
+                  height: TIMELINE_H,
+                  transform: `translateX(${(bounds.maxX - bounds.minX === 0 ? 0 : ((selectedSlot / dmaSlots - bounds.minX) / (bounds.maxX - bounds.minX)) * width) - 4}px)`,
+                }}
+                onPointerDown={onScrubPointerDown}
+                onPointerMove={onScrubPointerMove}
+                onPointerUp={onScrubPointerUp}
+                onLostPointerCapture={onScrubPointerUp}
+              />
+            )}
+          </>
+        )}
       </div>
       <div className="hscroll" ref={scrollRef} onScroll={onScroll} style={{ width }}>
         <div ref={scrollChildRef} />

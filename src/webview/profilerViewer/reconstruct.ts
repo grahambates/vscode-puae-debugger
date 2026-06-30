@@ -89,3 +89,27 @@ export function reconstructCustomRegs(
   }
   return regs;
 }
+
+// Nearest slot strictly before/after `slot` where bare register `offset` (0x000-0x1FE) was
+// written — the custom-registers viewer's prev/next-write navigation (old GetPrev/NextCustomRegWriteTime).
+export function findPrevRegWrite(dma: IDmaModel, offset: number, slot: number): number | undefined {
+  const off = offset & 0x1fe;
+  for (let i = Math.min(slot, dma.owner.length) - 1; i >= 0; i--) {
+    const flags = dma.flags[i];
+    if (!(flags & DMA_WRITE)) continue;
+    if (!dmaIsCustomReg(dma.owner[i], flags, dma.addr[i])) continue;
+    if ((dma.addr[i] & 0x1fe) === off) return i;
+  }
+  return undefined;
+}
+
+export function findNextRegWrite(dma: IDmaModel, offset: number, slot: number): number | undefined {
+  const off = offset & 0x1fe;
+  for (let i = Math.max(slot + 1, 0); i < dma.owner.length; i++) {
+    const flags = dma.flags[i];
+    if (!(flags & DMA_WRITE)) continue;
+    if (!dmaIsCustomReg(dma.owner[i], flags, dma.addr[i])) continue;
+    if ((dma.addr[i] & 0x1fe) === off) return i;
+  }
+  return undefined;
+}

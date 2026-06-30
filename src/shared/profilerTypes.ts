@@ -124,6 +124,19 @@ export function dmaIsCustomReg(owner: number, flags: number, addr: number): bool
   return false;
 }
 
+// The executed copper-instruction trace for the captured frame (PUAE's cop_record[],
+// puae_copper_serialize) — one entry per instruction the copper actually ran, in execution
+// order. `addr` is the instruction's start address (both words); hpos/vpos are the DMA-grid
+// coordinates of its second word fetch. Decoded webview-side via disassembleCopperInstruction
+// (src/shared/copperDisassembler.ts) — this just carries the raw trace.
+export interface ICopperModel {
+  addr: Uint32Array;
+  w1: Uint16Array;
+  w2: Uint16Array;
+  hpos: Uint16Array;
+  vpos: Uint16Array;
+}
+
 // Capture-start RAM baseline for memory reconstruction (replay the grid's WRITE cells
 // over this). Retained extension-side this phase; shipped to the webview when a
 // reconstruction consumer (memory/screen/blitter view) is built.
@@ -161,6 +174,9 @@ export interface IProfileModel {
   // Capture-start chip/slow RAM baseline; with `dma` it lets the webview reconstruct memory
   // at any cycle (see webview/profilerViewer/reconstruct.ts). Absent if DMA capture failed.
   dmaSnapshot?: DmaSnapshot;
+  // Executed copper-instruction trace for the captured frame. Absent if copper tracking
+  // wasn't supported/enabled or produced nothing.
+  copper?: ICopperModel;
   // Program + Kickstart symbols (sorted by address) for webview-side symbolization.
   symbols?: ISymbol[];
 }
