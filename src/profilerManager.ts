@@ -9,26 +9,25 @@ import {
   IDisassembledFunction,
   Category,
   REG_COUNT,
+  ILineTableEntry,
+  ISegmentRange,
 } from "./shared/profilerTypes";
 import { decodeDmaGrid, decodeCustomRegs, decodeCopperRecords, decodeDmaEvents, decodeRegisterTrace } from "./dma";
 
 export type { ProfileFrame, IProfileModel };
 
-// Flatten the source map's symbols into the address-sorted {address,name,size,file,line} list
-// the webview symbolizer (and Memory view's "jump to source" fallback for data addresses)
-// consumes. Sizes come from getSymbolLengths (clamped to segment end); file/line are each
-// symbol's own declaration site, resolved here (not webview-side) since only the host has a
-// SourceMap. excludeLocal=true so this agrees with the flame graph's function attribution
-// (symbolicate/expandPc also pass excludeLocal=true) — otherwise a vasm local label (e.g. a
-// macro's `.\@` branch target) would split a routine's symbol-list entry at the label instead of
-// the webview resolving addresses past it back to the enclosing routine.
+// Flatten the source map's symbols into the address-sorted {address,name,size} list the webview
+// symbolizer consumes. Sizes come from getSymbolLengths (clamped to segment end). excludeLocal=
+// true so this agrees with the flame graph's function attribution (symbolicate/expandPc also pass
+// excludeLocal=true) — otherwise a vasm local label (e.g. a macro's `.\@` branch target) would
+// split a routine's symbol-list entry at the label instead of the webview resolving addresses
+// past it back to the enclosing routine.
 function buildSymbolList(sourceMap: SourceMap): ISymbol[] {
   const addrs = sourceMap.getSymbols(true); // name -> address
   const sizes = sourceMap.getSymbolLengths(true) ?? {}; // name -> size
   const out: ISymbol[] = [];
   for (const name in addrs) {
-    const loc = sourceMap.lookupAddress(addrs[name]);
-    out.push({ address: addrs[name], name, size: sizes[name] ?? 0, file: loc?.path, line: loc?.line });
+    out.push({ address: addrs[name], name, size: sizes[name] ?? 0 });
   }
   out.sort((a, b) => a.address - b.address);
   return out;
@@ -379,6 +378,8 @@ export function buildModelFromCapture(
 
   const model = buildProfileModel(samples, sourceMap, cyclesPerMicroSecond);
   model.symbols = buildSymbolList(sourceMap);
+  model.lineTable = sourceMap.getLineTable().map((e): ILineTableEntry => ({ address: e.address, file: e.path, line: e.line }));
+  model.segments = sourceMap.getSegmentsInfo().map((s): ISegmentRange => ({ address: s.address, size: s.size }));
 
   if (raw.dma) {
     const dma = decodeDmaGrid(raw.dma);
@@ -413,8 +414,8 @@ export function buildModelFromCapture(
 }
 
 // Re-derive each instruction's source file/line from `sourceMap` (the wasm-produced text/bytes/
-// stats in `raw` are already final — see RawDisassembledFunction's comment). `line` is stored raw
-// (matching ILocation.callFrame's convention — see internLocation below), not pre-adjusted.
+// stats in `raw` are already final — see RawDisassembledFunction's comment). `line` is stored
+// 1-based, straight from lookupAddress().line — see IDisassembledInstruction.line/ProfileFrame.line.
 export function attachDisassembly(raw: RawDisassembledFunction[], sourceMap: SourceMap): IDisassembledFunction[] {
   return raw.map((fn) => ({
     address: fn.address,

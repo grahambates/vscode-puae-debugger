@@ -245,7 +245,7 @@ export function App() {
             ) : rightTab === "customregs" ? (
               <CustomRegsView selectedSlot={selectedSlot} onSelectSlot={setSelectedSlot} />
             ) : rightTab === "copper" ? (
-              <CopperView selectedSlot={selectedSlot} onSelectSlot={setSelectedSlot} />
+              <CopperView selectedSlot={selectedSlot} onSelectSlot={setSelectedSlot} onOpenSource={openSource} />
             ) : rightTab === "blitter" ? (
               <BlitterView selectedSlot={selectedSlot} onSelectSlot={setSelectedSlot} displayUnit={unit} timing={timing} />
             ) : rightTab === "memory" ? (

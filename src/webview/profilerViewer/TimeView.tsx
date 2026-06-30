@@ -261,13 +261,14 @@ function TimeViewRow({
   style: React.CSSProperties;
 }) {
   const location = node.callFrame.url
-    ? `${node.callFrame.url}${node.callFrame.lineNumber >= 0 ? `:${node.callFrame.lineNumber + 1}` : ""}`
+    ? `${node.callFrame.url}${node.callFrame.lineNumber >= 0 ? `:${node.callFrame.lineNumber}` : ""}`
     : undefined;
 
   const onClickFile = (e: React.MouseEvent) => {
     e.preventDefault();
-    // lineNumber is 0-based; openProfilerSource expects 1-based. Normalize unknown (-1) to 1.
-    if (node.callFrame.url) onOpenSource(node.callFrame.url, node.callFrame.lineNumber >= 0 ? node.callFrame.lineNumber + 1 : 1, e.altKey);
+    // lineNumber is already 1-based (raw SourceMap.lookupAddress().line), matching what
+    // openProfilerSource expects. Normalize unknown (-1) to 1.
+    if (node.callFrame.url) onOpenSource(node.callFrame.url, node.callFrame.lineNumber >= 0 ? node.callFrame.lineNumber : 1, e.altKey);
   };
 
   const onToggleExpand = (e: React.MouseEvent) => {

@@ -66,6 +66,8 @@ describe("buildModelFromCapture: register-trace alignment with model.pcs", () =>
       getUnwindRows: () => [{}],
       getSymbols: () => ({ _start: 0x100 }),
       getSymbolLengths: () => ({ _start: 0x10 }),
+      getLineTable: () => [],
+      getSegmentsInfo: () => [],
     } as unknown as SourceMap;
   }
 

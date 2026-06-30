@@ -182,6 +182,22 @@ export class SourceMap {
     return undefined;
   }
 
+  /**
+   * The full address->line table (every address transition the assembler/compiler's line info
+   * covers — code AND data, e.g. a copper list's `dc.w` lines), for shipping to a client that
+   * wants to floor-search it itself instead of round-tripping each address through lookupAddress
+   * (the profiler webview embeds this once per capture — see profilerManager.ts's
+   * buildModelFromCapture — so e.g. the Memory/Copper views can resolve source locations without
+   * a live session). Not sorted; callers that need floor-search order should sort by address.
+   */
+  public getLineTable(): { address: number; path: string; line: number }[] {
+    return Array.from(this.locationsByAddress.values(), (loc) => ({
+      address: loc.address,
+      path: loc.path,
+      line: loc.line,
+    }));
+  }
+
   public lookupSourceLine(path: string, line: number): Location {
     const pathKey = normalize(path).toUpperCase();
     const fileMap = this.locationsBySource.get(pathKey);

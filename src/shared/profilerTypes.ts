@@ -6,7 +6,9 @@
 export interface ProfileFrame {
   func: string;
   file?: string;
-  line?: number;
+  line?: number; // 1-based, straight from SourceMap.lookupAddress().line — pass directly to
+  // openProfilerSource's `line` param, no +1 (despite ILocation.callFrame.lineNumber's name,
+  // this is NOT the 0-based V8/CDP convention — a past mix-up here caused an off-by-one bug)
   address: number;
 }
 
@@ -22,13 +24,16 @@ export enum Category {
   Module = 2,
 }
 
-// A symbolicated frame. Mirrors the subset of CDP's Runtime.CallFrame the old
-// renderer reads, so the ported column/flame code needs no shape changes.
+// A symbolicated frame. Mirrors the SHAPE of CDP's Runtime.CallFrame the old renderer reads (so
+// the ported column/flame code needs no shape changes) — but NOT real CDP's 0-based lineNumber:
+// this is populated straight from SourceMap.lookupAddress().line, which is 1-based. Pass it
+// directly to onOpenSource, no +1 (a past assumption that this was genuinely 0-based, requiring
+// a +1 before calling onOpenSource — which itself does -1 — caused an off-by-one bug).
 export interface CallFrame {
   functionName: string;
   url: string; // source file path, "" if unknown
   scriptId: string;
-  lineNumber: number; // 0-based; -1 if unknown
+  lineNumber: number; // 1-based; -1 if unknown
   columnNumber: number;
 }
 
@@ -154,24 +159,35 @@ export interface DmaSnapshot {
 // A program symbol shipped to the webview for on-demand address symbolization (the
 // reusable primitive future disassembly/copper/memory views will also use). `size` is
 // clamped to the segment end (from SourceMap.getSymbolLengths), so [address, address+size)
-// bounds the symbol's range. `file`/`line` are the symbol's own declaration site (raw,
-// unadjusted — same convention as IDisassembledInstruction.line/ProfileFrame.line), resolved
-// once at capture time via SourceMap.lookupAddress(symbol's address) — present for data
-// symbols too (not just code), so the Memory view can offer "jump to source" for addresses
-// that fall inside a labelled data buffer but were never executed (so have no disassembly entry).
+// bounds the symbol's range. (Source-location lookup for an arbitrary address — code or data —
+// goes through `IProfileModel.lineTable` instead, not this list; see sourceLookup.ts.)
 export interface ISymbol {
   address: number;
   name: string;
   size: number;
-  file?: string;
-  line?: number;
+}
+
+// One address->line entry from SourceMap.getLineTable() — every address transition the
+// assembler/compiler's line info covers, code AND data (e.g. a copper list's `dc.w` lines).
+// `line` is 1-based (see ProfileFrame.line) — pass directly to onOpenSource, no +1. Floor-searched
+// by sourceLookup.ts's createSourceLookup, bounded by `segments` so a floor match doesn't cross
+// into a different (or unloaded) segment.
+export interface ILineTableEntry {
+  address: number;
+  file: string;
+  line: number;
+}
+
+// A loaded segment's address range, for bounding the line-table floor-search above (mirrors
+// SourceMap.findSegmentForAddress, minimally — just enough to replicate that check webview-side).
+export interface ISegmentRange {
+  address: number;
+  size: number;
 }
 
 // One disassembled instruction, annotated with exact per-PC execution stats (this profiler
 // traces every retired instruction, not statistical sampling — `hits`/`cycles` are exact counts
-// for the captured frame, not estimates) and source location. `file`/`line` follow the same
-// (quirky but established) convention as ILocation.callFrame — see openProfilerSource's `line - 1`
-// adjustment when opening from the webview.
+// for the captured frame, not estimates) and source location.
 export interface IDisassembledInstruction {
   address: number;
   hex: string; // raw instruction bytes, space-separated hex pairs
@@ -180,7 +196,7 @@ export interface IDisassembledInstruction {
   hits: number; // times this exact PC was the executing instruction this frame
   cycles: number; // total cycles attributed to this PC this frame
   file?: string;
-  line?: number;
+  line?: number; // 1-based, straight from SourceMap.lookupAddress().line — see ProfileFrame.line
 }
 
 // One executed function's full disassembly. Only functions that actually executed (per the
@@ -225,6 +241,15 @@ export interface IProfileModel {
   // Per-sample CPU register snapshot, flat and parallel to pcs/timeDeltas: registers[k*REG_COUNT
   // + r] is sample k's register r (see REG_* offsets below). Absent if unsupported/failed.
   registers?: Uint32Array;
+  // The program's full address->line table (SourceMap.getLineTable()) + loaded segment ranges,
+  // for general-purpose webview-side source-location lookup (see sourceLookup.ts) — covers code
+  // AND data addresses (unlike `disassembly`, which only covers executed instructions), so any
+  // view with an address (Memory, Copper, ...) can offer "jump to source" without a dedicated
+  // per-feature resolution pass. Set in buildModelFromCapture (not buildProfileModel, which is
+  // unit-tested with minimal SourceMap stubs that don't implement getLineTable/getSegmentsInfo) —
+  // optional for that reason, but in practice always present once a model reaches the webview.
+  lineTable?: ILineTableEntry[];
+  segments?: ISegmentRange[];
 }
 
 // Layout of one IProfileModel.registers entry (19 × u32: D0-D7, A0-A7, SR, PC, USP) — matches
@@ -264,8 +289,8 @@ export interface ReadyMessage {
 export interface CaptureMessage {
   command: "capture";
 }
-// Ctrl/Cmd+click on a box: jump to its source. `line` here is 1-based — the model's
-// CallFrame.lineNumber is 0-based, and the webview adds 1 before sending this message.
+// Ctrl/Cmd+click on a box: jump to its source. `line` here is 1-based, same as the model's
+// CallFrame.lineNumber/IDisassembledInstruction.line/etc. — passed straight through, no +1.
 // `toSide` opens beside (Alt held).
 export interface OpenDocumentMessage {
   command: "openDocument";

@@ -169,7 +169,7 @@ const QuadEaseInOut = (p: number) => (p < 0.5 ? 2 * p * p : -2 * p * p + 4 * p -
 
 const locText = (loc: ILocation): string | undefined =>
   loc.callFrame.url
-    ? `${loc.callFrame.url}${loc.callFrame.lineNumber >= 0 ? `:${loc.callFrame.lineNumber + 1}` : ""}`
+    ? `${loc.callFrame.url}${loc.callFrame.lineNumber >= 0 ? `:${loc.callFrame.lineNumber}` : ""}`
     : undefined;
 
 export function FlameGraph({
@@ -749,8 +749,9 @@ export function FlameGraph({
       setFocused(hovered.box);
       const loc = hovered.box.loc;
       if ((e.ctrlKey || e.metaKey) && loc.callFrame.url) {
-        // lineNumber is 0-based; openProfilerSource expects 1-based. Normalize unknown (-1) to 1.
-        onOpenSource(loc.callFrame.url, loc.callFrame.lineNumber >= 0 ? loc.callFrame.lineNumber + 1 : 1, e.altKey);
+        // lineNumber is already 1-based (raw SourceMap.lookupAddress().line — see internLocation),
+        // matching what openProfilerSource expects. Normalize unknown (-1) to 1.
+        onOpenSource(loc.callFrame.url, loc.callFrame.lineNumber >= 0 ? loc.callFrame.lineNumber : 1, e.altKey);
       }
     } else if (isClick && dmaHover && onSelectSlot) {
       onSelectSlot(dmaHover.slot);

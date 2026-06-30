@@ -239,9 +239,11 @@ instead, which has them). Register names from the static `customRegisters.ts` ta
 ### 3.3 Copper disassembler — `debugger/copper.tsx` ✅
 `CopperView.tsx`: virtualized (react-window) list of every executed copper instruction for the
 frame (addr, vpos/hpos, MOVE/WAIT/SKIP via `src/shared/copperDisassembler.ts`), highlights/
-auto-scrolls to the current instruction at `selectedSlot`, click-to-jump. Regex find / hover docs
-not ported. **Data:** PUAE's `cop_record[]` trace (`wasm_copper_get_records_*`), decoded by
-`decodeCopperRecords`.
+auto-scrolls to the current instruction at `selectedSlot`, click-to-jump. Each instruction's
+source location (a `dc.w`/equivalent line, when known) is resolved via `model.lineTable` (see
+sourceLookup.ts) and shown as a clickable "file:line" link, mirroring the live PUAE webview's
+copper DMA overlay. Regex find / hover docs not ported. **Data:** PUAE's `cop_record[]` trace
+(`wasm_copper_get_records_*`), decoded by `decodeCopperRecords`.
 
 ### 3.4 Blitter operations list — `debugger/blitter.tsx` ✅
 `BlitterView.tsx`: list of blits reconstructed from the grid (label, channels, start position),

@@ -119,6 +119,16 @@ describe("SourceMap Tests", () => {
     });
   });
 
+  describe("getLineTable", () => {
+    it("returns one entry per location, with path/line/address", () => {
+      const table = sourceMap.getLineTable();
+      assert.strictEqual(table.length, testLocations.length);
+      const byAddress = new Map(table.map((e) => [e.address, e]));
+      assert.deepStrictEqual(byAddress.get(0x1000), { address: 0x1000, path: "/test/main.c", line: 10 });
+      assert.deepStrictEqual(byAddress.get(0x1200), { address: 0x1200, path: "/test/util.c", line: 5 });
+    });
+  });
+
   describe("Source Line Lookup", () => {
     it("should find exact line match", () => {
       const location = sourceMap.lookupSourceLine("/test/main.c", 10);

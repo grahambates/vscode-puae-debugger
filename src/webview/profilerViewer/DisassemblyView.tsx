@@ -39,10 +39,12 @@ function RowRenderer({ index, style, instructions, maxCycles, currentAddress, on
           className="disasm-src"
           onClick={(e) => {
             e.preventDefault();
-            onOpenSource(ins.file!, ins.line !== undefined && ins.line >= 0 ? ins.line + 1 : 1, e.altKey);
+            // ins.line is already 1-based (raw SourceMap.lookupAddress().line), matching what
+            // onOpenSource expects. Normalize unknown (undefined/-1) to 1.
+            onOpenSource(ins.file!, ins.line !== undefined && ins.line >= 0 ? ins.line : 1, e.altKey);
           }}
         >
-          {ins.file.split(/[/\\]/).pop()}:{(ins.line ?? 0) + 1}
+          {ins.file.split(/[/\\]/).pop()}:{ins.line ?? 1}
         </a>
       )}
     </div>

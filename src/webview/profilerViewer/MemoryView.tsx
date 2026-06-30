@@ -101,10 +101,10 @@ function RowRenderer({
 // reconstructMemoryAt; "Follow writes" auto-switches region and scrolls to whatever address the
 // selected cycle wrote, mirroring Custom Registers' changed-this-cycle highlight. Clicking a byte
 // jumps the playhead to the most recent write that produced it; Ctrl/Cmd+click instead jumps to
-// source (see sourceLookup.ts) — either the executing instruction's line, for a byte inside a
-// disassembled (executed) function, or the declaration line of the enclosing data symbol (e.g. a
-// "Screen" buffer) otherwise — same modifier convention as FlameGraph/DisassemblyView. Hovering
-// a byte shows its
+// source via the program's full line table (model.lineTable — see sourceLookup.ts), which covers
+// code and data addresses alike (e.g. a byte inside a "Screen" buffer resolves to wherever that
+// line was declared) — same modifier convention as FlameGraph/DisassemblyView. Hovering a byte
+// shows its
 // address/symbol and byte/word/long interpretations, formatted to match the live memory viewer's
 // HexDump tooltip; bytes that changed value since the last debounced reconstruction fade out over
 // FADE_MS, also mirroring HexDump.
@@ -244,13 +244,13 @@ export function MemoryView({
     [region],
   );
 
-  const sourceLookup = useMemo(() => createSourceLookup(model?.disassembly, model?.symbols), [model]);
+  const sourceLookup = useMemo(() => createSourceLookup(model?.lineTable, model?.segments), [model]);
 
   const onByteClick = useCallback(
     (addr: number, jumpToSource: boolean, toSide: boolean) => {
       if (jumpToSource) {
         const loc = sourceLookup(addr);
-        if (loc) onOpenSource(loc.file, loc.line + 1, toSide);
+        if (loc) onOpenSource(loc.file, loc.line, toSide); // loc.line is already 1-based
         return;
       }
       if (!dma) return;
@@ -325,10 +325,9 @@ export function MemoryView({
 
   // Address combo box: replaces a separate "region" <select> and a free-text "go to address"
   // input with one Downshift autocomplete listing both RAM regions and the program's symbols
-  // (model.symbols already covers data symbols too — see sourceLookup.ts), plus accepting a
-  // raw hex address typed directly. browseAll mirrors the live memory viewer's dropdown-button
-  // behavior: bypass the per-keystroke suggestion cap and show everything, ignoring whatever's
-  // currently typed.
+  // (model.symbols — code and data alike), plus accepting a raw hex address typed directly.
+  // browseAll mirrors the live memory viewer's dropdown-button behavior: bypass the per-keystroke
+  // suggestion cap and show everything, ignoring whatever's currently typed.
   const comboSuggestions = useMemo(
     () => buildAddressSuggestions(browseAll ? "" : comboQuery, model?.symbols, !!snapshot && snapshot.slow.length > 0),
     [browseAll, comboQuery, model, snapshot],

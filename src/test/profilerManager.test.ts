@@ -1,4 +1,4 @@
-import { decodeProfileStream, applyContextReuse, syntheticLabel, InstructionSample } from "../profilerManager";
+import { decodeProfileStream, applyContextReuse, syntheticLabel, InstructionSample, buildModelFromCapture, RawCapture } from "../profilerManager";
 import { SourceMap } from "../sourceMap";
 
 describe("decodeProfileStream", () => {
@@ -90,5 +90,45 @@ describe("syntheticLabel", () => {
     expect(syntheticLabel(0xfffffffe, sm({}))).toBe("[IRQ]");
     expect(syntheticLabel(0x5000, sm({}))).toBe("[External]"); // no segment -> external
     expect(syntheticLabel(0x5000, sm({ findSegmentForAddress: () => ({}) }))).toBeUndefined(); // in a segment -> program
+  });
+});
+
+describe("buildModelFromCapture: model.lineTable/model.segments", () => {
+  function stubSourceMap(): SourceMap {
+    return {
+      findSymbolOffset: () => undefined,
+      lookupAddress: () => undefined,
+      findSegmentForAddress: () => undefined,
+      getCfaForPc: () => undefined,
+      getUnwindRows: () => [],
+      getSymbols: () => ({}),
+      getSymbolLengths: () => ({}),
+      getLineTable: () => [
+        { address: 0x1000, path: "/test/main.c", line: 10 },
+        { address: 0x1100, path: "/test/util.c", line: 5 },
+      ],
+      getSegmentsInfo: () => [{ name: "CODE", address: 0x1000, size: 0x1000, memType: 0 }],
+    } as unknown as SourceMap;
+  }
+
+  // 1 sample => profile.data is [depth=1,pc=0x100,cycles].
+  function profileBytes(): Uint8Array {
+    const words = [1, 0x100, 5];
+    const bytes = new Uint8Array(words.length * 4);
+    const view = new DataView(bytes.buffer);
+    words.forEach((w, i) => view.setUint32(i * 4, w, true));
+    return bytes;
+  }
+
+  it("ships the source map's line table and segments on the model, renaming path -> file", () => {
+    const raw: RawCapture = {
+      profile: { data: profileBytes(), start: 0, end: 0, total: 1, inRange: 1, frameCycles: 0, isPAL: true },
+    };
+    const { model } = buildModelFromCapture(raw, stubSourceMap());
+    expect(model.lineTable).toEqual([
+      { address: 0x1000, file: "/test/main.c", line: 10 },
+      { address: 0x1100, file: "/test/util.c", line: 5 },
+    ]);
+    expect(model.segments).toEqual([{ address: 0x1000, size: 0x1000 }]);
   });
 });
