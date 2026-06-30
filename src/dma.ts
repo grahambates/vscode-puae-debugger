@@ -38,25 +38,60 @@ export function decodeDmaGrid(bytes: Uint8Array): IDmaModel | undefined {
 // Decode the emulator's copper-instruction trace (puae_copper_serialize): 12-byte
 // little-endian records { u32 addr; u16 w1; u16 w2; u16 hpos; u16 vpos }, one per executed
 // instruction. Returns undefined for an empty/too-small buffer.
+//
+// WAIT and SKIP instructions are recorded TWICE by the emulator (custom.c's record_copper):
+// once when the copper first decodes the instruction (COP_wait_in2), and once when the wait
+// condition is satisfied / skip comparison done (COP_wait/COP_skip). We want each instruction
+// shown once, at the position the copper first encountered it, so we drop consecutive duplicate
+// records — same addr+w1+w2 where bit 0 of w1 is set (identifies WAIT/SKIP, not MOVE).
 export function decodeCopperRecords(bytes: Uint8Array): ICopperModel | undefined {
   if (!bytes || bytes.byteLength < COPPER_RECORD_BYTES) return undefined;
   const count = (bytes.byteLength / COPPER_RECORD_BYTES) | 0;
   if (count === 0) return undefined;
 
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-  const addr = new Uint32Array(count);
-  const w1 = new Uint16Array(count);
-  const w2 = new Uint16Array(count);
-  const hpos = new Uint16Array(count);
-  const vpos = new Uint16Array(count);
 
+  // First pass: decode all records, then filter
+  const rawAddr = new Uint32Array(count);
+  const rawW1 = new Uint16Array(count);
+  const rawW2 = new Uint16Array(count);
+  const rawHpos = new Uint16Array(count);
+  const rawVpos = new Uint16Array(count);
   for (let i = 0; i < count; i++) {
     const o = i * COPPER_RECORD_BYTES;
-    addr[i] = view.getUint32(o, true);
-    w1[i] = view.getUint16(o + 4, true);
-    w2[i] = view.getUint16(o + 6, true);
-    hpos[i] = view.getUint16(o + 8, true);
-    vpos[i] = view.getUint16(o + 10, true);
+    rawAddr[i] = view.getUint32(o, true);
+    rawW1[i] = view.getUint16(o + 4, true);
+    rawW2[i] = view.getUint16(o + 6, true);
+    rawHpos[i] = view.getUint16(o + 8, true);
+    rawVpos[i] = view.getUint16(o + 10, true);
+  }
+
+  // Second pass: drop duplicate WAIT/SKIP records (keep first encounter, drop wake-up copy)
+  const keep: boolean[] = new Array(count).fill(true);
+  for (let i = 1; i < count; i++) {
+    if ((rawW1[i] & 0x0001) !== 0                // WAIT or SKIP (not MOVE)
+      && rawAddr[i] === rawAddr[i - 1]
+      && rawW1[i] === rawW1[i - 1]
+      && rawW2[i] === rawW2[i - 1]) {
+      keep[i] = false;
+    }
+  }
+  const kept = keep.reduce((n, k) => n + (k ? 1 : 0), 0);
+
+  const addr = new Uint32Array(kept);
+  const w1 = new Uint16Array(kept);
+  const w2 = new Uint16Array(kept);
+  const hpos = new Uint16Array(kept);
+  const vpos = new Uint16Array(kept);
+  let j = 0;
+  for (let i = 0; i < count; i++) {
+    if (!keep[i]) continue;
+    addr[j] = rawAddr[i];
+    w1[j] = rawW1[i];
+    w2[j] = rawW2[i];
+    hpos[j] = rawHpos[i];
+    vpos[j] = rawVpos[i];
+    j++;
   }
   return { addr, w1, w2, hpos, vpos };
 }
