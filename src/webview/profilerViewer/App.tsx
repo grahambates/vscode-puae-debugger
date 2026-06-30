@@ -10,6 +10,7 @@ import { CopperView } from "./CopperView";
 import { BlitterView } from "./BlitterView";
 import { MemoryView } from "./MemoryView";
 import { createTopDownGraph } from "./topDownGraph";
+import { createBottomUpGraph } from "./bottomUpGraph";
 import { DisplayUnit, unitOptions, Timing } from "./display";
 import { IRichFilter } from "./filter";
 
@@ -30,6 +31,9 @@ export function App() {
   // custom-registers view (which reads it). Reset on a fresh capture, below.
   const [selectedSlot, setSelectedSlot] = useState<number | undefined>(undefined);
   const [rightTab, setRightTab] = useState<"time" | "customregs" | "copper" | "blitter" | "memory">("time");
+  // Time View's tree direction: top-down (call-tree, "what does main() spend time in") or
+  // bottom-up (leaf→callers, "what does Foo's time actually come from").
+  const [treeMode, setTreeMode] = useState<"top" | "bottom">("top");
   // "file" = a loaded .vamigaprofile (read-only): no live Capture/Save. The host bakes the
   // mode into #root so it's known at init and holds even if no model ever arrives.
   const [mode] = useState<"live" | "file">(() =>
@@ -108,8 +112,11 @@ export function App() {
   );
 
   const dataTable = useMemo(
-    () => (model ? Object.values(createTopDownGraph(model).children) : []),
-    [model],
+    () =>
+      model
+        ? Object.values((treeMode === "top" ? createTopDownGraph(model) : createBottomUpGraph(model)).children)
+        : [],
+    [model, treeMode],
   );
 
   return (
@@ -209,7 +216,25 @@ export function App() {
               </button>
             </div>
             {rightTab === "time" ? (
-              <TimeView data={dataTable} filter={filter} displayUnit={unit} timing={timing} onOpenSource={openSource} />
+              <div className="time-mode-wrap">
+                <div className="time-mode-toggle">
+                  <button
+                    className={"time-mode-btn" + (treeMode === "top" ? " active" : "")}
+                    onClick={() => setTreeMode("top")}
+                    title="Call tree from the root down — what each function spends its time in"
+                  >
+                    Top Down
+                  </button>
+                  <button
+                    className={"time-mode-btn" + (treeMode === "bottom" ? " active" : "")}
+                    onClick={() => setTreeMode("bottom")}
+                    title="Reversed call tree from each leaf up — where each function's time actually comes from"
+                  >
+                    Bottom Up
+                  </button>
+                </div>
+                <TimeView data={dataTable} filter={filter} displayUnit={unit} timing={timing} onOpenSource={openSource} />
+              </div>
             ) : rightTab === "customregs" ? (
               <CustomRegsView selectedSlot={selectedSlot} onSelectSlot={setSelectedSlot} />
             ) : rightTab === "copper" ? (
