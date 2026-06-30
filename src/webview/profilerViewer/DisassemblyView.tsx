@@ -1,11 +1,12 @@
 import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { List, ListImperativeAPI, RowComponentProps } from "react-window";
 import { getProfileModel } from "./modelStore";
-import { buildColumns, columnIndexAtX } from "./columns";
+import { buildColumns, columnIndexAtX, columnIndexToSlot, IColumn } from "./columns";
 import { IDisassembledInstruction, REG_COUNT, REG_D0, REG_A0, REG_SR, REG_PC, REG_USP } from "../../shared/profilerTypes";
 import { srFlags } from "../shared/cpuFlags";
 import { createSymbolizer, Symbolizer } from "./symbols";
 import { interpretDataReg, interpretAddressReg } from "./registerInterpret";
+import { findRegSetSample, findRegNextChangeSample } from "./registerHistory";
 import { Tooltip } from "./Tooltip";
 
 // Props shared across every row via the v2 rowProps channel (must not contain
@@ -66,12 +67,46 @@ type RegHover = { kind: RegKind; value: number; x: number; y: number };
 // skip the byte-sized interpretations (no byte-sized address arithmetic on the 68000) and get a
 // symbol+offset line instead, when the value resolves to one. The register name itself isn't
 // repeated in the tooltip (already shown on the cell being hovered).
-function RegistersPanel({ regs, prev, symbolize }: { regs: Uint32Array; prev: Uint32Array | undefined; symbolize: Symbolizer }) {
+//
+// Click jumps the playhead to where this register's CURRENT value was set (walking the per-sample
+// trace backward to the start of the run — see registerHistory.ts); Shift+click jumps forward to
+// where it next changes — mirroring Memory View's click-for-previous-write (and, per its own
+// request, the asymmetry it pointed out: Custom Registers' ◀▶ already go both ways, this and
+// Memory View didn't). `registers`/`currentIdx`/`columns`/`dmaSlots` are the whole-trace context
+// needed to do that lookup and convert the resulting sample index back into a DMA slot.
+function RegistersPanel({
+  regs, prev, symbolize, registers, currentIdx, columns, dmaSlots, onSelectSlot,
+}: {
+  regs: Uint32Array;
+  prev: Uint32Array | undefined;
+  symbolize: Symbolizer;
+  registers: Uint32Array | undefined;
+  currentIdx: number | undefined;
+  columns: IColumn[];
+  dmaSlots: number | undefined;
+  onSelectSlot: (slot: number) => void;
+}) {
   const [hover, setHover] = useState<RegHover | undefined>(undefined);
   const changed = (i: number) => prev !== undefined && regs[i] !== prev[i];
   const onEnter = (kind: RegKind, i: number) => (e: { clientX: number; clientY: number }) =>
     setHover({ kind, value: regs[i], x: e.clientX, y: e.clientY });
   const onLeave = () => setHover(undefined);
+
+  const canNavigate = registers !== undefined && currentIdx !== undefined && !!dmaSlots;
+  const sampleCount = registers ? registers.length / REG_COUNT : 0;
+  // Prevent the browser from setting a text-selection anchor on mousedown — without this,
+  // clicking cell A then Shift+clicking cell B extends a selection across the panel.
+  // preventDefault on click alone is too late; the selection starts on mousedown.
+  const preventSelect = (e: { preventDefault(): void }) => e.preventDefault();
+
+  const onCellClick = (i: number) => (e: { shiftKey: boolean; preventDefault(): void }) => {
+    if (!canNavigate) return;
+    const target = e.shiftKey
+      ? findRegNextChangeSample(registers, REG_COUNT, sampleCount, i, currentIdx)
+      : findRegSetSample(registers, REG_COUNT, sampleCount, i, currentIdx);
+    if (target === undefined) return;
+    onSelectSlot(columnIndexToSlot(columns, target, dmaSlots));
+  };
 
   const cell = (label: string, i: number, kind: RegKind, digits = 8) => (
     <div
@@ -79,6 +114,8 @@ function RegistersPanel({ regs, prev, symbolize }: { regs: Uint32Array; prev: Ui
       className={"reg-cell" + (changed(i) ? " reg-changed" : "") + " reg-hoverable"}
       onMouseEnter={onEnter(kind, i)}
       onMouseLeave={onLeave}
+      onMouseDown={preventSelect}
+      onClick={onCellClick(i)}
     >
       <span className="reg-label">{label}</span>
       <span className="reg-val">{hex(regs[i], digits)}</span>
@@ -98,6 +135,8 @@ function RegistersPanel({ regs, prev, symbolize }: { regs: Uint32Array; prev: Ui
         className="reg-flags reg-hoverable"
         onMouseEnter={onEnter("address", REG_PC)}
         onMouseLeave={onLeave}
+        onMouseDown={preventSelect}
+        onClick={onCellClick(REG_PC)}
       >
         <span className="reg-label">PC</span>
         <span className="reg-val">{hex(regs[REG_PC], 6)}</span>
@@ -106,6 +145,8 @@ function RegistersPanel({ regs, prev, symbolize }: { regs: Uint32Array; prev: Ui
         className="reg-flags reg-hoverable"
         onMouseEnter={onEnter("address", REG_USP)}
         onMouseLeave={onLeave}
+        onMouseDown={preventSelect}
+        onClick={onCellClick(REG_USP)}
       >
         <span className="reg-label">USP</span>
         <span className="reg-val">{hex(regs[REG_USP], 6)}</span>
@@ -125,6 +166,12 @@ function RegistersPanel({ regs, prev, symbolize }: { regs: Uint32Array; prev: Ui
               </Fragment>
             ))}
           </div>
+          {canNavigate && (
+            <>
+              <div className="tt-hint">Click: jump where set</div>
+              <div className="tt-hint">Shift+Click: next change</div>
+            </>
+          )}
         </Tooltip>
       )}
     </div>
@@ -139,9 +186,11 @@ function RegistersPanel({ regs, prev, symbolize }: { regs: Uint32Array; prev: Ui
 // fetchDisassembly) — see model.disassembly. Jump-arrow visualization isn't ported.
 export function DisassemblyView({
   selectedSlot,
+  onSelectSlot,
   onOpenSource,
 }: {
   selectedSlot: number | undefined;
+  onSelectSlot: (slot: number) => void;
   onOpenSource: (file: string, line: number, toSide: boolean) => void;
 }) {
   const model = getProfileModel();
@@ -254,7 +303,18 @@ export function DisassemblyView({
             rowHeight={18}
           />
         </div>
-        {currentRegs && <RegistersPanel regs={currentRegs} prev={prevRegs} symbolize={symbolize} />}
+        {currentRegs && (
+          <RegistersPanel
+            regs={currentRegs}
+            prev={prevRegs}
+            symbolize={symbolize}
+            registers={model.registers}
+            currentIdx={currentIdx}
+            columns={columns}
+            dmaSlots={dmaSlots}
+            onSelectSlot={onSelectSlot}
+          />
+        )}
       </div>
     </div>
   );

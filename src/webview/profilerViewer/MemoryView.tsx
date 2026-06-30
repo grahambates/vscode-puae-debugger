@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { List, ListImperativeAPI, RowComponentProps } from "react-window";
 import { useCombobox } from "downshift";
 import { getProfileModel } from "./modelStore";
-import { reconstructMemoryAt, resolveMemoryRegion, findPrevMemWrite, SLOW_BASE } from "./reconstruct";
+import { reconstructMemoryAt, resolveMemoryRegion, findPrevMemWrite, findNextMemWrite, SLOW_BASE } from "./reconstruct";
 import { createSymbolizer } from "./symbols";
 import { createSourceLookup } from "./sourceLookup";
 import { buildAddressSuggestions, parseAddressInput, AddressSuggestion, Region } from "./addressSuggestions";
@@ -36,7 +36,7 @@ type RowListProps = {
   baseAddr: number; // address of offset 0 in the buffer (0 for chip, SLOW_BASE for slow)
   highlightOffset: number | undefined; // byte written at the selected cycle, if any, in this region
   colorCode: boolean; // "Color bytes" toggle — one hue per leading hex digit, see .mem-nib-* in App.css
-  onByteClick: (addr: number, jumpToSource: boolean, toSide: boolean) => void;
+  onByteClick: (addr: number, jumpToSource: boolean, toSide: boolean, forward: boolean) => void;
   onByteHover: (addr: number, x: number, y: number) => void;
   onByteLeave: () => void;
 };
@@ -89,7 +89,7 @@ function RowRenderer({
               c.present ? nibbleClass(c.value, colorCode) : undefined,
             ].filter(Boolean).join(" ")}
             style={c.fade > 0 ? { background: `rgba(255,200,0,${c.fade.toFixed(3)})` } : undefined}
-            onClick={c.present ? (e) => onByteClick(baseAddr + c.off, e.ctrlKey || e.metaKey, e.altKey) : undefined}
+            onClick={c.present ? (e) => onByteClick(baseAddr + c.off, e.ctrlKey || e.metaKey, e.altKey, e.shiftKey) : undefined}
             onMouseEnter={c.present ? (e) => onByteHover(baseAddr + c.off, e.clientX, e.clientY) : undefined}
             onMouseLeave={onByteLeave}
           >
@@ -311,14 +311,16 @@ export function MemoryView({
   const sourceLookup = useMemo(() => createSourceLookup(model?.lineTable, model?.segments), [model]);
 
   const onByteClick = useCallback(
-    (addr: number, jumpToSource: boolean, toSide: boolean) => {
+    (addr: number, jumpToSource: boolean, toSide: boolean, forward: boolean) => {
       if (jumpToSource) {
         const loc = sourceLookup(addr);
         if (loc) onOpenSource(loc.file, loc.line, toSide); // loc.line is already 1-based
         return;
       }
       if (!dma) return;
-      const found = findPrevMemWrite(dma, addr, slot + 1);
+      // Shift+click jumps forward to the NEXT write to this address, plain click backward to the
+      // previous one — Custom Registers' ◀▶ nav already goes both ways; this didn't, until now.
+      const found = forward ? findNextMemWrite(dma, addr, slot) : findPrevMemWrite(dma, addr, slot + 1);
       if (found !== undefined) onSelectSlot(found);
     },
     [dma, slot, onSelectSlot, sourceLookup, onOpenSource],
@@ -535,6 +537,7 @@ export function MemoryView({
               );
             })}
           </div>
+          <div className="tt-hint">Click: jump to previous write · Shift+Click: jump to next write</div>
           {hoverSourceLoc && (
             <div className="tt-hint">{isMac ? "Cmd" : "Ctrl"}+Click to open source</div>
           )}

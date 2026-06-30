@@ -251,7 +251,7 @@ export function App() {
             ) : rightTab === "memory" ? (
               <MemoryView selectedSlot={selectedSlot} onSelectSlot={setSelectedSlot} onOpenSource={openSource} />
             ) : (
-              <DisassemblyView selectedSlot={selectedSlot} onOpenSource={openSource} />
+              <DisassemblyView selectedSlot={selectedSlot} onSelectSlot={setSelectedSlot} onOpenSource={openSource} />
             )}
           </div>
         </div>

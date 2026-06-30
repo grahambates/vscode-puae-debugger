@@ -107,6 +107,16 @@ export function columnIndexAtX(columns: IColumn[], x: number): number {
   return col;
 }
 
+// Inverse of columnIndexAtX(columns, (slot+0.5)/dmaSlots): given a column/sample index, find a
+// DMA slot that maps back to (a column containing) it — used by the CPU Registers panel to turn
+// a "jump to sample N" register-history result (see registerHistory.ts) back into a DMA-grid slot
+// for onSelectSlot. Picks the slot at the column's left edge; any slot within [x1, x2) would do.
+export function columnIndexToSlot(columns: IColumn[], idx: number, dmaSlots: number): number {
+  if (columns.length === 0 || dmaSlots <= 0) return 0;
+  const col = columns[Math.max(0, Math.min(idx, columns.length - 1))];
+  return Math.max(0, Math.min(dmaSlots - 1, Math.floor(col.x1 * dmaSlots)));
+}
+
 // Resolve the call stack (outermost→leaf) executing at normalized x (0..1) — the column covering
 // x, its rows resolved through the "merged with column n" indirection. Shared by the DMA
 // tooltip's call-stack line (FlameGraph's stackAtX, which maps this to function names — coalescing
