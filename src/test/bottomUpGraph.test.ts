@@ -28,11 +28,20 @@ describe("createBottomUpGraph", () => {
     // One root-level entry for "leaf", aggregating both call paths.
     expect(top.map((n) => n.callFrame.functionName)).toEqual(["leaf"]);
     const leaf = top[0];
-    expect(leaf.selfTime + leaf.aggregateTime).toBeGreaterThan(0);
 
-    // Its children are the two distinct callers, reversed (leaf→caller).
-    const callers = Object.values(leaf.children).map((n) => n.callFrame.functionName).sort();
-    expect(callers).toEqual(["callerA", "callerB"]);
+    // Self time = total cycles spent in leaf (40). Aggregate = same (leaf never calls anything).
+    expect(leaf.selfTime).toBe(40);
+    expect(leaf.aggregateTime).toBe(40);
+
+    // Its children are the two distinct callers. Each child's self time = cycles via that caller.
+    const callers = Object.values(leaf.children);
+    const callerMap = Object.fromEntries(callers.map((n) => [n.callFrame.functionName, n]));
+    expect(Object.keys(callerMap).sort()).toEqual(["callerA", "callerB"]);
+    expect(callerMap["callerA"].selfTime).toBe(10);
+    expect(callerMap["callerB"].selfTime).toBe(30);
+    // Nested entries: aggregate = self (leaf time via this path, no further sub-breakdown)
+    expect(callerMap["callerA"].aggregateTime).toBe(10);
+    expect(callerMap["callerB"].aggregateTime).toBe(30);
   });
 
   it("keeps two independent leaves as separate root-level entries", () => {
@@ -44,24 +53,56 @@ describe("createBottomUpGraph", () => {
     const top = Object.values(createBottomUpGraph(model).children);
     expect(top.map((n) => n.callFrame.functionName).sort()).toEqual(["callerB", "leaf"]);
 
-    // callerB was sampled as a depth-1 leaf directly under the synthetic root — no further
-    // reversed levels (node.parent === 0 stops the walk, see bottomUpGraph.ts).
     const callerB = top.find((n) => n.callFrame.functionName === "callerB")!;
+    expect(callerB.selfTime).toBe(5);
+    expect(callerB.aggregateTime).toBe(5); // callerB was a leaf: inclusive = self
     expect(callerB.childrenSize).toBe(0);
   });
 
-  it("reverses a 3-deep chain into a single caller-chain path", () => {
+  it("reverses a 3-deep chain into a single caller-chain path with correct self times", () => {
     // leaf() called from callerA() called from callerC().
     const samples: InstructionSample[] = [{ stack: [0x100, 0x200, 0x400], cycles: 7 }];
     const model = buildProfileModel(samples, stubSourceMap());
     const top = Object.values(createBottomUpGraph(model).children);
     expect(top.map((n) => n.callFrame.functionName)).toEqual(["leaf"]);
 
-    const callerA = Object.values(top[0].children)[0];
+    const leafEntry = top[0];
+    expect(leafEntry.selfTime).toBe(7);
+    expect(leafEntry.aggregateTime).toBe(7);
+
+    const callerA = Object.values(leafEntry.children)[0];
     expect(callerA.callFrame.functionName).toBe("callerA");
+    expect(callerA.selfTime).toBe(7);    // all 7 cycles of leaf flowed through callerA
+    expect(callerA.aggregateTime).toBe(7);
+
     const callerC = Object.values(callerA.children)[0];
     expect(callerC.callFrame.functionName).toBe("callerC");
-    expect(callerC.childrenSize).toBe(0); // top-level call, nothing further up
+    expect(callerC.selfTime).toBe(7);    // and through callerC
+    expect(callerC.aggregateTime).toBe(7);
+    expect(callerC.childrenSize).toBe(0);
+  });
+
+  it("top-level aggregateTime ≤ frame duration — no > 100% bug from the old double-counting", () => {
+    // Two disjoint call paths: callerA→leaf (60 cy) and callerB→leaf (40 cy). 'leaf' is called
+    // from two different callers; 'callerA' and 'callerB' each called only leaf.
+    // Old bug: the propagation added each ancestor's full subtree aggregateTime back up the
+    // reversed chain, causing leaf's aggregateTime to accumulate to 60+40+60+40 = 200 (>100%).
+    const samples: InstructionSample[] = [
+      { stack: [0x100, 0x200], cycles: 60 }, // leaf via callerA
+      { stack: [0x100, 0x300], cycles: 40 }, // leaf via callerB
+    ];
+    const model = buildProfileModel(samples, stubSourceMap());
+    const top = Object.values(createBottomUpGraph(model).children);
+    const byName = Object.fromEntries(top.map((n) => [n.callFrame.functionName, n]));
+
+    // leaf: total self = 100, aggregate = 100 (same — pure leaf)
+    expect(byName["leaf"].selfTime).toBe(100);
+    expect(byName["leaf"].aggregateTime).toBe(100);
+
+    // No entry exceeds the frame duration
+    for (const entry of top) {
+      expect(entry.aggregateTime).toBeLessThanOrEqual(model.duration);
+    }
   });
 
   it("returns an empty tree for an empty model", () => {

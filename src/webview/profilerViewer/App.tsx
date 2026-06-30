@@ -240,7 +240,7 @@ export function App() {
                     Bottom Up
                   </button>
                 </div>
-                <TimeView data={dataTable} filter={filter} displayUnit={unit} timing={timing} onOpenSource={openSource} />
+                <TimeView data={dataTable} filter={filter} displayUnit={unit} timing={timing} onOpenSource={openSource} hideTotalTime={treeMode === "bottom"} />
               </div>
             ) : rightTab === "customregs" ? (
               <CustomRegsView selectedSlot={selectedSlot} onSelectSlot={setSelectedSlot} />

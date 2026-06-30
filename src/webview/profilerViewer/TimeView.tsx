@@ -24,6 +24,7 @@ type RowListProps = {
   displayUnit: DisplayUnit;
   timing: Timing;
   onOpenSource: (file: string, line: number, toSide: boolean) => void;
+  hideTotalTime: boolean;
 };
 
 const getGlobalUniqueId = (node: IGraphNode): string => {
@@ -41,7 +42,7 @@ const getSortedChildren = (node: IGraphNode, sortFn: SortFn): IGraphNode[] => {
 
 // Defined outside TimeView so the reference is stable across renders (v2 memoises by rowComponent identity).
 // v2 injects ariaAttributes (listitem role) but our rows use treeitem — we don't spread it.
-function RowRenderer({ index, style, rows, expanded, onExpandChange, onKeyDown, onFocus, displayUnit, timing, onOpenSource }: RowComponentProps<RowListProps>) {
+function RowRenderer({ index, style, rows, expanded, onExpandChange, onKeyDown, onFocus, displayUnit, timing, onOpenSource, hideTotalTime }: RowComponentProps<RowListProps>) {
   const row = rows[index];
   if (!row) return null;
   const { node, depth, position } = row;
@@ -58,6 +59,7 @@ function RowRenderer({ index, style, rows, expanded, onExpandChange, onKeyDown, 
       displayUnit={displayUnit}
       timing={timing}
       onOpenSource={onOpenSource}
+      hideTotalTime={hideTotalTime}
       style={style}
     />
   );
@@ -69,12 +71,14 @@ export function TimeView({
   displayUnit,
   timing,
   onOpenSource,
+  hideTotalTime = false,
 }: {
   data: readonly IGraphNode[];
   filter: IRichFilter;
   displayUnit: DisplayUnit;
   timing: Timing;
   onOpenSource: (file: string, line: number, toSide: boolean) => void;
+  hideTotalTime?: boolean;
 }) {
   // v2 ListImperativeAPI: scrollToRow({index, align}) — v2 auto-sizes the container via CSS.
   const listRef = useRef<ListImperativeAPI>(null);
@@ -205,11 +209,12 @@ export function TimeView({
     displayUnit,
     timing,
     onOpenSource,
-  }), [visibleRows, expanded, onKeyDown, displayUnit, timing, onOpenSource]);
+    hideTotalTime,
+  }), [visibleRows, expanded, onKeyDown, displayUnit, timing, onOpenSource, hideTotalTime]);
 
   return (
     <div className="time-view">
-      <TimeViewHeader sortFn={sortFn} onChangeSort={setSortFn} displayUnit={displayUnit} />
+      <TimeViewHeader sortFn={sortFn} onChangeSort={setSortFn} displayUnit={displayUnit} hideTotalTime={hideTotalTime} />
       <div className="tv-rows">
         <List
           listRef={listRef}
@@ -225,24 +230,27 @@ export function TimeView({
 }
 
 function TimeViewHeader({
-  sortFn, onChangeSort, displayUnit,
-}: { sortFn: SortFn; onChangeSort: (fn: SortFn) => void; displayUnit: DisplayUnit }) {
+  sortFn, onChangeSort, displayUnit, hideTotalTime,
+}: { sortFn: SortFn; onChangeSort: (fn: SortFn) => void; displayUnit: DisplayUnit; hideTotalTime: boolean }) {
   return (
     <div className="tv-row tv-header">
       <div
         id="tv-self-header"
-        className={"tv-duration tv-heading" + (sortFn === SortFn.Self ? " tv-sorted" : "")}
-        onClick={() => onChangeSort(sortFn === SortFn.Self ? SortFn.Agg : SortFn.Self)}
+        className={"tv-duration tv-heading" + (sortFn === SortFn.Self || hideTotalTime ? " tv-sorted" : "")}
+        onClick={() => !hideTotalTime && onChangeSort(sortFn === SortFn.Self ? SortFn.Agg : SortFn.Self)}
+        style={hideTotalTime ? { cursor: "default" } : undefined}
       >
-        {sortFn === SortFn.Self && <span className="codicon codicon-chevron-down" />}Self {dataName(displayUnit)}
+        {(sortFn === SortFn.Self || hideTotalTime) && <span className="codicon codicon-chevron-down" />}Self {dataName(displayUnit)}
       </div>
-      <div
-        id="tv-total-header"
-        className={"tv-duration tv-heading" + (sortFn === SortFn.Agg ? " tv-sorted" : "")}
-        onClick={() => onChangeSort(sortFn === SortFn.Agg ? SortFn.Self : SortFn.Agg)}
-      >
-        {sortFn === SortFn.Agg && <span className="codicon codicon-chevron-down" />}Total {dataName(displayUnit)}
-      </div>
+      {!hideTotalTime && (
+        <div
+          id="tv-total-header"
+          className={"tv-duration tv-heading" + (sortFn === SortFn.Agg ? " tv-sorted" : "")}
+          onClick={() => onChangeSort(sortFn === SortFn.Agg ? SortFn.Self : SortFn.Agg)}
+        >
+          {sortFn === SortFn.Agg && <span className="codicon codicon-chevron-down" />}Total {dataName(displayUnit)}
+        </div>
+      )}
       <div className="tv-location tv-heading">File</div>
     </div>
   );
@@ -250,7 +258,7 @@ function TimeViewHeader({
 
 function TimeViewRow({
   node, depth, position, expanded, onExpandChange, onKeyDown: onKeyDownRaw,
-  onFocus: onFocusRaw, displayUnit, timing, onOpenSource, style,
+  onFocus: onFocusRaw, displayUnit, timing, onOpenSource, hideTotalTime, style,
 }: {
   node: IGraphNode; depth: number; position: number;
   expanded: ReadonlySet<IGraphNode>; onExpandChange: React.Dispatch<React.SetStateAction<ReadonlySet<IGraphNode>>>;
@@ -258,6 +266,7 @@ function TimeViewRow({
   onFocus: (node: IGraphNode) => void;
   displayUnit: DisplayUnit; timing: Timing;
   onOpenSource: (file: string, line: number, toSide: boolean) => void;
+  hideTotalTime: boolean;
   style: React.CSSProperties;
 }) {
   const location = node.callFrame.url
@@ -312,10 +321,12 @@ function TimeViewRow({
         <ImpactBar impact={node.selfTime / rootAgg} />
         <span>{formatValue(node.selfTime, displayUnit, timing)}</span>
       </div>
-      <div className="tv-duration" aria-labelledby="tv-total-header">
-        <ImpactBar impact={node.aggregateTime / rootAgg} />
-        <span>{formatValue(node.aggregateTime, displayUnit, timing)}</span>
-      </div>
+      {!hideTotalTime && (
+        <div className="tv-duration" aria-labelledby="tv-total-header">
+          <ImpactBar impact={node.aggregateTime / rootAgg} />
+          <span>{formatValue(node.aggregateTime, displayUnit, timing)}</span>
+        </div>
+      )}
       <div className="tv-location" style={{ paddingLeft: depth * 15 + 10 }}>
         <span className="tv-expander" onClick={onToggleExpand} onMouseDown={(e) => { if (e.shiftKey) e.preventDefault(); }}>
           {node.childrenSize > 0
