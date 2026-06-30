@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import type { PointerEvent as ReactPointerEvent, ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { PointerEvent as ReactPointerEvent } from "react";
 import { BusOwner, Category, ILocation, DMA_WRITE, DMA_BYTE, DMA_HPOS, dmaIsCustomReg } from "../../shared/profilerTypes";
 import { getProfileModel } from "./modelStore";
 import { buildColumns, IColumn, IColumnLocation, resolveStackAtX } from "./columns";
@@ -10,11 +10,13 @@ import Markdown from "markdown-to-jsx/react";
 import { channelStyle, blitStyle, dmaconChannels, dmaEventNames, ownerRegister, DMACON_REG_INDEX, ChannelStyle } from "./dma";
 import { getBlits, blitLabel, blitTooltip, Blit } from "./blits";
 import { BlitDetailGrid } from "./BlitDetail";
+import { Tooltip } from "./Tooltip";
 import { reconstructCustomRegs } from "./reconstruct";
 import { createSymbolizer } from "./symbols";
 import { customRegisterName } from "../shared/customRegisters";
 import { getCustomRegDoc } from "../shared/customRegisterDocs";
 import { MiddleOut } from "./MiddleOut";
+import { isMac } from "../shared/platform";
 
 // Time-ordered flame chart on a 2D canvas. x = cycles in execution order (the old
 // vscode-amiga-debug model, ported as data — see columns.ts), depth grows downward.
@@ -22,8 +24,6 @@ import { MiddleOut } from "./MiddleOut";
 // renderer: drag the canvas to pan (with click-vs-drag detection), mouse wheel zooms
 // centred on the cursor (shift = pan), a synced scrollbar pans, double-click / Enter
 // zooms the focused box, arrows navigate, Esc resets, Ctrl/Cmd+click jumps to source.
-
-const isMac = navigator.platform.toLowerCase().includes("mac");
 
 const ROW_H = 18;
 const TIMELINE_H = 18;
@@ -166,46 +166,6 @@ const buildBoxes = (columns: readonly IColumn[], yOffset: number) => {
 };
 
 const QuadEaseInOut = (p: number) => (p < 0.5 ? 2 * p * p : -2 * p * p + 4 * p - 1);
-
-// A tooltip that clamps itself into the viewport using its *measured* size, so it never runs off
-// the right/bottom edge regardless of content width. (Hardcoded width guesses mis-clamped: a fixed
-// width that ignored padding/border clipped on the right, and a too-large guess yanked a narrow
-// tooltip needlessly leftward near the edge.) `useLayoutEffect` reads offsetWidth/Height and adjusts
-// before paint, so there's no visible flash at the unclamped position.
-function Tooltip({
-  x,
-  y,
-  className,
-  width,
-  children,
-}: {
-  x: number;
-  y: number;
-  className?: string;
-  width?: number;
-  children: ReactNode;
-}) {
-  const ref = useRef<HTMLDivElement>(null);
-  const [pos, setPos] = useState({ left: x + 12, top: y + 12 });
-  useLayoutEffect(() => {
-    const el = ref.current;
-    if (!el) return;
-    const left = Math.max(8, Math.min(x + 12, window.innerWidth - el.offsetWidth - 8));
-    const top = Math.max(8, Math.min(y + 12, window.innerHeight - el.offsetHeight - 8));
-    // Functional update so the no-op pass after a setState bails out (converges in one extra pass).
-    setPos((p) => (p.left === left && p.top === top ? p : { left, top }));
-    // x/y change on every pointer move (so the hovered content always re-measures with them).
-  }, [x, y]);
-  return (
-    <div
-      ref={ref}
-      className={className ? `tooltip ${className}` : "tooltip"}
-      style={{ left: pos.left, top: pos.top, width }}
-    >
-      {children}
-    </div>
-  );
-}
 
 const locText = (loc: ILocation): string | undefined =>
   loc.callFrame.url

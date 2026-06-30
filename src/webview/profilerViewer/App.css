@@ -412,7 +412,7 @@ body {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
-  font-family: var(--vscode-editor-font-family);
+  font-family: var(--vscode-editor-font-family), monospace;
   font-size: var(--vscode-editor-font-size, 12px);
 }
 
@@ -477,7 +477,7 @@ body {
   flex: 1;
   min-height: 0;
   overflow: hidden;
-  font-family: var(--vscode-editor-font-family);
+  font-family: var(--vscode-editor-font-family), monospace;
   font-size: var(--vscode-editor-font-size, 12px);
 }
 
@@ -543,7 +543,7 @@ body {
   flex: 0 1 auto;
   max-height: 40%;
   overflow-y: auto;
-  font-family: var(--vscode-editor-font-family);
+  font-family: var(--vscode-editor-font-family), monospace;
   font-size: var(--vscode-editor-font-size, 12px);
 }
 
@@ -648,7 +648,7 @@ body {
   flex: 1;
   min-height: 0;
   overflow: hidden;
-  font-family: var(--vscode-editor-font-family);
+  font-family: var(--vscode-editor-font-family), monospace;
   font-size: var(--vscode-editor-font-size, 12px);
 }
 
@@ -690,6 +690,30 @@ body {
   color: var(--vscode-descriptionForeground);
   opacity: 0.8;
 }
+
+/* Byte color-coding (optional, "Color bytes" toolbar checkbox): one hue per leading hex digit
+   (0-F), matching the live memory viewer's HexDump (same hsl(n*360/16, 70%, 65%) palette, so a
+   byte looks the same color in both views). Zero bytes get the dim description color instead of
+   a hue — common "filler" data, called out distinctly rather than lumped into the 0x0-led hue. */
+.mem-nib-zero {
+  color: var(--vscode-descriptionForeground);
+}
+.mem-nib-0 { color: hsl(0, 70%, 65%); }
+.mem-nib-1 { color: hsl(22.5, 70%, 65%); }
+.mem-nib-2 { color: hsl(45, 70%, 65%); }
+.mem-nib-3 { color: hsl(67.5, 70%, 65%); }
+.mem-nib-4 { color: hsl(90, 70%, 65%); }
+.mem-nib-5 { color: hsl(112.5, 70%, 65%); }
+.mem-nib-6 { color: hsl(135, 70%, 65%); }
+.mem-nib-7 { color: hsl(157.5, 70%, 65%); }
+.mem-nib-8 { color: hsl(180, 70%, 65%); }
+.mem-nib-9 { color: hsl(202.5, 70%, 65%); }
+.mem-nib-10 { color: hsl(225, 70%, 65%); }
+.mem-nib-11 { color: hsl(247.5, 70%, 65%); }
+.mem-nib-12 { color: hsl(270, 70%, 65%); }
+.mem-nib-13 { color: hsl(292.5, 70%, 65%); }
+.mem-nib-14 { color: hsl(315, 70%, 65%); }
+.mem-nib-15 { color: hsl(337.5, 70%, 65%); }
 
 /* ── Disassembly view ─────────────────────────────────────────────────────── */
 
@@ -741,7 +765,7 @@ body {
   min-width: 0;
   min-height: 0;
   overflow: hidden;
-  font-family: var(--vscode-editor-font-family);
+  font-family: var(--vscode-editor-font-family), monospace;
   font-size: var(--vscode-editor-font-size, 12px);
 }
 
@@ -819,7 +843,7 @@ body {
   overflow-x: hidden;
   padding: 6px 8px;
   border-left: 1px solid var(--vscode-panel-border);
-  font-family: var(--vscode-editor-font-family);
+  font-family: var(--vscode-editor-font-family), monospace;
   font-size: var(--vscode-editor-font-size, 12px);
 }
 
@@ -917,7 +941,7 @@ body {
   flex: 1;
   min-height: 0;
   overflow: hidden; /* react-window List v2 manages its own scroll */
-  font-family: var(--vscode-editor-font-family);
+  font-family: var(--vscode-editor-font-family), monospace;
 }
 
 .tv-row {

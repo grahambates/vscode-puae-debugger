@@ -249,7 +249,7 @@ export function App() {
             ) : rightTab === "blitter" ? (
               <BlitterView selectedSlot={selectedSlot} onSelectSlot={setSelectedSlot} displayUnit={unit} timing={timing} />
             ) : rightTab === "memory" ? (
-              <MemoryView selectedSlot={selectedSlot} onSelectSlot={setSelectedSlot} />
+              <MemoryView selectedSlot={selectedSlot} onSelectSlot={setSelectedSlot} onOpenSource={openSource} />
             ) : (
               <DisassemblyView selectedSlot={selectedSlot} onOpenSource={openSource} />
             )}

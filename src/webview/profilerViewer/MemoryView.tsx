@@ -2,9 +2,18 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { List, ListImperativeAPI, RowComponentProps } from "react-window";
 import { getProfileModel } from "./modelStore";
 import { reconstructMemoryAt, resolveMemoryRegion, findPrevMemWrite, SLOW_BASE } from "./reconstruct";
+import { createSymbolizer } from "./symbols";
+import { createSourceLookup } from "./sourceLookup";
+import { Tooltip } from "./Tooltip";
+import { markChanges } from "./memoryDiff";
+import { convertToSigned } from "../shared/memoryFormat";
+import { isMac } from "../shared/platform";
 import { DMA_WRITE, dmaIsCustomReg } from "../../shared/profilerTypes";
 
 const BYTES_PER_ROW = 16;
+// Change-fade duration, matching the live memory viewer's HexDump (rgba(255,200,0,opacity),
+// opacity = 0.5*(1-elapsed/FADE_MS)) for a consistent visual language between the two viewers.
+const FADE_MS = 1000;
 
 type Region = "chip" | "slow";
 
@@ -16,23 +25,38 @@ type Region = "chip" | "slow";
 // instrumentation (see modelStore.ts's comment — the whole reason the big profile model lives
 // outside React state/props in the first place); a multi-megabyte typed array sitting in a prop
 // costs ~1-2s PER RENDER to walk, not just when it changes, which made this tab appear to hang
-// while scrubbing. `getByte`/`bufVersion` give rows fresh data through a stable function + a
-// cheap version number instead, so the actual bytes never enter React's prop tree.
+// while scrubbing. `getByte`/`getFadeOpacity` give rows fresh data through stable functions
+// instead, so the actual bytes (and the change-timestamp map) never enter React's prop tree.
 type RowListProps = {
   getByte: (off: number) => number | undefined; // reads the *current* reconstructed buffer
+  getFadeOpacity: (off: number) => number; // 0..0.5, decaying — see FADE_MS
   bufLength: number;
   bufVersion: number; // changes exactly when the reconstructed buffer's contents change, to force a row repaint
+  fadeTick: number; // bumped every animation frame while a fade is in progress, same purpose
   baseAddr: number; // address of offset 0 in the buffer (0 for chip, SLOW_BASE for slow)
   highlightOffset: number | undefined; // byte written at the selected cycle, if any, in this region
-  onByteClick: (addr: number) => void;
+  colorCode: boolean; // "Color bytes" toggle — one hue per leading hex digit, see .mem-nib-* in App.css
+  onByteClick: (addr: number, jumpToSource: boolean, toSide: boolean) => void;
+  onByteHover: (addr: number, x: number, y: number) => void;
+  onByteLeave: () => void;
 };
 
 const toAscii = (b: number): string => (b >= 0x20 && b < 0x7f ? String.fromCharCode(b) : ".");
 
-function RowRenderer({ index, style, getByte, baseAddr, highlightOffset, onByteClick }: RowComponentProps<RowListProps>) {
+// Nibble color-coding class for a byte value, or undefined when color-coding is off — only the
+// hex column is colored (the ASCII column stays the dim description color either way), matching
+// HexDump.
+const nibbleClass = (value: number, colorCode: boolean): string | undefined => {
+  if (!colorCode) return undefined;
+  return value === 0 ? "mem-nib-zero" : `mem-nib-${(value >>> 4) & 0xf}`;
+};
+
+function RowRenderer({
+  index, style, getByte, getFadeOpacity, baseAddr, highlightOffset, colorCode, onByteClick, onByteHover, onByteLeave,
+}: RowComponentProps<RowListProps>) {
   const rowOff = index * BYTES_PER_ROW;
   const addr = baseAddr + rowOff;
-  const cells: { hex: string; ascii: string; off: number; present: boolean }[] = [];
+  const cells: { hex: string; ascii: string; off: number; present: boolean; fade: number; value: number }[] = [];
   for (let i = 0; i < BYTES_PER_ROW; i++) {
     const off = rowOff + i;
     const b = getByte(off);
@@ -41,6 +65,8 @@ function RowRenderer({ index, style, getByte, baseAddr, highlightOffset, onByteC
       ascii: b !== undefined ? toAscii(b) : " ",
       off,
       present: b !== undefined,
+      fade: getFadeOpacity(off),
+      value: b ?? 0,
     });
   }
   return (
@@ -50,8 +76,15 @@ function RowRenderer({ index, style, getByte, baseAddr, highlightOffset, onByteC
         {cells.map((c) => (
           <span
             key={c.off}
-            className={"mem-byte" + (c.off === highlightOffset ? " mem-hit" : "")}
-            onClick={c.present ? () => onByteClick(baseAddr + c.off) : undefined}
+            className={[
+              "mem-byte",
+              c.off === highlightOffset ? "mem-hit" : undefined,
+              c.present ? nibbleClass(c.value, colorCode) : undefined,
+            ].filter(Boolean).join(" ")}
+            style={c.fade > 0 ? { background: `rgba(255,200,0,${c.fade.toFixed(3)})` } : undefined}
+            onClick={c.present ? (e) => onByteClick(baseAddr + c.off, e.ctrlKey || e.metaKey, e.altKey) : undefined}
+            onMouseEnter={c.present ? (e) => onByteHover(baseAddr + c.off, e.clientX, e.clientY) : undefined}
+            onMouseLeave={onByteLeave}
           >
             {c.hex}
           </span>
@@ -67,20 +100,31 @@ function RowRenderer({ index, style, getByte, baseAddr, highlightOffset, onByteC
 // toggle instead of the old pixel/heatmap view). Reconstruction comes from the already-wired
 // reconstructMemoryAt; "Follow writes" auto-switches region and scrolls to whatever address the
 // selected cycle wrote, mirroring Custom Registers' changed-this-cycle highlight. Clicking a byte
-// jumps the playhead to the most recent write that produced it.
+// jumps the playhead to the most recent write that produced it; Ctrl/Cmd+click instead jumps to
+// source (see sourceLookup.ts) — either the executing instruction's line, for a byte inside a
+// disassembled (executed) function, or the declaration line of the enclosing data symbol (e.g. a
+// "Screen" buffer) otherwise — same modifier convention as FlameGraph/DisassemblyView. Hovering
+// a byte shows its
+// address/symbol and byte/word/long interpretations, formatted to match the live memory viewer's
+// HexDump tooltip; bytes that changed value since the last debounced reconstruction fade out over
+// FADE_MS, also mirroring HexDump.
 export function MemoryView({
   selectedSlot,
   onSelectSlot,
+  onOpenSource,
 }: {
   selectedSlot: number | undefined;
   onSelectSlot: (slot: number) => void;
+  onOpenSource: (file: string, line: number, toSide: boolean) => void;
 }) {
   const model = getProfileModel();
   const dma = model?.dma;
   const snapshot = model?.dmaSnapshot;
   const [region, setRegion] = useState<Region>("chip");
   const [follow, setFollow] = useState(true);
+  const [colorCode, setColorCode] = useState(true); // matches the live memory viewer's default
   const [goTo, setGoTo] = useState("");
+  const [hover, setHover] = useState<{ addr: number; x: number; y: number } | undefined>(undefined);
   const listRef = useRef<ListImperativeAPI>(null);
 
   const slot = selectedSlot ?? (dma ? dma.owner.length - 1 : 0);
@@ -100,17 +144,46 @@ export function MemoryView({
     [dma, snapshot, debouncedSlot],
   );
 
-  // The reconstructed buffers, kept OUT of props (see RowListProps' comment) behind a ref that
-  // rows read through `getByte`. Refs may only be written in effects/handlers, not during render
-  // (react-hooks/refs) — a plain ref write with no setState call avoids the cascading-render
-  // problem that motivated dropping the separate bufVersion state below. `debouncedSlot` stands in
-  // for a version number in rowProps: it's guaranteed to change exactly when `recon` does (recon's
-  // only non-stable dependency), so it forces a row repaint without a separate counter.
+  // The reconstructed buffers, kept OUT of props (see RowListProps' comment) behind refs that
+  // rows read through `getByte`/`getFadeOpacity`. Refs may only be written in effects/handlers,
+  // not during render (react-hooks/refs). `debouncedSlot` stands in for a version number in
+  // rowProps below: it's guaranteed to change exactly when `recon` does (recon's only non-stable
+  // dependency), so it forces a row repaint without a separate counter.
   const chipRef = useRef<Uint8Array>(new Uint8Array(0));
   const slowRef = useRef<Uint8Array>(new Uint8Array(0));
+  const chipChangedRef = useRef<Map<number, number>>(new Map());
+  const slowChangedRef = useRef<Map<number, number>>(new Map());
+  const hasReconciledRef = useRef(false); // skip diffing against the initial empty buffers
   useEffect(() => {
-    chipRef.current = recon?.chip ?? chipRef.current;
-    slowRef.current = recon?.slow ?? slowRef.current;
+    if (!recon) return;
+    if (hasReconciledRef.current) {
+      const now = Date.now();
+      markChanges(chipRef.current, recon.chip, chipChangedRef.current, now, FADE_MS);
+      markChanges(slowRef.current, recon.slow, slowChangedRef.current, now, FADE_MS);
+    } else {
+      hasReconciledRef.current = true;
+    }
+    chipRef.current = recon.chip;
+    slowRef.current = recon.slow;
+  }, [recon]);
+
+  // Animation tick for the change-fade: self-restarting requestAnimationFrame loop that bumps
+  // `fadeTick` (forcing visible rows to repaint with the decayed opacity) only while a fade is
+  // actually in progress, so it doesn't burn CPU the rest of the time. Restarts whenever `recon`
+  // changes, since that's the only thing that can add new fades.
+  const [fadeTick, setFadeTick] = useState(0);
+  useEffect(() => {
+    let raf: number | undefined;
+    const tick = () => {
+      if (chipChangedRef.current.size > 0 || slowChangedRef.current.size > 0) {
+        setFadeTick((t) => t + 1);
+        raf = requestAnimationFrame(tick);
+      } else {
+        raf = undefined;
+      }
+    };
+    raf = requestAnimationFrame(tick);
+    return () => { if (raf !== undefined) cancelAnimationFrame(raf); };
   }, [recon]);
 
   // The write at the selected cycle, if any, resolved to a region+offset — drives "Follow writes".
@@ -153,26 +226,79 @@ export function MemoryView({
     [region],
   );
 
+  const getFadeOpacity = useCallback(
+    (off: number): number => {
+      const map = region === "chip" ? chipChangedRef.current : slowChangedRef.current;
+      const ts = map.get(off);
+      if (ts === undefined) return 0;
+      const elapsed = Date.now() - ts;
+      return elapsed >= FADE_MS ? 0 : 0.5 * (1 - elapsed / FADE_MS);
+    },
+    [region],
+  );
+
+  const sourceLookup = useMemo(() => createSourceLookup(model?.disassembly, model?.symbols), [model]);
+
   const onByteClick = useCallback(
-    (addr: number) => {
+    (addr: number, jumpToSource: boolean, toSide: boolean) => {
+      if (jumpToSource) {
+        const loc = sourceLookup(addr);
+        if (loc) onOpenSource(loc.file, loc.line + 1, toSide);
+        return;
+      }
       if (!dma) return;
       const found = findPrevMemWrite(dma, addr, slot + 1);
       if (found !== undefined) onSelectSlot(found);
     },
-    [dma, slot, onSelectSlot],
+    [dma, slot, onSelectSlot, sourceLookup, onOpenSource],
   );
+
+  const onByteHover = useCallback((addr: number, x: number, y: number) => setHover({ addr, x, y }), []);
+  const onByteLeave = useCallback(() => setHover(undefined), []);
 
   const rowProps = useMemo<RowListProps>(
     () => ({
       getByte,
+      getFadeOpacity,
       bufLength: bufLength ?? 0,
       bufVersion: debouncedSlot,
+      fadeTick,
       baseAddr,
       highlightOffset: currentWrite && currentWrite.region === region ? currentWrite.offset : undefined,
+      colorCode,
       onByteClick,
+      onByteHover,
+      onByteLeave,
     }),
-    [getByte, bufLength, debouncedSlot, baseAddr, currentWrite, region, onByteClick],
+    [getByte, getFadeOpacity, bufLength, debouncedSlot, fadeTick, baseAddr, currentWrite, region, colorCode, onByteClick, onByteHover, onByteLeave],
   );
+
+  // Address/symbol + byte/word/long (signed and unsigned) interpretations for the hovered byte,
+  // read straight from the live buffer (getByte) — recomputed only when the hovered address (or
+  // the underlying data) changes, not on every pointer move within the same byte. Word/longword
+  // reads must start at an even address on the 68000 (matches HexDump's getValueInterpretations),
+  // so an odd address only ever gets a Byte interpretation.
+  const symbolize = useMemo(() => createSymbolizer(model?.symbols), [model]);
+  const hoverInfo = useMemo(() => {
+    if (!hover) return undefined;
+    const off = hover.addr - baseAddr;
+    const b0 = getByte(off);
+    if (b0 === undefined) return undefined;
+    if (hover.addr % 2 !== 0) return { byte: b0, word: undefined, long: undefined };
+    const b1 = getByte(off + 1);
+    const b2 = getByte(off + 2);
+    const b3 = getByte(off + 3);
+    const word = b1 !== undefined ? (b0 << 8) | b1 : undefined;
+    const long = b1 !== undefined && b2 !== undefined && b3 !== undefined ? (((b0 << 24) | (b1 << 16) | (b2 << 8) | b3) >>> 0) : undefined;
+    return { byte: b0, word, long };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- re-reads on bufVersion (data changed), not just hover
+  }, [hover, baseAddr, getByte, debouncedSlot]);
+
+  const hoverSourceLoc = useMemo(
+    () => (hover ? sourceLookup(hover.addr) : undefined),
+    [hover, sourceLookup],
+  );
+  const hoverSymbol = useMemo(() => (hover ? symbolize(hover.addr) : undefined), [hover, symbolize]);
 
   const jumpTo = () => {
     if (!snapshot) return;
@@ -207,10 +333,43 @@ export function MemoryView({
           <input type="checkbox" checked={follow} onChange={(e) => setFollow(e.target.checked)} />
           Follow writes
         </label>
+        <label className="mem-follow">
+          <input type="checkbox" checked={colorCode} onChange={(e) => setColorCode(e.target.checked)} />
+          Color bytes
+        </label>
       </div>
       <div className="mem-rows">
         <List listRef={listRef} rowComponent={RowRenderer} rowProps={rowProps} rowCount={rowCount} rowHeight={18} />
       </div>
+      {hover && hoverInfo && (
+        <Tooltip x={hover.x} y={hover.y} width={220}>
+          <div className="tt-func">
+            {hover.addr.toString(16).toUpperCase().padStart(6, "0")}
+            {hoverSymbol ? `: ${hoverSymbol}` : ""}
+          </div>
+          <div className="tip-grid">
+            {([
+              ["Byte", hoverInfo.byte, 1],
+              ...(hoverInfo.word !== undefined ? [["Word", hoverInfo.word, 2]] as const : []),
+              ...(hoverInfo.long !== undefined ? [["Longword", hoverInfo.long, 4]] as const : []),
+            ] as const).map(([label, value, size]) => {
+              const signed = convertToSigned(value, size);
+              return (
+                <span key={label} style={{ display: "contents" }}>
+                  <span className="tip-label">{label}</span>
+                  <span className="tip-val">
+                    {value}
+                    {signed !== value ? `, ${signed}` : ""}
+                  </span>
+                </span>
+              );
+            })}
+          </div>
+          {hoverSourceLoc && (
+            <div className="tt-hint">{isMac ? "Cmd" : "Ctrl"}+Click to open source</div>
+          )}
+        </Tooltip>
+      )}
     </div>
   );
 }

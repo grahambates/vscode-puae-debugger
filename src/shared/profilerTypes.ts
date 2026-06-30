@@ -154,11 +154,17 @@ export interface DmaSnapshot {
 // A program symbol shipped to the webview for on-demand address symbolization (the
 // reusable primitive future disassembly/copper/memory views will also use). `size` is
 // clamped to the segment end (from SourceMap.getSymbolLengths), so [address, address+size)
-// bounds the symbol's range.
+// bounds the symbol's range. `file`/`line` are the symbol's own declaration site (raw,
+// unadjusted — same convention as IDisassembledInstruction.line/ProfileFrame.line), resolved
+// once at capture time via SourceMap.lookupAddress(symbol's address) — present for data
+// symbols too (not just code), so the Memory view can offer "jump to source" for addresses
+// that fall inside a labelled data buffer but were never executed (so have no disassembly entry).
 export interface ISymbol {
   address: number;
   name: string;
   size: number;
+  file?: string;
+  line?: number;
 }
 
 // One disassembled instruction, annotated with exact per-PC execution stats (this profiler

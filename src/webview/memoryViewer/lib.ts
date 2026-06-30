@@ -1,16 +1,7 @@
 
-/**
- * Convert number to signed, based on byte length
- */
-export function convertToSigned(value: number, valueSize: number): number {
-  if (valueSize === 1) {
-    return value > 0x7f ? value - 0x100 : value;
-  } else if (valueSize === 2) {
-    return value > 0x7fff ? value - 0x1_0000 : value;
-  } else {
-    return value > 0x7fff_ffff ? value - 0x1_0000_0000 : value;
-  }
-}
+// Re-exported so existing call sites in this module are unaffected — the implementation now
+// lives in webview/shared/memoryFormat.ts (shared with the profiler's MemoryView).
+export { convertToSigned } from "../shared/memoryFormat";
 
 /**
  * Get formatted address string for value including offset from previous symbol
