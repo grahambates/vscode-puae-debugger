@@ -1,4 +1,4 @@
-import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { PointerEvent as ReactPointerEvent, ReactNode } from "react";
 import { BusOwner, Category, ILocation, DMA_WRITE, DMA_BYTE, DMA_HPOS, dmaIsCustomReg } from "../../shared/profilerTypes";
 import { getProfileModel } from "./modelStore";
@@ -9,6 +9,7 @@ import { compileFilter, IRichFilter } from "./filter";
 import Markdown from "markdown-to-jsx/react";
 import { channelStyle, blitStyle, dmaconChannels, ownerRegister, DMACON_REG_INDEX, ChannelStyle } from "./dma";
 import { getBlits, blitLabel, blitTooltip, Blit } from "./blits";
+import { BlitDetailGrid } from "./BlitDetail";
 import { reconstructCustomRegs } from "./reconstruct";
 import { createSymbolizer } from "./symbols";
 import { customRegisterName } from "../shared/customRegisters";
@@ -900,12 +901,6 @@ export function FlameGraph({
   // Recomputed only when the hovered blit changes (not on every pointer move).
   const hoveredBlit = blitHover?.blit;
   const blitInfo = useMemo(() => (hoveredBlit ? blitTooltip(hoveredBlit) : undefined), [hoveredBlit]);
-  const blitAddr = (a: number) => {
-    const hex = `$${(a >>> 0).toString(16).padStart(6, "0")}`;
-    const sym = symbolize(a);
-    return sym ? `${sym} (${hex})` : hex;
-  };
-  const bin16 = (v: number) => `%${(v & 0xffff).toString(2).padStart(16, "0")}`;
 
   return (
     // Size the flame area to the actual (capped) call-stack depth — canvas height plus the pan
@@ -1053,76 +1048,7 @@ export function FlameGraph({
       )}
       {blitHover && blitInfo && (
         <Tooltip x={blitHover.x} y={blitHover.y} className="blit-tip" width={480}>
-          <div className="tt-func">
-            <span className="dma-dot" style={{ background: blitStyle(blitHover.blit.mode).color }} />
-            {blitLabel(blitHover.blit)}
-          </div>
-          <div className="tip-grid">
-            <span className="tip-label">Size</span>
-            <span className="tip-val">{blitInfo.size}</span>
-
-            <span className="tip-label">Blitter Control</span>
-            <span className="tip-val bt-chips">
-              {blitInfo.control.map((c) => (
-                <span key={c.name} className={c.on ? "tt-bit on" : "tt-bit"}>{c.name}</span>
-              ))}
-            </span>
-
-            <span className="tip-label">Minterm</span>
-            <span className="tip-val bt-chips">
-              <span className="bt-mt">{blitInfo.mintermHex} {blitInfo.mintermExpr}</span>
-              {blitInfo.mintermBits.map((c, i) => (
-                <span key={i} className={c.on ? "tt-bit on" : "tt-bit"}>{c.name}</span>
-              ))}
-            </span>
-
-            {blitInfo.line && (
-              <>
-                <span className="tip-label">Line</span>
-                <span className="tip-val">
-                  <span className="bt-eh">Start</span> {blitInfo.line.start}
-                  <span className="bt-eh">Texture</span> {blitInfo.line.texture}
-                </span>
-              </>
-            )}
-
-            {blitInfo.channels.map((ch) => (
-              <Fragment key={ch.label}>
-                <span className="tip-label">{ch.label}</span>
-                <span className="tip-val">
-                  {ch.literal !== undefined ? (
-                    bin16(ch.literal)
-                  ) : (
-                    <>
-                      <span>{blitAddr(ch.ptr!)}</span>
-                      {ch.shift !== undefined && <><span className="bt-eh">Shift</span> {ch.shift}</>}
-                      <span className="bt-eh">Modulo</span> {ch.modulo}
-                    </>
-                  )}
-                </span>
-                {ch.fwm !== undefined && (
-                  <>
-                    <span className="tip-label">Masks</span>
-                    <span className="tip-val">
-                      <span className="bt-eh">FWM</span> {bin16(ch.fwm)}
-                      <span className="bt-eh">LWM</span> {bin16(ch.lwm!)}
-                    </span>
-                  </>
-                )}
-              </Fragment>
-            ))}
-
-            <span className="tip-label">Start</span>
-            <span className="tip-val">Line {blitInfo.start.line}, Color Clock {blitInfo.start.colorClock}, DMA Cycle {blitInfo.start.slot}</span>
-            {blitInfo.end && (
-              <>
-                <span className="tip-label">End</span>
-                <span className="tip-val">Line {blitInfo.end.line}, Color Clock {blitInfo.end.colorClock}, DMA Cycle {blitInfo.end.slot}</span>
-                <span className="tip-label">Duration</span>
-                <span className="tip-val">{blitInfo.end.durationSlots} DMA Cycles ({formatValue(blitInfo.end.durationSlots * 2, displayUnit, timing)})</span>
-              </>
-            )}
-          </div>
+          <BlitDetailGrid blit={blitHover.blit} info={blitInfo} symbolize={symbolize} displayUnit={displayUnit} timing={timing} />
         </Tooltip>
       )}
     </div>

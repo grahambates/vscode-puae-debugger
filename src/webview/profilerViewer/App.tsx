@@ -7,6 +7,7 @@ import { FlameGraph } from "./FlameGraph";
 import { TimeView } from "./TimeView";
 import { CustomRegsView } from "./CustomRegsView";
 import { CopperView } from "./CopperView";
+import { BlitterView } from "./BlitterView";
 import { createTopDownGraph } from "./topDownGraph";
 import { DisplayUnit, unitOptions, Timing } from "./display";
 import { IRichFilter } from "./filter";
@@ -27,7 +28,7 @@ export function App() {
   // The pinned DMA-cycle cursor, shared between the flame graph (which sets it on click) and the
   // custom-registers view (which reads it). Reset on a fresh capture, below.
   const [selectedSlot, setSelectedSlot] = useState<number | undefined>(undefined);
-  const [rightTab, setRightTab] = useState<"time" | "customregs" | "copper">("time");
+  const [rightTab, setRightTab] = useState<"time" | "customregs" | "copper" | "blitter">("time");
   // "file" = a loaded .vamigaprofile (read-only): no live Capture/Save. The host bakes the
   // mode into #root so it's known at init and holds even if no model ever arrives.
   const [mode] = useState<"live" | "file">(() =>
@@ -193,13 +194,21 @@ export function App() {
               >
                 Copper
               </button>
+              <button
+                className={"right-tab" + (rightTab === "blitter" ? " active" : "")}
+                onClick={() => setRightTab("blitter")}
+              >
+                Blitter
+              </button>
             </div>
             {rightTab === "time" ? (
               <TimeView data={dataTable} filter={filter} displayUnit={unit} timing={timing} onOpenSource={openSource} />
             ) : rightTab === "customregs" ? (
               <CustomRegsView selectedSlot={selectedSlot} onSelectSlot={setSelectedSlot} />
-            ) : (
+            ) : rightTab === "copper" ? (
               <CopperView selectedSlot={selectedSlot} onSelectSlot={setSelectedSlot} />
+            ) : (
+              <BlitterView selectedSlot={selectedSlot} onSelectSlot={setSelectedSlot} displayUnit={unit} timing={timing} />
             )}
           </div>
         </div>
