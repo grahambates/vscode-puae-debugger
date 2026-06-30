@@ -618,22 +618,101 @@ body {
   border-bottom: 1px solid var(--vscode-panel-border);
 }
 
-.mem-toolbar select {
-  background: var(--vscode-dropdown-background);
-  color: var(--vscode-dropdown-foreground);
-  border: 1px solid var(--vscode-dropdown-border);
-  padding: 2px 4px;
-  border-radius: 2px;
+/* Address combo box (region + symbol + numeric address, replacing a separate region <select>
+   and a free-text "go to address" input): one Downshift-driven autocomplete, mirroring the live
+   memory viewer's .autocomplete-* styling/tokens but namespaced for this webview's bundle. */
+.mem-combo-container {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  display: flex;
 }
 
-.mem-goto {
+.mem-combo-input {
   flex: 1;
   min-width: 0;
   background: var(--vscode-input-background);
   color: var(--vscode-input-foreground);
   border: 1px solid var(--vscode-input-border, transparent);
+  border-right: none;
   padding: 2px 6px;
-  border-radius: 2px;
+  border-radius: 2px 0 0 2px;
+  outline: none;
+}
+
+.mem-combo-input:focus {
+  border-color: var(--vscode-focusBorder);
+}
+
+.mem-combo-toggle {
+  background: var(--vscode-dropdown-background);
+  color: var(--vscode-dropdown-foreground);
+  border: 1px solid var(--vscode-dropdown-border);
+  border-left: none;
+  border-radius: 0 2px 2px 0;
+  padding: 0 6px;
+  cursor: pointer;
+  font-size: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 24px;
+}
+
+.mem-combo-toggle:hover {
+  background: var(--vscode-list-hoverBackground);
+}
+
+.mem-combo-dropdown {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  right: 0;
+  background: var(--vscode-dropdown-background);
+  border: 1px solid var(--vscode-dropdown-border);
+  border-top: none;
+  max-height: 320px;
+  overflow-y: auto;
+  z-index: 20;
+  box-shadow: 0 4px 8px rgba(0, 0, 0, 0.3);
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  font-family: var(--vscode-font-family);
+  font-size: 12px;
+}
+
+.mem-combo-item {
+  padding: 4px 8px;
+  cursor: pointer;
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+}
+
+.mem-combo-item.active {
+  background: var(--vscode-list-hoverBackground);
+}
+
+.mem-combo-label {
+  font-weight: 600;
+  font-family: var(--vscode-editor-font-family), monospace;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mem-combo-region .mem-combo-label {
+  color: var(--vscode-terminal-ansiYellow);
+}
+
+.mem-combo-address {
+  color: var(--vscode-descriptionForeground);
+  font-family: var(--vscode-editor-font-family), monospace;
+  font-size: 0.9em;
+  flex-shrink: 0;
 }
 
 .mem-follow {

@@ -1,9 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { List, ListImperativeAPI, RowComponentProps } from "react-window";
+import { useCombobox } from "downshift";
 import { getProfileModel } from "./modelStore";
 import { reconstructMemoryAt, resolveMemoryRegion, findPrevMemWrite, SLOW_BASE } from "./reconstruct";
 import { createSymbolizer } from "./symbols";
 import { createSourceLookup } from "./sourceLookup";
+import { buildAddressSuggestions, parseAddressInput, AddressSuggestion, Region } from "./addressSuggestions";
 import { Tooltip } from "./Tooltip";
 import { markChanges } from "./memoryDiff";
 import { convertToSigned } from "../shared/memoryFormat";
@@ -14,8 +16,6 @@ const BYTES_PER_ROW = 16;
 // Change-fade duration, matching the live memory viewer's HexDump (rgba(255,200,0,opacity),
 // opacity = 0.5*(1-elapsed/FADE_MS)) for a consistent visual language between the two viewers.
 const FADE_MS = 1000;
-
-type Region = "chip" | "slow";
 
 // Props shared across every row via the v2 rowProps channel (must not contain
 // ariaAttributes/index/style — see TimeView.tsx).
@@ -123,7 +123,8 @@ export function MemoryView({
   const [region, setRegion] = useState<Region>("chip");
   const [follow, setFollow] = useState(true);
   const [colorCode, setColorCode] = useState(true); // matches the live memory viewer's default
-  const [goTo, setGoTo] = useState("");
+  const [comboQuery, setComboQuery] = useState("");
+  const [browseAll, setBrowseAll] = useState(false); // dropdown-button click: bypass the suggestion cap
   const [hover, setHover] = useState<{ addr: number; x: number; y: number } | undefined>(undefined);
   const listRef = useRef<ListImperativeAPI>(null);
 
@@ -201,11 +202,17 @@ export function MemoryView({
   // "Follow writes": sync `region` to wherever the playhead just wrote. Adjusted during render
   // (React's recommended pattern for state derived from a changing value — see
   // react-hooks/set-state-in-effect) rather than in an effect, by detecting the change against the
-  // last-seen currentWrite; the user can still override `region` manually via the dropdown.
+  // last-seen currentWrite; the user can still override `region` manually via the combo box.
+  // Also clears the combo box's text: it auto-jumped here from a write, not from selecting that
+  // text, so leaving e.g. a stale symbol name showing would misleadingly imply the view is still
+  // parked on that symbol.
   const [lastWrite, setLastWrite] = useState(currentWrite);
   if (currentWrite !== lastWrite) {
     setLastWrite(currentWrite);
-    if (follow && currentWrite) setRegion(currentWrite.region);
+    if (follow && currentWrite) {
+      setRegion(currentWrite.region);
+      setComboQuery("");
+    }
   }
 
   useEffect(() => {
@@ -300,15 +307,76 @@ export function MemoryView({
   );
   const hoverSymbol = useMemo(() => (hover ? symbolize(hover.addr) : undefined), [hover, symbolize]);
 
-  const jumpTo = () => {
-    if (!snapshot) return;
-    const addr = parseInt(goTo.replace(/^\$|^0x/i, ""), 16);
-    if (Number.isNaN(addr)) return;
-    const resolved = resolveMemoryRegion(addr, snapshot);
-    if (!resolved) return;
-    setRegion(resolved.region);
-    listRef.current?.scrollToRow({ index: Math.floor(resolved.offset / BYTES_PER_ROW), align: "start" });
-  };
+  const jumpToAddress = useCallback(
+    (addr: number) => {
+      if (!snapshot) return;
+      const resolved = resolveMemoryRegion(addr, snapshot);
+      if (!resolved) return;
+      setRegion(resolved.region);
+      listRef.current?.scrollToRow({ index: Math.floor(resolved.offset / BYTES_PER_ROW), align: "start" });
+    },
+    [snapshot],
+  );
+
+  const jumpToRegion = useCallback((r: Region) => {
+    setRegion(r);
+    listRef.current?.scrollToRow({ index: 0, align: "start" });
+  }, []);
+
+  // Address combo box: replaces a separate "region" <select> and a free-text "go to address"
+  // input with one Downshift autocomplete listing both RAM regions and the program's symbols
+  // (model.symbols already covers data symbols too — see sourceLookup.ts), plus accepting a
+  // raw hex address typed directly. browseAll mirrors the live memory viewer's dropdown-button
+  // behavior: bypass the per-keystroke suggestion cap and show everything, ignoring whatever's
+  // currently typed.
+  const comboSuggestions = useMemo(
+    () => buildAddressSuggestions(browseAll ? "" : comboQuery, model?.symbols, !!snapshot && snapshot.slow.length > 0),
+    [browseAll, comboQuery, model, snapshot],
+  );
+
+  const selectSuggestion = useCallback(
+    (item: AddressSuggestion) => {
+      if (item.kind === "region") jumpToRegion(item.region);
+      else jumpToAddress(item.address);
+    },
+    [jumpToRegion, jumpToAddress],
+  );
+
+  const {
+    isOpen: comboOpen,
+    getMenuProps,
+    getInputProps,
+    getToggleButtonProps,
+    highlightedIndex,
+    getItemProps,
+  } = useCombobox<AddressSuggestion>({
+    items: comboSuggestions,
+    itemToString: (item) => item?.label ?? "",
+    inputValue: comboQuery,
+    onInputValueChange: ({ inputValue }) => {
+      setComboQuery(inputValue ?? "");
+      setBrowseAll(false);
+    },
+    onSelectedItemChange: ({ selectedItem }) => {
+      if (!selectedItem) return;
+      setComboQuery(selectedItem.label);
+      selectSuggestion(selectedItem);
+    },
+  });
+
+  // Enter with nothing highlighted (downshift handles Enter-on-a-highlighted-item itself): try
+  // an exact case-insensitive label match first (fixes casing, matches the live viewer), then
+  // fall back to parsing the typed text as a raw hex address.
+  const commitComboInput = useCallback(() => {
+    const exact = comboSuggestions.find((s) => s.label.toLowerCase() === comboQuery.trim().toLowerCase());
+    if (exact) {
+      setComboQuery(exact.label);
+      selectSuggestion(exact);
+      return;
+    }
+    const addr = parseAddressInput(comboQuery);
+    if (addr !== undefined) jumpToAddress(addr);
+  }, [comboSuggestions, comboQuery, selectSuggestion, jumpToAddress]);
 
   if (!model) return null;
   if (!dma || !snapshot || !bufLength) {
@@ -318,17 +386,47 @@ export function MemoryView({
   return (
     <div className="memoryview">
       <div className="mem-toolbar">
-        <select value={region} onChange={(e) => setRegion(e.target.value as Region)}>
-          <option value="chip">Chip RAM</option>
-          {snapshot.slow.length > 0 && <option value="slow">Slow RAM</option>}
-        </select>
-        <input
-          className="mem-goto"
-          placeholder="Go to address ($..)"
-          value={goTo}
-          onChange={(e) => setGoTo(e.target.value)}
-          onKeyDown={(e) => e.key === "Enter" && jumpTo()}
-        />
+        <div className="mem-combo-container">
+          <input
+            {...getInputProps({
+              placeholder: "Region, symbol, or address ($..)",
+              onKeyDown: (e) => {
+                if (e.key === "Enter" && highlightedIndex === -1) {
+                  e.preventDefault();
+                  commitComboInput();
+                }
+              },
+            })}
+            className="mem-combo-input"
+          />
+          <button
+            {...getToggleButtonProps({
+              // Let downshift's own built-in toggle (already wired by getToggleButtonProps) open
+              // /close the menu — calling openMenu() here too would race it. Only layer in the
+              // "show everything, ignoring the cap" behavior, mirroring the live viewer's
+              // dropdown-button (which also only runs its side effect, not the open itself).
+              onClick: () => { if (!comboOpen) setBrowseAll(true); },
+            })}
+            type="button"
+            className="mem-combo-toggle codicon codicon-chevron-down"
+            aria-label="Show all regions and symbols"
+            tabIndex={-1}
+          />
+          <ul {...getMenuProps()} className="mem-combo-dropdown">
+            {comboOpen && comboSuggestions.map((s, index) => (
+              <li
+                key={s.kind === "region" ? `region:${s.region}` : `symbol:${s.label}`}
+                {...getItemProps({ item: s, index })}
+                className={"mem-combo-item" + (s.kind === "region" ? " mem-combo-region" : "") + (highlightedIndex === index ? " active" : "")}
+              >
+                <span className="mem-combo-label">{s.label}</span>
+                {s.kind === "symbol" && (
+                  <span className="mem-combo-address">${s.address.toString(16).padStart(6, "0")}</span>
+                )}
+              </li>
+            ))}
+          </ul>
+        </div>
         <label className="mem-follow">
           <input type="checkbox" checked={follow} onChange={(e) => setFollow(e.target.checked)} />
           Follow writes
