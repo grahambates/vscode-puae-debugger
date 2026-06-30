@@ -171,8 +171,11 @@ name+doc from the static table, Data, Access, Line/ColorClock, DMACON chips via
 ### 2.7 Frame selector / thumbnails — `layout.tsx` ⬜
 Multi-frame carousel: screenshot + CPU/blitter utilization bars. **Data:** `screenshot`,
 `idleCycles`, blit cycles. Needs multi-frame capture + screenshots.
-### 2.8 Code lenses — `createLenses(model, unit)` ⬜
-Per file:line self/agg/ticks lenses in the editor (extension-side here).
+### 2.8 Code lenses — `createLenses(model, unit)` ✅
+Per file:line self/agg/ticks lenses in the editor (extension-side here). → **Ours:**
+`profilerCodeLensProvider.ts` — simpler than the old extension's version since our `IProfileModel`
+is already built extension-side (no webview→host `setCodeLenses` postMessage round-trip needed);
+one global provider fed by both the live panel and the `.vamigaprofile` editor.
 
 ---
 
@@ -250,9 +253,9 @@ consumed by Custom Registers/Copper/Blitter/Memory.
    (3.2/3.3/3.4/3.6) — all four wired to the shared playhead.
 6. ⬜ **gfx-resource registry** (emulator-side) → resources/screen. **Next big lift.**
 7. ⬜ **Screen reconstruction** (`getScreen`) — largest; OCS/ECS first, AGA ⛔. Depends on #6.
-8. ⬜ Multi-frame capture + thumbnails; code lenses; DMACON/Events tooltip detail (the Events
-   bitfield needs a small wasm export — `dma_rec.evt` isn't exposed yet). ✅ bottom-up tree done.
-   The rest are independent webview-only items, cheap relative to 6–7.
+8. ⬜ Multi-frame capture + thumbnails; DMACON/Events tooltip detail (the Events bitfield needs a
+   small wasm export — `dma_rec.evt` isn't exposed yet). ✅ bottom-up tree and code lenses done.
+   The rest are independent items, cheap relative to 6–7.
 
 What's left is screen reconstruction + the gfx-resource registry it depends on (6–7, by far the
 largest remaining work), and a handful of small independent items (8). Also worth noting: PUAE's

@@ -37,6 +37,33 @@ jest.mock(
       ) {}
     },
     TerminatedEvent: class MockTerminatedEvent {},
+    Range: class MockRange {
+      constructor(
+        public startLine: number,
+        public startChar: number,
+        public endLine?: number,
+        public endChar?: number,
+      ) {}
+    },
+    CodeLens: class MockCodeLens {
+      constructor(
+        public range: unknown,
+        public command?: unknown,
+      ) {}
+    },
+    EventEmitter: class MockEventEmitter {
+      private listeners: ((e: unknown) => void)[] = [];
+      public event = (listener: (e: unknown) => void) => {
+        this.listeners.push(listener);
+        return { dispose: () => undefined };
+      };
+      public fire(e?: unknown): void {
+        for (const l of this.listeners) l(e);
+      }
+    },
+    languages: {
+      registerCodeLensProvider: jest.fn(),
+    },
   }),
   { virtual: true },
 );

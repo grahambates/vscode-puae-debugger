@@ -6,6 +6,7 @@ import { StateViewerProvider } from "./stateViewerProvider";
 import { PuaeEmulator } from "./puaeEmulator";
 import { ProfilerViewerProvider } from "./profilerViewerProvider";
 import { ProfileEditorProvider } from "./profileEditorProvider";
+import { ProfilerCodeLensProvider } from "./profilerCodeLensProvider";
 import { expressionRangeAt } from "./cExpressionEvaluator";
 
 /**
@@ -32,10 +33,14 @@ export function activate(context: vscode.ExtensionContext) {
   );
   // Writable, webview-fetchable scratch dir for the profiler's bulk capture blobs.
   const profilerStorage = context.globalStorageUri;
+  // Per file:line self/total/ticks CodeLenses, shared by the live panel and the .vamigaprofile
+  // editor (both call .update() with their freshly-built model).
+  const profilerCodeLens = new ProfilerCodeLensProvider();
   const profilerViewer = new ProfilerViewerProvider(
     context.extensionUri,
     profilerStorage,
     () => VamigaDebugAdapter.getActiveAdapter()?.getProfilerClient(),
+    profilerCodeLens,
   );
 
   // Register the debug adapters
@@ -250,9 +255,16 @@ export function activate(context: vscode.ExtensionContext) {
   context.subscriptions.push(
     vscode.window.registerCustomEditorProvider(
       ProfileEditorProvider.viewType,
-      new ProfileEditorProvider(context.extensionUri, profilerStorage),
+      new ProfileEditorProvider(context.extensionUri, profilerStorage, profilerCodeLens),
       { webviewOptions: { retainContextWhenHidden: true }, supportsMultipleEditorsPerDocument: false },
     ),
+  );
+
+  // Profiler CodeLenses: any file (the debugged program may be C/C++ or m68k assembly, and
+  // neither is guaranteed to have a language id registered) — provideCodeLenses itself is a
+  // cheap Map lookup that returns nothing for files outside the last captured/loaded profile.
+  context.subscriptions.push(
+    vscode.languages.registerCodeLensProvider({ scheme: "file" }, profilerCodeLens),
   );
 
   // Widen the hover expression for C/C++ so compound navigation expressions evaluate. By default

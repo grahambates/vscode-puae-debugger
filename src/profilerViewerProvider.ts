@@ -5,6 +5,7 @@ import { ProfilerManager, ProfilerRpcClient } from "./profilerManager";
 import { encodeCapture } from "./vamigaProfile";
 import { packBulk } from "./profilerBulk";
 import { ProfileEditorProvider } from "./profileEditorProvider";
+import { ProfilerCodeLensProvider } from "./profilerCodeLensProvider";
 import { ProfilerInboundMessage, ProfilerOutboundMessage, IProfileModel } from "./shared/profilerTypes";
 
 /**
@@ -33,6 +34,7 @@ export class ProfilerViewerProvider {
     private readonly extensionUri: vscode.Uri,
     private readonly storageUri: vscode.Uri, // writable dir (in localResourceRoots) for the bulk blob
     private readonly getClient: () => ProfilerRpcClient | undefined,
+    private readonly codeLens?: ProfilerCodeLensProvider,
   ) {
     this.manager = new ProfilerManager(getClient, () => {
       try {
@@ -59,6 +61,7 @@ export class ProfilerViewerProvider {
     this.symbolsSent = false;
     this.lastSaveData = undefined;
     this.lastSaveAdapter = undefined;
+    this.codeLens?.clear(); // same staleness concern as the cache above — a prior session's addresses
     void vscode.workspace.fs.delete(this.bulkFileUri()).then(undefined, () => undefined); // best-effort
   }
 
@@ -153,6 +156,7 @@ export class ProfilerViewerProvider {
     try {
       const model = await this.manager.capture(1);
       this.lastModel = model;
+      this.codeLens?.update(model);
       await this.cacheSaveData();
       this.lastBulkUri = await this.writeBulk();
       this.postResult(model, this.lastBulkUri);
