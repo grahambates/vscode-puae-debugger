@@ -2,7 +2,8 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { List, ListImperativeAPI, RowComponentProps } from "react-window";
 import { getProfileModel } from "./modelStore";
 import { buildColumns, columnIndexAtX } from "./columns";
-import { IDisassembledInstruction } from "../../shared/profilerTypes";
+import { IDisassembledInstruction, REG_COUNT, REG_D0, REG_A0, REG_SR, REG_PC, REG_USP } from "../../shared/profilerTypes";
+import { srFlags } from "../shared/cpuFlags";
 
 // Props shared across every row via the v2 rowProps channel (must not contain
 // ariaAttributes/index/style — see TimeView.tsx).
@@ -40,6 +41,42 @@ function RowRenderer({ index, style, instructions, maxCycles, currentAddress, on
           {ins.file.split(/[/\\]/).pop()}:{(ins.line ?? 0) + 1}
         </a>
       )}
+    </div>
+  );
+}
+
+const hex = (v: number, digits = 8) => `$${(v >>> 0).toString(16).padStart(digits, "0")}`;
+
+// D0-D7/A0-A7/SR/PC/USP at the current sample, with changed-since-the-previous-sample highlighted
+// (mirroring Custom Registers' changed-this-cycle highlight). `regs`/`prev` are REG_COUNT-length
+// slices of model.registers (see shared/profilerTypes.ts's REG_* layout) — `prev` is undefined at
+// the very first sample (nothing to diff against).
+function RegistersPanel({ regs, prev }: { regs: Uint32Array; prev: Uint32Array | undefined }) {
+  const changed = (i: number) => prev !== undefined && regs[i] !== prev[i];
+  const cell = (label: string, i: number, digits = 8) => (
+    <div key={label} className={"reg-cell" + (changed(i) ? " reg-changed" : "")}>
+      <span className="reg-label">{label}</span>
+      <span className="reg-val">{hex(regs[i], digits)}</span>
+    </div>
+  );
+  return (
+    <div className="registerspanel">
+      <div className="reg-grid">
+        {Array.from({ length: 8 }, (_, n) => cell(`D${n}`, REG_D0 + n))}
+        {Array.from({ length: 8 }, (_, n) => cell(`A${n}`, REG_A0 + n))}
+      </div>
+      <div className="reg-flags">
+        <span className="reg-label">PC</span>
+        <span className="reg-val">{hex(regs[REG_PC], 6)}</span>
+      </div>
+      <div className="reg-flags">
+        <span className="reg-label">USP</span>
+        <span className="reg-val">{hex(regs[REG_USP], 6)}</span>
+      </div>
+      <div className={"reg-flags" + (changed(REG_SR) ? " reg-changed" : "")}>
+        <span className="reg-label">SR</span>
+        <span className="reg-val reg-sr">{srFlags(regs[REG_SR])}</span>
+      </div>
     </div>
   );
 }
@@ -82,11 +119,22 @@ export function DisassemblyView({
   // this exact x every time.
   const columns = useMemo(() => (model ? buildColumns(model) : []), [model]);
   const dmaSlots = model?.dma?.owner.length;
-  const currentAddress = useMemo(() => {
+  const currentIdx = useMemo(() => {
     if (selectedSlot === undefined || !dmaSlots || !model?.pcs.length) return undefined;
-    const idx = columnIndexAtX(columns, (selectedSlot + 0.5) / dmaSlots);
-    return model.pcs[idx];
+    return columnIndexAtX(columns, (selectedSlot + 0.5) / dmaSlots);
   }, [columns, selectedSlot, dmaSlots, model]);
+  const currentAddress = currentIdx !== undefined ? model?.pcs[currentIdx] : undefined;
+
+  // D0-D7/A0-A7/SR/PC/USP at currentIdx, for the CPU Registers panel — bounds-checked since
+  // model.registers can be undefined (unsupported backend/older capture) or, rarely, shorter
+  // than model.pcs (buildModelFromCapture clips it defensively; see that function's comment).
+  const regsAt = (idx: number | undefined): Uint32Array | undefined => {
+    if (idx === undefined || !model?.registers) return undefined;
+    const off = idx * REG_COUNT;
+    return off + REG_COUNT <= model.registers.length ? model.registers.subarray(off, off + REG_COUNT) : undefined;
+  };
+  const currentRegs = regsAt(currentIdx);
+  const prevRegs = currentIdx !== undefined ? regsAt(currentIdx - 1) : undefined;
 
   // Which function (by index into `functions`) currentAddress falls within, if any.
   const currentFnIndex = useMemo(() => {
@@ -145,14 +193,17 @@ export function DisassemblyView({
           Follow execution
         </label>
       </div>
-      <div className="disasm-rows">
-        <List
-          listRef={listRef}
-          rowComponent={RowRenderer}
-          rowProps={rowProps}
-          rowCount={active?.fn.instructions.length ?? 0}
-          rowHeight={18}
-        />
+      <div className="disasm-body">
+        <div className="disasm-rows">
+          <List
+            listRef={listRef}
+            rowComponent={RowRenderer}
+            rowProps={rowProps}
+            rowCount={active?.fn.instructions.length ?? 0}
+            rowHeight={18}
+          />
+        </div>
+        {currentRegs && <RegistersPanel regs={currentRegs} prev={prevRegs} />}
       </div>
     </div>
   );

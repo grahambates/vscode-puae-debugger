@@ -216,7 +216,19 @@ export interface IProfileModel {
   // Disassembly + per-instruction profiling stats for every function that executed this frame.
   // Absent if disassembly capture wasn't supported/failed (CPU profile is unaffected either way).
   disassembly?: IDisassembledFunction[];
+  // Per-sample CPU register snapshot, flat and parallel to pcs/timeDeltas: registers[k*REG_COUNT
+  // + r] is sample k's register r (see REG_* offsets below). Absent if unsupported/failed.
+  registers?: Uint32Array;
 }
+
+// Layout of one IProfileModel.registers entry (19 × u32: D0-D7, A0-A7, SR, PC, USP) — matches
+// puae_debug_read_regs/WASM_PROFILE_REG_COUNT exactly (puae-wasm/puae_debug.c).
+export const REG_COUNT = 19;
+export const REG_D0 = 0; // D0-D7 = REG_D0..REG_D0+7
+export const REG_A0 = 8; // A0-A7 = REG_A0..REG_A0+7
+export const REG_SR = 16;
+export const REG_PC = 17;
+export const REG_USP = 18;
 
 // --- messages: extension -> webview ---
 export interface CaptureResultMessage {

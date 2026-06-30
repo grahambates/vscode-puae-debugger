@@ -69,7 +69,7 @@ export class ProfileEditorProvider implements vscode.CustomReadonlyEditorProvide
         if (model) {
           webviewPanel.webview.postMessage({
             command: "captureResult",
-            model: { ...model, dma: undefined, dmaSnapshot: undefined },
+            model: { ...model, dma: undefined, dmaSnapshot: undefined, registers: undefined },
             bulkUri,
           });
         } else {

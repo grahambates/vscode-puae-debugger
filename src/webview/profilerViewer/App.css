@@ -728,8 +728,17 @@ body {
   color: var(--vscode-descriptionForeground);
 }
 
+.disasm-body {
+  flex: 1;
+  display: flex;
+  flex-direction: row;
+  min-height: 0;
+  overflow: hidden;
+}
+
 .disasm-rows {
   flex: 1;
+  min-width: 0;
   min-height: 0;
   overflow: hidden;
   font-family: var(--vscode-editor-font-family);
@@ -791,6 +800,56 @@ body {
 
 .disasm-src:hover {
   text-decoration: underline;
+}
+
+/* CPU Registers panel, alongside the instruction list — D0-D7/A0-A7/SR/PC/USP at the current
+   (selectedSlot-tracked) instruction, changed-since-the-previous-sample highlighted. */
+.registerspanel {
+  flex-shrink: 0;
+  width: 18em;
+  box-sizing: border-box;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 6px 8px;
+  border-left: 1px solid var(--vscode-panel-border);
+  font-family: var(--vscode-editor-font-family);
+  font-size: var(--vscode-editor-font-size, 12px);
+}
+
+.reg-grid {
+  display: grid;
+  grid-template-columns: repeat(2, max-content);
+  column-gap: 14px;
+  margin-bottom: 6px;
+}
+
+.reg-cell,
+.reg-flags {
+  display: flex;
+  gap: 6px;
+  padding: 1px 2px;
+  white-space: nowrap;
+}
+
+.reg-cell .reg-val,
+.reg-flags .reg-val {
+  margin-left: auto;
+}
+
+.reg-label {
+  color: var(--vscode-descriptionForeground);
+}
+
+.reg-val {
+  font-variant-numeric: tabular-nums;
+}
+
+.reg-sr {
+  font-size: 0.85em;
+}
+
+.reg-changed {
+  background: var(--vscode-diffEditor-insertedTextBackground, rgba(155, 185, 85, 0.2));
 }
 
 /* Top-down/bottom-up toggle, wrapping TimeView inside the "Time View" tab. */

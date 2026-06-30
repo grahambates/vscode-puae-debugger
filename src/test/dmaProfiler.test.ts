@@ -1,4 +1,4 @@
-import { decodeDmaGrid, decodeCustomRegs, decodeDmaEvents } from "../dma";
+import { decodeDmaGrid, decodeCustomRegs, decodeDmaEvents, decodeRegisterTrace } from "../dma";
 import { createSymbolizer } from "../webview/profilerViewer/symbols";
 import {
   reconstructMemoryAt,
@@ -114,6 +114,26 @@ describe("decodeDmaEvents", () => {
   it("returns undefined for an empty/too-small buffer", () => {
     expect(decodeDmaEvents(new Uint8Array(0))).toBeUndefined();
     expect(decodeDmaEvents(new Uint8Array(2))).toBeUndefined();
+  });
+});
+
+describe("decodeRegisterTrace", () => {
+  // Pack a flat u32[] (REG_COUNT words per sample) into the LE byte stream getProfileRegs emits.
+  function packRegs(values: number[]): Uint8Array {
+    const bytes = new Uint8Array(values.length * 4);
+    const view = new DataView(bytes.buffer);
+    values.forEach((v, i) => view.setUint32(i * 4, v, true));
+    return bytes;
+  }
+
+  it("round-trips a flat sequence of 19-word register snapshots", () => {
+    const sample0 = [1, 2, 3, 4, 5, 6, 7, 8, /* D0-D7 */ 9, 10, 11, 12, 13, 14, 15, 0x7f00, /* A0-A7 */ 0x2700, 0x1000, 0x7f00 /* SR,PC,USP */];
+    const out = decodeRegisterTrace(packRegs(sample0));
+    expect(Array.from(out)).toEqual(sample0);
+  });
+
+  it("returns an empty array for empty input", () => {
+    expect(decodeRegisterTrace(new Uint8Array(0))).toEqual(new Uint32Array(0));
   });
 });
 

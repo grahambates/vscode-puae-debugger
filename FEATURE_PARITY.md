@@ -31,8 +31,8 @@ Custom-register names stay a **static webview table** (reuse `memoryViewer/coppe
 - We use an **enriched bus grid** (`{owner,flags,data,addr}`/cycle), not WinUAE's 58-byte
   `dma_rec`. Read/write + byte/word come from `flags`; channel from `owner` (BusOwner).
 - **OCS/ECS only** (6 bitplanes, no AGA) → `agaColors`/HAM8/8-plane features are ⛔ or differ.
-- We don't yet capture: `gfxResources`, `pcTrace`, `registerTrace`, screenshots, full
-  custom-register baseline (write-only regs), AGA colours.
+- We don't yet capture: `gfxResources`, screenshots, full custom-register baseline (write-only
+  regs), AGA colours. `pcTrace`/`registerTrace` ✅ — see §2.9.
 
 ---
 
@@ -65,7 +65,10 @@ webview-filled `memory?` (Memory), `copper?` (Copper[]), `blits?` (Blit[]).
 | `registerTrace?: number[]` | regs per sample | inspection |
 → **Ours:** the enriched grid replaces `dmaRecords`; `uniqueCallFrames`/`callFrames` replaced by **flame columns at x** (we read the CPU stack from `columns`, see §5 tooltip); `pcTrace` ✅ (we
 already had the strictly richer exact-per-instruction `samples`/`InstructionSample[]` extension-
-side — `fetchDisassembly` aggregates it into per-PC hits/cycles, see §2.9). `registerTrace` ⬜.
+side — `fetchDisassembly` aggregates it into per-PC hits/cycles, see §2.9). `registerTrace` ✅ —
+PUAE's profiler hook now also snapshots D0-D7/A0-A7/SR/PC/USP per recorded instruction
+(`g_wprofRegBuf`, parallel to the existing PC/cycle stream), shipped as `IProfileModel.registers`
+(flat, `REG_COUNT`-wide per sample) and surfaced in the Disassembly view's CPU Registers panel.
 
 ### `IAmigaProfileBase` (`client/types.ts`) — shared, frame-0 only
 `objdump` (text), `chipMem`/`bogoMem` (base64 snapshots), `symbols: SymbolInformation[]`,
@@ -195,12 +198,19 @@ project, so text/bytes come from the live wasm session (`_wasm_disassemble`) via
 `disassembleRange` RPC command, fetched eagerly for every executed function right after capture
 (`profilerManager.ts`'s `fetchDisassembly`/`attachDisassembly`) — mirrors how the DMA grid/copper
 trace/events are fetched, and is also embedded in saved `.vamigaprofile` files (since it can't be
-regenerated without a live session). "Follow execution" reuses the flame graph's column-resolution
-machinery (`columns.ts`'s `resolveStackAtX`, shared with the DMA tooltip's call-stack line) to
-highlight/auto-scroll to the instruction at `selectedSlot`. Jump-arrow (branch) SVG overlays and
-the old extension's theoretical-cycle-table tooltip aren't ported; click-to-source is one-way
-(time cursor → instruction; clicking an instruction doesn't move the cursor back, since one
-address can execute at multiple cycles in a frame, making the reverse ambiguous).
+regenerated without a live session). "Follow execution" reads `model.pcs` directly via
+`columns.ts`'s `columnIndexAtX` (the column x1/x2 boundaries, NOT the merged `.rows` —
+`resolveStackAtX`/`buildColumns`' flame-graph box-coalescing collapses an entire contiguous
+same-function run, e.g. a hot loop's iterations, into one box, which would otherwise freeze
+"current instruction" on that run's first PC for its whole span) to highlight/auto-scroll to the
+real instruction at `selectedSlot`, even mid-loop. A **CPU Registers panel** sits alongside the
+list — D0-D7/A0-A7/SR/PC/USP at the current instruction, changed-since-the-previous-sample
+highlighted — sourced from a new parallel per-sample register snapshot the profiler hook now also
+records (`g_wprofRegBuf` in `puae_debug.c`, lockstep with the existing PC/cycle stream; see
+`registerTrace` in §1). Jump-arrow (branch) SVG overlays and the old extension's
+theoretical-cycle-table tooltip aren't ported; click-to-source is one-way (time cursor →
+instruction; clicking an instruction doesn't move the cursor back, since one address can execute
+at multiple cycles in a frame, making the reverse ambiguous).
 
 ---
 

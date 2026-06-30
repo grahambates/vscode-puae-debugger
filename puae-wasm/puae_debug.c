@@ -340,6 +340,21 @@ puae_debug_profiler_instrHook(uint32_t pc24)
 #define WASM_PROFILE_BUF_WORDS (1 << 20)   /* 4 MB ≈ 174k samples at avg depth 5 */
 static uint32_t g_wprofBuf[WASM_PROFILE_BUF_WORDS];
 static uint32_t g_wprofBufLen;
+
+/* Per-sample CPU register snapshot, parallel to (lockstep with) g_wprofBuf — a fixed 19-word
+ * block per recorded sample (D0-D7, A0-A7, SR, PC, USP; see WASM_REG_COUNT/wasm_read_regs below),
+ * rather than interleaved into g_wprofBuf's variable-length records. Capped independently and
+ * more tightly than g_wprofBuf's worst case (174k samples) — a single profiled frame realistically
+ * never approaches that, and 64k samples already costs ~5MB of static wasm memory. Recording
+ * gates on BOTH caps (see wasm_profile_instrHook), so this never desyncs from the sample actually
+ * pushed to g_wprofBuf: the JS-side decode order for both is strictly sequential (one entry per
+ * successful wasm_profile_instrHook call), so registers[k] always belongs to the k-th decoded
+ * InstructionSample. */
+#define WASM_PROFILE_REG_COUNT 19          /* = WASM_REG_COUNT (wasm_read_regs, below) */
+#define WASM_PROFILE_MAX_REG_SAMPLES (1 << 16)   /* 64k samples ≈ 4.98 MB */
+static uint32_t g_wprofRegBuf[WASM_PROFILE_MAX_REG_SAMPLES * WASM_PROFILE_REG_COUNT];
+static uint32_t g_wprofRegSampleCount;
+
 int             g_wprofActive;             /* non-static: read by wasm_profile_start */
 static uint32_t g_wprofStartAddr;
 static uint32_t g_wprofEndAddr;
@@ -428,6 +443,7 @@ void
 wasm_profile_prepare(void)
 {
 	g_wprofBufLen          = 0;
+	g_wprofRegSampleCount  = 0;
 	g_wprofTotalInstrs     = 0;
 	g_wprofInRangeInstrs   = 0;
 	g_wprofLastCycleValid  = 0;
@@ -488,12 +504,21 @@ wasm_profile_instrHook(uint32_t pc24)
 	uint32_t depth  = 1 + stkDepth;
 	uint32_t needed = 1 + depth + 1;   /* depth-word + PCs + cycleDelta */
 	if (g_wprofBufLen + needed > WASM_PROFILE_BUF_WORDS) return;
+	/* Gate on the register buffer's own (much smaller) cap too — if it's ever the limiting
+	 * factor the sample is dropped from BOTH buffers, keeping them in lockstep rather than
+	 * silently desyncing registers[k] from the k-th decoded InstructionSample. */
+	if (g_wprofRegSampleCount >= WASM_PROFILE_MAX_REG_SAMPLES) return;
 
 	g_wprofBuf[g_wprofBufLen++] = depth;
 	g_wprofBuf[g_wprofBufLen++] = pc24;   /* leaf */
 	for (uint32_t i = 0; i < stkDepth; i++)
 		g_wprofBuf[g_wprofBufLen++] = callers[i];
 	g_wprofBuf[g_wprofBufLen++] = cycleDelta;
+
+	/* Register snapshot for this exact sample (D0-D7, A0-A7, SR, PC, USP — see
+	 * puae_debug_read_regs), in lockstep with the push above. */
+	puae_debug_read_regs(&g_wprofRegBuf[g_wprofRegSampleCount * WASM_PROFILE_REG_COUNT], WASM_PROFILE_REG_COUNT);
+	g_wprofRegSampleCount++;
 }
 
 PUAE_DEBUG_EXPORT void
@@ -518,6 +543,15 @@ wasm_profile_get_buf_ptr(void) { return g_wprofBuf; }
 
 PUAE_DEBUG_EXPORT uint32_t
 wasm_profile_get_buf_words(void) { return g_wprofBufLen; }
+
+// Per-sample register trace — see g_wprofRegBuf's comment above. Word count, not sample count
+// (= g_wprofRegSampleCount * WASM_PROFILE_REG_COUNT), matching wasm_profile_get_buf_words'
+// convention.
+PUAE_DEBUG_EXPORT uint32_t *
+wasm_profile_get_regs_buf_ptr(void) { return g_wprofRegBuf; }
+
+PUAE_DEBUG_EXPORT uint32_t
+wasm_profile_get_regs_buf_words(void) { return g_wprofRegSampleCount * WASM_PROFILE_REG_COUNT; }
 
 static char g_wprof_stats_buf[256];
 

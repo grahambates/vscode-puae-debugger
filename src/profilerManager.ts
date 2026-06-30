@@ -8,8 +8,9 @@ import {
   ISymbol,
   IDisassembledFunction,
   Category,
+  REG_COUNT,
 } from "./shared/profilerTypes";
-import { decodeDmaGrid, decodeCustomRegs, decodeCopperRecords, decodeDmaEvents } from "./dma";
+import { decodeDmaGrid, decodeCustomRegs, decodeCopperRecords, decodeDmaEvents, decodeRegisterTrace } from "./dma";
 
 export type { ProfileFrame, IProfileModel };
 
@@ -352,6 +353,7 @@ export interface RawCapture {
   copper?: Uint8Array; // raw copper-instruction-trace bytes (absent if unsupported/empty)
   dmaEvents?: Uint8Array; // raw per-cycle event-bitfield bytes, parallel to `dma` (absent if unsupported/empty)
   disassembly?: RawDisassembledFunction[]; // every function that executed this frame (absent if unsupported/empty)
+  registers?: Uint8Array; // raw per-sample register trace bytes, parallel to `profile.data` (absent if unsupported/empty)
 }
 
 // Pure transform: RawCapture + SourceMap → IProfileModel (+ the decoded samples, retained
@@ -396,6 +398,14 @@ export function buildModelFromCapture(
   }
   if (raw.copper) model.copper = decodeCopperRecords(raw.copper);
   if (raw.disassembly) model.disassembly = attachDisassembly(raw.disassembly, sourceMap);
+  if (raw.registers) {
+    const decoded = decodeRegisterTrace(raw.registers);
+    // Clip to model.pcs.length (decodeProfileStream can stop early on a corrupt/truncated
+    // stream; the wasm side keeps both buffers in lockstep, so this only guards that JS-side
+    // edge case) — never let registers[] outrun the samples it's supposed to align with.
+    const wordsNeeded = model.pcs.length * REG_COUNT;
+    model.registers = decoded.length > wordsNeeded ? decoded.subarray(0, wordsNeeded) : decoded;
+  }
   return { model, samples };
 }
 
@@ -561,6 +571,16 @@ export class ProfilerManager {
         isPAL: res.isPAL ?? true,
       },
     };
+
+    // Fetch the per-sample register trace recorded alongside the profile stream — best-effort,
+    // like every other capture extra: a failure here doesn't invalidate the CPU profile.
+    try {
+      const regsRes = await rpc.sendRpcCommand<{ data: Uint8Array }>("getProfileRegs");
+      const regsBytes = u8(regsRes.data);
+      if (regsBytes.length) raw.registers = regsBytes;
+    } catch (e) {
+      console.warn("[profiler] register trace capture failed (CPU profile unaffected):", e);
+    }
 
     // Fetch the DMA grid (captured in the same frame) + the reconstruction snapshot into the
     // RawCapture. Failure here must not break the CPU profile, so it's best-effort.

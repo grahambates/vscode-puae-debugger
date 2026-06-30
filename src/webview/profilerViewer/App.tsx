@@ -66,8 +66,8 @@ export function App() {
         void fetch(bulkUri)
           .then((r) => r.arrayBuffer())
           .then((buf) => {
-            const { dma, dmaSnapshot, copper } = unpackBulk(buf);
-            setProfileModel({ ...base, dma, dmaSnapshot, copper });
+            const { dma, dmaSnapshot, copper, registers } = unpackBulk(buf);
+            setProfileModel({ ...base, dma, dmaSnapshot, copper, registers });
           })
           .catch((e) => {
             console.warn("[profiler] bulk fetch failed:", e);

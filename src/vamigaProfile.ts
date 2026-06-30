@@ -80,6 +80,7 @@ export function encodeCapture(raw: RawCapture, opts: EncodeOptions = {}): Buffer
   }
   if (raw.copper) sections.push({ name: "copper", bytes: raw.copper });
   if (raw.dmaEvents) sections.push({ name: "dmaEvents", bytes: raw.dmaEvents });
+  if (raw.registers) sections.push({ name: "registers", bytes: raw.registers });
   if (opts.elf) sections.push({ name: "elf", bytes: opts.elf });
 
   let offset = 0;
@@ -175,6 +176,7 @@ export function decodeCapture(file: Uint8Array): DecodedCapture {
     copper: get("copper"), // absent in pre-copper-trace documents
     dmaEvents: get("dmaEvents"), // absent in pre-events documents
     disassembly: manifest.disassembly, // absent in pre-disassembly documents
+    registers: get("registers"), // absent in pre-register-trace documents
   };
   return { raw, elf: get("elf"), manifest };
 }

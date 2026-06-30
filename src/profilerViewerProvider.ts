@@ -140,7 +140,7 @@ export class ProfilerViewerProvider {
   private postResult(model: IProfileModel, bulkUri?: string): void {
     // Strip the big arrays (the webview fetches them via bulkUri instead — postMessage is slow
     // for binary) and the session-constant symbol table (after the first send).
-    const stripped: IProfileModel = { ...model, dma: undefined, dmaSnapshot: undefined };
+    const stripped: IProfileModel = { ...model, dma: undefined, dmaSnapshot: undefined, registers: undefined };
     if (this.symbolsSent) stripped.symbols = undefined;
     else if (model.symbols) this.symbolsSent = true;
     this.post({ command: "captureResult", model: stripped, bulkUri });

@@ -86,3 +86,18 @@ export function decodeCustomRegs(bytes: Uint8Array | undefined): Uint16Array {
   for (let i = 0; i < n; i++) regs[i] = view.getUint16(i * 2, true);
   return regs;
 }
+
+// Decode the per-sample CPU register trace (getProfileRegs): REG_COUNT little-endian u32 per
+// sample (D0-D7, A0-A7, SR, PC, USP — see REG_* in shared/profilerTypes.ts), in the same
+// strictly sequential order decodeProfileStream (profilerManager.ts) parses its own buffer —
+// both are written in lockstep by the same wasm_profile_instrHook call per recorded instruction.
+// DataView (not a Uint32Array view) because `bytes` isn't guaranteed 4-byte aligned within its
+// backing buffer. Shared (not profilerManager.ts-only) so profilerBulk.ts's webview-side
+// unpackBulk can decode it without pulling in profilerManager's Node-only dependencies.
+export function decodeRegisterTrace(bytes: Uint8Array): Uint32Array {
+  const count = (bytes.byteLength / 4) | 0;
+  const out = new Uint32Array(count);
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  for (let i = 0; i < count; i++) out[i] = view.getUint32(i * 4, true);
+  return out;
+}

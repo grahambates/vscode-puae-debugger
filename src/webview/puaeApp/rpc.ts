@@ -12,6 +12,7 @@
 // vscode.postMessage.
 
 import type { PuaeModule } from "./types";
+import { srFlags } from "../shared/cpuFlags";
 
 // Must match frontend_shim.c's `#define MEM_BUF_CAP 4096` — wasm_read_memory
 // clamps to this per call, so larger reads are chunked below.
@@ -737,31 +738,6 @@ export function setupRpcDispatcher(
     return { instructions };
   }
 
-  // 16-char status-register flag string, matching vAmiga/Moira's
-  // disassembleSR() format (vAmigaDebugAdapter.ts checks flags.includes("S")
-  // to detect supervisor mode for exception stack-frame handling).
-  function srFlags(sr: number): string {
-    const bit = (n: number) => (sr & (1 << n)) !== 0;
-    const ipl = (sr >> 8) & 7;
-    return [
-      bit(15) ? "T" : "t",
-      bit(14) ? "T" : "t",
-      bit(13) ? "S" : "s",
-      bit(12) ? "M" : "m",
-      "-",
-      ipl & 4 ? "1" : "0",
-      ipl & 2 ? "1" : "0",
-      ipl & 1 ? "1" : "0",
-      "-",
-      "-",
-      "-",
-      bit(4) ? "X" : "x",
-      bit(3) ? "N" : "n",
-      bit(2) ? "Z" : "z",
-      bit(1) ? "V" : "v",
-      bit(0) ? "C" : "c",
-    ].join("");
-  }
 
   function getCpuTrace(count: number) {
     const maxCount = Math.min(Math.max(count >>> 0, 0), E9K_CPU_TRACE_CAP);
@@ -1198,6 +1174,18 @@ export function setupRpcDispatcher(
           };
         });
         break;
+      // Per-sample CPU register trace, parallel to (lockstep with) getProfileData's stream — one
+      // 19-word block (D0-D7, A0-A7, SR, PC, USP) per recorded instruction.
+      case "getProfileRegs": {
+        const ptr = M._wasm_profile_get_regs_buf_ptr();
+        const words = M._wasm_profile_get_regs_buf_words();
+        rpcRequest(() => ({
+          data: words > 0
+            ? new Uint8Array(M.HEAPU8.buffer, ptr, words * 4).slice()
+            : new Uint8Array(0),
+        }));
+        break;
+      }
       case "getDmaData": {
         const ptr = M._wasm_dma_get_grid_ptr();
         const size = M._wasm_dma_get_grid_size();

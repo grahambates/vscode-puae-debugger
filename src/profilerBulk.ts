@@ -7,17 +7,19 @@
 //
 // Layout (little-endian):
 //   [u32 gridLen][u32 chipLen][u32 slowLen][u32 customLen][u32 copperLen][u32 eventsLen]
-//   [grid][chip][slow][custom][copper][events].
+//   [u32 registersLen][grid][chip][slow][custom][copper][events][registers].
 // `custom` is the raw custom-register baseline bytes (256 LE u16); decoded on unpack.
 // `copper` is the raw copper-instruction-trace bytes (12-byte records); decoded on unpack.
 // `events` is the raw per-cycle event-bitfield bytes (4-byte LE u32, parallel to `grid`);
 // decoded and attached onto the decoded IDmaModel as `.events` on unpack.
+// `registers` is the raw per-sample CPU register trace bytes (19-word LE u32 records, parallel
+// to the profile stream — see shared/profilerTypes.ts's REG_*); decoded on unpack.
 
 import type { RawCapture } from "./profilerManager";
-import { decodeDmaGrid, decodeCustomRegs, decodeCopperRecords, decodeDmaEvents } from "./dma";
+import { decodeDmaGrid, decodeCustomRegs, decodeCopperRecords, decodeDmaEvents, decodeRegisterTrace } from "./dma";
 import { IDmaModel, DmaSnapshot, ICopperModel } from "./shared/profilerTypes";
 
-const HEADER = 24;
+const HEADER = 28;
 const EMPTY = new Uint8Array(0);
 
 export function packBulk(raw: RawCapture): Uint8Array | undefined {
@@ -28,7 +30,10 @@ export function packBulk(raw: RawCapture): Uint8Array | undefined {
   const custom = raw.snapshot?.custom ?? EMPTY;
   const copper = raw.copper ?? EMPTY;
   const events = raw.dmaEvents ?? EMPTY;
-  const out = new Uint8Array(HEADER + grid.length + chip.length + slow.length + custom.length + copper.length + events.length);
+  const registers = raw.registers ?? EMPTY;
+  const out = new Uint8Array(
+    HEADER + grid.length + chip.length + slow.length + custom.length + copper.length + events.length + registers.length,
+  );
   const dv = new DataView(out.buffer);
   dv.setUint32(0, grid.length, true);
   dv.setUint32(4, chip.length, true);
@@ -36,17 +41,19 @@ export function packBulk(raw: RawCapture): Uint8Array | undefined {
   dv.setUint32(12, custom.length, true);
   dv.setUint32(16, copper.length, true);
   dv.setUint32(20, events.length, true);
+  dv.setUint32(24, registers.length, true);
   let off = HEADER;
   out.set(grid, off); off += grid.length;
   out.set(chip, off); off += chip.length;
   out.set(slow, off); off += slow.length;
   out.set(custom, off); off += custom.length;
   out.set(copper, off); off += copper.length;
-  out.set(events, off);
+  out.set(events, off); off += events.length;
+  out.set(registers, off);
   return out;
 }
 
-export function unpackBulk(buf: ArrayBuffer): { dma?: IDmaModel; dmaSnapshot?: DmaSnapshot; copper?: ICopperModel } {
+export function unpackBulk(buf: ArrayBuffer): { dma?: IDmaModel; dmaSnapshot?: DmaSnapshot; copper?: ICopperModel; registers?: Uint32Array } {
   // Validate before slicing: a truncated/corrupt buffer must not throw a raw RangeError
   // (or read past the end) deeper in the typed-array constructors below.
   if (buf.byteLength < HEADER) throw new Error(`unpackBulk: buffer too small (${buf.byteLength} < ${HEADER} byte header)`);
@@ -57,7 +64,8 @@ export function unpackBulk(buf: ArrayBuffer): { dma?: IDmaModel; dmaSnapshot?: D
   const customLen = dv.getUint32(12, true);
   const copperLen = dv.getUint32(16, true);
   const eventsLen = dv.getUint32(20, true);
-  const need = HEADER + gridLen + chipLen + slowLen + customLen + copperLen + eventsLen;
+  const registersLen = dv.getUint32(24, true);
+  const need = HEADER + gridLen + chipLen + slowLen + customLen + copperLen + eventsLen + registersLen;
   if (need > buf.byteLength) throw new Error(`unpackBulk: section lengths (${need}) exceed buffer (${buf.byteLength})`);
   let off = HEADER;
   const grid = new Uint8Array(buf, off, gridLen); off += gridLen;
@@ -65,7 +73,8 @@ export function unpackBulk(buf: ArrayBuffer): { dma?: IDmaModel; dmaSnapshot?: D
   const slow = new Uint8Array(buf, off, slowLen); off += slowLen;
   const custom = new Uint8Array(buf, off, customLen); off += customLen;
   const copper = new Uint8Array(buf, off, copperLen); off += copperLen;
-  const events = new Uint8Array(buf, off, eventsLen);
+  const events = new Uint8Array(buf, off, eventsLen); off += eventsLen;
+  const registers = new Uint8Array(buf, off, registersLen);
 
   const dma = decodeDmaGrid(grid);
   if (dma) {
@@ -77,5 +86,6 @@ export function unpackBulk(buf: ArrayBuffer): { dma?: IDmaModel; dmaSnapshot?: D
     // Copy out of the fetched buffer so the arrays stand alone.
     dmaSnapshot: chipLen || slowLen ? { chip: new Uint8Array(chip), slow: new Uint8Array(slow), custom: decodeCustomRegs(custom) } : undefined,
     copper: decodeCopperRecords(copper),
+    registers: registersLen > 0 ? decodeRegisterTrace(registers) : undefined,
   };
 }
