@@ -11,7 +11,7 @@
 
 import { gzipSync, gunzipSync } from "zlib";
 import { createHash } from "crypto";
-import type { RawCapture } from "./profilerManager";
+import type { RawCapture, RawDisassembledFunction } from "./profilerManager";
 
 const MAGIC = "VAMIGAPROF1";
 const FORMAT_VERSION = 1;
@@ -43,6 +43,11 @@ export interface ProfileManifest {
   // (unknown/unset ROM), which the loader treats as a flat [Kickstart] fallback.
   kickstart: { sha1: string; name: string };
   sections: { name: string; offset: number; length: number }[];
+  // Disassembly text/bytes/stats for every function that executed — stored directly in the
+  // manifest (JSON, not a binary section) since it's naturally structured data, not a flat
+  // buffer, and the whole container is gzipped anyway. Re-symbolicated (file/line) on load via
+  // attachDisassembly, same as every other RawCapture field. Absent in pre-disassembly documents.
+  disassembly?: RawDisassembledFunction[];
 }
 
 export interface DecodedCapture {
@@ -103,6 +108,7 @@ export function encodeCapture(raw: RawCapture, opts: EncodeOptions = {}): Buffer
     relocation: { segmentOffsets: opts.segmentOffsets ?? [], baseDir: opts.baseDir ?? "" },
     kickstart: opts.kickstart ?? { sha1: "", name: "" },
     sections: index,
+    disassembly: raw.disassembly,
   };
 
   const manifestJson = Buffer.from(JSON.stringify(manifest), "utf8");
@@ -168,6 +174,7 @@ export function decodeCapture(file: Uint8Array): DecodedCapture {
     snapshot: chip && slow ? { chip, slow, custom: get("custom") ?? new Uint8Array(0) } : undefined,
     copper: get("copper"), // absent in pre-copper-trace documents
     dmaEvents: get("dmaEvents"), // absent in pre-events documents
+    disassembly: manifest.disassembly, // absent in pre-disassembly documents
   };
   return { raw, elf: get("elf"), manifest };
 }

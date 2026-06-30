@@ -6,6 +6,7 @@ import {
   IComputedNode,
   ILocation,
   ISymbol,
+  IDisassembledFunction,
   Category,
 } from "./shared/profilerTypes";
 import { decodeDmaGrid, decodeCustomRegs, decodeCopperRecords, decodeDmaEvents } from "./dma";
@@ -301,6 +302,26 @@ export function buildProfileModel(samples: InstructionSample[], sourceMap: Sourc
   };
 }
 
+// Raw (pre-symbolication) disassembly: everything that required a live wasm session to produce
+// (the instruction text/bytes from _wasm_disassemble, and the hit/cycle counts aggregated from
+// the exact per-instruction sample trace) — NOT yet annotated with source file/line, which is
+// re-derived in attachDisassembly() from whichever SourceMap is active (live session or a
+// reconstructed one for a loaded .vamigaprofile), mirroring how the rest of IProfileModel is
+// rebuilt from RawCapture rather than baked in once.
+export interface RawDisassembledInstruction {
+  address: number;
+  hex: string;
+  text: string;
+  length: number;
+  hits: number;
+  cycles: number;
+}
+export interface RawDisassembledFunction {
+  address: number;
+  name: string;
+  instructions: RawDisassembledInstruction[];
+}
+
 // The raw, serializable result of one capture — everything the post-emulator pipeline
 // consumes, before any decoding or symbolication. This is the seam shared by live capture
 // and a loaded .vamigaprofile: both produce a RawCapture, then buildModelFromCapture turns
@@ -321,6 +342,7 @@ export interface RawCapture {
   snapshot?: { chip: Uint8Array; slow: Uint8Array; custom: Uint8Array };
   copper?: Uint8Array; // raw copper-instruction-trace bytes (absent if unsupported/empty)
   dmaEvents?: Uint8Array; // raw per-cycle event-bitfield bytes, parallel to `dma` (absent if unsupported/empty)
+  disassembly?: RawDisassembledFunction[]; // every function that executed this frame (absent if unsupported/empty)
 }
 
 // Pure transform: RawCapture + SourceMap → IProfileModel (+ the decoded samples, retained
@@ -364,7 +386,78 @@ export function buildModelFromCapture(
     }
   }
   if (raw.copper) model.copper = decodeCopperRecords(raw.copper);
+  if (raw.disassembly) model.disassembly = attachDisassembly(raw.disassembly, sourceMap);
   return { model, samples };
+}
+
+// Re-derive each instruction's source file/line from `sourceMap` (the wasm-produced text/bytes/
+// stats in `raw` are already final — see RawDisassembledFunction's comment). `line` is stored raw
+// (matching ILocation.callFrame's convention — see internLocation below), not pre-adjusted.
+export function attachDisassembly(raw: RawDisassembledFunction[], sourceMap: SourceMap): IDisassembledFunction[] {
+  return raw.map((fn) => ({
+    address: fn.address,
+    name: fn.name,
+    instructions: fn.instructions.map((ins) => {
+      const loc = sourceMap.lookupAddress(ins.address);
+      return { ...ins, file: loc?.path, line: loc?.line };
+    }),
+  }));
+}
+
+// Hard cap on how many distinct functions get disassembled per capture — a safety valve for a
+// pathological profile that touches many tiny functions, not a real-world limit. Sorted by total
+// cycles descending first, so a cap (if ever hit) drops the coldest functions, not the hottest.
+const MAX_DISASSEMBLE_FUNCTIONS = 64;
+
+// Disassemble every function that executed this frame: aggregate exact per-PC hit/cycle counts
+// from `samples` (this profiler traces every retired instruction, not statistical sampling),
+// resolve each unique PC to its enclosing function's [start, end) via sourceMap + model.symbols,
+// then fetch each function's text via the live wasm session (disassembleRange — there's no
+// host-side objdump in this project, unlike the old extension, so this only works while `rpc` is
+// live; a loaded .vamigaprofile instead replays whatever was embedded at capture/save time).
+export async function fetchDisassembly(
+  rpc: ProfilerRpcClient,
+  model: IProfileModel,
+  samples: InstructionSample[],
+  sourceMap: SourceMap,
+): Promise<RawDisassembledFunction[]> {
+  const pcStats = new Map<number, { hits: number; cycles: number }>();
+  for (const s of samples) {
+    const pc = s.stack[0];
+    const e = pcStats.get(pc);
+    if (e) { e.hits++; e.cycles += s.cycles; }
+    else pcStats.set(pc, { hits: 1, cycles: s.cycles });
+  }
+
+  const symByName = new Map((model.symbols ?? []).map((s) => [s.name, s]));
+  // Dedupe by function start address; accumulate each function's total cycles for the
+  // hottest-first cap/order below.
+  const functions = new Map<number, { name: string; end: number; totalCycles: number }>();
+  for (const [pc, stat] of pcStats) {
+    const off = sourceMap.findSymbolOffset(pc, true);
+    if (!off) continue; // out-of-program (Kickstart/[IRQ]/etc.) — no symbol to bound a range with
+    const sym = symByName.get(off.symbol);
+    if (!sym || sym.size <= 0) continue;
+    let fn = functions.get(sym.address);
+    if (!fn) { fn = { name: sym.name, end: sym.address + sym.size, totalCycles: 0 }; functions.set(sym.address, fn); }
+    fn.totalCycles += stat.cycles;
+  }
+
+  const ordered = [...functions.entries()].sort((a, b) => b[1].totalCycles - a[1].totalCycles).slice(0, MAX_DISASSEMBLE_FUNCTIONS);
+
+  const out: RawDisassembledFunction[] = [];
+  for (const [startAddr, fn] of ordered) {
+    const res = await rpc.sendRpcCommand<{ instructions: { address: number; hex: string; text: string; length: number }[] }>(
+      "disassembleRange",
+      { startAddr, endAddr: fn.end },
+    );
+    const instructions: RawDisassembledInstruction[] = (res.instructions ?? []).map((ins) => {
+      const stat = pcStats.get(ins.address);
+      return { address: ins.address, hex: ins.hex, text: ins.text, length: ins.length, hits: stat?.hits ?? 0, cycles: stat?.cycles ?? 0 };
+    });
+    out.push({ address: startAddr, name: fn.name, instructions });
+  }
+  return out;
 }
 
 // Orchestrates a capture: upload the unwind table, run the profiled frame(s),
@@ -511,6 +604,17 @@ export class ProfilerManager {
             ? `None of the ${res.total} executed instructions were inside your program ${range} — it may be idle/finished or running OS code. Try capturing while the program is actively running.`
             : "Instructions ran in range but produced no stack samples (unwind issue).";
       throw new Error(`No profile samples captured. ${hint}`);
+    }
+
+    // Disassemble every function that executed this frame — needs `model.symbols` (for each
+    // PC's enclosing function's start+size) and `samples` (for per-instruction hit/cycle
+    // aggregation), both only available after buildModelFromCapture above runs once. Best-effort,
+    // like the DMA/copper/events fetches: a failure here doesn't invalidate the CPU profile.
+    try {
+      raw.disassembly = await fetchDisassembly(rpc, model, samples, sourceMap);
+      if (raw.disassembly.length) model.disassembly = attachDisassembly(raw.disassembly, sourceMap);
+    } catch (e) {
+      console.warn("[profiler] disassembly capture failed (CPU profile unaffected):", e);
     }
 
     this.lastSamples = samples;

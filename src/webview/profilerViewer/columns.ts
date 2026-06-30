@@ -8,6 +8,7 @@
 // n, same row", which is how runs of the same function become a single wide box.
 
 import { IProfileModel, ILocation } from "../../shared/profilerTypes";
+import { binarySearch } from "./array";
 
 export interface IColumnLocation extends ILocation {
   graphId: number; // unique id of this cell in the graph (for hover/focus/colour)
@@ -79,3 +80,21 @@ export const buildColumns = (model: IProfileModel): IColumn[] => {
 
   return columns;
 };
+
+// Resolve the call stack (outermost→leaf) executing at normalized x (0..1) — the column covering
+// x, its rows resolved through the "merged with column n" indirection. Shared by the DMA
+// tooltip's call-stack line (FlameGraph's stackAtX, which maps this to function names) and the
+// Disassembly view's time-cursor link (which reads the leaf entry's `.address`).
+export function resolveStackAtX(columns: IColumn[], x: number): IColumnLocation[] {
+  let col = binarySearch(columns, (c) => c.x2 - x);
+  if (col < 0) col = -col - 1;
+  const column = columns[col];
+  if (!column) return [];
+  const stack: IColumnLocation[] = [];
+  for (let y = 0; y < column.rows.length; y++) {
+    let cell = column.rows[y];
+    if (typeof cell === "number") cell = columns[cell].rows[y];
+    if (cell !== undefined && typeof cell !== "number") stack.push(cell);
+  }
+  return stack;
+}

@@ -161,6 +161,30 @@ export interface ISymbol {
   size: number;
 }
 
+// One disassembled instruction, annotated with exact per-PC execution stats (this profiler
+// traces every retired instruction, not statistical sampling — `hits`/`cycles` are exact counts
+// for the captured frame, not estimates) and source location. `file`/`line` follow the same
+// (quirky but established) convention as ILocation.callFrame — see openProfilerSource's `line - 1`
+// adjustment when opening from the webview.
+export interface IDisassembledInstruction {
+  address: number;
+  hex: string; // raw instruction bytes, space-separated hex pairs
+  text: string; // mnemonic + operands (no address/hex prefix)
+  length: number; // byte length, so address+length is the next instruction's address
+  hits: number; // times this exact PC was the executing instruction this frame
+  cycles: number; // total cycles attributed to this PC this frame
+  file?: string;
+  line?: number;
+}
+
+// One executed function's full disassembly. Only functions that actually executed (per the
+// captured samples) are included — disassembling the whole program isn't useful or necessary.
+export interface IDisassembledFunction {
+  address: number;
+  name: string;
+  instructions: IDisassembledInstruction[];
+}
+
 // The time-ordered model. `samples[i]` is the leaf node id of the i-th captured
 // instruction (samples[0] is a dummy; pairs with timeDeltas[i-1], matching the old
 // CDP convention buildColumns expects). `timeDeltas[k]` is that instruction's cycle
@@ -184,6 +208,9 @@ export interface IProfileModel {
   copper?: ICopperModel;
   // Program + Kickstart symbols (sorted by address) for webview-side symbolization.
   symbols?: ISymbol[];
+  // Disassembly + per-instruction profiling stats for every function that executed this frame.
+  // Absent if disassembly capture wasn't supported/failed (CPU profile is unaffected either way).
+  disassembly?: IDisassembledFunction[];
 }
 
 // --- messages: extension -> webview ---

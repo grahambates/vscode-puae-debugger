@@ -2,7 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import type { PointerEvent as ReactPointerEvent, ReactNode } from "react";
 import { BusOwner, Category, ILocation, DMA_WRITE, DMA_BYTE, DMA_HPOS, dmaIsCustomReg } from "../../shared/profilerTypes";
 import { getProfileModel } from "./modelStore";
-import { buildColumns, IColumn, IColumnLocation } from "./columns";
+import { buildColumns, IColumn, IColumnLocation, resolveStackAtX } from "./columns";
 import { binarySearch } from "./array";
 import { dataName, DisplayUnit, formatValue, scaleValue, Timing } from "./display";
 import { compileFilter, IRichFilter } from "./filter";
@@ -658,21 +658,7 @@ export function FlameGraph({
   // covering x, its rows outer→leaf as function names. This is what the CPU was executing
   // at that instant — used for the DMA tooltip's call-stack line.
   const stackAtX = useCallback(
-    (x: number): string[] => {
-      let col = binarySearch(columns, (c) => c.x2 - x);
-      if (col < 0) col = -col - 1;
-      const column = columns[col];
-      if (!column) return [];
-      const names: string[] = [];
-      for (let y = 0; y < column.rows.length; y++) {
-        let cell = column.rows[y];
-        if (typeof cell === "number") cell = columns[cell].rows[y];
-        if (cell !== undefined && typeof cell !== "number") {
-          names.push((cell as IColumnLocation).callFrame.functionName);
-        }
-      }
-      return names;
-    },
+    (x: number): string[] => resolveStackAtX(columns, x).map((loc) => loc.callFrame.functionName),
     [columns],
   );
 

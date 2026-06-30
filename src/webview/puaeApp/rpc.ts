@@ -714,6 +714,29 @@ export function setupRpcDispatcher(
     return { instructions };
   }
 
+  // Disassemble a [startAddr, endAddr) range in one call, used by the profiler to fetch text for
+  // every executed function right after a capture (profilerManager.ts) — unlike `disassemble`
+  // above, which the live debugger's disassembly view drives with a fixed instruction COUNT
+  // instead of a byte-range end. MAX_INSTRUCTIONS is a safety valve against a corrupt/huge range
+  // (e.g. a symbol whose size couldn't be determined), not a real-world limit.
+  const DISASSEMBLE_RANGE_MAX_INSTRUCTIONS = 8192;
+  function disassembleRange(startAddr: number, endAddr: number) {
+    const instructions: { address: number; hex: string; text: string; length: number }[] = [];
+    let addr = startAddr >>> 0;
+    const end = endAddr >>> 0;
+    while (addr < end && instructions.length < DISASSEMBLE_RANGE_MAX_INSTRUCTIONS) {
+      const len = M._wasm_disassemble(addr);
+      const raw = M.UTF8ToString(M._wasm_get_disasm_buf());
+      const text = parseDisasmInstruction(raw, len);
+      const bytes = readMemory(addr, Math.max(len, 0));
+      const hexBytes = Array.from(bytes, (b: number) => b.toString(16).padStart(2, "0")).join(" ");
+      const length = Math.max(len, 2); // never advance by 0 — guards against a runaway loop
+      instructions.push({ address: addr, hex: hexBytes, text, length });
+      addr = (addr + length) >>> 0;
+    }
+    return { instructions };
+  }
+
   // 16-char status-register flag string, matching vAmiga/Moira's
   // disassembleSR() format (vAmigaDebugAdapter.ts checks flags.includes("S")
   // to detect supervisor mode for exception stack-frame handling).
@@ -1040,6 +1063,9 @@ export function setupRpcDispatcher(
         break;
       case "disassemble":
         rpcRequest(() => disassemble(args.address, args.count));
+        break;
+      case "disassembleRange":
+        rpcRequest(() => disassembleRange(args.startAddr, args.endAddr));
         break;
       case "disassembleCopper":
         rpcRequest(() => {

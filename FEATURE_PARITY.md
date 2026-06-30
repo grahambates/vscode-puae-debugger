@@ -63,15 +63,18 @@ webview-filled `memory?` (Memory), `copper?` (Copper[]), `blits?` (Blit[]).
 | `callFrames: number[]` | 1/word in .text → index into uniqueCallFrames | SymbolizeAddress |
 | `pcTrace: number[]` | `[pc, cycles]` pairs | objdump annotation |
 | `registerTrace?: number[]` | regs per sample | inspection |
-→ **Ours:** the enriched grid replaces `dmaRecords`; `uniqueCallFrames`/`callFrames` replaced by **flame columns at x** (we read the CPU stack from `columns`, see §5 tooltip). Others ⬜.
+→ **Ours:** the enriched grid replaces `dmaRecords`; `uniqueCallFrames`/`callFrames` replaced by **flame columns at x** (we read the CPU stack from `columns`, see §5 tooltip); `pcTrace` ✅ (we
+already had the strictly richer exact-per-instruction `samples`/`InstructionSample[]` extension-
+side — `fetchDisassembly` aggregates it into per-PC hits/cycles, see §2.9). `registerTrace` ⬜.
 
 ### `IAmigaProfileBase` (`client/types.ts`) — shared, frame-0 only
 `objdump` (text), `chipMem`/`bogoMem` (base64 snapshots), `symbols: SymbolInformation[]`,
 `sections: Section[]`, `systemStackLower/Upper`, `stackLower/Upper`, `baseClock`,
 `cpuCycleUnit`.
 → **Ours:** `chipMem`/`slow` snapshot ✅ (wired: Memory view, `reconstructMemoryAt`); `symbols` ✅
-(shipped `ISymbol[]`, webview `createSymbolizer`/`symbolize()`); timing via measured
-`frameCycles`/`cyclesPerMicroSecond` ✅; `sections`/stack bounds ⬜.
+(shipped `ISymbol[]`, webview `createSymbolizer`/`symbolize()`); `objdump` ✅ (no host-side
+`objdump` binary in this project — text comes from the live wasm session instead, see §2.9);
+timing via measured `frameCycles`/`cyclesPerMicroSecond` ✅; `sections`/stack bounds ⬜.
 
 ### `DmaRecord` (`backend/profile_types.ts`)
 `{reg?(&0x1000=CPU, &0x0100=write, &0xff=size), dat?, datHi?, size?(2/4/8), addr?, evt?(DmaEvents), type?(DmaTypes), extra?(DmaSubTypes), intlev?, end?}`.
@@ -179,6 +182,25 @@ Per file:line self/agg/ticks lenses in the editor (extension-side here). → **O
 `profilerCodeLensProvider.ts` — simpler than the old extension's version since our `IProfileModel`
 is already built extension-side (no webview→host `setCodeLenses` postMessage round-trip needed);
 one global provider fed by both the live panel and the `.vamigaprofile` editor.
+
+### 2.9 Disassembly view — `objdump.tsx` ✅ (no jump-arrow visualization)
+Per-instruction assembly listing annotated with profiling data, linked to a time cursor and to
+source. **Data (old):** `objdump` (text, from running the `objdump` binary against the ELF, or a
+live-disassembled fallback) + `pcTrace: [pc,cycles] pairs` for annotation.
+→ **Ours:** `DisassemblyView.tsx` — a virtualized per-function instruction list (function dropdown,
+hottest first), with exact per-PC `hits`/`cycles` (this profiler traces *every* retired
+instruction, not statistical sampling, so these are exact counts/totals for the frame, not
+estimates — stronger than the old extension's data). No host-side `objdump` exists in this
+project, so text/bytes come from the live wasm session (`_wasm_disassemble`) via a new
+`disassembleRange` RPC command, fetched eagerly for every executed function right after capture
+(`profilerManager.ts`'s `fetchDisassembly`/`attachDisassembly`) — mirrors how the DMA grid/copper
+trace/events are fetched, and is also embedded in saved `.vamigaprofile` files (since it can't be
+regenerated without a live session). "Follow execution" reuses the flame graph's column-resolution
+machinery (`columns.ts`'s `resolveStackAtX`, shared with the DMA tooltip's call-stack line) to
+highlight/auto-scroll to the instruction at `selectedSlot`. Jump-arrow (branch) SVG overlays and
+the old extension's theoretical-cycle-table tooltip aren't ported; click-to-source is one-way
+(time cursor → instruction; clicking an instruction doesn't move the cursor back, since one
+address can execute at multiple cycles in a frame, making the reverse ambiguous).
 
 ---
 

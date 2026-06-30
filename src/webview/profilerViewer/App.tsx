@@ -9,6 +9,7 @@ import { CustomRegsView } from "./CustomRegsView";
 import { CopperView } from "./CopperView";
 import { BlitterView } from "./BlitterView";
 import { MemoryView } from "./MemoryView";
+import { DisassemblyView } from "./DisassemblyView";
 import { createTopDownGraph } from "./topDownGraph";
 import { createBottomUpGraph } from "./bottomUpGraph";
 import { DisplayUnit, unitOptions, Timing } from "./display";
@@ -30,7 +31,7 @@ export function App() {
   // The pinned DMA-cycle cursor, shared between the flame graph (which sets it on click) and the
   // custom-registers view (which reads it). Reset on a fresh capture, below.
   const [selectedSlot, setSelectedSlot] = useState<number | undefined>(undefined);
-  const [rightTab, setRightTab] = useState<"time" | "customregs" | "copper" | "blitter" | "memory">("time");
+  const [rightTab, setRightTab] = useState<"time" | "customregs" | "copper" | "blitter" | "memory" | "disasm">("time");
   // Time View's tree direction: top-down (call-tree, "what does main() spend time in") or
   // bottom-up (leaf→callers, "what does Foo's time actually come from").
   const [treeMode, setTreeMode] = useState<"top" | "bottom">("top");
@@ -214,6 +215,12 @@ export function App() {
               >
                 Memory
               </button>
+              <button
+                className={"right-tab" + (rightTab === "disasm" ? " active" : "")}
+                onClick={() => setRightTab("disasm")}
+              >
+                Disassembly
+              </button>
             </div>
             {rightTab === "time" ? (
               <div className="time-mode-wrap">
@@ -241,8 +248,10 @@ export function App() {
               <CopperView selectedSlot={selectedSlot} onSelectSlot={setSelectedSlot} />
             ) : rightTab === "blitter" ? (
               <BlitterView selectedSlot={selectedSlot} onSelectSlot={setSelectedSlot} displayUnit={unit} timing={timing} />
-            ) : (
+            ) : rightTab === "memory" ? (
               <MemoryView selectedSlot={selectedSlot} onSelectSlot={setSelectedSlot} />
+            ) : (
+              <DisassemblyView selectedSlot={selectedSlot} onOpenSource={openSource} />
             )}
           </div>
         </div>
