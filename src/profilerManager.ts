@@ -260,6 +260,13 @@ export function buildProfileModel(samples: InstructionSample[], sourceMap: Sourc
 
   const sampleIds: number[] = [0]; // samples[0] dummy; pairs with timeDeltas[i-1]
   const timeDeltas: number[] = [];
+  // Exact PC per sample, in lockstep with timeDeltas (pcs[k] is timeDeltas[k]'s instruction).
+  // `locations[].address` is NOT this — locations are deduped per function (internLocation keys
+  // on functionName:file), so every sample within the same function shares one location object
+  // whose `address` is frozen to whichever PC first created it. buildColumns reads `pcs` to give
+  // each column's leaf cell its own real address, which the Disassembly view needs to highlight
+  // the actual current instruction (not just the current function) as the time cursor moves.
+  const pcs: number[] = [];
   let duration = 0;
   for (const s of applyContextReuse(samples, sourceMap)) {
     // Stacks are leaf-first; descend outermost→leaf so the path hangs off the root.
@@ -274,6 +281,7 @@ export function buildProfileModel(samples: InstructionSample[], sourceMap: Sourc
     nodes[nodeId].selfTime += s.cycles; // innermost (inlined) frame accrues self time
     sampleIds.push(nodeId);
     timeDeltas.push(s.cycles);
+    pcs.push(s.stack[0]);
     duration += s.cycles;
   }
 
@@ -297,6 +305,7 @@ export function buildProfileModel(samples: InstructionSample[], sourceMap: Sourc
     locations,
     samples: sampleIds,
     timeDeltas,
+    pcs,
     duration,
     cyclesPerMicroSecond,
   };

@@ -1,5 +1,5 @@
 import { buildProfileModel, InstructionSample } from "../profilerManager";
-import { buildColumns } from "../webview/profilerViewer/columns";
+import { buildColumns, columnIndexAtX } from "../webview/profilerViewer/columns";
 import { Category } from "../shared/profilerTypes";
 import { SourceMap } from "../sourceMap";
 
@@ -135,5 +135,93 @@ describe("buildColumns", () => {
     const first = columns[0].rows[0];
     expect(typeof first).toBe("object");
     expect((first as { callFrame: { functionName: string } }).callFrame.functionName).toBe("_start");
+  });
+});
+
+// Regression test for a bug where the Disassembly view's "current instruction" tracking only
+// ever showed the function's FIRST-ever-sampled address while scrubbing, never the real
+// instruction at the scrubbed cycle — because locations are deduped per function (internLocation
+// keys on functionName:file), so `locations[locId].address` is frozen to whichever PC first
+// created that location, shared by every sample in that function. buildColumns must instead use
+// model.pcs (the exact per-sample PC, parallel to timeDeltas) for each column's leaf cell.
+describe("buildColumns: leaf cell address is the exact per-sample PC, not the function's", () => {
+  function stubSourceMapOneFuncTwoPcs(): SourceMap {
+    const fibAddrs = new Set([0x200, 0x204]);
+    return {
+      findSymbolOffset: (pc: number) => (fibAddrs.has(pc) ? { symbol: "fib", offset: pc - 0x200 } : pc === 0x100 ? { symbol: "_start", offset: 0 } : undefined),
+      lookupAddress: () => ({ path: "a.c", line: 5 }),
+      findSegmentForAddress: () => ({}),
+      getCfaForPc: () => ({ reg: 15, offset: 0 }),
+      getUnwindRows: () => [{}],
+    } as unknown as SourceMap;
+  }
+
+  // fib (0x200), then _start (breaks the run so the two fib columns don't merge), then fib
+  // again at a DIFFERENT instruction (0x204) — re-entering the same function elsewhere.
+  const twoPcSamples: InstructionSample[] = [
+    { stack: [0x200], cycles: 5 },
+    { stack: [0x100], cycles: 3 },
+    { stack: [0x204], cycles: 5 },
+  ];
+  const model = buildProfileModel(twoPcSamples, stubSourceMapOneFuncTwoPcs());
+  const columns = buildColumns(model);
+
+  it("confirms the dedup: both fib samples share one location, frozen to the first PC", () => {
+    const fibLocId = model.nodes[model.samples[1]].locationId;
+    expect(model.nodes[model.samples[3]].locationId).toBe(fibLocId); // same location both times
+    expect(model.locations[fibLocId].address).toBe(0x200); // frozen — NOT instruction-accurate
+  });
+
+  it("still preserves the exact per-sample PC separately", () => {
+    expect(model.pcs).toEqual([0x200, 0x100, 0x204]);
+  });
+
+  it("gives each non-merged column its own exact leaf address", () => {
+    expect(columns).toHaveLength(3);
+    const leafAddr = (i: number) => (columns[i].rows[columns[i].rows.length - 1] as { address: number }).address;
+    expect(leafAddr(0)).toBe(0x200); // first fib sample
+    expect(leafAddr(2)).toBe(0x204); // second fib sample — was wrongly 0x200 before the fix
+  });
+});
+
+// Regression test for a SECOND bug, found after the first fix: within a hot loop (many
+// different instructions, all in the same function, sampled on CONSECUTIVE columns), buildColumns'
+// merge pass (for flame-graph rendering) coalesces the whole run into one box — so resolving
+// through columns[].rows (resolveStackAtX) always returns that run's FIRST instruction, frozen,
+// no matter where within the run you actually are. The Disassembly view's "current instruction"
+// must instead read model.pcs directly via columnIndexAtX (column x1/x2 boundaries — set once,
+// never touched by the merge pass), bypassing the row-merge entirely.
+describe("columnIndexAtX + model.pcs: exact instruction within a coalesced (merged) run", () => {
+  function stubSourceMapLoop(): SourceMap {
+    const loopAddrs = new Set([0x200, 0x202, 0x204]);
+    return {
+      findSymbolOffset: (pc: number) => (loopAddrs.has(pc) ? { symbol: "loop", offset: pc - 0x200 } : undefined),
+      lookupAddress: () => ({ path: "a.c", line: 5 }),
+      findSegmentForAddress: () => ({}),
+      getCfaForPc: () => ({ reg: 15, offset: 0 }),
+      getUnwindRows: () => [{}],
+    } as unknown as SourceMap;
+  }
+
+  // Three different instructions of ONE loop, sampled back-to-back — contiguous, so they merge
+  // into a single flame box (same function every column).
+  const loopSamples: InstructionSample[] = [
+    { stack: [0x200], cycles: 2 },
+    { stack: [0x202], cycles: 2 },
+    { stack: [0x204], cycles: 2 },
+  ];
+  const model = buildProfileModel(loopSamples, stubSourceMapLoop());
+  const columns = buildColumns(model);
+
+  it("confirms the three columns DO merge in .rows (resolveStackAtX would be frozen)", () => {
+    expect(columns[1].rows[0]).toBe(0); // merged: "see column 0"
+    expect(columns[2].rows[0]).toBe(0); // merged: "see column 0"
+  });
+
+  it("columnIndexAtX + model.pcs still resolves the real, distinct instruction at each x", () => {
+    // Frame duration is 6 cycles (2+2+2); column k covers [k*2, k*2+2)/6.
+    expect(model.pcs[columnIndexAtX(columns, 0.5 / 6)]).toBe(0x200); // inside column 0
+    expect(model.pcs[columnIndexAtX(columns, 2.5 / 6)]).toBe(0x202); // inside column 1 — NOT frozen at 0x200
+    expect(model.pcs[columnIndexAtX(columns, 4.5 / 6)]).toBe(0x204); // inside column 2 — NOT frozen at 0x200
   });
 });

@@ -194,6 +194,11 @@ export interface IProfileModel {
   locations: ILocation[];
   samples: number[];
   timeDeltas: number[];
+  // pcs[k] is timeDeltas[k]'s exact instruction PC — NOT the same as
+  // locations[nodes[samples[k+1]].locationId].address, which is deduped per function (every
+  // sample within the same function shares one location, frozen to whichever PC first created
+  // it). buildColumns reads this to give each column's leaf cell its own real address.
+  pcs: number[];
   duration: number;
   // CPU clock for the display-unit conversions (a property of the running machine,
   // PAL only for now). The old WinUAE baseClock analog.

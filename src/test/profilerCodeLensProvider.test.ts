@@ -18,6 +18,7 @@ const model = (locations: ILocation[]): IProfileModel => ({
   locations,
   samples: [],
   timeDeltas: [],
+  pcs: [],
   duration: 1000,
   cyclesPerMicroSecond: 7.09379,
 });

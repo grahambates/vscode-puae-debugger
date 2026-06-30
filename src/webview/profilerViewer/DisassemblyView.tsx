@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { List, ListImperativeAPI, RowComponentProps } from "react-window";
 import { getProfileModel } from "./modelStore";
-import { buildColumns, resolveStackAtX } from "./columns";
+import { buildColumns, columnIndexAtX } from "./columns";
 import { IDisassembledInstruction } from "../../shared/profilerTypes";
 
 // Props shared across every row via the v2 rowProps channel (must not contain
@@ -73,13 +73,20 @@ export function DisassemblyView({
   }, [disassembly]);
 
   // The instruction executing at the selected DMA cycle, if any — drives "Follow execution".
+  // Reads model.pcs directly via the column boundaries (columnIndexAtX), NOT through the
+  // columns' merged `.rows` (resolveStackAtX): buildColumns coalesces every contiguous run of
+  // the same function into one box for flame-graph rendering (e.g. an entire hot loop's
+  // iterations, all in one function, merge into a single box), so resolving through `.rows`
+  // would freeze on that run's first instruction for the whole run — never moving as you scrub
+  // within it. model.pcs has no such collapsing; indexing it directly gives the real PC for
+  // this exact x every time.
   const columns = useMemo(() => (model ? buildColumns(model) : []), [model]);
   const dmaSlots = model?.dma?.owner.length;
   const currentAddress = useMemo(() => {
-    if (selectedSlot === undefined || !dmaSlots) return undefined;
-    const stack = resolveStackAtX(columns, (selectedSlot + 0.5) / dmaSlots);
-    return stack[stack.length - 1]?.address;
-  }, [columns, selectedSlot, dmaSlots]);
+    if (selectedSlot === undefined || !dmaSlots || !model?.pcs.length) return undefined;
+    const idx = columnIndexAtX(columns, (selectedSlot + 0.5) / dmaSlots);
+    return model.pcs[idx];
+  }, [columns, selectedSlot, dmaSlots, model]);
 
   // Which function (by index into `functions`) currentAddress falls within, if any.
   const currentFnIndex = useMemo(() => {

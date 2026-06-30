@@ -39,6 +39,7 @@ describe("fetchDisassembly", () => {
     locations: [],
     samples: [],
     timeDeltas: [],
+    pcs: [],
     duration: 1000,
     cyclesPerMicroSecond: 7.09379,
     symbols: [
