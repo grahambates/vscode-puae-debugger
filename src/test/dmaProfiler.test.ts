@@ -1,6 +1,13 @@
 import { decodeDmaGrid, decodeCustomRegs } from "../dma";
 import { createSymbolizer } from "../webview/profilerViewer/symbols";
-import { reconstructMemoryAt, reconstructCustomRegs } from "../webview/profilerViewer/reconstruct";
+import {
+  reconstructMemoryAt,
+  reconstructCustomRegs,
+  resolveMemoryRegion,
+  findPrevMemWrite,
+  findNextMemWrite,
+  SLOW_BASE,
+} from "../webview/profilerViewer/reconstruct";
 import { createTopDownGraph } from "../webview/profilerViewer/topDownGraph";
 import { channelStyle, dmaconChannels, ownerRegister, DMACON_REG_INDEX } from "../webview/profilerViewer/dma";
 import { customRegisterName, CUSTOM_REGISTER_OFFSETS } from "../webview/shared/customRegisters";
@@ -266,6 +273,50 @@ describe("reconstructMemoryAt", () => {
     const { chip } = reconstructMemoryAt(dma, snapshot(), dma.owner.length);
     expect(chip[0x180]).toBe(0);
     expect(chip[0x181]).toBe(0);
+  });
+});
+
+describe("resolveMemoryRegion", () => {
+  const snapshot = { chip: new Uint8Array(0x1000), slow: new Uint8Array(0x800) };
+
+  it("maps a chip address to the chip buffer", () => {
+    const r = resolveMemoryRegion(0x10, snapshot);
+    expect(r).toEqual({ region: "chip", buf: snapshot.chip, offset: 0x10 });
+  });
+
+  it("doesn't recognize an address past the chip buffer's own size (documented limitation)", () => {
+    expect(resolveMemoryRegion(0x1010, snapshot)).toBeUndefined(); // 0x1010 >= chip.length (0x1000)
+  });
+
+  it("maps a slow-RAM address (SLOW_BASE-relative) to the slow buffer", () => {
+    const r = resolveMemoryRegion(SLOW_BASE + 0x20, snapshot);
+    expect(r).toEqual({ region: "slow", buf: snapshot.slow, offset: 0x20 });
+  });
+
+  it("returns undefined for an address outside both buffers (e.g. an empty slow RAM)", () => {
+    const noSlow = { chip: new Uint8Array(0x1000), slow: new Uint8Array(0) };
+    expect(resolveMemoryRegion(SLOW_BASE + 0x20, noSlow)).toBeUndefined();
+  });
+});
+
+describe("findPrevMemWrite / findNextMemWrite", () => {
+  const dma = makeModel([
+    { owner: BusOwner.CPU, flags: 0, data: 0, addr: 0 },
+    { owner: BusOwner.CPU, flags: DMA_WRITE, data: 0x1234, addr: 0x100 }, // slot 1
+    { owner: BusOwner.CPU, flags: 0, data: 0, addr: 0 },
+    { owner: BusOwner.COPPER, flags: DMA_WRITE, data: 0x0f00, addr: 0x180 }, // register write, not RAM
+    { owner: BusOwner.CPU, flags: DMA_WRITE, data: 0x5678, addr: 0x100 }, // slot 4
+  ]);
+
+  it("finds the nearest write to the exact address, ignoring register writes", () => {
+    expect(findPrevMemWrite(dma, 0x100, 3)).toBe(1);
+    expect(findNextMemWrite(dma, 0x100, 1)).toBe(4);
+    expect(findPrevMemWrite(dma, 0x100, 1)).toBeUndefined(); // strictly before slot 1: none
+    expect(findNextMemWrite(dma, 0x100, 4)).toBeUndefined(); // strictly after slot 4: none
+  });
+
+  it("doesn't match an unrelated address", () => {
+    expect(findPrevMemWrite(dma, 0x200, 5)).toBeUndefined();
   });
 });
 

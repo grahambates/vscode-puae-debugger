@@ -8,6 +8,7 @@ import { TimeView } from "./TimeView";
 import { CustomRegsView } from "./CustomRegsView";
 import { CopperView } from "./CopperView";
 import { BlitterView } from "./BlitterView";
+import { MemoryView } from "./MemoryView";
 import { createTopDownGraph } from "./topDownGraph";
 import { DisplayUnit, unitOptions, Timing } from "./display";
 import { IRichFilter } from "./filter";
@@ -28,7 +29,7 @@ export function App() {
   // The pinned DMA-cycle cursor, shared between the flame graph (which sets it on click) and the
   // custom-registers view (which reads it). Reset on a fresh capture, below.
   const [selectedSlot, setSelectedSlot] = useState<number | undefined>(undefined);
-  const [rightTab, setRightTab] = useState<"time" | "customregs" | "copper" | "blitter">("time");
+  const [rightTab, setRightTab] = useState<"time" | "customregs" | "copper" | "blitter" | "memory">("time");
   // "file" = a loaded .vamigaprofile (read-only): no live Capture/Save. The host bakes the
   // mode into #root so it's known at init and holds even if no model ever arrives.
   const [mode] = useState<"live" | "file">(() =>
@@ -200,6 +201,12 @@ export function App() {
               >
                 Blitter
               </button>
+              <button
+                className={"right-tab" + (rightTab === "memory" ? " active" : "")}
+                onClick={() => setRightTab("memory")}
+              >
+                Memory
+              </button>
             </div>
             {rightTab === "time" ? (
               <TimeView data={dataTable} filter={filter} displayUnit={unit} timing={timing} onOpenSource={openSource} />
@@ -207,8 +214,10 @@ export function App() {
               <CustomRegsView selectedSlot={selectedSlot} onSelectSlot={setSelectedSlot} />
             ) : rightTab === "copper" ? (
               <CopperView selectedSlot={selectedSlot} onSelectSlot={setSelectedSlot} />
-            ) : (
+            ) : rightTab === "blitter" ? (
               <BlitterView selectedSlot={selectedSlot} onSelectSlot={setSelectedSlot} displayUnit={unit} timing={timing} />
+            ) : (
+              <MemoryView selectedSlot={selectedSlot} onSelectSlot={setSelectedSlot} />
             )}
           </div>
         </div>

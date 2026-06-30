@@ -717,16 +717,37 @@ export function FlameGraph({
     [bounds, width, dmaSlots],
   );
 
+  // pointermove can fire far faster than the display refreshes (especially high-poll-rate mice/
+  // trackpads) — calling onSelectSlot (a React state update with downstream consumers like the
+  // Memory view) on every raw event queues up a backlog of renders that falls further and further
+  // behind, making the UI appear to hang for seconds. Coalesce to at most one onSelectSlot call
+  // per animation frame: pointermove just stashes the latest clientX, a pending rAF reads it once.
+  const scrubRafRef = useRef<number | undefined>(undefined);
+  const scrubPendingXRef = useRef<number | undefined>(undefined);
+  const scheduleScrub = useCallback(
+    (clientX: number) => {
+      scrubPendingXRef.current = clientX;
+      if (scrubRafRef.current !== undefined) return;
+      scrubRafRef.current = requestAnimationFrame(() => {
+        scrubRafRef.current = undefined;
+        const x = scrubPendingXRef.current;
+        if (x !== undefined && onSelectSlot) onSelectSlot(slotFromClientX(x));
+      });
+    },
+    [onSelectSlot, slotFromClientX],
+  );
+  useEffect(() => () => { if (scrubRafRef.current !== undefined) cancelAnimationFrame(scrubRafRef.current); }, []);
+
   const onScrubPointerDown = (e: ReactPointerEvent<HTMLDivElement>) => {
     if (!dma || !onSelectSlot) return;
     e.currentTarget.setPointerCapture(e.pointerId);
-    onSelectSlot(slotFromClientX(e.clientX));
+    onSelectSlot(slotFromClientX(e.clientX)); // first position applies immediately, not rAF-deferred
     setScrubbing(true);
     e.stopPropagation();
   };
   const onScrubPointerMove = (e: ReactPointerEvent<HTMLDivElement>) => {
-    if (!scrubbing || !onSelectSlot) return;
-    onSelectSlot(slotFromClientX(e.clientX));
+    if (!scrubbing) return;
+    scheduleScrub(e.clientX);
   };
   const onScrubPointerUp = () => setScrubbing(false);
 

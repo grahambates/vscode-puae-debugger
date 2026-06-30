@@ -15,9 +15,28 @@
 
 import { IDmaModel, DmaSnapshot, DMA_WRITE, DMA_BYTE, dmaIsCustomReg } from "../../shared/profilerTypes";
 
-const SLOW_BASE = 0xc00000;
+export const SLOW_BASE = 0xc00000;
 const REG_DMACON = 0x096;
 const DMACON_SETCLR = 0x8000;
+
+// Map an absolute Amiga bus address to its backing buffer ('chip'/'slow') + offset within it, or
+// undefined if the address isn't RAM captured on the chip bus (custom registers, fast RAM — never
+// recorded). Shared by reconstructMemoryAt and the profiler's Memory view (address→row mapping,
+// write-highlight). `a < snapshot.chip.length` (not the full 2MB chip aperture) means an address
+// past the installed chip size isn't recognized as a mirror — a known limitation, not new here.
+export function resolveMemoryRegion(
+  addr: number,
+  snapshot: Pick<DmaSnapshot, "chip" | "slow">,
+): { region: "chip" | "slow"; buf: Uint8Array; offset: number } | undefined {
+  const a = addr >>> 0;
+  if (snapshot.slow.length && a >= SLOW_BASE && a < SLOW_BASE + snapshot.slow.length) {
+    return { region: "slow", buf: snapshot.slow, offset: a - SLOW_BASE };
+  }
+  if (a < snapshot.chip.length) {
+    return { region: "chip", buf: snapshot.chip, offset: a & (snapshot.chip.length - 1) }; // chip mirrors
+  }
+  return undefined;
+}
 
 // Reconstruct chip + slow RAM at slot `sliceEnd` (exclusive): fresh copies of the
 // snapshot with all preceding non-register WRITE cells applied.
@@ -39,15 +58,9 @@ export function reconstructMemoryAt(
     const isByte = (flags & DMA_BYTE) !== 0;
     const v = dma.value[i];
 
-    let buf: Uint8Array | undefined;
-    let off = 0;
-    if (slow.length && a >= SLOW_BASE && a < SLOW_BASE + slow.length) {
-      buf = slow;
-      off = a - SLOW_BASE;
-    } else if (a < chip.length) {
-      buf = chip;
-      off = a & (chip.length - 1); // chip mirrors
-    }
+    const resolved = resolveMemoryRegion(a, { chip, slow });
+    const buf = resolved?.buf;
+    const off = resolved?.offset ?? 0;
     if (!buf) continue;
 
     if (isByte) {
@@ -110,6 +123,31 @@ export function findNextRegWrite(dma: IDmaModel, offset: number, slot: number): 
     if (!(flags & DMA_WRITE)) continue;
     if (!dmaIsCustomReg(dma.owner[i], flags, dma.addr[i])) continue;
     if ((dma.addr[i] & 0x1fe) === off) return i;
+  }
+  return undefined;
+}
+
+// Nearest slot strictly before/after `slot` where absolute RAM address `addr` was written — the
+// Memory view's "jump to the write that produced this byte" click. Matches the cell's exact bus
+// address only (a word write's second byte won't match clicking +1 — a known v1 limitation).
+export function findPrevMemWrite(dma: IDmaModel, addr: number, slot: number): number | undefined {
+  const a = addr >>> 0;
+  for (let i = Math.min(slot, dma.owner.length) - 1; i >= 0; i--) {
+    const flags = dma.flags[i];
+    if (!(flags & DMA_WRITE)) continue;
+    if (dmaIsCustomReg(dma.owner[i], flags, dma.addr[i])) continue;
+    if ((dma.addr[i] >>> 0) === a) return i;
+  }
+  return undefined;
+}
+
+export function findNextMemWrite(dma: IDmaModel, addr: number, slot: number): number | undefined {
+  const a = addr >>> 0;
+  for (let i = Math.max(slot + 1, 0); i < dma.owner.length; i++) {
+    const flags = dma.flags[i];
+    if (!(flags & DMA_WRITE)) continue;
+    if (dmaIsCustomReg(dma.owner[i], flags, dma.addr[i])) continue;
+    if ((dma.addr[i] >>> 0) === a) return i;
   }
   return undefined;
 }
