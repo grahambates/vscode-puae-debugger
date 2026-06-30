@@ -8,10 +8,10 @@ const columns: IColumn[] = [
 ];
 
 describe("columnIndexToSlot", () => {
-  it("maps a column index to a slot within its x1..x2 span", () => {
+  it("maps a column index to a slot within its x1..x2 span (uses midpoint, not left edge)", () => {
     const dmaSlots = 100;
-    const slot = columnIndexToSlot(columns, 2, dmaSlots); // x1=0.5 -> slot 50
-    expect(slot).toBe(50);
+    const slot = columnIndexToSlot(columns, 2, dmaSlots); // mid=(0.5+0.75)/2=0.625 -> slot 62
+    expect(slot).toBe(62);
   });
 
   it("round-trips with columnIndexAtX: the returned slot resolves back to the same column", () => {

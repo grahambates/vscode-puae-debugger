@@ -25,6 +25,23 @@ export function findRegSetSample(
   return j;
 }
 
+// The first sample of the run IMMEDIATELY BEFORE the run containing `atIdx` — i.e. strictly go
+// back one transition. Mirroring how findPrevRegWrite (Custom Registers' ◀ button) searches
+// strictly before the current slot. Returning just `findRegSetSample(atIdx)` gets stuck because
+// after jumping there, the DMA-slot round-trip lands us back at the same run-start and
+// findRegSetSample returns it unchanged on the next click.
+export function findPrevRegChangeSample(
+  registers: Uint32Array,
+  regCount: number,
+  sampleCount: number,
+  regIndex: number,
+  atIdx: number,
+): number | undefined {
+  const start = findRegSetSample(registers, regCount, sampleCount, regIndex, atIdx);
+  if (start <= 0) return undefined;
+  return findRegSetSample(registers, regCount, sampleCount, regIndex, start - 1);
+}
+
 // The next sample index after `atIdx` where `regIndex`'s value differs from its value at `atIdx`
 // — i.e. where it's next "written" to something else. Undefined if it never changes again before
 // the end of the trace.

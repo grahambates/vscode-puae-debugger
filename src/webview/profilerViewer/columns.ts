@@ -114,7 +114,12 @@ export function columnIndexAtX(columns: IColumn[], x: number): number {
 export function columnIndexToSlot(columns: IColumn[], idx: number, dmaSlots: number): number {
   if (columns.length === 0 || dmaSlots <= 0) return 0;
   const col = columns[Math.max(0, Math.min(idx, columns.length - 1))];
-  return Math.max(0, Math.min(dmaSlots - 1, Math.floor(col.x1 * dmaSlots)));
+  // Use the column midpoint rather than left edge (x1): floor(x1*dmaSlots) can resolve back to
+  // column idx-1 when x1 sits close to a slot boundary, breaking the round-trip. The midpoint is
+  // safely inside [x1, x2) for any column whose width >= 1 DMA-slot (the common case), giving
+  // columnIndexAtX((slot+0.5)/dmaSlots) == idx as required for cycling navigation to step forward.
+  const mid = (col.x1 + col.x2) / 2;
+  return Math.max(0, Math.min(dmaSlots - 1, Math.floor(mid * dmaSlots)));
 }
 
 // Resolve the call stack (outermost→leaf) executing at normalized x (0..1) — the column covering

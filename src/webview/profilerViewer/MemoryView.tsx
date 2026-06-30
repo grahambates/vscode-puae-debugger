@@ -318,9 +318,11 @@ export function MemoryView({
         return;
       }
       if (!dma) return;
-      // Shift+click jumps forward to the NEXT write to this address, plain click backward to the
-      // previous one — Custom Registers' ◀▶ nav already goes both ways; this didn't, until now.
-      const found = forward ? findNextMemWrite(dma, addr, slot) : findPrevMemWrite(dma, addr, slot + 1);
+      // Shift+click jumps forward to the NEXT write, plain click backward to the previous one.
+      // Both use strict "before/after current slot" semantics (matching findPrevRegWrite's ◀ in
+      // CustomRegsView) — using slot+1 as the backward ceiling would find the current slot itself
+      // and re-select it on every click, causing the navigation to stick.
+      const found = forward ? findNextMemWrite(dma, addr, slot) : findPrevMemWrite(dma, addr, slot);
       if (found !== undefined) onSelectSlot(found);
     },
     [dma, slot, onSelectSlot, sourceLookup, onOpenSource],

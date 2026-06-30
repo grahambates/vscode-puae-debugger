@@ -6,7 +6,7 @@ import { IDisassembledInstruction, REG_COUNT, REG_D0, REG_A0, REG_SR, REG_PC, RE
 import { srFlags } from "../shared/cpuFlags";
 import { createSymbolizer, Symbolizer } from "./symbols";
 import { interpretDataReg, interpretAddressReg } from "./registerInterpret";
-import { findRegSetSample, findRegNextChangeSample } from "./registerHistory";
+import { findPrevRegChangeSample, findRegNextChangeSample } from "./registerHistory";
 import { Tooltip } from "./Tooltip";
 
 // Props shared across every row via the v2 rowProps channel (must not contain
@@ -103,7 +103,7 @@ function RegistersPanel({
     if (!canNavigate) return;
     const target = e.shiftKey
       ? findRegNextChangeSample(registers, REG_COUNT, sampleCount, i, currentIdx)
-      : findRegSetSample(registers, REG_COUNT, sampleCount, i, currentIdx);
+      : findPrevRegChangeSample(registers, REG_COUNT, sampleCount, i, currentIdx);
     if (target === undefined) return;
     onSelectSlot(columnIndexToSlot(columns, target, dmaSlots));
   };
