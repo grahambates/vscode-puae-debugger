@@ -366,6 +366,15 @@ static int      g_wprofWasPaused;
 static evt_t    g_wprofStartCycles;
 static uint64_t g_wprofFrameCycles;
 
+/* Index into g_wprofBuf of the cycleDelta word belonging to the MOST RECENTLY pushed sample,
+ * still unfinalized — UINT32_MAX when none is pending. See wasm_profile_instrHook's comment for
+ * why this exists: cycle cost can only be known retroactively, one hook call after a sample's
+ * (pc, stack) is known, so the buffer reserves the word at push time and this records where to
+ * fill it in once the next hook call (or wasm_profile_finish, for the very last sample) reveals
+ * the actual duration. */
+static uint32_t g_wprofPendingCycleSlot;
+#define WASM_PROFILE_NO_PENDING_SLOT 0xFFFFFFFFu
+
 /* DWARF unwind table uploaded by wasm_profile_set_unwind (NULL = assembly/branch-stack). */
 static uint8_t *g_wprofUnwindBuf = NULL;
 static uint32_t g_wprofUnwindLen = 0;
@@ -448,6 +457,7 @@ wasm_profile_prepare(void)
 	g_wprofInRangeInstrs   = 0;
 	g_wprofLastCycleValid  = 0;
 	g_wprofFrameCycles     = 0;
+	g_wprofPendingCycleSlot = WASM_PROFILE_NO_PENDING_SLOT;
 	g_wprofActive          = 1;
 	g_wprofWasPaused       = puae_debug_paused;
 	puae_debug_paused       = 0;
@@ -463,6 +473,12 @@ wasm_profile_finish(int numFrames)
 	}
 	g_wprofActive    = 0;
 	puae_debug_paused = g_wprofWasPaused;
+	/* The very last sample's cycleDelta slot (if any) is left at its placeholder value
+	 * (1 — see wasm_profile_instrHook) rather than finalized here: get_cycles() at this point
+	 * has already advanced past whatever ran after the last HOOKED instruction (the multi-frame
+	 * retro_run() loop doesn't stop exactly at an instruction boundary we hooked), so it would
+	 * overcount, not measure, that one instruction's true cost. Negligible — at most one sample
+	 * out of the whole capture. */
 }
 
 static void
@@ -475,6 +491,15 @@ wasm_profile_instrHook(uint32_t pc24)
 	if (pc24 < g_wprofStartAddr || pc24 >= g_wprofEndAddr) return;
 	g_wprofInRangeInstrs++;
 
+	/* puae_debug_instructionHook fires BEFORE an instruction executes and consumes cycles (see
+	 * its call site in newcpu.c, right before `cpu_cycles = (*cpufunctbl[...])...; do_cycles(...)`)
+	 * — so the elapsed time since the LAST hook call is the duration of the PREVIOUS sample
+	 * (whatever ran between its hook call and this one), not this one's own cost. Finalize the
+	 * previous sample's reserved cycleDelta slot with it now; THIS sample's cost isn't knowable
+	 * until the next hook call (or wasm_profile_finish, if it turns out to be the last one).
+	 * Getting this backwards was a real bug: every sample's reported cost belonged to whichever
+	 * instruction preceded it, e.g. a slow `divs` would show up attributed to the *following*
+	 * fast `add` instead of itself. */
 	evt_t now = get_cycles();
 	uint32_t cycleDelta = 1;
 	if (g_wprofLastCycleValid && CYCLE_UNIT > 0) {
@@ -486,6 +511,10 @@ wasm_profile_instrHook(uint32_t pc24)
 	}
 	g_wprofLastCycle      = now;
 	g_wprofLastCycleValid = 1;
+	if (g_wprofPendingCycleSlot != WASM_PROFILE_NO_PENDING_SLOT) {
+		g_wprofBuf[g_wprofPendingCycleSlot] = cycleDelta;
+		g_wprofPendingCycleSlot = WASM_PROFILE_NO_PENDING_SLOT;
+	}
 
 	/* Stack: leaf (current PC) + callers innermost-first.
 	 * DWARF unwind table present  → walk CFA chain from live registers.
@@ -502,7 +531,7 @@ wasm_profile_instrHook(uint32_t pc24)
 	}
 
 	uint32_t depth  = 1 + stkDepth;
-	uint32_t needed = 1 + depth + 1;   /* depth-word + PCs + cycleDelta */
+	uint32_t needed = 1 + depth + 1;   /* depth-word + PCs + cycleDelta placeholder */
 	if (g_wprofBufLen + needed > WASM_PROFILE_BUF_WORDS) return;
 	/* Gate on the register buffer's own (much smaller) cap too — if it's ever the limiting
 	 * factor the sample is dropped from BOTH buffers, keeping them in lockstep rather than
@@ -513,7 +542,12 @@ wasm_profile_instrHook(uint32_t pc24)
 	g_wprofBuf[g_wprofBufLen++] = pc24;   /* leaf */
 	for (uint32_t i = 0; i < stkDepth; i++)
 		g_wprofBuf[g_wprofBufLen++] = callers[i];
-	g_wprofBuf[g_wprofBufLen++] = cycleDelta;
+	/* This sample's own cost isn't known yet (see the comment above) — reserve the slot with
+	 * the same "1 = unknown" placeholder used for the very first sample, and remember its index
+	 * so the next hook call (or wasm_profile_finish, for the last sample) can fill in the real
+	 * value once it's measurable. */
+	g_wprofPendingCycleSlot = g_wprofBufLen;
+	g_wprofBuf[g_wprofBufLen++] = 1;
 
 	/* Register snapshot for this exact sample (D0-D7, A0-A7, SR, PC, USP — see
 	 * puae_debug_read_regs), in lockstep with the push above. */

@@ -25,7 +25,8 @@ function RowRenderer({ index, style, instructions, maxCycles, currentAddress, on
       className={"disasm-row" + (ins.address === currentAddress ? " disasm-current" : "")}
       style={{ ...style, background: heat > 0 ? `rgba(255,140,0,${(heat * 0.5).toFixed(3)})` : undefined }}
     >
-      <span className="disasm-cycles">{ins.cycles > 0 ? ins.cycles : ""}</span>
+      <span className="disasm-hits" title="Executions this frame">{ins.hits > 0 ? `${ins.hits}×` : ""}</span>
+      <span className="disasm-cycles" title="Total cycles this frame">{ins.cycles > 0 ? `${ins.cycles}cy` : ""}</span>
       <span className="disasm-addr">${ins.address.toString(16).padStart(6, "0")}</span>
       <span className="disasm-hex">{ins.hex}</span>
       <span className="disasm-text">{ins.text}</span>

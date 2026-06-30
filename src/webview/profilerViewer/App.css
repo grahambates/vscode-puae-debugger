@@ -759,11 +759,18 @@ body {
   outline-offset: -1px;
 }
 
-.disasm-cycles {
-  width: 4em;
+.disasm-hits {
+  width: 3.5em;
   flex-shrink: 0;
   text-align: right;
   color: var(--vscode-terminal-ansiYellow);
+}
+
+.disasm-cycles {
+  width: 4.5em;
+  flex-shrink: 0;
+  text-align: right;
+  color: var(--vscode-descriptionForeground);
 }
 
 .disasm-addr {
