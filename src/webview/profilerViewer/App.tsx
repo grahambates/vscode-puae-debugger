@@ -40,9 +40,9 @@ export function App() {
   const [selectedSlot, setSelectedSlot] = useState<number | undefined>(undefined);
   const [leftTab, setLeftTab] = useState<TabId>("time");
   const [rightTab, setRightTab] = useState<TabId>("memory");
-  // Vertical split of the right pane into two independent tab panels.
-  const [split, setSplit] = useState(false);
-  const [splitRatio, setSplitRatio] = useState(0.5); // fraction of width for the left panel
+  // Split mode for the right pane: "none" = single panel, "h" = side-by-side, "v" = stacked.
+  const [splitMode, setSplitMode] = useState<"none" | "h" | "v">("none");
+  const [splitRatio, setSplitRatio] = useState(0.5); // fraction of first dimension (width or height)
   const panelContainerRef = useRef<HTMLDivElement>(null);
   // Time View's tree direction: top-down (call-tree, "what does main() spend time in") or
   // bottom-up (leaf→callers, "what does Foo's time actually come from").
@@ -132,16 +132,20 @@ export function App() {
     [model, treeMode],
   );
 
-  // Drag the vertical panel divider to resize the split.
+  // Drag the panel divider to resize the split. Works for both h (col-resize) and v (row-resize).
   const onPanelDividerMouseDown = useCallback((e: React.MouseEvent) => {
     e.preventDefault();
     const container = panelContainerRef.current;
     if (!container) return;
-    document.body.style.cursor = "col-resize";
+    const isH = splitMode === "h";
+    document.body.style.cursor = isH ? "col-resize" : "row-resize";
     document.body.style.userSelect = "none";
-    const { left, width } = container.getBoundingClientRect();
+    const rect = container.getBoundingClientRect();
+    const origin = isH ? rect.left : rect.top;
+    const size = isH ? rect.width : rect.height;
     const onMove = (me: MouseEvent) => {
-      setSplitRatio(Math.max(0.2, Math.min(0.8, (me.clientX - left) / width)));
+      const pos = isH ? me.clientX : me.clientY;
+      setSplitRatio(Math.max(0.2, Math.min(0.8, (pos - origin) / size)));
     };
     const onUp = () => {
       document.body.style.cursor = "";
@@ -151,7 +155,7 @@ export function App() {
     };
     document.addEventListener("mousemove", onMove);
     document.addEventListener("mouseup", onUp);
-  }, []);
+  }, [splitMode]);
 
   // Render the content for a given tab (shared between left and right panels).
   const renderTabContent = (tab: TabId) => {
@@ -199,13 +203,22 @@ export function App() {
           </button>
         ))}
         {isLeft && (
-          <button
-            className={"right-tab right-tab-split" + (split ? " active" : "")}
-            onClick={() => setSplit((s) => !s)}
-            title={split ? "Close split panel" : "Open split panel"}
-          >
-            <span className="codicon codicon-split-horizontal" />
-          </button>
+          <div className="right-tabs-split-group">
+            <button
+              className={"right-tab right-tab-split" + (splitMode === "h" ? " active" : "")}
+              onClick={() => setSplitMode((m) => m === "h" ? "none" : "h")}
+              title={splitMode === "h" ? "Close split" : "Split side by side"}
+            >
+              <span className="codicon codicon-split-horizontal" />
+            </button>
+            <button
+              className={"right-tab right-tab-split" + (splitMode === "v" ? " active" : "")}
+              onClick={() => setSplitMode((m) => m === "v" ? "none" : "v")}
+              title={splitMode === "v" ? "Close split" : "Split top and bottom"}
+            >
+              <span className="codicon codicon-split-vertical" />
+            </button>
+          </div>
         )}
       </div>
       {renderTabContent(tab)}
@@ -275,12 +288,19 @@ export function App() {
             onSelectSlot={setSelectedSlot}
           />
           <div className="split-divider" />
-          <div className="right-pane" ref={panelContainerRef}>
-            {renderPanel(leftTab, setLeftTab, true,
-              split ? { width: `${splitRatio * 100}%` } : { flex: 1 })}
-            {split && (
+          <div
+            className={"right-pane" + (splitMode === "v" ? " right-pane-v" : "")}
+            ref={panelContainerRef}
+          >
+            {renderPanel(leftTab, setLeftTab, true, splitMode !== "none"
+              ? (splitMode === "h" ? { width: `${splitRatio * 100}%` } : { height: `${splitRatio * 100}%` })
+              : { flex: 1 })}
+            {splitMode !== "none" && (
               <>
-                <div className="panel-divider-v" onMouseDown={onPanelDividerMouseDown} />
+                <div
+                  className={"panel-divider-v" + (splitMode === "v" ? " panel-divider-h" : "")}
+                  onMouseDown={onPanelDividerMouseDown}
+                />
                 {renderPanel(rightTab, setRightTab, false, { flex: 1 })}
               </>
             )}

@@ -364,8 +364,8 @@ body {
   font-weight: 600;
 }
 
-/* Right pane — holds one or two tab panels side by side; direction is always row
-   so the vertical panel divider splits it cleanly. */
+/* Right pane — holds one or two tab panels. Default direction is row (h split);
+   .right-pane-v switches to column (v split). */
 .right-pane {
   flex: 1;
   display: flex;
@@ -374,7 +374,11 @@ body {
   overflow: hidden;
 }
 
-/* One tab panel (tab bar + content). Width is set inline when split, flex:1 otherwise. */
+.right-pane-v {
+  flex-direction: column;
+}
+
+/* One tab panel (tab bar + content). Width/height set inline when split, flex:1 otherwise. */
 .right-panel {
   display: flex;
   flex-direction: column;
@@ -382,7 +386,7 @@ body {
   overflow: hidden;
 }
 
-/* Vertical drag handle between two split panels. */
+/* Vertical drag handle (h split: separates left | right). */
 .panel-divider-v {
   flex: 0 0 4px;
   background: var(--vscode-panel-border);
@@ -390,7 +394,13 @@ body {
   transition: background 0.1s;
 }
 
-.panel-divider-v:hover {
+/* Horizontal drag handle (v split: separates top / bottom). */
+.panel-divider-h {
+  cursor: row-resize;
+}
+
+.panel-divider-v:hover,
+.panel-divider-h:hover {
   background: var(--vscode-focusBorder);
 }
 
@@ -421,12 +431,17 @@ body {
   font-weight: 600;
 }
 
-/* Split-panel toggle button — flush to the right of the tab bar. */
-.right-tab-split {
+/* Wrapper that right-aligns the split toggle buttons as a group. */
+.right-tabs-split-group {
   margin-left: auto;
-  border-left: 1px solid var(--vscode-panel-border);
-  padding: 5px 8px;
+  display: flex;
   flex-shrink: 0;
+  border-left: 1px solid var(--vscode-panel-border);
+}
+
+/* Individual split-panel toggle buttons. */
+.right-tab-split {
+  padding: 5px 8px;
   opacity: 0.7;
 }
 
