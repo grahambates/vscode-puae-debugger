@@ -747,6 +747,12 @@ export function FlameGraph({
     const isClick = Date.now() - drag.timestamp < 500 && Math.abs(e.pageX - drag.pageXOrigin) < 100;
     if (isClick && hovered) {
       setFocused(hovered.box);
+      if (onSelectSlot && dmaSlots > 0) {
+        // Jump the playhead to the start of this function's execution block, so the registers,
+        // disassembly, memory, etc. all snap to where it begins.
+        const slot = Math.max(0, Math.min(dmaSlots - 1, Math.floor(hovered.box.x1 * dmaSlots)));
+        onSelectSlot(slot);
+      }
       const loc = hovered.box.loc;
       if ((e.ctrlKey || e.metaKey) && loc.callFrame.url) {
         // lineNumber is already 1-based (raw SourceMap.lookupAddress().line — see internLocation),
