@@ -25,11 +25,13 @@ export function findRegSetSample(
   return j;
 }
 
-// The first sample of the run IMMEDIATELY BEFORE the run containing `atIdx` — i.e. strictly go
-// back one transition. Mirroring how findPrevRegWrite (Custom Registers' ◀ button) searches
-// strictly before the current slot. Returning just `findRegSetSample(atIdx)` gets stuck because
-// after jumping there, the DMA-slot round-trip lands us back at the same run-start and
-// findRegSetSample returns it unchanged on the next click.
+// The instruction that SET the register to its current value at `atIdx` — strictly the sample
+// BEFORE the current value first appeared in the trace. Because model.registers[k] is captured
+// BEFORE instruction k executes (hook fires pre-execution), the instruction that WRITES a new
+// value appears at sample `start - 1` while the new value is first SEEN at sample `start`.
+// Returning `findRegSetSample(start - 1)` (start of the previous value's run) was wrong: that's
+// the first READER of the old value, not the WRITER of the current one, and it caused harmless
+// but confusing jumps to non-writing instructions like `cmp`.
 export function findPrevRegChangeSample(
   registers: Uint32Array,
   regCount: number,
@@ -39,7 +41,10 @@ export function findPrevRegChangeSample(
 ): number | undefined {
   const start = findRegSetSample(registers, regCount, sampleCount, regIndex, atIdx);
   if (start <= 0) return undefined;
-  return findRegSetSample(registers, regCount, sampleCount, regIndex, start - 1);
+  // `start - 1` is the sample whose instruction executed and produced the value first seen at
+  // `start`. Registers[start-1] will show the OLD value (before execution) — that's expected,
+  // since the displayed instruction IS the write that changes it.
+  return start - 1;
 }
 
 // The next sample index after `atIdx` where `regIndex`'s value differs from its value at `atIdx`
