@@ -6,6 +6,7 @@ import { reconstructMemoryAt, resolveMemoryRegion, findPrevMemWrite, findNextMem
 import { createSymbolizer } from "./symbols";
 import { createSourceLookup } from "./sourceLookup";
 import { buildAddressSuggestions, parseAddressInput, AddressSuggestion, Region } from "./addressSuggestions";
+import { MemoryVisual, MemoryVisualAPI } from "./MemoryVisual";
 import { Tooltip } from "./Tooltip";
 import { markChanges } from "./memoryDiff";
 import { convertToSigned } from "../shared/memoryFormat";
@@ -133,6 +134,22 @@ export function MemoryView({
   const [region, setRegion] = useState<Region>(savedView?.region ?? "chip");
   const [follow, setFollow] = useState(savedView?.follow ?? true);
   const [colorCode, setColorCode] = useState(savedView?.colorCode ?? true); // live memory viewer's default
+  const [viewMode, setViewMode] = useState<"hex" | "visual">("hex");
+  const visualRef = useRef<MemoryVisualAPI>(null);
+  // Keep a ref so scrollToByteOffset stays stable (no viewMode dep → no callback cascade).
+  const viewModeRef = useRef(viewMode);
+  useEffect(() => { viewModeRef.current = viewMode; }, [viewMode]);
+
+  // Unified scroller: routes to the hex List or visual canvas depending on current view mode.
+  // Declared early (before any effects that call it) so it's in scope throughout.
+  const scrollToByteOffset = useCallback((off: number, align: "start" | "smart" = "start") => {
+    if (viewModeRef.current === "visual") {
+      visualRef.current?.scrollToOffset(off);
+    } else {
+      listRef.current?.scrollToRow({ index: Math.floor(off / BYTES_PER_ROW), align });
+    }
+  }, []);
+
   const [comboQuery, setComboQuery] = useState("");
   const [browseAll, setBrowseAll] = useState(false); // dropdown-button click: bypass the suggestion cap
   const [hover, setHover] = useState<{ addr: number; x: number; y: number } | undefined>(undefined);
@@ -240,9 +257,9 @@ export function MemoryView({
 
   useEffect(() => {
     if (follow && currentWrite && currentWrite.region === region) {
-      listRef.current?.scrollToRow({ index: Math.floor(currentWrite.offset / BYTES_PER_ROW), align: "smart" });
+      scrollToByteOffset(currentWrite.offset, "smart");
     }
-  }, [follow, currentWrite, region]);
+  }, [follow, currentWrite, region, scrollToByteOffset]);
 
   const bufLength = region === "chip" ? recon?.chip.length : recon?.slow.length;
   const baseAddr = region === "chip" ? 0 : SLOW_BASE;
@@ -269,9 +286,9 @@ export function MemoryView({
     if (currentWrite) return; // existing effect already handles the "is a write" case
     const saved = initialSavedViewRef.current;
     if (saved?.topAddress !== undefined && saved.region === region) {
-      const idx = Math.floor((saved.topAddress - baseAddr) / BYTES_PER_ROW);
-      if (idx >= 0 && idx < rowCount) {
-        const raf = requestAnimationFrame(() => listRef.current?.scrollToRow({ index: idx, align: "start" }));
+      const off = saved.topAddress - baseAddr;
+      if (off >= 0 && off < (bufLength ?? 0)) {
+        const raf = requestAnimationFrame(() => scrollToByteOffset(off));
         return () => cancelAnimationFrame(raf);
       }
     }
@@ -282,8 +299,7 @@ export function MemoryView({
       if (dmaIsCustomReg(dma.owner[i], flags, dma.addr[i])) continue;
       const resolved = resolveMemoryRegion(dma.addr[i], snapshot);
       if (!resolved || resolved.region !== region) continue;
-      const target = Math.floor(resolved.offset / BYTES_PER_ROW);
-      const raf = requestAnimationFrame(() => listRef.current?.scrollToRow({ index: target, align: "smart" }));
+      const raf = requestAnimationFrame(() => scrollToByteOffset(resolved.offset, "smart"));
       return () => cancelAnimationFrame(raf);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -381,15 +397,15 @@ export function MemoryView({
       const resolved = resolveMemoryRegion(addr, snapshot);
       if (!resolved) return;
       setRegion(resolved.region);
-      listRef.current?.scrollToRow({ index: Math.floor(resolved.offset / BYTES_PER_ROW), align: "start" });
+      scrollToByteOffset(resolved.offset);
     },
-    [snapshot],
+    [snapshot, scrollToByteOffset],
   );
 
   const jumpToRegion = useCallback((r: Region) => {
     setRegion(r);
-    listRef.current?.scrollToRow({ index: 0, align: "start" });
-  }, []);
+    scrollToByteOffset(0);
+  }, [scrollToByteOffset]);
 
   // Address combo box: replaces a separate "region" <select> and a free-text "go to address"
   // input with one Downshift autocomplete listing both RAM regions and the program's symbols
@@ -498,23 +514,53 @@ export function MemoryView({
           <input type="checkbox" checked={follow} onChange={(e) => setFollow(e.target.checked)} />
           Follow writes
         </label>
-        <label className="mem-follow">
-          <input type="checkbox" checked={colorCode} onChange={(e) => setColorCode(e.target.checked)} />
-          Color bytes
-        </label>
+        {viewMode === "hex" && (
+          <label className="mem-follow">
+            <input type="checkbox" checked={colorCode} onChange={(e) => setColorCode(e.target.checked)} />
+            Color bytes
+          </label>
+        )}
+        <div className="mem-view-toggle">
+          <button
+            className={"mem-view-btn" + (viewMode === "hex" ? " active" : "")}
+            onClick={() => setViewMode("hex")}
+            title="Hex view"
+          >Hex</button>
+          <button
+            className={"mem-view-btn" + (viewMode === "visual" ? " active" : "")}
+            onClick={() => setViewMode("visual")}
+            title="Visual (bitmap) view"
+          >Visual</button>
+        </div>
       </div>
-      <div className="mem-rows">
-        <List
-          listRef={listRef}
-          rowComponent={RowRenderer}
-          rowProps={rowProps}
-          rowCount={rowCount}
-          rowHeight={18}
-          onRowsRendered={(visible) => {
-            savedView = { region, follow, colorCode, topAddress: baseAddr + visible.startIndex * BYTES_PER_ROW };
-          }}
+      {viewMode === "hex" ? (
+        <div className="mem-rows">
+          <List
+            listRef={listRef}
+            rowComponent={RowRenderer}
+            rowProps={rowProps}
+            rowCount={rowCount}
+            rowHeight={18}
+            onRowsRendered={(visible) => {
+              savedView = { region, follow, colorCode, topAddress: baseAddr + visible.startIndex * BYTES_PER_ROW };
+            }}
+          />
+        </div>
+      ) : (
+        <MemoryVisual
+          ref={visualRef}
+          getByte={getByte}
+          getFadeOpacity={getFadeOpacity}
+          bufLength={bufLength ?? 0}
+          bufVersion={chipVersion}
+          fadeTick={fadeTick}
+          baseAddr={baseAddr}
+          highlightOffset={currentWrite && currentWrite.region === region ? currentWrite.offset : undefined}
+          onByteClick={onByteClick}
+          onByteHover={onByteHover}
+          onByteLeave={onByteLeave}
         />
-      </div>
+      )}
       {hover && hoverInfo && (
         <Tooltip x={hover.x} y={hover.y} width={220}>
           <div className="tt-func">

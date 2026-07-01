@@ -803,6 +803,108 @@ body {
   color: var(--vscode-descriptionForeground);
 }
 
+/* Hex / Visual toggle — right-aligned via margin-left:auto on the group. */
+.mem-view-toggle {
+  margin-left: auto;
+  display: flex;
+  gap: 0;
+  flex-shrink: 0;
+  border: 1px solid var(--vscode-panel-border);
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.mem-view-btn {
+  background: transparent;
+  color: var(--vscode-foreground);
+  border: none;
+  padding: 2px 8px;
+  cursor: pointer;
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.mem-view-btn:hover {
+  background: var(--vscode-toolbar-hoverBackground);
+}
+
+.mem-view-btn.active {
+  background: var(--vscode-inputOption-activeBackground);
+  color: var(--vscode-inputOption-activeForeground, var(--vscode-foreground));
+}
+
+/* ── Visual (bitmap) memory mode ─────────────────────────────────────────── */
+
+.memvisual {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.memvisual-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 3px 10px;
+  flex-shrink: 0;
+  border-bottom: 1px solid var(--vscode-panel-border);
+  font-size: 12px;
+}
+
+.memvisual-label {
+  color: var(--vscode-descriptionForeground);
+  white-space: nowrap;
+}
+
+.memvisual-width {
+  width: 4.5em;
+  background: var(--vscode-input-background);
+  color: var(--vscode-input-foreground);
+  border: 1px solid var(--vscode-input-border, transparent);
+  padding: 1px 4px;
+  border-radius: 2px;
+  text-align: right;
+}
+
+.memvisual-scale {
+  background: var(--vscode-dropdown-background);
+  color: var(--vscode-dropdown-foreground);
+  border: 1px solid var(--vscode-dropdown-border);
+  padding: 1px 4px;
+  border-radius: 2px;
+}
+
+.memvisual-btn {
+  background: transparent;
+  color: var(--vscode-foreground);
+  border: 1px solid var(--vscode-panel-border);
+  padding: 1px 6px;
+  border-radius: 2px;
+  cursor: pointer;
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.memvisual-btn:hover {
+  background: var(--vscode-toolbar-hoverBackground);
+}
+
+.memvisual-hint {
+  margin-left: auto;
+  color: var(--vscode-descriptionForeground);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.memvisual-scroll {
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: auto;
+  min-height: 0;
+}
+
 .mem-rows {
   flex: 1;
   min-height: 0;

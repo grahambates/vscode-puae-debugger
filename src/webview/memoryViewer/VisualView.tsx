@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect, useCallback } from "react";
-import { guessWidthsKnownLength, guessWidthsUnknownLength } from "./strideGuesser";
+import { guessWidthsKnownLength, guessWidthsUnknownLength } from "../shared/strideGuesser";
 import "./VisualView.css";
 import { MemoryRange } from "../../shared/memoryViewerTypes";
 import { Tooltip, TooltipProps } from "./Tooltip";
