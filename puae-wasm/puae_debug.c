@@ -331,7 +331,7 @@ puae_debug_profiler_instrHook(uint32_t pc24)
 	}
 }
 
-// ---- wasm_profile: vAmiga-format CPU profiler ----
+// ---- wasm_profile: vAmiga-format profiler ----
 // Each record: [depth, leaf_pc, callerN-1, ..., caller0, cycleDelta] (uint32_t).
 // Address range + optional DWARF unwind table from wasm_profile_set_unwind.
 // When a table is present (C/C++ programs): call stack reconstructed by walking

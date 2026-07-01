@@ -197,6 +197,7 @@ export function DisassemblyView({
   const disassembly = model?.disassembly;
   const [selectedFn, setSelectedFn] = useState<number | undefined>(undefined); // index into `functions`
   const [follow, setFollow] = useState(true);
+  const [showRegs, setShowRegs] = useState(true);
   const listRef = useRef<ListImperativeAPI>(null);
   const symbolize = useMemo(() => createSymbolizer(model?.symbols), [model]);
 
@@ -209,7 +210,7 @@ export function DisassemblyView({
       .sort((a, b) => b.totalCycles - a.totalCycles);
   }, [disassembly]);
 
-  // The instruction executing at the selected DMA cycle, if any — drives "Follow execution".
+  // The instruction executing at the selected DMA cycle, if any — drives "Follow timeline".
   // Reads model.pcs directly via the column boundaries (columnIndexAtX), NOT through the
   // columns' merged `.rows` (resolveStackAtX): buildColumns coalesces every contiguous run of
   // the same function into one box for flame-graph rendering (e.g. an entire hot loop's
@@ -290,7 +291,11 @@ export function DisassemblyView({
         </select>
         <label className="disasm-follow">
           <input type="checkbox" checked={follow} onChange={(e) => setFollow(e.target.checked)} />
-          Follow execution
+          Follow timeline
+        </label>
+        <label className="disasm-follow">
+          <input type="checkbox" checked={showRegs} onChange={(e) => setShowRegs(e.target.checked)} />
+          Registers
         </label>
         {columns.length > 0 && dmaSlots && (
           <span className="cr-nav">
@@ -321,7 +326,7 @@ export function DisassemblyView({
             rowHeight={18}
           />
         </div>
-        {currentRegs && (
+        {currentRegs && showRegs && (
           <RegistersPanel
             regs={currentRegs}
             prev={prevRegs}

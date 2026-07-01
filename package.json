@@ -61,7 +61,7 @@
       },
       {
         "command": "vamiga-debugger.openMemoryViewer",
-        "title": "VAmiga: Open Memory Viewer",
+        "title": "Open Memory Viewer",
         "icon": "$(symbol-array)"
       },
       {
@@ -74,7 +74,7 @@
       },
       {
         "command": "vamiga-debugger.openStateViewer",
-        "title": "VAmiga: Open State Viewer",
+        "title": "Open Amiga State",
         "icon": "$(symbol-misc)"
       },
       {
@@ -83,7 +83,7 @@
       },
       {
         "command": "vamiga-debugger.openProfiler",
-        "title": "VAmiga: Open CPU Profiler",
+        "title": "Capture Frame Profile",
         "icon": "$(dashboard)"
       }
     ],

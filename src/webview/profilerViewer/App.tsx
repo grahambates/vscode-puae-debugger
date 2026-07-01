@@ -20,9 +20,9 @@ const vscode = acquireVsCodeApi();
 type TabId = "time" | "customregs" | "copper" | "blitter" | "memory" | "disasm";
 const TAB_LABELS: Record<TabId, string> = {
   time: "Time View", customregs: "Custom Registers", copper: "Copper",
-  blitter: "Blitter", memory: "Memory", disasm: "Disassembly",
+  blitter: "Blitter", memory: "Memory", disasm: "CPU",
 };
-const ALL_TABS: TabId[] = ["time", "customregs", "copper", "blitter", "memory", "disasm"];
+const ALL_TABS: TabId[] = ["time", "disasm", "copper", "blitter", "memory", "customregs"];
 
 export function App() {
   useModelVersion(); // re-render when the model changes (the model lives in modelStore, not state)
@@ -64,7 +64,7 @@ export function App() {
     const handle = (event: MessageEvent) => {
       const m = event.data as ProfilerOutboundMessage;
       if (m.command === "captureResult") {
-        setSelectedSlot(undefined);
+        setSelectedSlot(0);
         if (m.model.symbols) symbolsRef.current = m.model.symbols;
         const base = symbolsRef.current ? { ...m.model, symbols: symbolsRef.current } : m.model;
         const bulkUri = m.bulkUri;

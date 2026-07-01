@@ -101,7 +101,7 @@ export class ProfilerViewerProvider {
 
     this.panel = vscode.window.createWebviewPanel(
       ProfilerViewerProvider.viewType,
-      "CPU Profiler",
+      "Profiler",
       vscode.ViewColumn.Beside,
       { enableScripts: true, retainContextWhenHidden: true, localResourceRoots: [this.extensionUri, this.storageUri] },
     );
@@ -310,7 +310,7 @@ export function getProfilerHtml(webview: vscode.Webview, extensionUri: vscode.Ur
   <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${webview.cspSource} 'unsafe-inline'; font-src ${webview.cspSource}; script-src ${webview.cspSource}; connect-src ${webview.cspSource};">
   <link href="${codiconsUri}" rel="stylesheet" id="vscode-codicon-stylesheet" />
   <link href="${styleUri}" rel="stylesheet" />
-  <title>CPU Profiler</title>
+  <title>Profiler</title>
 </head>
 <body>
   <div id="root" data-mode="${mode}"></div>
