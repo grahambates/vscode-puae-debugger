@@ -16,9 +16,11 @@ type RowListProps = {
   maxCycles: number;
   currentAddress: number | undefined;
   onOpenSource: (file: string, line: number, toSide: boolean) => void;
+  // Jump to the next (or Shift: previous) execution of the clicked instruction in the trace.
+  onJumpToExecution: ((address: number, prev: boolean) => void) | undefined;
 };
 
-function RowRenderer({ index, style, instructions, maxCycles, currentAddress, onOpenSource }: RowComponentProps<RowListProps>) {
+function RowRenderer({ index, style, instructions, maxCycles, currentAddress, onOpenSource, onJumpToExecution }: RowComponentProps<RowListProps>) {
   const ins = instructions[index];
   // Hot/cold tint: background alpha proportional to this instruction's share of the function's
   // hottest instruction (not the frame total) — keeps the heat map meaningful within a function
@@ -26,8 +28,10 @@ function RowRenderer({ index, style, instructions, maxCycles, currentAddress, on
   const heat = maxCycles > 0 ? ins.cycles / maxCycles : 0;
   return (
     <div
-      className={"disasm-row" + (ins.address === currentAddress ? " disasm-current" : "")}
+      className={"disasm-row" + (ins.address === currentAddress ? " disasm-current" : "") + (onJumpToExecution ? " disasm-clickable" : "")}
       style={{ ...style, background: heat > 0 ? `rgba(255,140,0,${(heat * 0.5).toFixed(3)})` : undefined }}
+      onClick={onJumpToExecution ? (e) => onJumpToExecution(ins.address, e.shiftKey) : undefined}
+      title={onJumpToExecution ? "Click: next execution · Shift+Click: previous execution" : undefined}
     >
       <span className="disasm-hits" title="Executions this frame">{ins.hits > 0 ? `${ins.hits}×` : ""}</span>
       <span className="disasm-cycles" title="Total cycles this frame">{ins.cycles > 0 ? `${ins.cycles}cy` : ""}</span>
@@ -40,6 +44,7 @@ function RowRenderer({ index, style, instructions, maxCycles, currentAddress, on
           className="disasm-src"
           onClick={(e) => {
             e.preventDefault();
+            e.stopPropagation(); // don't also trigger the row's jump-to-execution click
             // ins.line is already 1-based (raw SourceMap.lookupAddress().line), matching what
             // onOpenSource expects. Normalize unknown (undefined/-1) to 1.
             onOpenSource(ins.file!, ins.line !== undefined && ins.line >= 0 ? ins.line : 1, e.altKey);
@@ -266,9 +271,33 @@ export function DisassemblyView({
 
   const maxCycles = useMemo(() => (active ? Math.max(0, ...active.fn.instructions.map((i) => i.cycles)) : 0), [active]);
 
+  // Scan model.pcs forward (prev=false) or backward (prev=true) from currentIdx to find the
+  // next/previous execution of a specific instruction address, then jump the playhead there.
+  // Wraps around the frame so repeated clicks cycle through all executions.
+  const jumpToExecution = useMemo(() => {
+    if (!model?.pcs.length || !dmaSlots || columns.length === 0) return undefined;
+    return (address: number, prev: boolean) => {
+      const pcs = model.pcs;
+      const from = currentIdx ?? (prev ? pcs.length - 1 : -1);
+      if (prev) {
+        // Search backward, wrapping to the end if not found before current position.
+        for (let d = 1; d < pcs.length; d++) {
+          const k = (from - d + pcs.length) % pcs.length;
+          if (pcs[k] === address) { onSelectSlot(columnIndexToSlot(columns, k, dmaSlots)); return; }
+        }
+      } else {
+        // Search forward, wrapping to the beginning if not found after current position.
+        for (let d = 1; d < pcs.length; d++) {
+          const k = (from + d) % pcs.length;
+          if (pcs[k] === address) { onSelectSlot(columnIndexToSlot(columns, k, dmaSlots)); return; }
+        }
+      }
+    };
+  }, [model, currentIdx, columns, dmaSlots, onSelectSlot]);
+
   const rowProps = useMemo<RowListProps>(
-    () => ({ instructions: active?.fn.instructions ?? [], maxCycles, currentAddress, onOpenSource }),
-    [active, maxCycles, currentAddress, onOpenSource],
+    () => ({ instructions: active?.fn.instructions ?? [], maxCycles, currentAddress, onOpenSource, onJumpToExecution: jumpToExecution }),
+    [active, maxCycles, currentAddress, onOpenSource, jumpToExecution],
   );
 
   if (!model) return null;
