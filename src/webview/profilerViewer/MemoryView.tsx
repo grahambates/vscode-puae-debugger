@@ -11,7 +11,7 @@ import { Tooltip } from "./Tooltip";
 import { markChanges } from "./memoryDiff";
 import { convertToSigned } from "../shared/memoryFormat";
 import { isMac } from "../shared/platform";
-import { DMA_WRITE, dmaIsCustomReg } from "../../shared/profilerTypes";
+import { DMA_WRITE, dmaIsCustomReg, ISymbol } from "../../shared/profilerTypes";
 
 const BYTES_PER_ROW = 16;
 // Change-fade duration, matching the live memory viewer's HexDump (rgba(255,200,0,opacity),
@@ -41,6 +41,20 @@ type RowListProps = {
   onByteHover: (addr: number, x: number, y: number) => void;
   onByteLeave: () => void;
 };
+
+// For visual mode: find the symbol whose extent covers absAddr and return its start offset
+// relative to base (= baseAddr). This keeps the row grid aligned to the label rather than
+// the exact write address so "Screen+4" doesn't shift the image left by 4 pixels.
+function symAlignOff(absAddr: number, base: number, symbols: ISymbol[] | undefined): number {
+  if (!symbols?.length) return absAddr - base;
+  let best: number | undefined;
+  for (const s of symbols) {
+    if (s.address < base || s.address > absAddr) continue; // out of region or past target
+    if (s.size > 0 && absAddr >= s.address + s.size) continue; // address beyond symbol extent
+    if (best === undefined || s.address > best) best = s.address;
+  }
+  return (best ?? absAddr) - base;
+}
 
 // Last-viewed region/options/scroll position, kept at module scope — NOT React state — so it
 // survives MemoryView unmounting. The right pane only ever renders the active tab (see
@@ -142,9 +156,9 @@ export function MemoryView({
 
   // Unified scroller: routes to the hex List or visual canvas depending on current view mode.
   // Declared early (before any effects that call it) so it's in scope throughout.
-  const scrollToByteOffset = useCallback((off: number, align: "start" | "smart" = "start") => {
+  const scrollToByteOffset = useCallback((off: number, align: "start" | "smart" = "start", alignOff?: number) => {
     if (viewModeRef.current === "visual") {
-      visualRef.current?.scrollToOffset(off);
+      visualRef.current?.scrollToOffset(off, alignOff);
     } else {
       listRef.current?.scrollToRow({ index: Math.floor(off / BYTES_PER_ROW), align });
     }
@@ -255,14 +269,17 @@ export function MemoryView({
     }
   }
 
-  useEffect(() => {
-    if (follow && currentWrite && currentWrite.region === region) {
-      scrollToByteOffset(currentWrite.offset, "smart");
-    }
-  }, [follow, currentWrite, region, scrollToByteOffset]);
-
   const bufLength = region === "chip" ? recon?.chip.length : recon?.slow.length;
   const baseAddr = region === "chip" ? 0 : SLOW_BASE;
+
+  useEffect(() => {
+    if (follow && currentWrite && currentWrite.region === region) {
+      scrollToByteOffset(
+        currentWrite.offset, "smart",
+        symAlignOff(baseAddr + currentWrite.offset, baseAddr, model?.symbols),
+      );
+    }
+  }, [follow, currentWrite, region, scrollToByteOffset, baseAddr, model]);
   const rowCount = bufLength ? Math.ceil(bufLength / BYTES_PER_ROW) : 0;
 
   // On first mount: restore the previous scroll position if this tab has been opened before
@@ -299,7 +316,11 @@ export function MemoryView({
       if (dmaIsCustomReg(dma.owner[i], flags, dma.addr[i])) continue;
       const resolved = resolveMemoryRegion(dma.addr[i], snapshot);
       if (!resolved || resolved.region !== region) continue;
-      const raf = requestAnimationFrame(() => scrollToByteOffset(resolved.offset, "smart"));
+      const syms = model?.symbols;
+      const absAddr = dma.addr[i];
+      const base = resolved.region === "chip" ? 0 : SLOW_BASE;
+      const raf = requestAnimationFrame(() =>
+        scrollToByteOffset(resolved.offset, "smart", symAlignOff(absAddr, base, syms)));
       return () => cancelAnimationFrame(raf);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -337,8 +358,12 @@ export function MemoryView({
       // Shift+click jumps forward to the NEXT write, plain click backward to the previous one.
       // Both use strict "before/after current slot" semantics (matching findPrevRegWrite's ◀ in
       // CustomRegsView) — using slot+1 as the backward ceiling would find the current slot itself
-      // and re-select it on every click, causing the navigation to stick.
-      const found = forward ? findNextMemWrite(dma, addr, slot) : findPrevMemWrite(dma, addr, slot);
+      // and re-select it on every click, causing the navigation to stick. When the first search
+      // reaches the beginning/end without a match, wrap around to the other end of the frame
+      // (same wrapping behaviour as CPU register and instruction navigation).
+      const found = forward
+        ? (findNextMemWrite(dma, addr, slot) ?? findNextMemWrite(dma, addr, -1))
+        : (findPrevMemWrite(dma, addr, slot) ?? findPrevMemWrite(dma, addr, dma.owner.length));
       if (found !== undefined) onSelectSlot(found);
     },
     [dma, slot, onSelectSlot, sourceLookup, onOpenSource],
@@ -397,9 +422,10 @@ export function MemoryView({
       const resolved = resolveMemoryRegion(addr, snapshot);
       if (!resolved) return;
       setRegion(resolved.region);
-      scrollToByteOffset(resolved.offset);
+      const base = resolved.region === "chip" ? 0 : SLOW_BASE;
+      scrollToByteOffset(resolved.offset, "start", symAlignOff(addr, base, model?.symbols));
     },
-    [snapshot, scrollToByteOffset],
+    [snapshot, scrollToByteOffset, model],
   );
 
   const jumpToRegion = useCallback((r: Region) => {

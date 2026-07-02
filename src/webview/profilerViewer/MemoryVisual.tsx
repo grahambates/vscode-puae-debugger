@@ -4,7 +4,7 @@
 // byte buffer rather than the live viewer's async chunked pattern.
 // Use forwardRef so MemoryView can call scrollToOffset() for "Follow writes" and combo-nav.
 
-import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState } from "react";
+import { forwardRef, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useRef, useState } from "react";
 import { guessWidthsUnknownLength } from "../shared/strideGuesser";
 import { isMac } from "../shared/platform";
 
@@ -12,7 +12,7 @@ const PIXELS_PER_BYTE = 8;  // each byte → 8 horizontal pixels (one per bit, M
 const BUFFER_ROWS = 20;     // extra rows rendered beyond the visible viewport
 
 export interface MemoryVisualAPI {
-  scrollToOffset(off: number): void;
+  scrollToOffset(off: number, alignOff?: number): void;
 }
 
 interface Props {
@@ -35,11 +35,16 @@ export const MemoryVisual = forwardRef<MemoryVisualAPI, Props>(function MemoryVi
   const [bytesPerRow, setBytesPerRow] = useState(40); // 40 bytes = 320px lores bitplane row
   const [bytesPerRowInput, setBytesPerRowInput] = useState("40");
   const [scale, setScale] = useState(2);
+  // rowPhase: number of leading "empty" columns before byte 0. When set to
+  // (bytesPerRow - addr%bytesPerRow) % bytesPerRow, the selected address lands
+  // exactly at column 0 of its row, aligning the image to the left edge.
+  const [rowPhase, setRowPhase] = useState(0);
+  const pendingScrollRef = useRef<{ off: number; phase: number } | null>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const [visibleRange, setVisibleRange] = useState({ first: 0, last: 0 });
 
-  const totalRows = bufLength > 0 ? Math.ceil(bufLength / bytesPerRow) : 0;
+  const totalRows = bufLength > 0 ? Math.ceil((bufLength + rowPhase) / bytesPerRow) : 0;
   const rowH = scale;
   const canvasW = bytesPerRow * PIXELS_PER_BYTE * scale;
 
@@ -56,19 +61,49 @@ export const MemoryVisual = forwardRef<MemoryVisualAPI, Props>(function MemoryVi
   useEffect(() => { recalcVisible(); }, [recalcVisible]);
 
   useImperativeHandle(ref, () => ({
-    scrollToOffset(off: number) {
-      const el = containerRef.current;
-      if (!el) return;
-      const row = Math.floor(off / bytesPerRow);
-      const rowTop = row * rowH;
-      if (rowTop < el.scrollTop || rowTop + rowH > el.scrollTop + el.clientHeight) {
-        el.scrollTop = Math.max(0, rowTop - el.clientHeight / 2);
+    scrollToOffset(off: number, alignOff = off) {
+      // Compute phase so that `alignOff` (default: same as off) lands at column 0 of its row.
+      // Pass a symbol's base offset as alignOff to keep the whole image aligned to that label.
+      const newPhase = (bytesPerRow - alignOff % bytesPerRow) % bytesPerRow;
+      pendingScrollRef.current = { off, phase: newPhase };
+      if (newPhase !== rowPhase) {
+        setRowPhase(newPhase); // triggers re-render; useLayoutEffect below applies the scroll
+      } else {
+        // Phase unchanged: React skips re-render, so apply scroll directly now.
+        const el = containerRef.current;
+        if (el) {
+          const row = Math.floor((off + newPhase) / bytesPerRow);
+          el.scrollTop = Math.max(0, row * rowH - el.clientHeight / 2);
+        }
+        pendingScrollRef.current = null;
       }
     },
-  }), [bytesPerRow, rowH]);
+  }), [bytesPerRow, rowH, rowPhase]);
+
+  // After a rowPhase change re-renders the canvas (and the wrapper div height updates),
+  // apply the deferred scroll so the target row is centred in view.
+  useLayoutEffect(() => {
+    const pending = pendingScrollRef.current;
+    if (!pending) return;
+    pendingScrollRef.current = null;
+    const el = containerRef.current;
+    if (!el) return;
+    const row = Math.floor((pending.off + pending.phase) / bytesPerRow);
+    el.scrollTop = Math.max(0, row * rowH - el.clientHeight / 2);
+  }, [rowPhase, bytesPerRow, rowH]);
 
   // Re-sync width input when state is set externally (e.g. stride guesser).
   useEffect(() => { setBytesPerRowInput(String(bytesPerRow)); }, [bytesPerRow]);
+
+  // Reset row phase when bytesPerRow changes — the old phase may be >= new width, which
+  // would produce invalid (negative or out-of-bounds) byte offsets in the canvas loop.
+  const prevBprRef = useRef(bytesPerRow);
+  useEffect(() => {
+    if (bytesPerRow !== prevBprRef.current) {
+      prevBprRef.current = bytesPerRow;
+      setRowPhase(0);
+    }
+  }, [bytesPerRow]);
 
   // ── Canvas draw ──────────────────────────────────────────────────────────────
 
@@ -99,8 +134,8 @@ export const MemoryVisual = forwardRef<MemoryVisualAPI, Props>(function MemoryVi
     for (let row = first; row < last; row++) {
       const canvasY = (row - first) * rowH;
       for (let col = 0; col < bytesPerRow; col++) {
-        const off = row * bytesPerRow + col;
-        if (off >= bufLength) break;
+        const off = row * bytesPerRow + col - rowPhase;
+        if (off < 0 || off >= bufLength) continue;
         const byte = getByte(off);
         if (byte === undefined) continue;
 
@@ -132,7 +167,7 @@ export const MemoryVisual = forwardRef<MemoryVisualAPI, Props>(function MemoryVi
         }
       }
     }
-  }, [bufVersion, fadeTick, visibleRange, bytesPerRow, scale, highlightOffset,
+  }, [bufVersion, fadeTick, visibleRange, bytesPerRow, rowPhase, scale, highlightOffset,
     getByte, getFadeOpacity, bufLength, canvasW, rowH]);
 
   // ── Interaction ──────────────────────────────────────────────────────────────
@@ -145,7 +180,7 @@ export const MemoryVisual = forwardRef<MemoryVisualAPI, Props>(function MemoryVi
     const col = Math.floor((e.clientX - rect.left) / (scale * PIXELS_PER_BYTE));
     const row = visibleRange.first + Math.floor((e.clientY - rect.top) / rowH);
     if (col < 0 || col >= bytesPerRow) return undefined;
-    const off = row * bytesPerRow + col;
+    const off = row * bytesPerRow + col - rowPhase;
     return off >= 0 && off < bufLength ? off : undefined;
   };
 

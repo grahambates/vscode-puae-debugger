@@ -363,6 +363,7 @@ static uint64_t g_wprofInRangeInstrs;
 static evt_t    g_wprofLastCycle;
 static int      g_wprofLastCycleValid;
 static int      g_wprofWasPaused;
+static int      g_wprofSavedBlitterCE; /* saved currprefs.blitter_cycle_exact during capture */
 static evt_t    g_wprofStartCycles;
 static uint64_t g_wprofFrameCycles;
 
@@ -462,6 +463,12 @@ wasm_profile_prepare(void)
 	g_wprofWasPaused       = puae_debug_paused;
 	puae_debug_paused       = 0;
 	g_wprofStartCycles     = get_cycles();
+	/* Force CE blitter for the capture frame so every D-channel write (including fill
+	 * mode, which the fast blitter never records) appears in the DMA grid.  The
+	 * do_blitter() call reads currprefs.blitter_cycle_exact at each blit-start, so
+	 * setting it here before the frame runs is sufficient; restored in wasm_profile_finish. */
+	g_wprofSavedBlitterCE       = currprefs.blitter_cycle_exact;
+	currprefs.blitter_cycle_exact = 1;
 }
 
 void
@@ -473,6 +480,7 @@ wasm_profile_finish(int numFrames)
 	}
 	g_wprofActive    = 0;
 	puae_debug_paused = g_wprofWasPaused;
+	currprefs.blitter_cycle_exact = g_wprofSavedBlitterCE;
 	/* The very last sample's cycleDelta slot (if any) is left at its placeholder value
 	 * (1 — see wasm_profile_instrHook) rather than finalized here: get_cycles() at this point
 	 * has already advanced past whatever ran after the last HOOKED instruction (the multi-frame
