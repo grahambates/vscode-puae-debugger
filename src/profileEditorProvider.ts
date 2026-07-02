@@ -69,8 +69,7 @@ export class ProfileEditorProvider implements vscode.CustomReadonlyEditorProvide
         if (model) {
           webviewPanel.webview.postMessage({
             command: "captureResult",
-            model: { ...model, dma: undefined, dmaSnapshot: undefined, registers: undefined },
-            bulkUri,
+            frames: [{ model: { ...model, dma: undefined, dmaSnapshot: undefined, registers: undefined }, bulkUri }],
           });
         } else {
           webviewPanel.webview.postMessage({ command: "showError", error: loadError ?? "Failed to load profile" });

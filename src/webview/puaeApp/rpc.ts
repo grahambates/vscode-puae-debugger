@@ -1225,6 +1225,25 @@ export function setupRpcDispatcher(
         }));
         break;
       }
+      case "getFramebuffer":
+        // Capture a JPEG thumbnail of the current framebuffer. Uses OffscreenCanvas to scale
+        // down (THUMB_H rows high) and compress; result is JPEG bytes + dimensions.
+        rpcRequestAsync(async () => {
+          const ptr = M._wasm_get_fb_rgba();
+          const w   = M._wasm_get_fb_width();
+          const h   = M._wasm_get_fb_height();
+          if (w <= 0 || h <= 0) return { data: new Uint8Array(0), width: 0, height: 0 };
+          const THUMB_H = 80;
+          const THUMB_W = Math.max(1, Math.round(w * THUMB_H / h));
+          const src = new OffscreenCanvas(w, h);
+          src.getContext("2d")!.putImageData(
+            new ImageData(new Uint8ClampedArray(M.HEAPU8.buffer as ArrayBuffer, ptr, w * h * 4), w, h), 0, 0);
+          const dst = new OffscreenCanvas(THUMB_W, THUMB_H);
+          dst.getContext("2d")!.drawImage(src, 0, 0, THUMB_W, THUMB_H);
+          const blob = await dst.convertToBlob({ type: "image/jpeg", quality: 0.75 });
+          return { data: new Uint8Array(await blob.arrayBuffer()), width: THUMB_W, height: THUMB_H };
+        });
+        break;
       case "getDmaSnapshot": {
         const chipPtr = M._wasm_dma_get_chip_ptr();
         const chipSize = M._wasm_dma_get_chip_size();

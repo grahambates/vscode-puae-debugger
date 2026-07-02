@@ -356,6 +356,15 @@ export interface RawCapture {
   dmaEvents?: Uint8Array; // raw per-cycle event-bitfield bytes, parallel to `dma` (absent if unsupported/empty)
   disassembly?: RawDisassembledFunction[]; // every function that executed this frame (absent if unsupported/empty)
   registers?: Uint8Array; // raw per-sample register trace bytes, parallel to `profile.data` (absent if unsupported/empty)
+  // JPEG thumbnail of the framebuffer at capture time, for the multi-frame filmstrip UI.
+  thumbnail?: { data: Uint8Array; width: number; height: number };
+}
+
+// One captured frame: the decoded model + the raw bytes it was built from.
+// capture() returns an array of these; single-frame captures produce a one-element array.
+export interface FrameCapture {
+  model: IProfileModel;
+  raw: RawCapture;
 }
 
 // Pure transform: RawCapture + SourceMap → IProfileModel (+ the decoded samples, retained
@@ -493,22 +502,22 @@ export class ProfilerManager {
     private readonly getSourceMap: () => SourceMap | undefined,
   ) {}
 
-  // Per-instruction samples from the last capture, retained as a first-class
-  // artifact for the later coverage / disassembly-tracing phases (they need
-  // per-instruction PC+cycle data, not just the aggregated chart).
-  private lastSamples: InstructionSample[] = [];
+  // All frames from the last capture, retained so the webview "Save" button can
+  // serialize frame 0 to a .vamigaprofile without re-running the emulator.
+  private lastFrames: FrameCapture[] = [];
   public getSamples(): readonly InstructionSample[] {
-    return this.lastSamples;
+    return this.lastFrames[0] ? (this._lastSamples0 ?? []) : [];
   }
+  private _lastSamples0: InstructionSample[] = [];
 
-  // Raw bytes of the last capture, retained so the webview "Save" button can serialize it
-  // to a .vamigaprofile without re-running the emulator.
-  private lastRaw?: RawCapture;
   public getLastRaw(): RawCapture | undefined {
-    return this.lastRaw;
+    return this.lastFrames[0]?.raw;
   }
 
-  public async capture(numFrames = 1): Promise<IProfileModel> {
+  // Capture `numFrames` independent single-frame profiles in sequence, each with its own
+  // model and JPEG thumbnail. Returns one FrameCapture per frame; single-frame captures
+  // (numFrames=1, the default) return a one-element array for API uniformity.
+  public async capture(numFrames = 1): Promise<FrameCapture[]> {
     const rpc = this.getClient();
     if (!rpc) throw new Error("Profiler: no active emulator session — start a debug session first");
     const sourceMap = this.getSourceMap();
@@ -541,130 +550,136 @@ export class ProfilerManager {
       });
     }
 
-    // Enable the copper-instruction trace for the captured frame(s) — best-effort, a backend
-    // without it (e.g. an older PUAE build) just won't produce raw.copper below.
+    const u8 = (d: unknown): Uint8Array => (d instanceof Uint8Array ? d : new Uint8Array((d as ArrayLike<number>) ?? 0));
+
+    // Capture N frames sequentially — each is one independent single-frame profile with its
+    // own DMA grid, register trace, copper trace, and JPEG thumbnail. Copper tracking stays
+    // enabled for the whole run and is turned off in the finally block after all frames.
     try {
       await rpc.sendRpcCommand("copperTrackingEnable", { enabled: true });
     } catch {
-      // unsupported — fine, the CPU/DMA profile doesn't depend on it
+      // unsupported backend — copper trace just won't appear
     }
 
-    // Capture runs N frames synchronously in the emulator; allow generous time.
-    await rpc.sendRpcCommand("startProfiling", { numFrames }, 30000);
-
-    const u8 = (d: unknown): Uint8Array => (d instanceof Uint8Array ? d : new Uint8Array((d as ArrayLike<number>) ?? 0));
-
-    const res = await rpc.sendRpcCommand<{
-      data: Uint8Array;
-      start: number;
-      end: number;
-      total: number;
-      inRange: number;
-      frameCycles?: number;
-      isPAL?: boolean;
-    }>("getProfileData");
-
-    const raw: RawCapture = {
-      profile: {
-        data: u8(res.data),
-        start: res.start,
-        end: res.end,
-        total: res.total,
-        inRange: res.inRange,
-        frameCycles: res.frameCycles ?? 0, // normalize the optional RPC fields here, once
-        isPAL: res.isPAL ?? true,
-      },
-    };
-
-    // Fetch the per-sample register trace recorded alongside the profile stream — best-effort,
-    // like every other capture extra: a failure here doesn't invalidate the CPU profile.
+    const frames: FrameCapture[] = [];
     try {
-      const regsRes = await rpc.sendRpcCommand<{ data: Uint8Array }>("getProfileRegs");
-      const regsBytes = u8(regsRes.data);
-      if (regsBytes.length) raw.registers = regsBytes;
-    } catch (e) {
-      console.warn("[profiler] register trace capture failed (CPU profile unaffected):", e);
-    }
+      for (let frameIdx = 0; frameIdx < numFrames; frameIdx++) {
+        // Run one frame synchronously in the emulator; generous per-frame timeout.
+        await rpc.sendRpcCommand("startProfiling", { numFrames: 1 }, 30000);
 
-    // Fetch the DMA grid (captured in the same frame) + the reconstruction snapshot into the
-    // RawCapture. Failure here must not break the CPU profile, so it's best-effort.
-    try {
-      const dmaRes = await rpc.sendRpcCommand<{ data: Uint8Array }>("getDmaData");
-      const dmaBytes = u8(dmaRes.data);
-      if (dmaBytes.length) {
-        raw.dma = dmaBytes;
-        const snap = await rpc.sendRpcCommand<{ chip: Uint8Array; slow: Uint8Array; custom: Uint8Array }>(
-          "getDmaSnapshot",
+        // After startProfiling returns, g_rgba_buf holds this frame's pixels — grab the
+        // thumbnail before the next retro_run() call overwrites it.
+        let thumbnail: RawCapture["thumbnail"] | undefined;
+        try {
+          const fbRes = await rpc.sendRpcCommand<{ data: Uint8Array; width: number; height: number }>("getFramebuffer");
+          const fbData = u8(fbRes.data);
+          if (fbData.length && fbRes.width > 0 && fbRes.height > 0) {
+            thumbnail = { data: fbData, width: fbRes.width, height: fbRes.height };
+          }
+        } catch (e) {
+          console.warn(`[profiler] frame ${frameIdx}: thumbnail capture failed:`, e);
+        }
+
+        const res = await rpc.sendRpcCommand<{
+          data: Uint8Array;
+          start: number;
+          end: number;
+          total: number;
+          inRange: number;
+          frameCycles?: number;
+          isPAL?: boolean;
+        }>("getProfileData");
+
+        const raw: RawCapture = {
+          profile: {
+            data: u8(res.data),
+            start: res.start,
+            end: res.end,
+            total: res.total,
+            inRange: res.inRange,
+            frameCycles: res.frameCycles ?? 0,
+            isPAL: res.isPAL ?? true,
+          },
+          thumbnail,
+        };
+
+        try {
+          const regsRes = await rpc.sendRpcCommand<{ data: Uint8Array }>("getProfileRegs");
+          const regsBytes = u8(regsRes.data);
+          if (regsBytes.length) raw.registers = regsBytes;
+        } catch (e) {
+          console.warn(`[profiler] frame ${frameIdx}: register trace failed:`, e);
+        }
+
+        try {
+          const dmaRes = await rpc.sendRpcCommand<{ data: Uint8Array }>("getDmaData");
+          const dmaBytes = u8(dmaRes.data);
+          if (dmaBytes.length) {
+            raw.dma = dmaBytes;
+            const snap = await rpc.sendRpcCommand<{ chip: Uint8Array; slow: Uint8Array; custom: Uint8Array }>("getDmaSnapshot");
+            raw.snapshot = { chip: u8(snap.chip), slow: u8(snap.slow), custom: u8(snap.custom) };
+            const eventsRes = await rpc.sendRpcCommand<{ data: Uint8Array }>("getDmaEvents");
+            const eventsBytes = u8(eventsRes.data);
+            if (eventsBytes.length) raw.dmaEvents = eventsBytes;
+          }
+        } catch (e) {
+          console.warn(`[profiler] frame ${frameIdx}: DMA capture failed:`, e);
+        }
+
+        try {
+          const copperRes = await rpc.sendRpcCommand<{ data: Uint8Array }>("getCopperData");
+          const copperBytes = u8(copperRes.data);
+          if (copperBytes.length) raw.copper = copperBytes;
+        } catch (e) {
+          console.warn(`[profiler] frame ${frameIdx}: copper trace failed:`, e);
+        }
+
+        const { model, samples } = buildModelFromCapture(raw, sourceMap);
+
+        console.log(
+          `[profiler] frame ${frameIdx}: total=${res.total} instr, inRange=${res.inRange}, ` +
+            `samples=${samples.length}, range=[0x${(res.start >>> 0).toString(16)},0x${(res.end >>> 0).toString(16)})`,
         );
-        raw.snapshot = { chip: u8(snap.chip), slow: u8(snap.slow), custom: u8(snap.custom) };
-        const eventsRes = await rpc.sendRpcCommand<{ data: Uint8Array }>("getDmaEvents");
-        const eventsBytes = u8(eventsRes.data);
-        if (eventsBytes.length) raw.dmaEvents = eventsBytes;
-      }
-    } catch (e) {
-      console.warn("[profiler] DMA capture failed (CPU profile unaffected):", e);
-    }
+        if (frameIdx === 0 && samples.length === 0) {
+          const range = `[0x${(res.start >>> 0).toString(16)}, 0x${(res.end >>> 0).toString(16)})`;
+          const hint =
+            res.total === 0
+              ? "The emulator executed no instructions in the captured frame."
+              : res.inRange === 0
+                ? `None of the ${res.total} executed instructions were inside your program ${range} — it may be idle/finished or running OS code. Try capturing while the program is actively running.`
+                : "Instructions ran in range but produced no stack samples (unwind issue).";
+          throw new Error(`No profile samples captured. ${hint}`);
+        }
 
-    // Fetch the copper trace recorded over the same frame(s), then turn tracking back off —
-    // it costs real per-cycle overhead in the live emulator, so it shouldn't stay on past
-    // this capture. Best-effort, like the DMA grid above.
-    try {
-      const copperRes = await rpc.sendRpcCommand<{ data: Uint8Array }>("getCopperData");
-      const copperBytes = u8(copperRes.data);
-      if (copperBytes.length) raw.copper = copperBytes;
-    } catch (e) {
-      console.warn("[profiler] copper trace capture failed (CPU profile unaffected):", e);
+        // Disassembly is expensive and session-specific — fetch once for frame 0 only.
+        if (frameIdx === 0) {
+          try {
+            raw.disassembly = await fetchDisassembly(rpc, model, samples, sourceMap);
+            if (raw.disassembly.length) model.disassembly = attachDisassembly(raw.disassembly, sourceMap);
+          } catch (e) {
+            console.warn("[profiler] disassembly capture failed (CPU profile unaffected):", e);
+          }
+          this._lastSamples0 = samples;
+        }
+
+        if (model.dma) {
+          const writes = model.dma.flags.reduce((n, f) => n + (f & 1), 0);
+          console.log(
+            `[profiler] frame ${frameIdx} dma: ${model.dma.owner.length} slots, ${writes} writes`,
+          );
+        }
+
+        frames.push({ model, raw });
+      }
     } finally {
       try {
         await rpc.sendRpcCommand("copperTrackingEnable", { enabled: false });
       } catch {
-        // unsupported — already a no-op
+        // unsupported — no-op
       }
     }
 
-    const { model, samples } = buildModelFromCapture(raw, sourceMap);
-
-    console.log(
-      `[profiler] captured: total=${res.total} instr, inRange=${res.inRange}, ` +
-        `samples=${samples.length}, range=[0x${(res.start >>> 0).toString(16)},0x${(res.end >>> 0).toString(16)})`,
-    );
-    if (samples.length === 0) {
-      const range = `[0x${(res.start >>> 0).toString(16)}, 0x${(res.end >>> 0).toString(16)})`;
-      const hint =
-        res.total === 0
-          ? "The emulator executed no instructions in the captured frame."
-          : res.inRange === 0
-            ? `None of the ${res.total} executed instructions were inside your program ${range} — it may be idle/finished or running OS code. Try capturing while the program is actively running.`
-            : "Instructions ran in range but produced no stack samples (unwind issue).";
-      throw new Error(`No profile samples captured. ${hint}`);
-    }
-
-    // Disassemble every function that executed this frame — needs `model.symbols` (for each
-    // PC's enclosing function's start+size) and `samples` (for per-instruction hit/cycle
-    // aggregation), both only available after buildModelFromCapture above runs once. Best-effort,
-    // like the DMA/copper/events fetches: a failure here doesn't invalidate the CPU profile.
-    try {
-      raw.disassembly = await fetchDisassembly(rpc, model, samples, sourceMap);
-      if (raw.disassembly.length) model.disassembly = attachDisassembly(raw.disassembly, sourceMap);
-    } catch (e) {
-      console.warn("[profiler] disassembly capture failed (CPU profile unaffected):", e);
-    }
-
-    this.lastSamples = samples;
-    this.lastRaw = raw;
-
-    if (model.dma) {
-      const writes = model.dma.flags.reduce((n, f) => n + (f & 1), 0);
-      console.log(
-        `[profiler] dma: ${model.dma.owner.length} slots, ${writes} writes, ` +
-          `snapshot chip=${model.dmaSnapshot?.chip.length ?? 0}B slow=${model.dmaSnapshot?.slow.length ?? 0}B`,
-      );
-    }
-    console.log(
-      `[profiler] model: ${model.locations.length} locations, ${model.nodes.length} nodes, ` +
-        `${model.samples.length - 1} samples, ${model.duration} captured cycles` +
-        (raw.profile.frameCycles ? ` (frame=${raw.profile.frameCycles} cy, ${model.cyclesPerMicroSecond.toFixed(4)} cy/µs, ${raw.profile.isPAL ? "PAL" : "NTSC"})` : ""),
-    );
-    return model;
+    this.lastFrames = frames;
+    return frames;
   }
 }

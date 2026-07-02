@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import "./App.css";
-import { ProfilerOutboundMessage, ISymbol } from "../../shared/profilerTypes";
+import { ProfilerOutboundMessage, ISymbol, IProfileModel } from "../../shared/profilerTypes";
 import { unpackBulk } from "../../profilerBulk";
 import { setProfileModel, getProfileModel, useModelVersion } from "./modelStore";
 import { FlameGraph } from "./FlameGraph";
@@ -23,6 +23,11 @@ const TAB_LABELS: Record<TabId, string> = {
   blitter: "Blitter", memory: "Memory", disasm: "CPU",
 };
 const ALL_TABS: TabId[] = ["time", "disasm", "copper", "blitter", "memory", "customregs"];
+
+interface FrameInfo {
+  model: IProfileModel;
+  thumbUrl?: string; // blob: URL of the JPEG thumbnail, if captured
+}
 
 export function App() {
   useModelVersion(); // re-render when the model changes (the model lives in modelStore, not state)
@@ -56,6 +61,19 @@ export function App() {
   // them here and merge into every model so the rest of the webview always sees model.symbols.
   const symbolsRef = useRef<ISymbol[] | undefined>(undefined);
 
+  // Multi-frame filmstrip state.
+  const [frames, setFrames] = useState<FrameInfo[]>([]);
+  const [frameIndex, setFrameIndex] = useState(0);
+  const [numFrames, setNumFrames] = useState(1);
+  // Track blob URLs so we can revoke them when frames are replaced (prevents memory leaks).
+  const prevThumbUrlsRef = useRef<string[]>([]);
+
+  // Switch the active model when frameIndex changes.
+  useEffect(() => {
+    const f = frames[frameIndex];
+    if (f) setProfileModel(f.model);
+  }, [frameIndex, frames]);
+
   useEffect(() => {
     vscode.postMessage({ command: "ready" });
   }, []);
@@ -65,25 +83,45 @@ export function App() {
       const m = event.data as ProfilerOutboundMessage;
       if (m.command === "captureResult") {
         setSelectedSlot(0);
-        if (m.model.symbols) symbolsRef.current = m.model.symbols;
-        const base = symbolsRef.current ? { ...m.model, symbols: symbolsRef.current } : m.model;
-        const bulkUri = m.bulkUri;
-        if (!bulkUri) {
-          setProfileModel(base);
-          setError(null);
-          setBusy(false);
-          return;
-        }
-        // The big arrays (DMA grid + snapshot) arrive via a fast resource fetch, not postMessage.
-        void fetch(bulkUri)
-          .then((r) => r.arrayBuffer())
-          .then((buf) => {
-            const { dma, dmaSnapshot, copper, registers } = unpackBulk(buf);
-            setProfileModel({ ...base, dma, dmaSnapshot, copper, registers });
-          })
-          .catch((e) => {
-            console.warn("[profiler] bulk fetch failed:", e);
-            setProfileModel(base); // render without DMA rather than nothing
+        // Symbols are sent only in frames[0] on the first post; cache and merge into all frames.
+        const firstModel = m.frames[0]?.model;
+        if (firstModel?.symbols) symbolsRef.current = firstModel.symbols;
+
+        // Revoke previous thumbnail blob URLs before replacing them.
+        for (const url of prevThumbUrlsRef.current) URL.revokeObjectURL(url);
+        prevThumbUrlsRef.current = [];
+
+        // Fetch all frame bulk blobs in parallel, then update state once all are ready.
+        const framePromises = m.frames.map((fi) => {
+          const base = symbolsRef.current ? { ...fi.model, symbols: symbolsRef.current } : fi.model;
+          if (!fi.bulkUri) return Promise.resolve({ model: base });
+          return fetch(fi.bulkUri)
+            .then((r) => r.arrayBuffer())
+            .then((buf) => {
+              const { dma, dmaSnapshot, copper, registers, thumbnail } = unpackBulk(buf);
+              let thumbUrl: string | undefined;
+              if (thumbnail) {
+                // thumbnail.data is a fresh Uint8Array copy (byteOffset 0), so its .buffer
+                // is a standalone ArrayBuffer — cast is safe and avoids a redundant copy.
+                thumbUrl = URL.createObjectURL(new Blob([thumbnail.data.buffer as ArrayBuffer], { type: "image/jpeg" }));
+              }
+              return { model: { ...base, dma, dmaSnapshot, copper, registers } as IProfileModel, thumbUrl };
+            })
+            .catch((e) => {
+              console.warn("[profiler] bulk fetch failed:", e);
+              return { model: base }; // render without DMA rather than nothing
+            });
+        });
+
+        Promise.all(framePromises)
+          .then((results) => {
+            const newFrames: FrameInfo[] = results;
+            prevThumbUrlsRef.current = newFrames.map((f) => f.thumbUrl).filter(Boolean) as string[];
+            setFrames(newFrames);
+            setFrameIndex(0);
+            // modelStore update is handled by the frameIndex/frames effect above, but trigger it
+            // now for the first frame to avoid a render with stale model.
+            if (newFrames[0]) setProfileModel(newFrames[0].model);
           })
           .finally(() => {
             setError(null);
@@ -99,6 +137,13 @@ export function App() {
     };
     window.addEventListener("message", handle);
     return () => window.removeEventListener("message", handle);
+  }, []);
+
+  // Revoke thumbnail blob URLs on unmount.
+  useEffect(() => {
+    return () => {
+      for (const url of prevThumbUrlsRef.current) URL.revokeObjectURL(url);
+    };
   }, []);
 
   const capture = () => {
@@ -225,17 +270,37 @@ export function App() {
     </div>
   );
 
+  const captureLabel = numFrames === 1
+    ? (busy ? "Capturing…" : "Capture frame")
+    : (busy ? `Capturing ${numFrames} frames…` : `Capture ${numFrames} frames`);
+
   return (
     <div className="profiler">
       <div className="toolbar">
         {mode === "live" && (
           <>
             <button className="capture-btn" onClick={capture} disabled={busy}>
-              {busy ? "Capturing…" : "Capture frame"}
+              {captureLabel}
             </button>
             <button onClick={save} disabled={busy || !model} title="Save this capture to a .vamigaprofile file">
               Save
             </button>
+            <label className="frames-label" title="Number of frames to capture per click">Frames</label>
+            <input
+              className="frames-input"
+              type="number"
+              min={1}
+              max={500}
+              value={numFrames}
+              disabled={busy}
+              onChange={(e) => {
+                const n = parseInt(e.target.value, 10);
+                if (!Number.isNaN(n) && n >= 1 && n <= 500) {
+                  setNumFrames(n);
+                  vscode.postMessage({ command: "setNumFrames", numFrames: n });
+                }
+              }}
+            />
           </>
         )}
         {model && (
@@ -277,6 +342,24 @@ export function App() {
           </>
         )}
       </div>
+      {frames.length > 1 && (
+        <div className="filmstrip" role="listbox" aria-label="Captured frames">
+          {frames.map((f, i) => (
+            <button
+              key={i}
+              className={"filmstrip-frame" + (i === frameIndex ? " active" : "")}
+              title={`Frame ${i + 1}`}
+              role="option"
+              aria-selected={i === frameIndex}
+              onClick={() => setFrameIndex(i)}
+            >
+              {f.thumbUrl
+                ? <img src={f.thumbUrl} alt={`Frame ${i + 1}`} />
+                : <span className="filmstrip-no-thumb">{i + 1}</span>}
+            </button>
+          ))}
+        </div>
+      )}
       {error && <div className="error">{error}</div>}
       {model ? (
         <div className="split-pane">
@@ -312,10 +395,12 @@ export function App() {
             {busy
               ? mode === "file"
                 ? "Loading profile…"
-                : "Capturing one frame of CPU execution…"
+                : numFrames === 1
+                  ? "Capturing one frame of CPU execution…"
+                  : `Capturing ${numFrames} frames of CPU execution…`
               : mode === "file"
                 ? "No profile loaded."
-                : "Click \"Capture frame\" to profile one frame of CPU execution."}
+                : "Click \"Capture frame\" to profile CPU execution."}
           </div>
         )
       )}

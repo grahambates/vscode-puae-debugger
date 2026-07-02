@@ -262,13 +262,19 @@ export const REG_PC = 17;
 export const REG_USP = 18;
 
 // --- messages: extension -> webview ---
+
+// One frame within a multi-frame captureResult. `bulkUri` is the webview-fetchable URI of the
+// frame's bulk binary blob (DMA grid + chip/slow snapshot + JPEG thumbnail), packed by packBulk.
+// The big arrays go via the resource loader (fast) instead of postMessage (slow for binary).
+export interface CaptureFrameInfo {
+  model: IProfileModel;
+  bulkUri?: string;
+}
+
 export interface CaptureResultMessage {
   command: "captureResult";
-  model: IProfileModel;
-  // Webview-fetchable URI of the bulk binary blob (DMA grid + chip/slow snapshot), packed by
-  // packBulk. The big arrays go via the resource loader (fast) instead of postMessage (slow for
-  // binary); the webview fetches + decodes them and attaches dma/dmaSnapshot to the model.
-  bulkUri?: string;
+  // All captured frames. Single-frame captures produce a one-element array; multi-frame produce N.
+  frames: CaptureFrameInfo[];
 }
 export interface ProfilerErrorMessage {
   command: "showError";
@@ -302,8 +308,14 @@ export interface OpenDocumentMessage {
 export interface SaveProfileMessage {
   command: "saveProfile";
 }
+// Update the number of frames the next capture will record (live panel only).
+export interface SetNumFramesMessage {
+  command: "setNumFrames";
+  numFrames: number;
+}
 export type ProfilerInboundMessage =
   | ReadyMessage
   | CaptureMessage
   | OpenDocumentMessage
-  | SaveProfileMessage;
+  | SaveProfileMessage
+  | SetNumFramesMessage;

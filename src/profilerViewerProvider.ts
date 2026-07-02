@@ -1,38 +1,37 @@
 import * as vscode from "vscode";
 import * as path from "path";
 import { VamigaDebugAdapter } from "./vAmigaDebugAdapter";
-import { ProfilerManager, ProfilerRpcClient } from "./profilerManager";
+import { ProfilerManager, ProfilerRpcClient, FrameCapture } from "./profilerManager";
 import { encodeCapture } from "./vamigaProfile";
 import { packBulk } from "./profilerBulk";
 import { ProfileEditorProvider } from "./profileEditorProvider";
 import { ProfilerCodeLensProvider } from "./profilerCodeLensProvider";
-import { ProfilerInboundMessage, ProfilerOutboundMessage, IProfileModel } from "./shared/profilerTypes";
+import { ProfilerInboundMessage, ProfilerOutboundMessage, IProfileModel, CaptureFrameInfo } from "./shared/profilerTypes";
 
 /**
- * Webview panel for the CPU profiler: captures one frame of CPU execution, builds
- * a symbolicated call tree, and renders a flame graph. Capture is user-triggered
- * (it advances the emulator a frame), not automatic.
+ * Webview panel for the CPU profiler: captures N frames of CPU execution, builds
+ * symbolicated call trees, and renders a flame graph with a per-frame filmstrip.
+ * Capture is user-triggered (it advances the emulator), not automatic.
  */
 export class ProfilerViewerProvider {
   public static readonly viewType = "vamiga-debugger.profilerViewer";
 
   private panel?: vscode.WebviewPanel;
   private readonly manager: ProfilerManager;
-  // Last successful capture, kept extension-side so a webview reload ("Developer: Reload
-  // Webviews", which resets the webview's React state but not the extension host) re-shows
-  // it instead of auto-capturing a fresh frame (which would advance the emulator).
-  private lastModel?: IProfileModel;
-  // Everything Save needs, grabbed at capture time while the debug session is live, so saving
-  // still works after the emulator webview / session is closed (which clears the adapter).
+  // Last successful capture, kept extension-side so a webview reload re-shows it
+  // without advancing the emulator (a reload resets webview state, not the extension host).
+  private lastFrames: FrameCapture[] = [];
+  private lastBulkUris: string[] = [];
+  // Everything Save needs, grabbed at capture time while the debug session is live.
   private lastSaveData?: { elf: Uint8Array; programName: string; segmentOffsets: number[]; baseDir: string; kickstart: { sha1: string; name: string } };
-  private lastSaveAdapter?: VamigaDebugAdapter; // which session lastSaveData came from (read ELF once per session)
+  private lastSaveAdapter?: VamigaDebugAdapter;
   private symbolsSent = false; // symbols are session-constant — send them only once per webview mount
-  private lastBulkUri?: string; // webview URI of the last capture's bulk blob (reused on webview reload)
-  private capturing = false; // a frame capture is in flight (drops re-entrant capture requests)
+  private capturing = false;   // a frame capture is in flight (drops re-entrant requests)
+  private numFrames = 1;       // updated by "setNumFrames" from the webview toolbar
 
   constructor(
     private readonly extensionUri: vscode.Uri,
-    private readonly storageUri: vscode.Uri, // writable dir (in localResourceRoots) for the bulk blob
+    private readonly storageUri: vscode.Uri,
     private readonly getClient: () => ProfilerRpcClient | undefined,
     private readonly codeLens?: ProfilerCodeLensProvider,
   ) {
@@ -46,57 +45,47 @@ export class ProfilerViewerProvider {
   }
 
   public dispose(): void {
-    // Disposing the panel fires onDidDispose, which clears the cached capture + bulk file.
     this.panel?.dispose();
   }
 
-  // Drop the cached capture (model + bulk blob + per-session save data). Called when a
-  // FRESH panel is created (so it auto-captures the current program instead of re-showing
-  // a previous session's frame) and when the panel is disposed. A webview *reload* goes
-  // through neither path, so the reload-survives-capture feature (the reason lastModel is
-  // cached at all) is preserved.
   private resetCapture(): void {
-    this.lastModel = undefined;
-    this.lastBulkUri = undefined;
+    for (let i = 0; i < this.lastBulkUris.length; i++) {
+      void vscode.workspace.fs.delete(this.bulkFileUri(i)).then(undefined, () => undefined);
+    }
+    this.lastFrames = [];
+    this.lastBulkUris = [];
     this.symbolsSent = false;
     this.lastSaveData = undefined;
     this.lastSaveAdapter = undefined;
-    this.codeLens?.clear(); // same staleness concern as the cache above — a prior session's addresses
-    void vscode.workspace.fs.delete(this.bulkFileUri()).then(undefined, () => undefined); // best-effort
+    this.codeLens?.clear();
   }
 
-  private bulkFileUri(): vscode.Uri {
-    return vscode.Uri.joinPath(this.storageUri, "profiler-live-bulk.bin");
+  private bulkFileUri(index: number): vscode.Uri {
+    return vscode.Uri.joinPath(this.storageUri, `profiler-live-bulk-${index}.bin`);
   }
 
-  // Write the last capture's bulk binary (DMA grid + snapshot) to a temp file the webview can
-  // fetch (the fast resource path), returning its webview URI — or undefined if there's no DMA.
-  private async writeBulk(): Promise<string | undefined> {
-    const raw = this.manager.getLastRaw();
-    if (!raw || !this.panel) return undefined;
-    const bytes = packBulk(raw);
-    if (!bytes) return undefined;
+  private async writeAllBulks(frames: FrameCapture[]): Promise<string[]> {
+    if (!this.panel) return [];
     await vscode.workspace.fs.createDirectory(this.storageUri);
-    const fileUri = this.bulkFileUri();
-    await vscode.workspace.fs.writeFile(fileUri, bytes);
-    // Cache-bust (same filename is overwritten each capture) so the fetch isn't served stale.
-    return `${this.panel.webview.asWebviewUri(fileUri)}?v=${Date.now()}`;
+    const v = Date.now();
+    const uris: string[] = [];
+    for (let i = 0; i < frames.length; i++) {
+      const bytes = packBulk(frames[i].raw);
+      if (!bytes) { uris.push(""); continue; }
+      const fileUri = this.bulkFileUri(i);
+      await vscode.workspace.fs.writeFile(fileUri, bytes);
+      uris.push(`${this.panel.webview.asWebviewUri(fileUri)}?v=${v}`);
+    }
+    return uris;
   }
 
   public async show(): Promise<void> {
     if (this.panel) {
-      // Already open: leave the panel exactly where the user put it. reveal() with no ViewColumn
-      // shows it in its current column; passing ViewColumn.Beside (a position *relative* to the
-      // active group) would move/resize it on every click. Then grab a fresh frame so a repeat
-      // click is visibly a new capture rather than a no-op.
       this.panel.reveal();
       await this.capture();
       return;
     }
 
-    // Fresh panel: discard any cache left over from a previous (now-disposed) panel or a
-    // prior debug session, so the first "ready" auto-captures the CURRENT program rather
-    // than re-showing a stale frame.
     this.resetCapture();
 
     this.panel = vscode.window.createWebviewPanel(
@@ -113,16 +102,15 @@ export class ProfilerViewerProvider {
     });
 
     this.panel.webview.onDidReceiveMessage(async (message: ProfilerInboundMessage) => {
-      // "ready" fires whenever the webview mounts — first open AND after a webview reload.
-      // On the first open there's no capture yet, so grab one frame; on a reload, re-show
-      // the cached capture so it survives (and we don't advance the emulator). "capture"
-      // (the button) always grabs a fresh frame.
       if (message.command === "ready") {
-        this.symbolsSent = false; // fresh webview (first mount or reload) — it needs symbols again
-        if (this.lastModel) this.postResult(this.lastModel, this.lastBulkUri);
+        this.symbolsSent = false;
+        if (this.lastFrames.length > 0) this.postResult(this.lastFrames, this.lastBulkUris);
         else await this.capture();
       } else if (message.command === "capture") {
         await this.capture();
+      } else if (message.command === "setNumFrames") {
+        const n = message.numFrames;
+        if (Number.isInteger(n) && n >= 1 && n <= 500) this.numFrames = n;
       } else if (message.command === "saveProfile") {
         await this.saveProfile();
       } else if (message.command === "openDocument") {
@@ -135,31 +123,31 @@ export class ProfilerViewerProvider {
     this.panel?.webview.postMessage(message);
   }
 
-  // Post a capture result, including the (session-constant) symbol table only on the first
-  // post to this webview; later captures omit it and the webview reuses what it cached.
-  private postResult(model: IProfileModel, bulkUri?: string): void {
-    // Strip the big arrays (the webview fetches them via bulkUri instead — postMessage is slow
-    // for binary) and the session-constant symbol table (after the first send).
-    const stripped: IProfileModel = { ...model, dma: undefined, dmaSnapshot: undefined, registers: undefined };
-    if (this.symbolsSent) stripped.symbols = undefined;
-    else if (model.symbols) this.symbolsSent = true;
-    this.post({ command: "captureResult", model: stripped, bulkUri });
+  private postResult(frames: FrameCapture[], bulkUris: string[]): void {
+    const result: CaptureFrameInfo[] = frames.map((f, i) => {
+      const stripped: IProfileModel = { ...f.model, dma: undefined, dmaSnapshot: undefined, registers: undefined };
+      // Symbols are session-constant — include only on the first post per webview mount.
+      if (i === 0 && !this.symbolsSent) {
+        if (f.model.symbols) this.symbolsSent = true;
+      } else {
+        stripped.symbols = undefined;
+      }
+      return { model: stripped, bulkUri: bulkUris[i] || undefined };
+    });
+    this.post({ command: "captureResult", frames: result });
   }
 
   private async capture(): Promise<void> {
-    // Ignore re-entrant requests while a frame is in flight (e.g. repeatedly clicking the
-    // "Open CPU Profiler" button) — overlapping captures would advance the emulator twice and
-    // race on lastModel/bulk.
     if (this.capturing) return;
     this.capturing = true;
     this.post({ command: "capturing" });
     try {
-      const model = await this.manager.capture(1);
-      this.lastModel = model;
-      this.codeLens?.update(model);
+      const frames = await this.manager.capture(this.numFrames);
+      this.lastFrames = frames;
+      this.codeLens?.update(frames[0].model);
       await this.cacheSaveData();
-      this.lastBulkUri = await this.writeBulk();
-      this.postResult(model, this.lastBulkUri);
+      this.lastBulkUris = await this.writeAllBulks(frames);
+      this.postResult(frames, this.lastBulkUris);
     } catch (error) {
       this.post({
         command: "showError",
@@ -170,14 +158,10 @@ export class ProfilerViewerProvider {
     }
   }
 
-  // Capture the program ELF + relocation now, while the session is live, so Save doesn't
-  // depend on the adapter still being around (closing the emulator webview ends the session).
   private async cacheSaveData(): Promise<void> {
     const adapter = VamigaDebugAdapter.getActiveAdapter();
     const elfPath = adapter?.getDebugProgramPath();
     if (!adapter || !elfPath) return;
-    // ELF + relocation are constant within a session, so read them once per session (keyed by
-    // the adapter instance); a relaunch yields a new adapter and re-reads.
     if (adapter === this.lastSaveAdapter && this.lastSaveData) return;
     try {
       const elf = await vscode.workspace.fs.readFile(vscode.Uri.file(elfPath));
@@ -195,10 +179,6 @@ export class ProfilerViewerProvider {
     }
   }
 
-  // Save the last capture to a .vamigaprofile. The ELF the source map was built from is
-  // embedded so the document is self-contained and re-symbolicates on load — embedding is
-  // required (loading by path isn't supported yet), so a failure to read it aborts the save
-  // loudly rather than writing an unloadable file.
   private async saveProfile(): Promise<void> {
     const raw = this.manager.getLastRaw();
     if (!raw) {
@@ -232,8 +212,6 @@ export class ProfilerViewerProvider {
         kickstart: save.kickstart,
       });
       await vscode.workspace.fs.writeFile(target, buf);
-      // Open the saved profile in its (read-only) editor, then close the live capture panel —
-      // the saved file becomes the thing you're looking at.
       await vscode.commands.executeCommand("vscode.openWith", target, ProfileEditorProvider.viewType);
       this.dispose();
     } catch (error) {
@@ -260,12 +238,8 @@ export async function openProfilerSource(file: string, line: number, toSide?: bo
     if (!uri) return;
     const doc = await vscode.workspace.openTextDocument(uri);
     const l = Math.max(0, line - 1);
-    // Reveal an editor that already has this file open rather than opening a new one; only
-    // fall back to a fresh editor (beside when Alt-clicked) otherwise.
     const existing = findOpenColumn(uri);
     await vscode.window.showTextDocument(doc, {
-      // As in the old extension: select the whole line, and keep focus on the profiler so
-      // you can keep clicking through functions.
       selection: new vscode.Range(l, 0, l + 1, 0),
       viewColumn: existing ?? (toSide ? vscode.ViewColumn.Beside : undefined),
       preserveFocus: true,
@@ -277,8 +251,6 @@ export async function openProfilerSource(file: string, line: number, toSide?: bo
   }
 }
 
-// View column of a tab already showing `uri` (across all groups, incl. background tabs),
-// or undefined if it isn't open anywhere.
 function findOpenColumn(uri: vscode.Uri): vscode.ViewColumn | undefined {
   const target = uri.toString();
   for (const group of vscode.window.tabGroups.all) {
@@ -291,10 +263,6 @@ function findOpenColumn(uri: vscode.Uri): vscode.ViewColumn | undefined {
   return undefined;
 }
 
-// The profiler webview's HTML, shared by the live panel and the .vamigaprofile editor.
-// `mode` is a property of which host created the webview, so it's baked into the markup
-// (read by the webview at init) rather than carried per-message — that way it holds even
-// if the model never arrives (e.g. a file that fails to load still hides Capture/Save).
 export function getProfilerHtml(webview: vscode.Webview, extensionUri: vscode.Uri, mode: "live" | "file"): string {
   const scriptUri = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, "out", "profilerViewer.js"));
   const styleUri = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, "out", "profilerViewer.css"));
@@ -307,7 +275,7 @@ export function getProfilerHtml(webview: vscode.Webview, extensionUri: vscode.Ur
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${webview.cspSource} 'unsafe-inline'; font-src ${webview.cspSource}; script-src ${webview.cspSource}; connect-src ${webview.cspSource};">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${webview.cspSource} 'unsafe-inline'; font-src ${webview.cspSource}; script-src ${webview.cspSource}; connect-src ${webview.cspSource}; img-src blob:;">
   <link href="${codiconsUri}" rel="stylesheet" id="vscode-codicon-stylesheet" />
   <link href="${styleUri}" rel="stylesheet" />
   <title>Profiler</title>
