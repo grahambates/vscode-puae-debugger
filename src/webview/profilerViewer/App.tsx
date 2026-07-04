@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import "./App.css";
-import { ProfilerOutboundMessage, ISymbol, IProfileModel } from "../../shared/profilerTypes";
+import { ProfilerOutboundMessage, ISymbol, IProfileModel, IDmaModel, ComputeRangeMessage } from "../../shared/profilerTypes";
 import { unpackBulk } from "../../profilerBulk";
 import { setProfileModel, getProfileModel, useModelVersion } from "./modelStore";
 import { FlameGraph } from "./FlameGraph";
@@ -63,16 +63,71 @@ export function App() {
 
   // Multi-frame filmstrip state.
   const [frames, setFrames] = useState<FrameInfo[]>([]);
+  // frameIndex is the anchor for shift-click selection (last frame explicitly clicked).
   const [frameIndex, setFrameIndex] = useState(0);
+  // selectedRange: null = single frame (frameIndex), [a,b] = inclusive range of frames.
+  // [0, N-1] = all frames (uses pre-built combinedModel); any other range = partial (uses rangeModel).
+  const [selectedRange, setSelectedRange] = useState<[number, number] | null>(null);
   const [numFrames, setNumFrames] = useState(1);
+  // Combined model built server-side from all N frames' InstructionSamples. Can't be derived
+  // client-side from IProfileModel.samples because those are call-tree node IDs local to each
+  // model's own nodes[] array — concatenating them would reference wrong nodes.
+  const [combinedModel, setCombinedModel] = useState<IProfileModel | null>(null);
+  // Model built server-side for a partial frame range (shift-click selection).
+  const [rangeModel, setRangeModel] = useState<IProfileModel | null>(null);
   // Track blob URLs so we can revoke them when frames are replaced (prevents memory leaks).
   const prevThumbUrlsRef = useRef<string[]>([]);
 
-  // Switch the active model when frameIndex changes.
+  // Concatenate the selected range's DMA grids into one continuous timeline, matching the
+  // combined flame-graph x-axis. Each frame contributes DMA_HPOS*DMA_VPOS slots.
+  const combinedDma = useMemo<IDmaModel | undefined>(() => {
+    if (!selectedRange) return undefined;
+    const [a, b] = selectedRange;
+    const grids = frames.slice(a, b + 1).map(f => f.model.dma).filter((d): d is IDmaModel => !!d);
+    if (!grids.length) return undefined;
+    if (grids.length === 1) return grids[0];
+    const total = grids.reduce((s, d) => s + d.owner.length, 0);
+    const owner  = new Uint8Array(total);
+    const flags  = new Uint8Array(total);
+    const addr   = new Uint32Array(total);
+    const value  = new Uint16Array(total);
+    const events = grids.every(d => d.events) ? new Uint32Array(total) : undefined;
+    let off = 0;
+    for (const d of grids) {
+      owner.set(d.owner, off);
+      flags.set(d.flags, off);
+      addr.set(d.addr, off);
+      value.set(d.value, off);
+      if (events && d.events) events.set(d.events, off);
+      off += d.owner.length;
+    }
+    return { owner, flags, addr, value, events };
+  }, [selectedRange, frames]);
+
+  // Switch the active model when frame selection or range changes.
   useEffect(() => {
-    const f = frames[frameIndex];
-    if (f) setProfileModel(f.model);
-  }, [frameIndex, frames]);
+    if (!selectedRange) {
+      const m = frames[frameIndex]?.model;
+      if (m) setProfileModel(m);
+      return;
+    }
+    const [a, b] = selectedRange;
+    const isAll = a === 0 && b === frames.length - 1;
+    const baseModel = isAll ? combinedModel : rangeModel;
+    if (!baseModel) return; // waiting for rangeResult
+    const m = { ...baseModel, dma: combinedDma, dmaSnapshot: frames[a]?.model.dmaSnapshot, copper: frames[a]?.model.copper };
+    setProfileModel(m);
+  }, [selectedRange, combinedModel, rangeModel, combinedDma, frameIndex, frames]);
+
+  // When a partial range is selected, request the combined model from the extension host.
+  // All-frames range [0, N-1] reuses the pre-built combinedModel instead.
+  useEffect(() => {
+    if (!selectedRange) return;
+    const [a, b] = selectedRange;
+    if (a === 0 && b === frames.length - 1) return; // all-frames: use combinedModel
+    setRangeModel(null);
+    vscode.postMessage({ command: "computeRange", range: [a, b] } as ComputeRangeMessage);
+  }, [selectedRange, frames.length]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     vscode.postMessage({ command: "ready" });
@@ -119,6 +174,16 @@ export function App() {
             prevThumbUrlsRef.current = newFrames.map((f) => f.thumbUrl).filter(Boolean) as string[];
             setFrames(newFrames);
             setFrameIndex(0);
+            setSelectedRange(null);
+            setRangeModel(null);
+            // Merge symbols into the server-built combined model (symbols are cached in
+            // symbolsRef and omitted from subsequent posts to save bandwidth).
+            if (m.combinedModel) {
+              const syms = symbolsRef.current;
+              setCombinedModel(syms ? { ...m.combinedModel, symbols: syms } : m.combinedModel);
+            } else {
+              setCombinedModel(null);
+            }
             // modelStore update is handled by the frameIndex/frames effect above, but trigger it
             // now for the first frame to avoid a render with stale model.
             if (newFrames[0]) setProfileModel(newFrames[0].model);
@@ -127,6 +192,9 @@ export function App() {
             setError(null);
             setBusy(false);
           });
+      } else if (m.command === "rangeResult") {
+        const syms = symbolsRef.current;
+        setRangeModel(syms ? { ...m.model, symbols: syms } : m.model);
       } else if (m.command === "showError") {
         setError(m.error);
         setBusy(false);
@@ -165,8 +233,10 @@ export function App() {
   );
 
   const timing = useMemo<Timing>(
-    () => model ? { cyclesPerMicroSecond: model.cyclesPerMicroSecond, duration: model.duration } : { cyclesPerMicroSecond: 7.09379, duration: 1 },
-    [model],
+    () => model
+      ? { cyclesPerMicroSecond: model.cyclesPerMicroSecond, duration: model.duration, numFrames: selectedRange ? (selectedRange[1] - selectedRange[0] + 1) : 1 }
+      : { cyclesPerMicroSecond: 7.09379, duration: 1 },
+    [model, selectedRange],
   );
 
   const dataTable = useMemo(
@@ -344,20 +414,51 @@ export function App() {
       </div>
       {frames.length > 1 && (
         <div className="filmstrip" role="listbox" aria-label="Captured frames">
-          {frames.map((f, i) => (
-            <button
-              key={i}
-              className={"filmstrip-frame" + (i === frameIndex ? " active" : "")}
-              title={`Frame ${i + 1}`}
-              role="option"
-              aria-selected={i === frameIndex}
-              onClick={() => setFrameIndex(i)}
-            >
-              {f.thumbUrl
-                ? <img src={f.thumbUrl} alt={`Frame ${i + 1}`} />
-                : <span className="filmstrip-no-thumb">{i + 1}</span>}
-            </button>
-          ))}
+          {(() => {
+            const isAllSelected = selectedRange !== null && selectedRange[0] === 0 && selectedRange[1] === frames.length - 1;
+            return (
+              <>
+                <button
+                  className={"filmstrip-frame" + (isAllSelected ? " active" : "")}
+                  title="Combine all frames — totals in flame graph, time view and disassembly"
+                  role="option"
+                  aria-selected={isAllSelected}
+                  onClick={() => setSelectedRange([0, frames.length - 1])}
+                >
+                  <span className="filmstrip-no-thumb">All</span>
+                </button>
+                {frames.map((f, i) => {
+                  const inRange = selectedRange !== null
+                    ? i >= selectedRange[0] && i <= selectedRange[1]
+                    : i === frameIndex;
+                  return (
+                    <button
+                      key={i}
+                      className={"filmstrip-frame" + (inRange ? " active" : "")}
+                      title={`Frame ${i + 1}${frames.length > 1 ? " (Shift-click to select a range)" : ""}`}
+                      role="option"
+                      aria-selected={inRange}
+                      onClick={(e) => {
+                        if (e.shiftKey && frames.length > 1) {
+                          const a = Math.min(frameIndex, i);
+                          const b = Math.max(frameIndex, i);
+                          setSelectedRange(a === b ? null : [a, b]);
+                          if (a === b) setFrameIndex(i);
+                        } else {
+                          setSelectedRange(null);
+                          setFrameIndex(i);
+                        }
+                      }}
+                    >
+                      {f.thumbUrl
+                        ? <img src={f.thumbUrl} alt={`Frame ${i + 1}`} />
+                        : <span className="filmstrip-no-thumb">{i + 1}</span>}
+                    </button>
+                  );
+                })}
+              </>
+            );
+          })()}
         </div>
       )}
       {error && <div className="error">{error}</div>}

@@ -26,6 +26,10 @@ export enum DisplayUnit {
 export interface Timing {
   cyclesPerMicroSecond: number; // CPU clock /1e6 (PAL 7.09379 = 28_375_160 / 4 / 1e6)
   duration: number; // total captured cycles (for the Size-group "% of total" unit)
+  // Number of frames in this capture (default 1). When > 1 (combined "All" view), the
+  // PercentFrame/Lines denominators scale by this so percentages show per-frame averages,
+  // not a sum that would exceed 100%.
+  numFrames?: number;
 }
 
 const decimalFormat = new Intl.NumberFormat(undefined, { maximumFractionDigits: 2, minimumFractionDigits: 2 });
@@ -65,10 +69,12 @@ export const scaleValue = (value: number, unit: DisplayUnit, t: Timing): number 
     // PAL defaults to 313 lines, if VPOSW LOF-bit is not set, it's 312 lines;
     // 7.09MHz/50=312.5 lines.
     case DisplayUnit.Lines:
-      return (value / t.cyclesPerMicroSecond / 200) * 312.5 / 100;
+      return (value / t.cyclesPerMicroSecond / 200) * 312.5 / 100 / (t.numFrames ?? 1);
     // % of a PAL frame (20 ms): µs / 200 (a PAL frame is 20000 µs, so 200 µs = 1%).
+    // For combined multi-frame captures, divide by numFrames so percentages show per-frame
+    // averages rather than a sum that grows with N (e.g. 3 frames × 100% = 300%).
     case DisplayUnit.PercentFrame:
-      return value / t.cyclesPerMicroSecond / 200;
+      return value / t.cyclesPerMicroSecond / 200 / (t.numFrames ?? 1);
     case DisplayUnit.Bytes:
       return Math.round(value);
     case DisplayUnit.BytesHex:

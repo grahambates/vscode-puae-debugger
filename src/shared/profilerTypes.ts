@@ -275,6 +275,10 @@ export interface CaptureResultMessage {
   command: "captureResult";
   // All captured frames. Single-frame captures produce a one-element array; multi-frame produce N.
   frames: CaptureFrameInfo[];
+  // Present when frames.length > 1: a model built from all N frames' instruction samples
+  // concatenated (correct aggregate times + combined flame-graph timeline). DMA/copper/registers
+  // are omitted (per-frame only). The webview uses this for the "All" filmstrip button.
+  combinedModel?: IProfileModel;
 }
 export interface ProfilerErrorMessage {
   command: "showError";
@@ -283,8 +287,14 @@ export interface ProfilerErrorMessage {
 export interface CaptureBusyMessage {
   command: "capturing";
 }
+// Result of a ComputeRangeMessage: a combined model for the requested sub-range.
+export interface RangeResultMessage {
+  command: "rangeResult";
+  model: IProfileModel;
+}
 export type ProfilerOutboundMessage =
   | CaptureResultMessage
+  | RangeResultMessage
   | ProfilerErrorMessage
   | CaptureBusyMessage;
 
@@ -313,9 +323,16 @@ export interface SetNumFramesMessage {
   command: "setNumFrames";
   numFrames: number;
 }
+// Request a combined model for a sub-range of captured frames (shift-click selection).
+// The extension builds it server-side and replies with RangeResultMessage.
+export interface ComputeRangeMessage {
+  command: "computeRange";
+  range: [number, number]; // [a, b] inclusive frame indices
+}
 export type ProfilerInboundMessage =
   | ReadyMessage
   | CaptureMessage
+  | ComputeRangeMessage
   | OpenDocumentMessage
   | SaveProfileMessage
   | SetNumFramesMessage;

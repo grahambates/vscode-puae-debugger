@@ -6,7 +6,7 @@ import { encodeCapture } from "./vamigaProfile";
 import { packBulk } from "./profilerBulk";
 import { ProfileEditorProvider } from "./profileEditorProvider";
 import { ProfilerCodeLensProvider } from "./profilerCodeLensProvider";
-import { ProfilerInboundMessage, ProfilerOutboundMessage, IProfileModel, CaptureFrameInfo } from "./shared/profilerTypes";
+import { ProfilerInboundMessage, ProfilerOutboundMessage, IProfileModel, CaptureFrameInfo, ComputeRangeMessage } from "./shared/profilerTypes";
 
 /**
  * Webview panel for the CPU profiler: captures N frames of CPU execution, builds
@@ -111,6 +111,8 @@ export class ProfilerViewerProvider {
       } else if (message.command === "setNumFrames") {
         const n = message.numFrames;
         if (Number.isInteger(n) && n >= 1 && n <= 500) this.numFrames = n;
+      } else if (message.command === "computeRange") {
+        this.computeRange(message as ComputeRangeMessage);
       } else if (message.command === "saveProfile") {
         await this.saveProfile();
       } else if (message.command === "openDocument") {
@@ -134,7 +136,25 @@ export class ProfilerViewerProvider {
       }
       return { model: stripped, bulkUri: bulkUris[i] || undefined };
     });
-    this.post({ command: "captureResult", frames: result });
+    // Include the combined model when present (multi-frame captures only).
+    // Strip per-frame data (DMA/copper/registers) — combined view shows CPU/time data only.
+    let combinedModel: IProfileModel | undefined;
+    if (frames[0]?.combined) {
+      const c = frames[0].combined;
+      combinedModel = { ...c, dma: undefined, dmaSnapshot: undefined, registers: undefined };
+      // Symbols are already on the combined model (copied from frame 0 in profilerManager);
+      // suppress them if we already sent them this session to avoid a redundant transfer.
+      if (this.symbolsSent) combinedModel.symbols = undefined;
+    }
+    this.post({ command: "captureResult", frames: result, combinedModel });
+  }
+
+  private computeRange(message: ComputeRangeMessage): void {
+    const model = this.manager.buildRangeModel(message.range);
+    if (!model) return;
+    const stripped: IProfileModel = { ...model, dma: undefined, dmaSnapshot: undefined, registers: undefined };
+    if (this.symbolsSent) stripped.symbols = undefined;
+    this.post({ command: "rangeResult", model: stripped });
   }
 
   private async capture(): Promise<void> {

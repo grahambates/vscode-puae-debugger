@@ -362,9 +362,13 @@ export interface RawCapture {
 
 // One captured frame: the decoded model + the raw bytes it was built from.
 // capture() returns an array of these; single-frame captures produce a one-element array.
+// `combined` is only present on frames[0] when numFrames > 1: a model built from all N
+// frames' InstructionSamples concatenated, giving correct aggregate node/location times
+// and a combined flame-graph timeline across the full capture.
 export interface FrameCapture {
   model: IProfileModel;
   raw: RawCapture;
+  combined?: IProfileModel;
 }
 
 // Pure transform: RawCapture + SourceMap → IProfileModel (+ the decoded samples, retained
@@ -441,6 +445,30 @@ export function attachDisassembly(raw: RawDisassembledFunction[], sourceMap: Sou
 // cycles descending first, so a cap (if ever hit) drops the coldest functions, not the hottest.
 const MAX_DISASSEMBLE_FUNCTIONS = 64;
 
+// Re-apply per-instruction hit/cycle counts from a new sample set onto an existing
+// disassembly template (instruction text + addresses unchanged from the template). Used
+// to give frames 1..N-1 correct per-frame counts without re-running the expensive
+// disassemble RPC, and to produce the combined-all-frames disassembly.
+function reweightDisassembly(
+  template: RawDisassembledFunction[],
+  samples: InstructionSample[],
+): RawDisassembledFunction[] {
+  const pcStats = new Map<number, { hits: number; cycles: number }>();
+  for (const s of samples) {
+    const pc = s.stack[0];
+    const e = pcStats.get(pc);
+    if (e) { e.hits++; e.cycles += s.cycles; }
+    else pcStats.set(pc, { hits: 1, cycles: s.cycles });
+  }
+  return template.map((fn) => ({
+    ...fn,
+    instructions: fn.instructions.map((ins) => {
+      const stat = pcStats.get(ins.address);
+      return { ...ins, hits: stat?.hits ?? 0, cycles: stat?.cycles ?? 0 };
+    }),
+  }));
+}
+
 // Disassemble every function that executed this frame: aggregate exact per-PC hit/cycle counts
 // from `samples` (this profiler traces every retired instruction, not statistical sampling),
 // resolve each unique PC to its enclosing function's [start, end) via sourceMap + model.symbols,
@@ -505,6 +533,10 @@ export class ProfilerManager {
   // All frames from the last capture, retained so the webview "Save" button can
   // serialize frame 0 to a .vamigaprofile without re-running the emulator.
   private lastFrames: FrameCapture[] = [];
+  // Per-frame raw InstructionSample arrays, parallel to lastFrames. Kept separate from
+  // lastFrames because buildRangeModel needs them for arbitrary sub-range combinations
+  // without rebuilding entire models (IProfileModel.samples are node IDs, not raw stacks).
+  private _frameSamples: InstructionSample[][] = [];
   public getSamples(): readonly InstructionSample[] {
     return this.lastFrames[0] ? (this._lastSamples0 ?? []) : [];
   }
@@ -512,6 +544,28 @@ export class ProfilerManager {
 
   public getLastRaw(): RawCapture | undefined {
     return this.lastFrames[0]?.raw;
+  }
+
+  // Build a combined model for a sub-range [a, b] of captured frames (inclusive).
+  // Called server-side in response to a "computeRange" webview message (shift-click selection).
+  public buildRangeModel(range: [number, number]): IProfileModel | null {
+    const sourceMap = this.getSourceMap();
+    if (!sourceMap) return null;
+    const [a, b] = range;
+    if (a < 0 || b >= this._frameSamples.length || a > b) return null;
+    const samples: InstructionSample[] = [];
+    for (let i = a; i <= b; i++) samples.push(...this._frameSamples[i]);
+    if (!samples.length) return null;
+    const avgCycles = this.lastFrames.slice(a, b + 1).reduce((s, f) => s + f.model.cyclesPerMicroSecond, 0) / (b - a + 1);
+    const model = buildProfileModel(samples, sourceMap, avgCycles);
+    model.symbols   = this.lastFrames[0]?.model.symbols;
+    model.lineTable = this.lastFrames[0]?.model.lineTable;
+    model.segments  = this.lastFrames[0]?.model.segments;
+    if (this.lastFrames[0]?.raw.disassembly?.length) {
+      const reweighted = reweightDisassembly(this.lastFrames[0].raw.disassembly, samples);
+      model.disassembly = attachDisassembly(reweighted, sourceMap);
+    }
+    return model;
   }
 
   // Capture `numFrames` independent single-frame profiles in sequence, each with its own
@@ -562,6 +616,8 @@ export class ProfilerManager {
     }
 
     const frames: FrameCapture[] = [];
+    const allSamples: InstructionSample[] = []; // accumulated across all frames for combined model
+    this._frameSamples = []; // reset per-frame sample store for buildRangeModel
     try {
       for (let frameIdx = 0; frameIdx < numFrames; frameIdx++) {
         // Run one frame synchronously in the emulator; generous per-frame timeout.
@@ -651,8 +707,11 @@ export class ProfilerManager {
           throw new Error(`No profile samples captured. ${hint}`);
         }
 
-        // Disassembly is expensive and session-specific — fetch once for frame 0 only.
+        allSamples.push(...samples);
+        this._frameSamples[frameIdx] = samples;
+
         if (frameIdx === 0) {
+          // Disassembly is expensive (requires wasm RPC) — fetch once from the live session.
           try {
             raw.disassembly = await fetchDisassembly(rpc, model, samples, sourceMap);
             if (raw.disassembly.length) model.disassembly = attachDisassembly(raw.disassembly, sourceMap);
@@ -660,6 +719,10 @@ export class ProfilerManager {
             console.warn("[profiler] disassembly capture failed (CPU profile unaffected):", e);
           }
           this._lastSamples0 = samples;
+        } else if (frames[0].raw.disassembly?.length) {
+          // Frames 1+: reuse frame 0's instruction text/addresses, just recount hits/cycles.
+          raw.disassembly = reweightDisassembly(frames[0].raw.disassembly, samples);
+          model.disassembly = attachDisassembly(raw.disassembly, sourceMap);
         }
 
         if (model.dma) {
@@ -677,6 +740,24 @@ export class ProfilerManager {
       } catch {
         // unsupported — no-op
       }
+    }
+
+    // For multi-frame captures, build one combined model by re-running buildProfileModel on all
+    // frames' InstructionSamples concatenated. This gives correct aggregate node/location times
+    // and a single flame-graph timeline spanning the full capture. Can't be done in the webview
+    // because IProfileModel.samples holds call-tree node IDs local to each model's own nodes[].
+    if (numFrames > 1 && frames.length > 0) {
+      const avgCycles = frames.reduce((s, f) => s + f.model.cyclesPerMicroSecond, 0) / frames.length;
+      const combined = buildProfileModel(allSamples, sourceMap, avgCycles);
+      // Session-constant metadata lives on frame 0.
+      combined.symbols   = frames[0].model.symbols;
+      combined.lineTable = frames[0].model.lineTable;
+      combined.segments  = frames[0].model.segments;
+      if (frames[0].raw.disassembly?.length) {
+        const reweighted = reweightDisassembly(frames[0].raw.disassembly, allSamples);
+        combined.disassembly = attachDisassembly(reweighted, sourceMap);
+      }
+      frames[0] = { ...frames[0], combined };
     }
 
     this.lastFrames = frames;
