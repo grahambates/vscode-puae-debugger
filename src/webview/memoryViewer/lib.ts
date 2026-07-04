@@ -1,3 +1,4 @@
+/// <reference lib="dom" />
 
 // Re-exported so existing call sites in this module are unaffected — the implementation now
 // lives in webview/shared/memoryFormat.ts (shared with the profiler's MemoryView).

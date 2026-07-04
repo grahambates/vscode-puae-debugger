@@ -522,11 +522,6 @@ export async function main(config: MainConfig = {}): Promise<void> {
     { type: DmaRecordType.DISK, label: "Disk", abbr: "DSK", color: "#ffffff" },
   ];
 
-  // Whether the COPPER channel toggle is currently on — gates
-  // wasm_copper_tracking_enable so cop_record[] (needed for the copper
-  // hover tooltip's instruction lookup) is only populated while it's
-  // actually wanted.
-  let copperChannelActive = false;
   // Whether any DMA overlay channel is on — gates the hover tooltip itself
   // (see installDmaHoverTooltip below): copper hovers additionally need
   // copperChannelActive, but other channels' (e.g. blitter) per-cycle info
@@ -577,7 +572,6 @@ export async function main(config: MainConfig = {}): Promise<void> {
       if (active) enabledChannelTypes.add(ch.type);
       else enabledChannelTypes.delete(ch.type);
       if (ch.type === DmaRecordType.COPPER) {
-        copperChannelActive = active;
         M._wasm_copper_tracking_enable(active ? 1 : 0);
       }
       const anyActive = channelBtns.some(b => b.classList.contains("active"));

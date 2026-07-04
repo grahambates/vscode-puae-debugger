@@ -1,3 +1,6 @@
+// Allow side-effect CSS imports (e.g. `import "./App.css"`) in webview TypeScript files.
+declare module "*.css" {}
+
 import {
   VscodeBadge,
   VscodeButton,
