@@ -659,10 +659,18 @@ export class ProfilerManager {
           thumbnail,
         };
 
+        // In multi-frame captures, skip expensive per-frame data that's not needed for
+        // frames 1..N-1: register traces (~4.9 MB each, powers the custom-regs panel)
+        // and the DMA snapshot (~2 MB+ chip RAM, only frame 0's baseline is ever used
+        // for memory reconstruction). Single-frame captures are unaffected.
+        const isFirstFrame = frameIdx === 0;
+        const fetchFull = numFrames === 1 || isFirstFrame;
         try {
-          const regsRes = await rpc.sendRpcCommand<{ data: Uint8Array }>("getProfileRegs");
-          const regsBytes = u8(regsRes.data);
-          if (regsBytes.length) raw.registers = regsBytes;
+          if (fetchFull) {
+            const regsRes = await rpc.sendRpcCommand<{ data: Uint8Array }>("getProfileRegs");
+            const regsBytes = u8(regsRes.data);
+            if (regsBytes.length) raw.registers = regsBytes;
+          }
         } catch (e) {
           console.warn(`[profiler] frame ${frameIdx}: register trace failed:`, e);
         }
@@ -672,8 +680,12 @@ export class ProfilerManager {
           const dmaBytes = u8(dmaRes.data);
           if (dmaBytes.length) {
             raw.dma = dmaBytes;
-            const snap = await rpc.sendRpcCommand<{ chip: Uint8Array; slow: Uint8Array; custom: Uint8Array }>("getDmaSnapshot");
-            raw.snapshot = { chip: u8(snap.chip), slow: u8(snap.slow), custom: u8(snap.custom) };
+            if (fetchFull) {
+              // Only fetch the chip/slow RAM snapshot for frame 0 — it's the baseline for
+              // memory reconstruction; frames 1..N-1 snapshots are never used.
+              const snap = await rpc.sendRpcCommand<{ chip: Uint8Array; slow: Uint8Array; custom: Uint8Array }>("getDmaSnapshot");
+              raw.snapshot = { chip: u8(snap.chip), slow: u8(snap.slow), custom: u8(snap.custom) };
+            }
             const eventsRes = await rpc.sendRpcCommand<{ data: Uint8Array }>("getDmaEvents");
             const eventsBytes = u8(eventsRes.data);
             if (eventsBytes.length) raw.dmaEvents = eventsBytes;
