@@ -44,7 +44,6 @@ export interface ILocation {
   id: number;
   selfTime: number;
   aggregateTime: number;
-  ticks: number;
   category: Category;
   callFrame: CallFrame;
   address: number;

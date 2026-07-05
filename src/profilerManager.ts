@@ -199,7 +199,6 @@ export function buildProfileModel(samples: InstructionSample[], sourceMap: Sourc
     id: 0,
     selfTime: 0,
     aggregateTime: 0,
-    ticks: 0,
     category: Category.System,
     callFrame: { functionName: "(all)", url: "", scriptId: "root", lineNumber: -1, columnNumber: 0 },
     address: 0,
@@ -214,7 +213,6 @@ export function buildProfileModel(samples: InstructionSample[], sourceMap: Sourc
         id: idx,
         selfTime: 0,
         aggregateTime: 0,
-        ticks: 0,
         // No source file ⇒ treat as system/OS (renders gray); program code is User.
         category: f.file ? Category.User : Category.System,
         callFrame: {

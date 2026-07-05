@@ -6,7 +6,6 @@ const loc = (overrides: Partial<ILocation>): ILocation => ({
   id: 1,
   selfTime: 0,
   aggregateTime: 0,
-  ticks: 0,
   category: Category.User,
   callFrame: { functionName: "fn", url: "C:\\proj\\a.c", scriptId: "0", lineNumber: 4, columnNumber: 0 },
   address: 0x1000,
@@ -28,13 +27,13 @@ const doc = (path: string): vscode.TextDocument => ({ uri: { fsPath: path } }) a
 describe("ProfilerCodeLensProvider", () => {
   it("provides a lens at the location's line for a matching file", () => {
     const p = new ProfilerCodeLensProvider();
-    p.update(model([loc({ selfTime: 250, aggregateTime: 500, ticks: 10 })]));
+    p.update(model([loc({ selfTime: 250, aggregateTime: 500 })]));
 
     const lenses = p.provideCodeLenses(doc("C:\\proj\\a.c"));
     expect(lenses).toHaveLength(1);
     const lens = (lenses as vscode.CodeLens[])[0];
     expect((lens.range as unknown as { startLine: number }).startLine).toBe(4);
-    expect((lens.command as { title: string }).title).toBe("25.0% Self, 50.0% Total, 10 Ticks");
+    expect((lens.command as { title: string }).title).toBe("25.0% Self, 50.0% Total");
   });
 
   it("matches the file path case-insensitively and normalizes separators", () => {
@@ -43,7 +42,7 @@ describe("ProfilerCodeLensProvider", () => {
     expect(p.provideCodeLenses(doc("C:\\proj\\a.c"))).toHaveLength(1);
   });
 
-  it("skips locations with no source, unknown line, or all-zero times/ticks", () => {
+  it("skips locations with no source, unknown line, or all-zero times", () => {
     const p = new ProfilerCodeLensProvider();
     p.update(
       model([

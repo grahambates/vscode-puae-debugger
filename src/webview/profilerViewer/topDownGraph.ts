@@ -9,7 +9,6 @@ export interface IGraphNode {
   id: number;
   selfTime: number;
   aggregateTime: number;
-  ticks: number;
   category: Category;
   callFrame: CallFrame;
   address: number;
@@ -27,7 +26,6 @@ export class TopDownNode implements IGraphNode {
       category: Category.System,
       selfTime: 0,
       aggregateTime: 0,
-      ticks: 0,
       callFrame: { functionName: "(root)", lineNumber: -1, columnNumber: -1, scriptId: "0", url: "" },
       address: 0,
     });
@@ -36,7 +34,6 @@ export class TopDownNode implements IGraphNode {
   public children: { [id: number]: TopDownNode } = {};
   public aggregateTime = 0;
   public selfTime = 0;
-  public ticks = 0;
   public childrenSize = 0;
   public filtered = true;
   public dmaColor?: string; // set on synthetic DMA leaf rows → renders a color dot
@@ -95,7 +92,6 @@ export const createTopDownGraph = (model: IProfileModel): TopDownNode => {
       id: synthId--,
       selfTime: 0,
       aggregateTime: 0,
-      ticks: 0,
       category: Category.System,
       callFrame: { functionName: name, url: "", scriptId: "#dma", lineNumber: -1, columnNumber: 0 },
       address: 0,

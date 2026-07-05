@@ -13,7 +13,6 @@ export class BottomUpNode implements IGraphNode {
       id: -1,
       selfTime: 0,
       aggregateTime: 0,
-      ticks: 0,
       category: Category.System,
       callFrame: { functionName: "(root)", lineNumber: -1, columnNumber: -1, scriptId: "0", url: "" },
       address: 0,
@@ -23,7 +22,6 @@ export class BottomUpNode implements IGraphNode {
   public children: { [id: number]: BottomUpNode } = {};
   public aggregateTime = 0;
   public selfTime = 0;
-  public ticks = 0;
   public childrenSize = 0;
   public filtered = true;
 

@@ -169,31 +169,6 @@ static uint16_t puae_debug_cpuTraceSr[PUAE_DEBUG_CPU_TRACE_CAP];
 static size_t puae_debug_cpuTraceHead = 0; // next write index
 static size_t puae_debug_cpuTraceCount = 0; // number of valid entries (<= CAP)
 
-static int puae_debug_profilerEnabled = 0;
-
-// Minimal PC-sampling profiler used by debugger. The debugger resolves PCs to symbols/lines.
-// We stream aggregated PC hits as JSON in puae_debug_profiler_stream_next(), matching geo9000.
-#define PUAE_DEBUG_PROF_EMPTY_PC 0xffffffffu
-#define PUAE_DEBUG_PROF_TABLE_CAP 4096u
-#define PUAE_DEBUG_PROF_SAMPLE_DIV 64u
-static uint32_t puae_debug_prof_pcs[PUAE_DEBUG_PROF_TABLE_CAP];
-static uint64_t puae_debug_prof_samples[PUAE_DEBUG_PROF_TABLE_CAP];
-static uint64_t puae_debug_prof_cycles[PUAE_DEBUG_PROF_TABLE_CAP];
-static uint32_t puae_debug_prof_entryEpoch[PUAE_DEBUG_PROF_TABLE_CAP];
-static uint32_t puae_debug_prof_dirtyIdx[PUAE_DEBUG_PROF_TABLE_CAP];
-static uint32_t puae_debug_prof_dirtyCount = 0;
-static uint32_t puae_debug_prof_epoch = 1;
-static uint32_t puae_debug_prof_tick = 0;
-static uint32_t puae_debug_prof_lastTickAtFrame = 0;
-static int puae_debug_prof_streamEnabled = 0;
-static int puae_debug_prof_lastValid = 0;
-static uint32_t puae_debug_prof_lastPc = 0;
-static evt_t puae_debug_prof_lastCycle = 0;
-#ifdef JIT
-static int puae_debug_prof_savedCachesize = -1;
-#endif
-
-
 static char puae_debug_textBuf[PUAE_DEBUG_TEXT_CAP];
 static size_t puae_debug_textHead = 0;
 static size_t puae_debug_textTail = 0;
@@ -201,135 +176,6 @@ static size_t puae_debug_textCount = 0;
 
 static void puae_debug_requestBreak(void);
 static int puae_debug_regwatchCheck(uint32_t pc24);
-
-static void
-puae_debug_profiler_reset(void)
-{
-	memset(puae_debug_prof_pcs, 0xff, sizeof(puae_debug_prof_pcs));
-	memset(puae_debug_prof_samples, 0, sizeof(puae_debug_prof_samples));
-	memset(puae_debug_prof_cycles, 0, sizeof(puae_debug_prof_cycles));
-	memset(puae_debug_prof_entryEpoch, 0, sizeof(puae_debug_prof_entryEpoch));
-	puae_debug_prof_dirtyCount = 0;
-	puae_debug_prof_epoch = 1;
-	puae_debug_prof_tick = 0;
-	puae_debug_prof_lastTickAtFrame = 0;
-	puae_debug_prof_lastValid = 0;
-	puae_debug_prof_lastPc = 0;
-	puae_debug_prof_lastCycle = 0;
-}
-
-static void
-puae_debug_profiler_markDirtySlot(uint32_t slot)
-{
-	if (slot >= PUAE_DEBUG_PROF_TABLE_CAP) {
-		return;
-	}
-	if (puae_debug_prof_entryEpoch[slot] == puae_debug_prof_epoch) {
-		return;
-	}
-	puae_debug_prof_entryEpoch[slot] = puae_debug_prof_epoch;
-	if (puae_debug_prof_dirtyCount < PUAE_DEBUG_PROF_TABLE_CAP) {
-		puae_debug_prof_dirtyIdx[puae_debug_prof_dirtyCount++] = slot;
-	}
-}
-
-static int
-puae_debug_profiler_findSlot(uint32_t pc24, int create, uint32_t *out_slot)
-{
-	if (out_slot) {
-		*out_slot = 0;
-	}
-	pc24 &= 0x00ffffffu;
-	uint32_t mask = PUAE_DEBUG_PROF_TABLE_CAP - 1u;
-	uint32_t idx = (pc24 * 2654435761u) & mask;
-	for (uint32_t probe = 0; probe < PUAE_DEBUG_PROF_TABLE_CAP; ++probe) {
-		uint32_t slot = (idx + probe) & mask;
-		uint32_t cur = puae_debug_prof_pcs[slot];
-		if (cur == pc24) {
-			if (out_slot) {
-				*out_slot = slot;
-			}
-			return 1;
-		}
-		if (cur == PUAE_DEBUG_PROF_EMPTY_PC) {
-			if (!create) {
-				return 0;
-			}
-			puae_debug_prof_pcs[slot] = pc24 & 0x00ffffffu;
-			puae_debug_prof_samples[slot] = 0;
-			puae_debug_prof_cycles[slot] = 0;
-			if (out_slot) {
-				*out_slot = slot;
-			}
-			return 1;
-		}
-	}
-	return 0;
-}
-
-static void
-puae_debug_profiler_accountCycles(uint32_t pc24, uint64_t cycles)
-{
-	if (cycles == 0) {
-		return;
-	}
-	uint32_t slot = 0;
-	if (!puae_debug_profiler_findSlot(pc24, 1, &slot)) {
-		return;
-	}
-	puae_debug_prof_cycles[slot] += cycles;
-	puae_debug_profiler_markDirtySlot(slot);
-}
-
-static void
-puae_debug_profiler_samplePc(uint32_t pc24)
-{
-	uint32_t slot = 0;
-	if (!puae_debug_profiler_findSlot(pc24, 1, &slot)) {
-		return;
-	}
-	puae_debug_prof_samples[slot] += 1;
-	puae_debug_profiler_markDirtySlot(slot);
-}
-
-static void
-puae_debug_profiler_instrHook(uint32_t pc24)
-{
-	if (!puae_debug_profilerEnabled) {
-		return;
-	}
-	if (puae_debug_paused) {
-		return;
-	}
-	if (puae_debug_replayMode) {
-		// Replay re-executes already-profiled instructions; don't double-count.
-		return;
-	}
-
-	evt_t now = get_cycles();
-	if (puae_debug_prof_lastValid) {
-		evt_t deltaUnits = now - puae_debug_prof_lastCycle;
-		if (deltaUnits > 0) {
-			uint64_t deltaCycles = 0;
-			if (CYCLE_UNIT > 0) {
-				deltaCycles = (uint64_t)(deltaUnits / (evt_t)CYCLE_UNIT);
-			} else {
-				deltaCycles = (uint64_t)deltaUnits;
-			}
-			if (deltaCycles) {
-				puae_debug_profiler_accountCycles(puae_debug_prof_lastPc, deltaCycles);
-			}
-		}
-	}
-	puae_debug_prof_lastCycle = now;
-	puae_debug_prof_lastPc = pc24 & 0x00ffffffu;
-	puae_debug_prof_lastValid = 1;
-
-	puae_debug_prof_tick++;
-	if ((puae_debug_prof_tick % PUAE_DEBUG_PROF_SAMPLE_DIV) == 0u) {
-		puae_debug_profiler_samplePc(pc24);
-	}
-}
 
 // ---- wasm_profile: vAmiga-format profiler ----
 // Each record: [depth, leaf_pc, callerN-1, ..., caller0, cycleDelta] (uint32_t).
@@ -1905,13 +1751,6 @@ puae_debug_set_hblank_callback(void (*cb)(void *), void *user)
 PUAE_DEBUG_EXPORT void
 puae_vblank_notify(void)
 {
-	if (puae_debug_profilerEnabled && !puae_debug_paused) {
-		if (puae_debug_prof_tick == puae_debug_prof_lastTickAtFrame) {
-			uaecptr pc = m68k_getpc();
-			puae_debug_profiler_samplePc(puae_debug_maskAddr(pc));
-		}
-		puae_debug_prof_lastTickAtFrame = puae_debug_prof_tick;
-	}
 	if (puae_debug_vblankCb) {
 		puae_debug_vblankCb(puae_debug_vblankUser);
 	}
@@ -2320,7 +2159,6 @@ puae_debug_instructionHookImpl(uaecptr pc, uae_u16 opcode)
 {
 	uint32_t pc24 = puae_debug_maskAddr(pc);
 
-	puae_debug_profiler_instrHook(pc24);
 	wasm_profile_instrHook(pc24);
 	puae_debug_cpuTrace_instrHook(pc24);
 
@@ -2633,129 +2471,6 @@ puae_debug_regwatchCheck(uint32_t pc24)
 	puae_debug_regwatchbreakPending = 1;
 	puae_debug_requestBreak();
 	return 1;
-}
-
-PUAE_DEBUG_EXPORT void
-puae_debug_profiler_start(int stream)
-{
-	puae_debug_profiler_reset();
-	puae_debug_prof_streamEnabled = stream ? 1 : 0;
-	puae_debug_profilerEnabled = 1;
-#ifdef JIT
-	if (puae_debug_prof_savedCachesize < 0) {
-		puae_debug_prof_savedCachesize = currprefs.cachesize;
-	}
-	if (currprefs.cachesize) {
-		currprefs.cachesize = 0;
-		flush_icache(3);
-		set_special(SPCFLAG_END_COMPILE);
-	}
-#endif
-}
-
-PUAE_DEBUG_EXPORT void
-puae_debug_profiler_stop(void)
-{
-	puae_debug_profilerEnabled = 0;
-	puae_debug_prof_streamEnabled = 0;
-#ifdef JIT
-	if (puae_debug_prof_savedCachesize >= 0) {
-		if (currprefs.cachesize != puae_debug_prof_savedCachesize) {
-			currprefs.cachesize = puae_debug_prof_savedCachesize;
-			flush_icache(3);
-			set_special(SPCFLAG_END_COMPILE);
-		}
-		puae_debug_prof_savedCachesize = -1;
-	}
-#endif
-}
-
-PUAE_DEBUG_EXPORT int
-puae_debug_profiler_is_enabled(void)
-{
-	return puae_debug_profilerEnabled;
-}
-
-PUAE_DEBUG_EXPORT size_t
-puae_debug_profiler_stream_next(char *out, size_t cap)
-{
-	if (!out || cap == 0) {
-		return 0;
-	}
-
-	if (!puae_debug_prof_streamEnabled) {
-		return 0;
-	}
-	if (puae_debug_prof_dirtyCount == 0) {
-		return 0;
-	}
-
-	const char *enabled = puae_debug_profilerEnabled ? "enabled" : "disabled";
-	size_t pos = 0;
-	int written = snprintf(out, cap, "{\"stream\":\"profiler\",\"enabled\":\"%s\",\"hits\":[", enabled);
-	if (written <= 0 || (size_t)written >= cap) {
-		return 0;
-	}
-	pos = (size_t)written;
-
-	int first = 1;
-	uint32_t newDirtyCount = 0;
-	for (uint32_t i = 0; i < puae_debug_prof_dirtyCount; ++i) {
-		uint32_t slot = puae_debug_prof_dirtyIdx[i];
-		if (slot >= PUAE_DEBUG_PROF_TABLE_CAP) {
-			continue;
-		}
-		uint32_t pc24 = puae_debug_prof_pcs[slot];
-		if (pc24 == PUAE_DEBUG_PROF_EMPTY_PC) {
-			puae_debug_prof_entryEpoch[slot] = 0;
-			continue;
-		}
-		unsigned long long samples = (unsigned long long)puae_debug_prof_samples[slot];
-		unsigned long long cycles = (unsigned long long)puae_debug_prof_cycles[slot];
-		if (samples == 0 && cycles == 0) {
-			puae_debug_prof_entryEpoch[slot] = 0;
-			continue;
-		}
-
-		char entry[96];
-		if (first) {
-			written = snprintf(entry, sizeof(entry), "{\"pc\":\"0x%06X\",\"samples\":%llu,\"cycles\":%llu}",
-			                   (unsigned)(pc24 & 0x00ffffffu), samples, cycles);
-			first = 0;
-		} else {
-			written = snprintf(entry, sizeof(entry), ",{\"pc\":\"0x%06X\",\"samples\":%llu,\"cycles\":%llu}",
-			                   (unsigned)(pc24 & 0x00ffffffu), samples, cycles);
-		}
-		if (written <= 0) {
-			puae_debug_prof_entryEpoch[slot] = 0;
-			continue;
-		}
-		size_t need = (size_t)written;
-		if (pos + need + 2 >= cap) {
-			puae_debug_prof_dirtyIdx[newDirtyCount++] = slot;
-			continue;
-		}
-		memcpy(out + pos, entry, need);
-		pos += need;
-		puae_debug_prof_entryEpoch[slot] = 0;
-	}
-	puae_debug_prof_dirtyCount = newDirtyCount;
-
-	if (pos + 2 >= cap) {
-		return 0;
-	}
-	out[pos++] = ']';
-	out[pos++] = '}';
-	out[pos] = '\0';
-
-	if (puae_debug_prof_dirtyCount == 0) {
-		puae_debug_prof_epoch++;
-		if (puae_debug_prof_epoch == 0) {
-			memset(puae_debug_prof_entryEpoch, 0, sizeof(puae_debug_prof_entryEpoch));
-			puae_debug_prof_epoch = 1;
-		}
-	}
-	return pos;
 }
 
 PUAE_DEBUG_EXPORT size_t

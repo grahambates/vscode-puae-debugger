@@ -27,11 +27,11 @@ export class ProfilerCodeLensProvider implements vscode.CodeLensProvider {
       for (const loc of model.locations) {
         const file = loc.callFrame.url;
         if (!file || loc.callFrame.lineNumber < 0) continue; // no source (DMA/synthetic/unresolved)
-        if (loc.selfTime <= 0 && loc.aggregateTime <= 0 && loc.ticks <= 0) continue; // nothing to show
+        if (loc.selfTime <= 0 && loc.aggregateTime <= 0) continue; // nothing to show
 
         const selfPct = model.duration > 0 ? (loc.selfTime / model.duration) * 100 : 0;
         const totalPct = model.duration > 0 ? (loc.aggregateTime / model.duration) * 100 : 0;
-        const title = `${selfPct.toFixed(1)}% Self, ${totalPct.toFixed(1)}% Total, ${loc.ticks} Ticks`;
+        const title = `${selfPct.toFixed(1)}% Self, ${totalPct.toFixed(1)}% Total`;
         const range = new vscode.Range(loc.callFrame.lineNumber, 0, loc.callFrame.lineNumber, 0);
         const lens = new vscode.CodeLens(range, { title, command: "" });
 
