@@ -140,6 +140,48 @@ body {
   image-rendering: pixelated;
 }
 
+/* ── Screen / Resources view ────────────────────────────────────────────── */
+.resources-view {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  overflow: hidden;
+}
+.resources-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--vscode-panel-border, transparent);
+  flex-shrink: 0;
+  font-size: 12px;
+}
+.resources-info {
+  flex: 1;
+  color: var(--vscode-descriptionForeground);
+}
+.resources-scale-label {
+  color: var(--vscode-foreground);
+  opacity: 0.8;
+}
+.resources-scale-select {
+  background: var(--vscode-dropdown-background);
+  color: var(--vscode-dropdown-foreground);
+  border: 1px solid var(--vscode-dropdown-border);
+  padding: 1px 4px;
+  font-size: 12px;
+}
+.resources-canvas-wrap {
+  flex: 1;
+  overflow: auto;
+  padding: 8px;
+}
+.resources-empty {
+  padding: 16px;
+  color: var(--vscode-descriptionForeground);
+  font-style: italic;
+}
+
 .error {
   margin: 8px 10px;
   padding: 6px 10px;

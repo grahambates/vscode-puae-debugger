@@ -10,6 +10,7 @@ import { CopperView } from "./CopperView";
 import { BlitterView } from "./BlitterView";
 import { MemoryView } from "./MemoryView";
 import { DisassemblyView } from "./DisassemblyView";
+import { ResourcesView } from "./ResourcesView";
 import { createTopDownGraph } from "./topDownGraph";
 import { createBottomUpGraph } from "./bottomUpGraph";
 import { DisplayUnit, unitOptions, Timing } from "./display";
@@ -17,12 +18,12 @@ import { IRichFilter } from "./filter";
 
 const vscode = acquireVsCodeApi();
 
-type TabId = "time" | "customregs" | "copper" | "blitter" | "memory" | "disasm";
+type TabId = "time" | "customregs" | "copper" | "blitter" | "memory" | "disasm" | "screen";
 const TAB_LABELS: Record<TabId, string> = {
   time: "Time View", customregs: "Custom Registers", copper: "Copper",
-  blitter: "Blitter", memory: "Memory", disasm: "CPU",
+  blitter: "Blitter", memory: "Memory", disasm: "CPU", screen: "Screen",
 };
-const ALL_TABS: TabId[] = ["time", "disasm", "copper", "blitter", "memory", "customregs"];
+const ALL_TABS: TabId[] = ["time", "disasm", "copper", "blitter", "memory", "screen", "customregs"];
 
 interface FrameInfo {
   model: IProfileModel;
@@ -100,6 +101,7 @@ export function App() {
   // [0, N-1] = all frames (uses pre-built combinedModel); any other range = partial (uses rangeModel).
   const [selectedRange, setSelectedRange] = useState<[number, number] | null>(null);
   const [numFrames, setNumFrames] = useState(1);
+  const [numFramesText, setNumFramesText] = useState("1");
   // Combined model built server-side from all N frames' InstructionSamples. Can't be derived
   // client-side from IProfileModel.samples because those are call-tree node IDs local to each
   // model's own nodes[] array — concatenating them would reference wrong nodes.
@@ -142,17 +144,32 @@ export function App() {
   useEffect(() => {
     if (!selectedRange) {
       const m = frames[frameIndex]?.model;
-      if (m) setProfileModel(m);
+      if (!m) return;
+      // Multi-frame captures: snapshot (2.5 MB) and copper trace are only stored on the last
+      // frame to avoid per-frame duplication. Propagate them to whichever frame is selected so
+      // Copper / Screen / Custom Registers tabs remain usable across the whole filmstrip.
+      const lastFrame = frames[frames.length - 1]?.model;
+      const needsMerge = lastFrame && lastFrame !== m && (!m.dmaSnapshot || !m.copper);
+      setProfileModel(needsMerge
+        ? { ...m, dmaSnapshot: m.dmaSnapshot ?? lastFrame.dmaSnapshot, copper: m.copper ?? lastFrame.copper }
+        : m
+      );
       return;
     }
     const [a, b] = selectedRange;
     const isAll = a === 0 && b === frames.length - 1;
     const baseModel = isAll ? combinedModel : rangeModel;
     if (!baseModel) return; // waiting for rangeResult
-    // Snapshot and copper live only on the last captured frame (end-of-capture state).
-    // Use frames[b] (last in selected range) so the "All" view [0, N-1] always picks up
-    // snapshot and copper from frame N-1, and partial ranges covering it do too.
-    const m = { ...baseModel, dma: combinedDma, dmaSnapshot: frames[b]?.model.dmaSnapshot, copper: frames[b]?.model.copper };
+    // Snapshot and copper live only on the last frame (too large to duplicate per frame).
+    // Prefer frames[b] (end of selected range) then fall back to the last captured frame
+    // so partial ranges that don't include the last frame still have working views.
+    const lastFrame = frames[frames.length - 1]?.model;
+    const m = {
+      ...baseModel,
+      dma: combinedDma,
+      dmaSnapshot: frames[b]?.model.dmaSnapshot ?? lastFrame?.dmaSnapshot,
+      copper:      frames[b]?.model.copper      ?? lastFrame?.copper,
+    };
     setProfileModel(m);
   }, [selectedRange, combinedModel, rangeModel, combinedDma, frameIndex, frames]);
 
@@ -276,6 +293,18 @@ export function App() {
     [filterText, caseSensitive, useRegex],
   );
 
+  // Screen reconstruction always uses the single frame at frameIndex, regardless of
+  // range selection — combining N frames' DMA grids produces N stacked screens.
+  const screenModel = useMemo(() => {
+    const base = frames[frameIndex]?.model;
+    if (!base) return null;
+    const lastFrame = frames[frames.length - 1]?.model;
+    const needsMerge = lastFrame && lastFrame !== base && (!base.dmaSnapshot || !base.copper);
+    return needsMerge
+      ? { ...base, dmaSnapshot: base.dmaSnapshot ?? lastFrame.dmaSnapshot, copper: base.copper ?? lastFrame.copper }
+      : base;
+  }, [frames, frameIndex]);
+
   const timing = useMemo<Timing>(
     () => model
       ? { cyclesPerMicroSecond: model.cyclesPerMicroSecond, duration: model.duration, numFrames: selectedRange ? (selectedRange[1] - selectedRange[0] + 1) : 1 }
@@ -343,6 +372,7 @@ export function App() {
     if (tab === "copper") return <CopperView selectedSlot={selectedSlot} onSelectSlot={setSelectedSlot} onOpenSource={openSource} />;
     if (tab === "blitter") return <BlitterView selectedSlot={selectedSlot} onSelectSlot={setSelectedSlot} displayUnit={unit} timing={timing} />;
     if (tab === "memory") return <MemoryView selectedSlot={selectedSlot} onSelectSlot={setSelectedSlot} onOpenSource={openSource} />;
+    if (tab === "screen") return <ResourcesView selectedSlot={selectedSlot} model={screenModel} />;
     return <DisassemblyView selectedSlot={selectedSlot} onSelectSlot={setSelectedSlot} onOpenSource={openSource} />;
   };
 
@@ -405,15 +435,17 @@ export function App() {
               type="number"
               min={1}
               max={500}
-              value={numFrames}
+              value={numFramesText}
               disabled={busy}
               onChange={(e) => {
+                setNumFramesText(e.target.value);
                 const n = parseInt(e.target.value, 10);
                 if (!Number.isNaN(n) && n >= 1 && n <= 500) {
                   setNumFrames(n);
                   vscode.postMessage({ command: "setNumFrames", numFrames: n });
                 }
               }}
+              onBlur={() => setNumFramesText(String(numFrames))}
             />
           </>
         )}
