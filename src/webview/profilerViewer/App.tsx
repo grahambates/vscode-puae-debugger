@@ -28,6 +28,36 @@ interface FrameInfo {
   model: IProfileModel;
   thumbUrl?: string;     // blob: URL of the small filmstrip JPEG
   fullFrameUrl?: string; // blob: URL of the full-resolution JPEG (for hover-to-enlarge)
+  dmaBar?: Array<{ color: string; flex: number }>; // precomputed stacked bar segments
+}
+
+// Compute stacked DMA bar segments from a frame's owner array (BusOwner ordinals).
+// Grouped: BLITTER(23), BPL(8-13), SPR(14-21), AUD(4-7), COPPER(22), CPU(1,24), REFRESH(2), DISK(3), idle(0).
+// Colors match dma.ts OWNER_STYLE (0xAABBGGRR format, R=low byte).
+function computeDmaBar(owner: Uint8Array | undefined): Array<{ color: string; flex: number }> | undefined {
+  if (!owner || owner.length === 0) return undefined;
+  const c = new Int32Array(8); // [blitter, bpl, spr, aud, cop, cpu, refresh, disk]
+  let idle = 0;
+  for (let i = 0; i < owner.length; i++) {
+    const o = owner[i];
+    if      (o === 23)              c[0]++;
+    else if (o >= 8 && o <= 13)    c[1]++;
+    else if (o >= 14 && o <= 21)   c[2]++;
+    else if (o >= 4 && o <= 7)     c[3]++;
+    else if (o === 22)              c[4]++;
+    else if (o === 1 || o === 24)   c[5]++;
+    else if (o === 2)               c[6]++;
+    else if (o === 3)               c[7]++;
+    else                            idle++;
+  }
+  const COLORS = ["rgb(0,136,136)","rgb(0,0,255)","rgb(255,0,255)","rgb(255,0,0)",
+                  "rgb(238,238,0)","rgb(162,83,66)","rgb(68,68,68)","rgb(255,255,255)"];
+  const segs: Array<{ color: string; flex: number }> = [];
+  for (let i = 0; i < 8; i++) {
+    if (c[i] > 0) segs.push({ color: COLORS[i], flex: c[i] });
+  }
+  if (idle > 0) segs.push({ color: "rgba(255,255,255,0.07)", flex: idle });
+  return segs.length > 0 ? segs : undefined;
 }
 
 export function App() {
@@ -171,7 +201,7 @@ export function App() {
               if (fullFrame) {
                 fullFrameUrl = URL.createObjectURL(new Blob([fullFrame.data.buffer as ArrayBuffer], { type: "image/jpeg" }));
               }
-              return { model: { ...base, dma, dmaSnapshot, copper, registers } as IProfileModel, thumbUrl, fullFrameUrl };
+              return { model: { ...base, dma, dmaSnapshot, copper, registers } as IProfileModel, thumbUrl, fullFrameUrl, dmaBar: computeDmaBar(dma?.owner) };
             })
             .catch((e) => {
               console.warn("[profiler] bulk fetch failed:", e);
@@ -483,6 +513,9 @@ export function App() {
                       {f.thumbUrl
                         ? <img src={f.thumbUrl} alt={`Frame ${i + 1}`} />
                         : <span className="filmstrip-no-thumb">{i + 1}</span>}
+                      <div className="dma-bar" aria-hidden="true">
+                        {f.dmaBar?.map((s, si) => <div key={si} style={{ background: s.color, flex: s.flex }} />)}
+                      </div>
                     </button>
                   );
                 })}
