@@ -26,7 +26,8 @@ const ALL_TABS: TabId[] = ["time", "disasm", "copper", "blitter", "memory", "cus
 
 interface FrameInfo {
   model: IProfileModel;
-  thumbUrl?: string; // blob: URL of the JPEG thumbnail, if captured
+  thumbUrl?: string;     // blob: URL of the small filmstrip JPEG
+  fullFrameUrl?: string; // blob: URL of the full-resolution JPEG (for hover-to-enlarge)
 }
 
 export function App() {
@@ -77,6 +78,9 @@ export function App() {
   const [rangeModel, setRangeModel] = useState<IProfileModel | null>(null);
   // Track blob URLs so we can revoke them when frames are replaced (prevents memory leaks).
   const prevThumbUrlsRef = useRef<string[]>([]);
+  // Filmstrip hover-to-enlarge state: which rect the pointer is over + the full-res JPEG URL.
+  const [hoverRect, setHoverRect] = useState<DOMRect | null>(null);
+  const [hoveredFullFrameUrl, setHoveredFullFrameUrl] = useState<string | null>(null);
 
   // Concatenate the selected range's DMA grids into one continuous timeline, matching the
   // combined flame-graph x-axis. Each frame contributes DMA_HPOS*DMA_VPOS slots.
@@ -145,7 +149,7 @@ export function App() {
         const firstModel = m.frames[0]?.model;
         if (firstModel?.symbols) symbolsRef.current = firstModel.symbols;
 
-        // Revoke previous thumbnail blob URLs before replacing them.
+        // Revoke previous thumbnail and full-frame blob URLs before replacing them.
         for (const url of prevThumbUrlsRef.current) URL.revokeObjectURL(url);
         prevThumbUrlsRef.current = [];
 
@@ -156,14 +160,18 @@ export function App() {
           return fetch(fi.bulkUri)
             .then((r) => r.arrayBuffer())
             .then((buf) => {
-              const { dma, dmaSnapshot, copper, registers, thumbnail } = unpackBulk(buf);
+              const { dma, dmaSnapshot, copper, registers, thumbnail, fullFrame } = unpackBulk(buf);
               let thumbUrl: string | undefined;
               if (thumbnail) {
                 // thumbnail.data is a fresh Uint8Array copy (byteOffset 0), so its .buffer
                 // is a standalone ArrayBuffer — cast is safe and avoids a redundant copy.
                 thumbUrl = URL.createObjectURL(new Blob([thumbnail.data.buffer as ArrayBuffer], { type: "image/jpeg" }));
               }
-              return { model: { ...base, dma, dmaSnapshot, copper, registers } as IProfileModel, thumbUrl };
+              let fullFrameUrl: string | undefined;
+              if (fullFrame) {
+                fullFrameUrl = URL.createObjectURL(new Blob([fullFrame.data.buffer as ArrayBuffer], { type: "image/jpeg" }));
+              }
+              return { model: { ...base, dma, dmaSnapshot, copper, registers } as IProfileModel, thumbUrl, fullFrameUrl };
             })
             .catch((e) => {
               console.warn("[profiler] bulk fetch failed:", e);
@@ -174,7 +182,10 @@ export function App() {
         Promise.all(framePromises)
           .then((results) => {
             const newFrames: FrameInfo[] = results;
-            prevThumbUrlsRef.current = newFrames.map((f) => f.thumbUrl).filter(Boolean) as string[];
+            // Track all blob URLs for revocation — both small thumbnails and full frames.
+            prevThumbUrlsRef.current = newFrames.flatMap((f) =>
+              [f.thumbUrl, f.fullFrameUrl].filter(Boolean) as string[]
+            );
             setFrames(newFrames);
             setFrameIndex(0);
             setSelectedRange(null);
@@ -415,6 +426,14 @@ export function App() {
           </>
         )}
       </div>
+      {hoveredFullFrameUrl && hoverRect && (
+        <div
+          className="filmstrip-fullframe-popup"
+          style={{ left: 4, top: hoverRect.bottom + 8 }}
+        >
+          <img src={hoveredFullFrameUrl} alt="" />
+        </div>
+      )}
       {frames.length > 1 && (
         <div className="filmstrip" role="listbox" aria-label="Captured frames">
           {(() => {
@@ -452,6 +471,14 @@ export function App() {
                           setFrameIndex(i);
                         }
                       }}
+                      onMouseEnter={f.fullFrameUrl ? (e) => {
+                        setHoverRect((e.currentTarget as HTMLElement).getBoundingClientRect());
+                        setHoveredFullFrameUrl(f.fullFrameUrl!);
+                      } : undefined}
+                      onMouseLeave={f.fullFrameUrl ? () => {
+                        setHoverRect(null);
+                        setHoveredFullFrameUrl(null);
+                      } : undefined}
                     >
                       {f.thumbUrl
                         ? <img src={f.thumbUrl} alt={`Frame ${i + 1}`} />

@@ -22,26 +22,31 @@ import type { RawCapture } from "./profilerManager";
 import { decodeDmaGrid, decodeCustomRegs, decodeCopperRecords, decodeDmaEvents, decodeRegisterTrace } from "./dma";
 import { IDmaModel, DmaSnapshot, ICopperModel } from "./shared/profilerTypes";
 
-// v1 header: 7 × u32 = 28 bytes. v2 header: 10 × u32 = 40 bytes (adds thumbnail fields).
+// v1 header: 7 × u32 = 28 bytes. v2 header: 10 × u32 = 40 bytes (adds thumbnail).
+// v3 header: 13 × u32 = 52 bytes (adds fullFrame: len + width + height).
 const HEADER_V1 = 28;
 const HEADER_V2 = 40;
+const HEADER_V3 = 52;
 const EMPTY = new Uint8Array(0);
 
 export function packBulk(raw: RawCapture): Uint8Array | undefined {
   if (!raw.dma && !raw.thumbnail) return undefined;
-  const grid = raw.dma ?? EMPTY;
-  const chip = raw.snapshot?.chip ?? EMPTY;
-  const slow = raw.snapshot?.slow ?? EMPTY;
-  const custom = raw.snapshot?.custom ?? EMPTY;
-  const copper = raw.copper ?? EMPTY;
-  const events = raw.dmaEvents ?? EMPTY;
+  const grid      = raw.dma ?? EMPTY;
+  const chip      = raw.snapshot?.chip ?? EMPTY;
+  const slow      = raw.snapshot?.slow ?? EMPTY;
+  const custom    = raw.snapshot?.custom ?? EMPTY;
+  const copper    = raw.copper ?? EMPTY;
+  const events    = raw.dmaEvents ?? EMPTY;
   const registers = raw.registers ?? EMPTY;
-  const thumb = raw.thumbnail?.data ?? EMPTY;
-  const thumbW = raw.thumbnail?.width ?? 0;
-  const thumbH = raw.thumbnail?.height ?? 0;
+  const thumb     = raw.thumbnail?.data ?? EMPTY;
+  const thumbW    = raw.thumbnail?.width ?? 0;
+  const thumbH    = raw.thumbnail?.height ?? 0;
+  const full      = raw.fullFrame?.data ?? EMPTY;
+  const fullW     = raw.fullFrame?.width ?? 0;
+  const fullH     = raw.fullFrame?.height ?? 0;
   const out = new Uint8Array(
-    HEADER_V2 + grid.length + chip.length + slow.length + custom.length +
-    copper.length + events.length + registers.length + thumb.length,
+    HEADER_V3 + grid.length + chip.length + slow.length + custom.length +
+    copper.length + events.length + registers.length + thumb.length + full.length,
   );
   const dv = new DataView(out.buffer);
   dv.setUint32(0,  grid.length,      true);
@@ -54,7 +59,10 @@ export function packBulk(raw: RawCapture): Uint8Array | undefined {
   dv.setUint32(28, thumb.length,     true);
   dv.setUint32(32, thumbW,           true);
   dv.setUint32(36, thumbH,           true);
-  let off = HEADER_V2;
+  dv.setUint32(40, full.length,      true);
+  dv.setUint32(44, fullW,            true);
+  dv.setUint32(48, fullH,            true);
+  let off = HEADER_V3;
   out.set(grid,      off); off += grid.length;
   out.set(chip,      off); off += chip.length;
   out.set(slow,      off); off += slow.length;
@@ -62,7 +70,8 @@ export function packBulk(raw: RawCapture): Uint8Array | undefined {
   out.set(copper,    off); off += copper.length;
   out.set(events,    off); off += events.length;
   out.set(registers, off); off += registers.length;
-  out.set(thumb,     off);
+  out.set(thumb,     off); off += thumb.length;
+  out.set(full,      off);
   return out;
 }
 
@@ -72,8 +81,9 @@ export function unpackBulk(buf: ArrayBuffer): {
   copper?: ICopperModel;
   registers?: Uint32Array;
   thumbnail?: { data: Uint8Array; width: number; height: number };
+  fullFrame?: { data: Uint8Array; width: number; height: number };
 } {
-  // Accept both v1 (28-byte header, no thumbnail) and v2 (40-byte header, with thumbnail).
+  // Accept v1 (28 B), v2 (40 B, adds thumbnail), v3 (52 B, adds fullFrame).
   if (buf.byteLength < HEADER_V1) throw new Error(`unpackBulk: buffer too small (${buf.byteLength} < ${HEADER_V1} byte header)`);
   const dv = new DataView(buf);
   const gridLen      = dv.getUint32(0,  true);
@@ -84,14 +94,19 @@ export function unpackBulk(buf: ArrayBuffer): {
   const eventsLen    = dv.getUint32(20, true);
   const registersLen = dv.getUint32(24, true);
 
-  // v2 fields — present only if the header is at least HEADER_V2 bytes.
   const isV2 = buf.byteLength >= HEADER_V2;
   const thumbLen = isV2 ? dv.getUint32(28, true) : 0;
   const thumbW   = isV2 ? dv.getUint32(32, true) : 0;
   const thumbH   = isV2 ? dv.getUint32(36, true) : 0;
-  const HEADER   = isV2 ? HEADER_V2 : HEADER_V1;
 
-  const need = HEADER + gridLen + chipLen + slowLen + customLen + copperLen + eventsLen + registersLen + thumbLen;
+  const isV3 = buf.byteLength >= HEADER_V3;
+  const fullLen  = isV3 ? dv.getUint32(40, true) : 0;
+  const fullW    = isV3 ? dv.getUint32(44, true) : 0;
+  const fullH    = isV3 ? dv.getUint32(48, true) : 0;
+
+  const HEADER = isV3 ? HEADER_V3 : isV2 ? HEADER_V2 : HEADER_V1;
+
+  const need = HEADER + gridLen + chipLen + slowLen + customLen + copperLen + eventsLen + registersLen + thumbLen + fullLen;
   if (need > buf.byteLength) throw new Error(`unpackBulk: section lengths (${need}) exceed buffer (${buf.byteLength})`);
   let off = HEADER;
   const grid      = new Uint8Array(buf, off, gridLen);      off += gridLen;
@@ -101,7 +116,8 @@ export function unpackBulk(buf: ArrayBuffer): {
   const copper    = new Uint8Array(buf, off, copperLen);    off += copperLen;
   const events    = new Uint8Array(buf, off, eventsLen);    off += eventsLen;
   const registers = new Uint8Array(buf, off, registersLen); off += registersLen;
-  const thumbData = thumbLen > 0 ? new Uint8Array(buf, off, thumbLen) : undefined;
+  const thumbData = thumbLen > 0 ? new Uint8Array(buf, off, thumbLen) : undefined; off += thumbLen;
+  const fullData  = fullLen  > 0 ? new Uint8Array(buf, off, fullLen)  : undefined;
 
   const dma = decodeDmaGrid(grid);
   if (dma) {
@@ -110,12 +126,14 @@ export function unpackBulk(buf: ArrayBuffer): {
   }
   return {
     dma,
-    // Copy out of the fetched buffer so the arrays stand alone.
     dmaSnapshot: chipLen || slowLen ? { chip: new Uint8Array(chip), slow: new Uint8Array(slow), custom: decodeCustomRegs(custom) } : undefined,
     copper: decodeCopperRecords(copper),
     registers: registersLen > 0 ? decodeRegisterTrace(registers) : undefined,
     thumbnail: thumbData && thumbW > 0 && thumbH > 0
       ? { data: new Uint8Array(thumbData), width: thumbW, height: thumbH }
+      : undefined,
+    fullFrame: fullData && fullW > 0 && fullH > 0
+      ? { data: new Uint8Array(fullData), width: fullW, height: fullH }
       : undefined,
   };
 }

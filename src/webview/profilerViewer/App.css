@@ -107,6 +107,24 @@ body {
   color: var(--vscode-descriptionForeground);
 }
 
+/* Full-resolution popup shown on filmstrip thumbnail hover. */
+.filmstrip-fullframe-popup {
+  position: fixed;
+  z-index: 9999;
+  pointer-events: none; /* never intercept mouse events — would cause the button's onMouseLeave to fire */
+  border: 1px solid var(--vscode-panel-border, #555);
+  border-radius: 3px;
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.7);
+  background: #000;
+  overflow: hidden;
+}
+.filmstrip-fullframe-popup img {
+  display: block;
+  max-width: calc(100vw - 8px); /* 4px left offset + 4px right margin */
+  max-height: 568px;
+  image-rendering: pixelated;
+}
+
 .error {
   margin: 8px 10px;
   padding: 6px 10px;

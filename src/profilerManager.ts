@@ -358,6 +358,8 @@ export interface RawCapture {
   registers?: Uint8Array; // raw per-sample register trace bytes, parallel to `profile.data` (absent if unsupported/empty)
   // JPEG thumbnail of the framebuffer at capture time, for the multi-frame filmstrip UI.
   thumbnail?: { data: Uint8Array; width: number; height: number };
+  // Full-resolution JPEG of the framebuffer, for hover-to-enlarge in the filmstrip.
+  fullFrame?: { data: Uint8Array; width: number; height: number };
 }
 
 // One captured frame: the decoded model + the raw bytes it was built from.
@@ -670,9 +672,10 @@ export class ProfilerManager {
         // ── Single-frame path — one startProfiling call, all data fetched immediately ──────
         await rpc.sendRpcCommand("startProfiling", { numFrames: 1 }, 30000);
 
-        // g_rgba_buf holds the frame's pixels after startProfiling returns; grab the
-        // thumbnail before a subsequent retro_run() could overwrite it.
+        // g_rgba_buf holds the frame's pixels after startProfiling returns; grab both the
+        // filmstrip thumbnail and the full-res image before anything could overwrite it.
         let thumbnail: RawCapture["thumbnail"] | undefined;
+        let fullFrame: RawCapture["fullFrame"] | undefined;
         try {
           const fbRes = await rpc.sendRpcCommand<{ data: Uint8Array; width: number; height: number }>("getFramebuffer");
           const fbData = u8(fbRes.data);
@@ -681,6 +684,17 @@ export class ProfilerManager {
           }
         } catch (e) {
           console.warn("[profiler] frame 0: thumbnail capture failed:", e);
+        }
+        try {
+          // wasm_profile_start always stores a full-res frame in g_wprofFullFrames[0];
+          // batch-encode it via the same OffscreenCanvas path used by multi-frame captures.
+          const ffBatch = await rpc.sendRpcCommand<{ data: Uint8Array; width: number; height: number }[]>("getProfileFullFrameBatch");
+          const ff = ffBatch[0];
+          if (ff && u8(ff.data).length && ff.width > 0 && ff.height > 0) {
+            fullFrame = { data: u8(ff.data), width: ff.width, height: ff.height };
+          }
+        } catch (e) {
+          console.warn("[profiler] frame 0: full-frame capture failed:", e);
         }
 
         const res = await rpc.sendRpcCommand<{
@@ -704,6 +718,7 @@ export class ProfilerManager {
             isPAL: res.isPAL ?? true,
           },
           thumbnail,
+          fullFrame,
         };
 
         try {
@@ -784,6 +799,14 @@ export class ProfilerManager {
           thumbBatch = await rpc.sendRpcCommand<{ data: Uint8Array; width: number; height: number }[]>("getProfileThumbBatch");
         } catch (e) {
           console.warn("[profiler] thumbnail batch capture failed:", e);
+        }
+
+        // Full-resolution frames for hover-to-enlarge, encoded in parallel alongside thumbnails.
+        let fullFrameBatch: { data: Uint8Array; width: number; height: number }[] = [];
+        try {
+          fullFrameBatch = await rpc.sendRpcCommand<{ data: Uint8Array; width: number; height: number }[]>("getProfileFullFrameBatch");
+        } catch (e) {
+          console.warn("[profiler] full-frame batch capture failed:", e);
         }
 
         const res = await rpc.sendRpcCommand<{
@@ -889,6 +912,12 @@ export class ProfilerManager {
               ? { data: u8(thumbEntry.data), width: thumbEntry.width, height: thumbEntry.height }
               : undefined;
 
+          const ffEntry = fullFrameBatch[fi];
+          const fullFrame: RawCapture["fullFrame"] | undefined =
+            ffEntry && u8(ffEntry.data).length > 0
+              ? { data: u8(ffEntry.data), width: ffEntry.width, height: ffEntry.height }
+              : undefined;
+
           const raw: RawCapture = {
             profile: {
               data: frameProfileBytes,
@@ -910,6 +939,7 @@ export class ProfilerManager {
             // Registers: only frame 0 has data in the buffer.
             registers: fi === 0 && allRegsBytes.length > 0 ? allRegsBytes : undefined,
             thumbnail,
+            fullFrame,
           };
 
           const model = buildProfileModel(samples, sourceMap, cyclesPerMicroSecond);

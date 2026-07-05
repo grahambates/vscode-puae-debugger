@@ -1244,6 +1244,26 @@ export function setupRpcDispatcher(
           return { data: new Uint8Array(await blob.arrayBuffer()), width: THUMB_W, height: THUMB_H };
         });
         break;
+      // Batch-encode all per-frame full-resolution RGBA frames into JPEG for hover-to-enlarge.
+      // Returns { data, width, height }[] — one entry per captured frame (matches getProfileThumbBatch).
+      // Encodes in parallel; each JPEG is typically 80–150 KB for a PAL Amiga frame at quality 0.85.
+      case "getProfileFullFrameBatch":
+        rpcRequestAsync(async () => {
+          const count = M._wasm_profile_get_frame_count();
+          const fw    = M._wasm_profile_get_fullframe_w();
+          const fh    = M._wasm_profile_get_fullframe_h();
+          const encodes = Array.from({ length: count }, async (_, i) => {
+            const ptr = M._wasm_profile_get_fullframe_ptr(i);
+            if (!ptr || fw <= 0 || fh <= 0) return { data: new Uint8Array(0), width: 0, height: 0 };
+            const src = new OffscreenCanvas(fw, fh);
+            src.getContext("2d")!.putImageData(
+              new ImageData(new Uint8ClampedArray(M.HEAPU8.buffer as ArrayBuffer, ptr, fw * fh * 4), fw, fh), 0, 0);
+            const blob = await src.convertToBlob({ type: "image/jpeg", quality: 0.85 });
+            return { data: new Uint8Array(await blob.arrayBuffer()), width: fw, height: fh };
+          });
+          return Promise.all(encodes);
+        });
+        break;
       // Batch-encode all per-frame thumbnails saved by wasm_profile_start into JPEG.
       // Returns an array of { data, width, height } — one entry per captured frame.
       // All encodes run in parallel via Promise.all so the total cost is ~one JPEG encode.

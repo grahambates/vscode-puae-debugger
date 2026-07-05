@@ -104,6 +104,7 @@ export class ProfilerViewerProvider {
     this.panel.webview.onDidReceiveMessage(async (message: ProfilerInboundMessage) => {
       if (message.command === "ready") {
         this.symbolsSent = false;
+        this.numFrames = 1; // webview always resets its UI to 1 on mount — keep provider in sync
         if (this.lastFrames.length > 0) this.postResult(this.lastFrames, this.lastBulkUris);
         else await this.capture();
       } else if (message.command === "capture") {

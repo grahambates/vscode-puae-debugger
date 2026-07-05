@@ -848,6 +848,20 @@ EMSCRIPTEN_KEEPALIVE const void *wasm_profile_get_evt_frame_ptr(int fi) {
     return g_wprofEvtAll + (size_t)fi * WASM_EVT_FRAME_BYTES;
 }
 
+// Per-frame full-resolution RGBA images for hover-to-enlarge.
+// Allocated on the first retro_run() (once dimensions are known), freed at the start of
+// the next wasm_profile_start call.  All frames share the same W×H (taken from frame 0).
+static uint8_t *g_wprofFullFrames = NULL; /* [frameCount][W×H×4], contiguous */
+static unsigned  g_wprofFullFrameW = 0;
+static unsigned  g_wprofFullFrameH = 0;
+
+EMSCRIPTEN_KEEPALIVE unsigned    wasm_profile_get_fullframe_w(void)    { return g_wprofFullFrameW; }
+EMSCRIPTEN_KEEPALIVE unsigned    wasm_profile_get_fullframe_h(void)    { return g_wprofFullFrameH; }
+EMSCRIPTEN_KEEPALIVE const void *wasm_profile_get_fullframe_ptr(int fi) {
+    if (!g_wprofFullFrames || fi < 0 || fi >= g_wprofThumbCount) return (void *)0;
+    return g_wprofFullFrames + (size_t)fi * g_wprofFullFrameW * g_wprofFullFrameH * 4u;
+}
+
 // Runs numFrames PAL/NTSC frames, sampling CPU call stacks and DMA slots.
 // For N>1, emits a WASM_PROFILE_FRAME_MARKER sentinel between consecutive frames in the
 // profile stream so the JS side can split into per-frame models without extra round-trips.
@@ -858,10 +872,13 @@ EMSCRIPTEN_KEEPALIVE const void *wasm_profile_get_evt_frame_ptr(int fi) {
 EMSCRIPTEN_KEEPALIVE
 int wasm_profile_start(int numFrames)
 {
-    // Free per-frame DMA buffers left over from the previous call before allocating new ones.
-    free(g_wprofDmaAll); g_wprofDmaAll = NULL;
-    free(g_wprofEvtAll); g_wprofEvtAll = NULL;
-    g_wprofDmaCount = 0;
+    // Free per-frame buffers left over from the previous call before allocating new ones.
+    free(g_wprofDmaAll);     g_wprofDmaAll     = NULL;
+    free(g_wprofEvtAll);     g_wprofEvtAll     = NULL;
+    free(g_wprofFullFrames); g_wprofFullFrames = NULL;
+    g_wprofDmaCount    = 0;
+    g_wprofFullFrameW  = 0;
+    g_wprofFullFrameH  = 0;
 
     wasm_profile_prepare();
     record_dma_reset(1);   /* alloc if needed, toggle buffer, set debug_dma=1 */
@@ -879,6 +896,24 @@ int wasm_profile_start(int numFrames)
         libretro_frame_end = false;
         retro_run();
         wasm_profile_save_thumbnail();
+        // Capture full-resolution RGBA for hover-to-enlarge.  g_rgba_buf is a contiguous
+        // safe_w × safe_h × 4 region; copy it while it still holds this frame's pixels.
+        {
+            unsigned fw = g_fb_width  < MAX_FB_WIDTH  ? g_fb_width  : MAX_FB_WIDTH;
+            unsigned fh = g_fb_height < MAX_FB_HEIGHT ? g_fb_height : MAX_FB_HEIGHT;
+            if (fw > 0 && fh > 0) {
+                if (!g_wprofFullFrames) {
+                    g_wprofFullFrameW = fw;
+                    g_wprofFullFrameH = fh;
+                    g_wprofFullFrames = (uint8_t *)malloc(
+                        (size_t)numFrames * fw * fh * 4u);
+                }
+                if (g_wprofFullFrames && fw == g_wprofFullFrameW && fh == g_wprofFullFrameH) {
+                    memcpy(g_wprofFullFrames + (size_t)framesDone * fw * fh * 4u,
+                           g_rgba_buf, (size_t)fw * fh * 4u);
+                }
+            }
+        }
         // Serialize this frame's DMA immediately after retro_run() while the
         // toggle buffer still holds its data (before the next frame can overwrite it).
         if (g_wprofDmaAll)
