@@ -8,10 +8,15 @@ export interface IScreen {
   firstLine: number;   // vpos of first BPL-active scan line
   hires: boolean;      // BPLCON0 at display start — may not hold for the whole frame
   ham: boolean;        // BPLCON0 at display start — may not hold for the whole frame
+  dpf: boolean;        // BPLCON0[10] — dual playfield at display start
   // True when the copper writes BPLCON0 during the display area. When set the
   // info label should say "variable" rather than reporting a single mode, because
   // numPlanes / hires / ham may be different in different parts of the screen.
   modeChanges: boolean;
+  // Lores pixel position of canvas x=0 within the full horizontal line.
+  // Used to map sprite HSTRT register values (lores pixel units) to canvas coords:
+  //   canvas_x = (hstart - displayLeft) * (hires ? 2 : 1)
+  displayLeft: number;
 }
 
 export const DMA_HPOS = 227; // slots per scan line in the DMA grid
@@ -80,6 +85,7 @@ export function buildScreenFromModel(model: IProfileModel): IScreen | undefined 
 
   const hires = (BPLCON0 & (1 << 15)) !== 0;
   const ham   = (BPLCON0 & (1 << 11)) !== 0;
+  const dpf   = (BPLCON0 & (1 << 10)) !== 0;
 
   const ddfStart = DDFSTRT & 0xfc;
   const ddfStop  = DDFSTOP & 0xfc;
@@ -101,5 +107,5 @@ export function buildScreenFromModel(model: IProfileModel): IScreen | undefined 
     if ((w1 & 0x1fe) === R.BPLCON0) { modeChanges = true; break; }
   }
 
-  return { numPlanes, width, height, firstLine, hires, ham, modeChanges };
+  return { numPlanes, width, height, firstLine, hires, ham, dpf, modeChanges, displayLeft: ddfStart * 2 };
 }
