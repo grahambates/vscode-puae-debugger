@@ -1216,7 +1216,7 @@ export function setupRpcDispatcher(
         rpcRequest(() => ({ ok: true }));
         break;
       case "getCopperData": {
-        const ptr = M._wasm_copper_get_records_ptr(); // re-serializes on every call
+        const ptr = M._wasm_copper_get_records_ptr();
         const size = M._wasm_copper_get_records_size();
         rpcRequest(() => ({
           data: size > 0

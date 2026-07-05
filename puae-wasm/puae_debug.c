@@ -591,18 +591,25 @@ extern int debug_copper;
 #define PUAE_COPPER_MAX_RECORDS 40000
 static uint8_t g_copperRecords[PUAE_COPPER_MAX_RECORDS * PUAE_COPPER_RECORD_BYTES];
 static uint32_t g_copperRecordsSize;
+static int g_copperCacheDirty = 1; /* serialized once per frame, not once per call */
 
 PUAE_DEBUG_EXPORT void
-wasm_copper_tracking_enable(int on) { debug_copper = on ? 1 : 0; }
+wasm_copper_tracking_enable(int on)
+{
+	debug_copper = on ? 1 : 0;
+	g_copperCacheDirty = 1; /* tracking state changed — re-serialize next read */
+}
 
-// Re-serializes on every call (cheap — bounded by the actual instruction
-// count for one frame) so the data is always fresh as of this call. Callers
-// (copperHover.ts) call this first, then wasm_copper_get_records_size() for
-// the byte count of that same pass.
+// Serializes cop_record[] into g_copperRecords at most once per frame (lazily
+// on first call after vblank). dmaHover.ts calls this on every mousemove —
+// caching avoids repeated work while the frame is static.
 PUAE_DEBUG_EXPORT const uint8_t *
 wasm_copper_get_records_ptr(void)
 {
-	g_copperRecordsSize = puae_copper_serialize(g_copperRecords);
+	if (g_copperCacheDirty) {
+		g_copperRecordsSize = puae_copper_serialize(g_copperRecords);
+		g_copperCacheDirty = 0;
+	}
 	return g_copperRecords;
 }
 
@@ -1751,6 +1758,7 @@ puae_debug_set_hblank_callback(void (*cb)(void *), void *user)
 PUAE_DEBUG_EXPORT void
 puae_vblank_notify(void)
 {
+	g_copperCacheDirty = 1; /* new frame — copper double-buffer may have flipped */
 	if (puae_debug_vblankCb) {
 		puae_debug_vblankCb(puae_debug_vblankUser);
 	}
