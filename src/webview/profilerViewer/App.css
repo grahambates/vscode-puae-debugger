@@ -181,6 +181,131 @@ body {
   color: var(--vscode-descriptionForeground);
   font-style: italic;
 }
+.resources-bpl-label {
+  color: var(--vscode-foreground);
+  opacity: 0.8;
+  margin-left: 4px;
+}
+.resources-bpl-btn {
+  background: var(--vscode-badge-background, #4d4d4d);
+  color: var(--vscode-badge-foreground, #fff);
+  border: 1px solid transparent;
+  border-radius: 2px;
+  padding: 1px 5px;
+  font-size: 11px;
+  cursor: pointer;
+  opacity: 0.4;
+  font-family: var(--vscode-editor-font-family, monospace);
+  min-width: 20px;
+}
+.resources-bpl-btn.active {
+  opacity: 1;
+  border-color: var(--vscode-focusBorder, #007fd4);
+}
+
+/* Screen pixel hover tooltip */
+.screen-tooltip {
+  position: fixed;
+  z-index: 1000;
+  background: var(--vscode-editorHoverWidget-background, #252526);
+  border: 1px solid var(--vscode-editorHoverWidget-border, #454545);
+  border-radius: 3px;
+  padding: 6px 8px;
+  font-size: 11px;
+  font-family: var(--vscode-editor-font-family, monospace);
+  pointer-events: none;
+  white-space: nowrap;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.4);
+}
+.screen-tooltip-table {
+  border-collapse: collapse;
+}
+.screen-tooltip-table td {
+  padding: 1px 4px 1px 0;
+  vertical-align: middle;
+}
+.screen-tooltip-label {
+  color: var(--vscode-descriptionForeground);
+  padding-right: 8px !important;
+}
+.screen-tooltip-color-row {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+.screen-tooltip-swatch {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  border: 1px solid rgba(255,255,255,0.25);
+  border-radius: 1px;
+  flex-shrink: 0;
+}
+.screen-tooltip-bits {
+  display: flex;
+  gap: 3px;
+}
+.screen-tooltip-bit {
+  display: inline-block;
+  width: 16px;
+  text-align: center;
+  border-radius: 2px;
+  padding: 0 2px;
+  font-size: 10px;
+  font-weight: bold;
+}
+.screen-tooltip-bit.on {
+  background: var(--vscode-badge-background, #4d4d4d);
+  color: var(--vscode-badge-foreground, #fff);
+  opacity: 1;
+}
+.screen-tooltip-bit.off {
+  background: transparent;
+  color: var(--vscode-descriptionForeground);
+  opacity: 0.4;
+  border: 1px solid currentColor;
+}
+
+/* BPL fetch addresses */
+.screen-tooltip-addrs {
+  display: grid;
+  grid-template-columns: repeat(2, auto);
+  gap: 1px 14px;
+}
+.screen-tooltip-addr-item {
+  white-space: nowrap;
+  color: var(--vscode-descriptionForeground);
+}
+.screen-tooltip-addr-val {
+  color: var(--vscode-foreground);
+}
+.screen-tooltip-addr-none {
+  opacity: 0.4;
+}
+
+/* Palette chip grid */
+.screen-tooltip-palette {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px;
+  max-width: 200px;
+}
+.screen-tooltip-palette-chip {
+  width: 10px;
+  height: 10px;
+  border: 1px solid rgba(255,255,255,0.1);
+  border-radius: 1px;
+  display: inline-block;
+  flex-shrink: 0;
+  cursor: default;
+}
+
+/* Copper instruction text */
+.screen-tooltip-copper {
+  font-family: var(--vscode-editor-font-family, monospace);
+  font-size: 10px;
+  opacity: 0.85;
+}
 
 .error {
   margin: 8px 10px;
