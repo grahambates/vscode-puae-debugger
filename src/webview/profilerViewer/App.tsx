@@ -115,7 +115,10 @@ export function App() {
     const isAll = a === 0 && b === frames.length - 1;
     const baseModel = isAll ? combinedModel : rangeModel;
     if (!baseModel) return; // waiting for rangeResult
-    const m = { ...baseModel, dma: combinedDma, dmaSnapshot: frames[a]?.model.dmaSnapshot, copper: frames[a]?.model.copper };
+    // Snapshot and copper live only on the last captured frame (end-of-capture state).
+    // Use frames[b] (last in selected range) so the "All" view [0, N-1] always picks up
+    // snapshot and copper from frame N-1, and partial ranges covering it do too.
+    const m = { ...baseModel, dma: combinedDma, dmaSnapshot: frames[b]?.model.dmaSnapshot, copper: frames[b]?.model.copper };
     setProfileModel(m);
   }, [selectedRange, combinedModel, rangeModel, combinedDma, frameIndex, frames]);
 

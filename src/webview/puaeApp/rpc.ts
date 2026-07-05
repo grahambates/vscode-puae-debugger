@@ -1244,6 +1244,50 @@ export function setupRpcDispatcher(
           return { data: new Uint8Array(await blob.arrayBuffer()), width: THUMB_W, height: THUMB_H };
         });
         break;
+      // Batch-encode all per-frame thumbnails saved by wasm_profile_start into JPEG.
+      // Returns an array of { data, width, height } — one entry per captured frame.
+      // All encodes run in parallel via Promise.all so the total cost is ~one JPEG encode.
+      case "getProfileThumbBatch":
+        rpcRequestAsync(async () => {
+          const count = M._wasm_profile_get_frame_count();
+          const tw    = M._wasm_profile_get_thumb_w();
+          const th    = M._wasm_profile_get_thumb_h();
+          const encodes = Array.from({ length: count }, async (_, i) => {
+            const ptr = M._wasm_profile_get_thumb_ptr(i);
+            if (!ptr || tw <= 0 || th <= 0) return { data: new Uint8Array(0), width: 0, height: 0 };
+            const src = new OffscreenCanvas(tw, th);
+            src.getContext("2d")!.putImageData(
+              new ImageData(new Uint8ClampedArray(M.HEAPU8.buffer as ArrayBuffer, ptr, tw * th * 4), tw, th), 0, 0);
+            const blob = await src.convertToBlob({ type: "image/jpeg", quality: 0.75 });
+            return { data: new Uint8Array(await blob.arrayBuffer()), width: tw, height: th };
+          });
+          return Promise.all(encodes);
+        });
+        break;
+      // Per-frame DMA grid from the multi-frame profile loop — serialized in C right after
+      // each retro_run() while the toggle buffer still holds that frame's data.
+      case "getDmaFrame": {
+        const fi = (args.frameIdx ?? 0) >>> 0;
+        const ptr  = M._wasm_profile_get_dma_frame_ptr(fi);
+        const size = ptr ? M._wasm_profile_get_dma_frame_bytes() : 0;
+        rpcRequest(() => ({
+          data: size > 0
+            ? new Uint8Array(M.HEAPU8.buffer as ArrayBuffer, ptr, size).slice()
+            : new Uint8Array(0),
+        }));
+        break;
+      }
+      case "getDmaEventsFrame": {
+        const fi = (args.frameIdx ?? 0) >>> 0;
+        const ptr  = M._wasm_profile_get_evt_frame_ptr(fi);
+        const size = ptr ? M._wasm_profile_get_evt_frame_bytes() : 0;
+        rpcRequest(() => ({
+          data: size > 0
+            ? new Uint8Array(M.HEAPU8.buffer as ArrayBuffer, ptr, size).slice()
+            : new Uint8Array(0),
+        }));
+        break;
+      }
       case "getDmaSnapshot": {
         const chipPtr = M._wasm_dma_get_chip_ptr();
         const chipSize = M._wasm_dma_get_chip_size();

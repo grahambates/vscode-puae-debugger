@@ -366,6 +366,11 @@ static int      g_wprofWasPaused;
 static int      g_wprofSavedBlitterCE; /* saved currprefs.blitter_cycle_exact during capture */
 static evt_t    g_wprofStartCycles;
 static uint64_t g_wprofFrameCycles;
+/* When 0, wasm_profile_instrHook still records profile samples but skips the
+ * register snapshot.  Set to 0 by wasm_profile_emit_frame_marker() so that
+ * only frame 0 carries register data in multi-frame captures — avoiding the
+ * 65k-sample register cap from blocking profile recording for later frames. */
+static int      g_wprofRegEnabled;
 
 /* Index into g_wprofBuf of the cycleDelta word belonging to the MOST RECENTLY pushed sample,
  * still unfinalized — UINT32_MAX when none is pending. See wasm_profile_instrHook's comment for
@@ -454,6 +459,7 @@ wasm_profile_prepare(void)
 {
 	g_wprofBufLen          = 0;
 	g_wprofRegSampleCount  = 0;
+	g_wprofRegEnabled      = 1;
 	g_wprofTotalInstrs     = 0;
 	g_wprofInRangeInstrs   = 0;
 	g_wprofLastCycleValid  = 0;
@@ -541,10 +547,11 @@ wasm_profile_instrHook(uint32_t pc24)
 	uint32_t depth  = 1 + stkDepth;
 	uint32_t needed = 1 + depth + 1;   /* depth-word + PCs + cycleDelta placeholder */
 	if (g_wprofBufLen + needed > WASM_PROFILE_BUF_WORDS) return;
-	/* Gate on the register buffer's own (much smaller) cap too — if it's ever the limiting
-	 * factor the sample is dropped from BOTH buffers, keeping them in lockstep rather than
-	 * silently desyncing registers[k] from the k-th decoded InstructionSample. */
-	if (g_wprofRegSampleCount >= WASM_PROFILE_MAX_REG_SAMPLES) return;
+	/* When register recording is active (frame 0 of multi-frame; always in single-frame mode),
+	 * gate on the register cap too — the two buffers stay in lockstep so registers[k] reliably
+	 * belongs to the k-th decoded InstructionSample.  wasm_profile_emit_frame_marker() clears
+	 * g_wprofRegEnabled for frames 1..N-1, allowing the profile buffer to keep filling. */
+	if (g_wprofRegEnabled && g_wprofRegSampleCount >= WASM_PROFILE_MAX_REG_SAMPLES) return;
 
 	g_wprofBuf[g_wprofBufLen++] = depth;
 	g_wprofBuf[g_wprofBufLen++] = pc24;   /* leaf */
@@ -557,10 +564,32 @@ wasm_profile_instrHook(uint32_t pc24)
 	g_wprofPendingCycleSlot = g_wprofBufLen;
 	g_wprofBuf[g_wprofBufLen++] = 1;
 
-	/* Register snapshot for this exact sample (D0-D7, A0-A7, SR, PC, USP — see
-	 * puae_debug_read_regs), in lockstep with the push above. */
-	puae_debug_read_regs(&g_wprofRegBuf[g_wprofRegSampleCount * WASM_PROFILE_REG_COUNT], WASM_PROFILE_REG_COUNT);
-	g_wprofRegSampleCount++;
+	/* Register snapshot: only for the frames where register recording is enabled (frame 0 of
+	 * a multi-frame capture; always enabled in single-frame mode). */
+	if (g_wprofRegEnabled) {
+		puae_debug_read_regs(&g_wprofRegBuf[g_wprofRegSampleCount * WASM_PROFILE_REG_COUNT], WASM_PROFILE_REG_COUNT);
+		g_wprofRegSampleCount++;
+	}
+}
+
+/* Emit a frame-boundary sentinel into g_wprofBuf between consecutive profiled frames.
+ * Called by wasm_profile_start (in frontend_shim.c) after each completed retro_run(), except
+ * the last frame.  Sentinel layout: [WASM_PROFILE_FRAME_MARKER, frameIdx] (2 words).
+ * 0xFFFFFF01 is safe: real depth values are 1-64; it is far outside that range and the JS
+ * splitProfileStream() stops at the first word that looks like a depth > MAX_DEPTH.
+ * Also disables register recording for subsequent frames so the 65k-sample cap can't block
+ * the profile buffer from accumulating samples for frames 1..N-1. */
+#define WASM_PROFILE_FRAME_MARKER 0xFFFFFF01u
+PUAE_DEBUG_EXPORT void
+wasm_profile_emit_frame_marker(int frameIdx)
+{
+	if (!g_wprofActive) return;
+	if (g_wprofBufLen + 2 > WASM_PROFILE_BUF_WORDS) return;
+	g_wprofPendingCycleSlot = WASM_PROFILE_NO_PENDING_SLOT;
+	g_wprofLastCycleValid   = 0;
+	g_wprofRegEnabled       = 0;
+	g_wprofBuf[g_wprofBufLen++] = WASM_PROFILE_FRAME_MARKER;
+	g_wprofBuf[g_wprofBufLen++] = (uint32_t)frameIdx;
 }
 
 PUAE_DEBUG_EXPORT void
@@ -651,6 +680,14 @@ wasm_dma_get_events_ptr(void) { return g_dmaEvents; }
 
 PUAE_DEBUG_EXPORT uint32_t
 wasm_dma_get_events_size(void) { return g_dmaEventsSize; }
+
+// Thin wrappers used by frontend_shim.c's per-frame DMA serialization inside
+// wasm_profile_start's multi-frame loop: serialize the just-completed frame's
+// DMA into a caller-provided buffer instead of the static g_dmaGrid/g_dmaEvents.
+// Must be called immediately after retro_run() while the toggle buffer still
+// holds that frame's data.
+void wasm_dma_serialize_to_buf(uint8_t *dst)        { puae_dma_serialize(dst); }
+void wasm_dma_serialize_events_to_buf(uint8_t *dst) { puae_dma_serialize_events(dst); }
 
 // Live single-cell query (last completed frame), for the DMA-overlay hover
 // tooltip (dmaHover.ts) — cheap enough to call on every mousemove, unlike

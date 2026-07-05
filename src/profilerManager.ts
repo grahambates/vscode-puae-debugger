@@ -520,6 +520,53 @@ export async function fetchDisassembly(
   return out;
 }
 
+// Sentinel depth value the C side emits between consecutive frames in g_wprofBuf.
+// Must match WASM_PROFILE_FRAME_MARKER in puae-wasm/puae_debug.c.
+const WASM_PROFILE_FRAME_MARKER = 0xFFFFFF01;
+
+// Split a combined multi-frame profile stream (WASM_PROFILE_FRAME_MARKER [marker, frameIdx]
+// pairs between each frame's samples) into per-frame arrays.  Returns:
+//   perFrame[i]   — decoded InstructionSample[] for frame i
+//   startWords[i] — word index of frame i's first record in `words`
+//   endWords[i]   — word index just past frame i's last record (= marker index or words.length)
+// Used by the multi-frame single-call capture path to slice raw.profile.data per frame.
+function splitProfileStream(words: Uint32Array): {
+  perFrame: InstructionSample[][];
+  startWords: number[];
+  endWords: number[];
+} {
+  const perFrame: InstructionSample[][] = [];
+  const startWords: number[] = [];
+  const endWords: number[] = [];
+  let current: InstructionSample[] = [];
+  let frameStart = 0;
+  let i = 0;
+  while (i < words.length) {
+    const depth = words[i]; // peek without consuming
+    if (depth === WASM_PROFILE_FRAME_MARKER) {
+      perFrame.push(current);
+      startWords.push(frameStart);
+      endWords.push(i);
+      current = [];
+      frameStart = i + 2; // skip marker word + frameIdx word
+      i += 2;
+      continue;
+    }
+    if (depth === 0 || depth > MAX_DEPTH) break;
+    i++; // consume depth word
+    if (i + depth + 1 > words.length) break;
+    const stack: number[] = [];
+    for (let d = 0; d < depth; d++) stack.push(words[i++]);
+    const cycles = words[i++];
+    current.push({ stack, cycles });
+  }
+  // Final frame (or the only frame when N=1, which has no markers).
+  perFrame.push(current);
+  startWords.push(frameStart);
+  endWords.push(i);
+  return { perFrame, startWords, endWords };
+}
+
 // Orchestrates a capture: upload the unwind table, run the profiled frame(s),
 // read back the binary stream, decode + aggregate into a call tree. All heavy
 // work (symbolication, aggregation) happens here, once, so the webview only ever
@@ -619,12 +666,12 @@ export class ProfilerManager {
     const allSamples: InstructionSample[] = []; // accumulated across all frames for combined model
     this._frameSamples = []; // reset per-frame sample store for buildRangeModel
     try {
-      for (let frameIdx = 0; frameIdx < numFrames; frameIdx++) {
-        // Run one frame synchronously in the emulator; generous per-frame timeout.
+      if (numFrames === 1) {
+        // ── Single-frame path — one startProfiling call, all data fetched immediately ──────
         await rpc.sendRpcCommand("startProfiling", { numFrames: 1 }, 30000);
 
-        // After startProfiling returns, g_rgba_buf holds this frame's pixels — grab the
-        // thumbnail before the next retro_run() call overwrites it.
+        // g_rgba_buf holds the frame's pixels after startProfiling returns; grab the
+        // thumbnail before a subsequent retro_run() could overwrite it.
         let thumbnail: RawCapture["thumbnail"] | undefined;
         try {
           const fbRes = await rpc.sendRpcCommand<{ data: Uint8Array; width: number; height: number }>("getFramebuffer");
@@ -633,7 +680,7 @@ export class ProfilerManager {
             thumbnail = { data: fbData, width: fbRes.width, height: fbRes.height };
           }
         } catch (e) {
-          console.warn(`[profiler] frame ${frameIdx}: thumbnail capture failed:`, e);
+          console.warn("[profiler] frame 0: thumbnail capture failed:", e);
         }
 
         const res = await rpc.sendRpcCommand<{
@@ -659,20 +706,12 @@ export class ProfilerManager {
           thumbnail,
         };
 
-        // In multi-frame captures, skip expensive per-frame data that's not needed for
-        // frames 1..N-1: register traces (~4.9 MB each, powers the custom-regs panel)
-        // and the DMA snapshot (~2 MB+ chip RAM, only frame 0's baseline is ever used
-        // for memory reconstruction). Single-frame captures are unaffected.
-        const isFirstFrame = frameIdx === 0;
-        const fetchFull = numFrames === 1 || isFirstFrame;
         try {
-          if (fetchFull) {
-            const regsRes = await rpc.sendRpcCommand<{ data: Uint8Array }>("getProfileRegs");
-            const regsBytes = u8(regsRes.data);
-            if (regsBytes.length) raw.registers = regsBytes;
-          }
+          const regsRes = await rpc.sendRpcCommand<{ data: Uint8Array }>("getProfileRegs");
+          const regsBytes = u8(regsRes.data);
+          if (regsBytes.length) raw.registers = regsBytes;
         } catch (e) {
-          console.warn(`[profiler] frame ${frameIdx}: register trace failed:`, e);
+          console.warn("[profiler] frame 0: register trace failed:", e);
         }
 
         try {
@@ -680,18 +719,14 @@ export class ProfilerManager {
           const dmaBytes = u8(dmaRes.data);
           if (dmaBytes.length) {
             raw.dma = dmaBytes;
-            if (fetchFull) {
-              // Only fetch the chip/slow RAM snapshot for frame 0 — it's the baseline for
-              // memory reconstruction; frames 1..N-1 snapshots are never used.
-              const snap = await rpc.sendRpcCommand<{ chip: Uint8Array; slow: Uint8Array; custom: Uint8Array }>("getDmaSnapshot");
-              raw.snapshot = { chip: u8(snap.chip), slow: u8(snap.slow), custom: u8(snap.custom) };
-            }
+            const snap = await rpc.sendRpcCommand<{ chip: Uint8Array; slow: Uint8Array; custom: Uint8Array }>("getDmaSnapshot");
+            raw.snapshot = { chip: u8(snap.chip), slow: u8(snap.slow), custom: u8(snap.custom) };
             const eventsRes = await rpc.sendRpcCommand<{ data: Uint8Array }>("getDmaEvents");
             const eventsBytes = u8(eventsRes.data);
             if (eventsBytes.length) raw.dmaEvents = eventsBytes;
           }
         } catch (e) {
-          console.warn(`[profiler] frame ${frameIdx}: DMA capture failed:`, e);
+          console.warn("[profiler] frame 0: DMA capture failed:", e);
         }
 
         try {
@@ -699,16 +734,16 @@ export class ProfilerManager {
           const copperBytes = u8(copperRes.data);
           if (copperBytes.length) raw.copper = copperBytes;
         } catch (e) {
-          console.warn(`[profiler] frame ${frameIdx}: copper trace failed:`, e);
+          console.warn("[profiler] frame 0: copper trace failed:", e);
         }
 
         const { model, samples } = buildModelFromCapture(raw, sourceMap);
 
         console.log(
-          `[profiler] frame ${frameIdx}: total=${res.total} instr, inRange=${res.inRange}, ` +
+          `[profiler] frame 0: total=${res.total} instr, inRange=${res.inRange}, ` +
             `samples=${samples.length}, range=[0x${(res.start >>> 0).toString(16)},0x${(res.end >>> 0).toString(16)})`,
         );
-        if (frameIdx === 0 && samples.length === 0) {
+        if (samples.length === 0) {
           const range = `[0x${(res.start >>> 0).toString(16)}, 0x${(res.end >>> 0).toString(16)})`;
           const hint =
             res.total === 0
@@ -720,31 +755,212 @@ export class ProfilerManager {
         }
 
         allSamples.push(...samples);
-        this._frameSamples[frameIdx] = samples;
+        this._frameSamples[0] = samples;
+        this._lastSamples0 = samples;
 
-        if (frameIdx === 0) {
-          // Disassembly is expensive (requires wasm RPC) — fetch once from the live session.
-          try {
-            raw.disassembly = await fetchDisassembly(rpc, model, samples, sourceMap);
-            if (raw.disassembly.length) model.disassembly = attachDisassembly(raw.disassembly, sourceMap);
-          } catch (e) {
-            console.warn("[profiler] disassembly capture failed (CPU profile unaffected):", e);
-          }
-          this._lastSamples0 = samples;
-        } else if (frames[0].raw.disassembly?.length) {
-          // Frames 1+: reuse frame 0's instruction text/addresses, just recount hits/cycles.
-          raw.disassembly = reweightDisassembly(frames[0].raw.disassembly, samples);
-          model.disassembly = attachDisassembly(raw.disassembly, sourceMap);
+        try {
+          raw.disassembly = await fetchDisassembly(rpc, model, samples, sourceMap);
+          if (raw.disassembly.length) model.disassembly = attachDisassembly(raw.disassembly, sourceMap);
+        } catch (e) {
+          console.warn("[profiler] disassembly capture failed (CPU profile unaffected):", e);
         }
 
         if (model.dma) {
           const writes = model.dma.flags.reduce((n, f) => n + (f & 1), 0);
-          console.log(
-            `[profiler] frame ${frameIdx} dma: ${model.dma.owner.length} slots, ${writes} writes`,
-          );
+          console.log(`[profiler] frame 0 dma: ${model.dma.owner.length} slots, ${writes} writes`);
         }
 
         frames.push({ model, raw });
+      } else {
+        // ── Multi-frame single-call path — all N frames in one wasm call ──────────────────
+        // The profile stream contains WASM_PROFILE_FRAME_MARKER sentinels between frames.
+        // The DMA grid holds only the last frame (double-buffer toggle limitation — only
+        // one frame's DMA is accessible at a time via puae_dma_serialize).
+        await rpc.sendRpcCommand("startProfiling", { numFrames }, 30000 * numFrames);
+
+        // All N frame thumbnails encoded in parallel in one round-trip.
+        let thumbBatch: { data: Uint8Array; width: number; height: number }[] = [];
+        try {
+          thumbBatch = await rpc.sendRpcCommand<{ data: Uint8Array; width: number; height: number }[]>("getProfileThumbBatch");
+        } catch (e) {
+          console.warn("[profiler] thumbnail batch capture failed:", e);
+        }
+
+        const res = await rpc.sendRpcCommand<{
+          data: Uint8Array;
+          start: number;
+          end: number;
+          total: number;
+          inRange: number;
+          frameCycles?: number;
+          isPAL?: boolean;
+        }>("getProfileData");
+
+        // Registers: only frame 0 has register data (C disables g_wprofRegEnabled at the first
+        // frame marker, so the 65k-sample cap can't block subsequent frames' profile recording).
+        let allRegsBytes: Uint8Array = new Uint8Array(0);
+        try {
+          const regsRes = await rpc.sendRpcCommand<{ data: Uint8Array }>("getProfileRegs");
+          allRegsBytes = u8(regsRes.data);
+        } catch (e) {
+          console.warn("[profiler] register trace failed:", e);
+        }
+
+        // Per-frame DMA grids — serialized in C right after each retro_run() while the
+        // toggle buffer still holds that frame's data.  These are fast fetches (no emulation,
+        // just HEAPU8 slices): each 568KB grid transfers in ~454ms at 800ms/MB, so for
+        // N=10 frames the total DMA transfer is ~4.5s vs. ~4.5s in the old N-loop — same
+        // total data volume, but we've already saved the snapshot + register round-trips.
+        const perFrameDmaBytes: (Uint8Array | undefined)[] = new Array(numFrames).fill(undefined);
+        const perFrameEvtBytes: (Uint8Array | undefined)[] = new Array(numFrames).fill(undefined);
+        try {
+          for (let fi = 0; fi < numFrames; fi++) {
+            const dmaRes = await rpc.sendRpcCommand<{ data: Uint8Array }>("getDmaFrame", { frameIdx: fi });
+            const db = u8(dmaRes.data);
+            if (db.length) perFrameDmaBytes[fi] = db;
+            const evtRes = await rpc.sendRpcCommand<{ data: Uint8Array }>("getDmaEventsFrame", { frameIdx: fi });
+            const eb = u8(evtRes.data);
+            if (eb.length) perFrameEvtBytes[fi] = eb;
+          }
+        } catch (e) {
+          console.warn("[profiler] per-frame DMA capture failed:", e);
+        }
+
+        // Snapshot and copper are captured at end-of-capture state (last frame).
+        // The snapshot is used for memory reconstruction — only attached to the last
+        // frame so we don't waste bulk-blob space duplicating 2.5MB per frame.
+        let snapshotRaw: { chip: Uint8Array; slow: Uint8Array; custom: Uint8Array } | undefined;
+        try {
+          if (perFrameDmaBytes[numFrames - 1]) {
+            const snap = await rpc.sendRpcCommand<{ chip: Uint8Array; slow: Uint8Array; custom: Uint8Array }>("getDmaSnapshot");
+            snapshotRaw = { chip: u8(snap.chip), slow: u8(snap.slow), custom: u8(snap.custom) };
+          }
+        } catch (e) {
+          console.warn("[profiler] snapshot fetch failed:", e);
+        }
+
+        let copperBytes: Uint8Array | undefined;
+        try {
+          const copperRes = await rpc.sendRpcCommand<{ data: Uint8Array }>("getCopperData");
+          const cb = u8(copperRes.data);
+          if (cb.length) copperBytes = cb;
+        } catch (e) {
+          console.warn("[profiler] copper trace failed:", e);
+        }
+
+        // Split the combined stream at WASM_PROFILE_FRAME_MARKER boundaries.
+        const profileBytes = u8(res.data);
+        const words = new Uint32Array(profileBytes.buffer, profileBytes.byteOffset, profileBytes.byteLength >>> 2);
+        const { perFrame: perFrameSamples, startWords, endWords } = splitProfileStream(words);
+
+        const frameUs = (res.isPAL ?? true) ? 20000 : 1_000_000 / 60;
+        const cyclesPerMicroSecond = (res.frameCycles ?? 0) > 0 ? (res.frameCycles!) / frameUs : 7.09379;
+
+        // Validate frame 0 has samples before spending time building the rest.
+        if ((perFrameSamples[0]?.length ?? 0) === 0) {
+          const range = `[0x${(res.start >>> 0).toString(16)}, 0x${(res.end >>> 0).toString(16)})`;
+          const hint =
+            res.total === 0
+              ? "The emulator executed no instructions in the captured frame."
+              : res.inRange === 0
+                ? `None of the ${res.total} executed instructions were inside your program ${range} — it may be idle/finished or running OS code. Try capturing while the program is actively running.`
+                : "Instructions ran in range but produced no stack samples (unwind issue).";
+          throw new Error(`No profile samples captured. ${hint}`);
+        }
+
+        const totalFrames = perFrameSamples.length;
+        const lastFrameIdx = totalFrames - 1;
+
+        for (let fi = 0; fi < totalFrames; fi++) {
+          const samples = perFrameSamples[fi];
+          allSamples.push(...samples);
+          this._frameSamples[fi] = samples;
+
+          const isLastFrame = fi === lastFrameIdx;
+
+          // Slice of the combined stream bytes that belongs to this frame, so raw.profile.data
+          // encodes correctly when saved to a .vamigaprofile (frame 0 only is ever saved, but
+          // keep it correct for all frames).
+          const frameProfileBytes = profileBytes.slice(startWords[fi] * 4, endWords[fi] * 4);
+
+          const thumbEntry = thumbBatch[fi];
+          const thumbnail: RawCapture["thumbnail"] | undefined =
+            thumbEntry && u8(thumbEntry.data).length > 0
+              ? { data: u8(thumbEntry.data), width: thumbEntry.width, height: thumbEntry.height }
+              : undefined;
+
+          const raw: RawCapture = {
+            profile: {
+              data: frameProfileBytes,
+              start: res.start,
+              end: res.end,
+              total: res.total,
+              inRange: res.inRange,
+              frameCycles: res.frameCycles ?? 0,
+              isPAL: res.isPAL ?? true,
+            },
+            // Every frame has its own DMA grid (serialized in C after each retro_run()).
+            dma: perFrameDmaBytes[fi],
+            dmaEvents: perFrameEvtBytes[fi],
+            // Snapshot (2.5MB) and copper only on the last frame — memory reconstruction
+            // baseline is end-of-capture state; correct for the last frame, approximate
+            // for earlier ones (acceptable: demo loops tend to restore RAM each frame).
+            snapshot: isLastFrame ? snapshotRaw : undefined,
+            copper: isLastFrame ? copperBytes : undefined,
+            // Registers: only frame 0 has data in the buffer.
+            registers: fi === 0 && allRegsBytes.length > 0 ? allRegsBytes : undefined,
+            thumbnail,
+          };
+
+          const model = buildProfileModel(samples, sourceMap, cyclesPerMicroSecond);
+          model.symbols = buildSymbolList(sourceMap);
+          model.lineTable = sourceMap.getLineTable().map((e): ILineTableEntry => ({ address: e.address, file: e.path, line: e.line }));
+          model.segments = sourceMap.getSegmentsInfo().map((s): ISegmentRange => ({ address: s.address, size: s.size }));
+
+          if (raw.dma) {
+            const dma = decodeDmaGrid(raw.dma);
+            if (dma) {
+              model.dma = dma;
+              if (raw.snapshot) {
+                model.dmaSnapshot = {
+                  chip: raw.snapshot.chip,
+                  slow: raw.snapshot.slow,
+                  custom: decodeCustomRegs(raw.snapshot.custom),
+                };
+              }
+              if (raw.dmaEvents) {
+                const events = decodeDmaEvents(raw.dmaEvents);
+                if (events && events.length === dma.owner.length) dma.events = events;
+              }
+            }
+          }
+          if (raw.copper) model.copper = decodeCopperRecords(raw.copper);
+          if (raw.registers) {
+            const decoded = decodeRegisterTrace(raw.registers);
+            const wordsNeeded = model.pcs.length * REG_COUNT;
+            model.registers = decoded.length > wordsNeeded ? decoded.subarray(0, wordsNeeded) : decoded;
+          }
+
+          if (fi === 0) {
+            try {
+              raw.disassembly = await fetchDisassembly(rpc, model, samples, sourceMap);
+              if (raw.disassembly.length) model.disassembly = attachDisassembly(raw.disassembly, sourceMap);
+            } catch (e) {
+              console.warn("[profiler] disassembly capture failed (CPU profile unaffected):", e);
+            }
+            this._lastSamples0 = samples;
+          } else if (frames[0].raw.disassembly?.length) {
+            raw.disassembly = reweightDisassembly(frames[0].raw.disassembly, samples);
+            model.disassembly = attachDisassembly(raw.disassembly, sourceMap);
+          }
+
+          console.log(
+            `[profiler] frame ${fi}: samples=${samples.length}` +
+              (model.dma ? `, dma=${model.dma.owner.length} slots` : ""),
+          );
+
+          frames.push({ model, raw });
+        }
       }
     } finally {
       try {

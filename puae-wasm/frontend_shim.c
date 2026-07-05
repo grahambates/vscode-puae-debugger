@@ -777,28 +777,124 @@ void wasm_write_instr_count(uint32_t lo, uint32_t hi) {
 extern int  g_wprofActive;
 extern void wasm_profile_prepare(void);
 extern void wasm_profile_finish(int numFrames);
+extern void wasm_profile_emit_frame_marker(int frameIdx);
 extern void wasm_dma_serialize_grid(void);
 extern void wasm_dma_serialize_events(void);
+// Per-frame DMA serializers — write the just-completed frame's DMA into an
+// arbitrary caller-provided buffer (must be called right after retro_run()).
+extern void wasm_dma_serialize_to_buf(uint8_t *dst);
+extern void wasm_dma_serialize_events_to_buf(uint8_t *dst);
 
 extern int  debug_dma;
 extern void record_dma_reset(int start);
 
+// Per-frame thumbnail capture — nearest-neighbour downscale of g_rgba_buf after each
+// retro_run().  Stored as RGBA8888 at a fixed 160×100 resolution (aspect not preserved;
+// thumbnails are for visual identification in the filmstrip, not analysis).
+// 60 frames × 160×100×4 = 3.84 MB of static storage, comfortably within the 320 MB heap.
+#define WASM_THUMB_W 160
+#define WASM_THUMB_H 100
+#define WASM_THUMB_MAX_FRAMES 60
+static uint8_t g_wprofThumbs[WASM_THUMB_MAX_FRAMES * WASM_THUMB_W * WASM_THUMB_H * 4];
+static int     g_wprofThumbCount;
+
+static void wasm_profile_save_thumbnail(void) {
+    if (g_wprofThumbCount >= WASM_THUMB_MAX_FRAMES) return;
+    unsigned fw = g_fb_width  < MAX_FB_WIDTH  ? g_fb_width  : MAX_FB_WIDTH;
+    unsigned fh = g_fb_height < MAX_FB_HEIGHT ? g_fb_height : MAX_FB_HEIGHT;
+    if (fw == 0 || fh == 0) return;
+    uint8_t *dst = g_wprofThumbs + g_wprofThumbCount * (WASM_THUMB_W * WASM_THUMB_H * 4);
+    for (int ty = 0; ty < WASM_THUMB_H; ty++) {
+        int sy = (int)((unsigned)ty * fh / WASM_THUMB_H);
+        for (int tx = 0; tx < WASM_THUMB_W; tx++) {
+            int sx = (int)((unsigned)tx * fw / WASM_THUMB_W);
+            const uint8_t *s = g_rgba_buf + (sy * (int)fw + sx) * 4;
+            uint8_t *d = dst + (ty * WASM_THUMB_W + tx) * 4;
+            d[0] = s[0]; d[1] = s[1]; d[2] = s[2]; d[3] = s[3];
+        }
+    }
+    g_wprofThumbCount++;
+}
+
+EMSCRIPTEN_KEEPALIVE int         wasm_profile_get_frame_count(void) { return g_wprofThumbCount; }
+EMSCRIPTEN_KEEPALIVE int         wasm_profile_get_thumb_w(void) { return WASM_THUMB_W; }
+EMSCRIPTEN_KEEPALIVE int         wasm_profile_get_thumb_h(void) { return WASM_THUMB_H; }
+EMSCRIPTEN_KEEPALIVE const void *wasm_profile_get_thumb_ptr(int frameIdx) {
+    if (frameIdx < 0 || frameIdx >= g_wprofThumbCount) return (void *)0;
+    return g_wprofThumbs + frameIdx * (WASM_THUMB_W * WASM_THUMB_H * 4);
+}
+
+// Per-frame DMA grids — dynamically allocated inside wasm_profile_start for N>1
+// captures.  Each retro_run() is immediately followed by a serialize call while
+// the DMA toggle buffer still holds that frame's data.  The buffers are freed at
+// the start of the NEXT wasm_profile_start call (not at the end of the current
+// one) so the JS side can fetch them after the call returns.
+// PAL geometry: DMA_HPOS=227, DMA_VPOS=313, PUAE_DMA_CELL_BYTES=8, EVENT_BYTES=4.
+#define WASM_DMA_FRAME_BYTES  (227u * 313u * 8u)    /* 568 712 bytes per frame */
+#define WASM_EVT_FRAME_BYTES  (227u * 313u * 4u)    /* 284 356 bytes per frame */
+static uint8_t *g_wprofDmaAll   = NULL; /* [dmaCount][WASM_DMA_FRAME_BYTES] */
+static uint8_t *g_wprofEvtAll   = NULL; /* [dmaCount][WASM_EVT_FRAME_BYTES] */
+static int      g_wprofDmaCount = 0;
+
+EMSCRIPTEN_KEEPALIVE int      wasm_profile_get_dma_count(void)      { return g_wprofDmaCount; }
+EMSCRIPTEN_KEEPALIVE uint32_t wasm_profile_get_dma_frame_bytes(void){ return WASM_DMA_FRAME_BYTES; }
+EMSCRIPTEN_KEEPALIVE uint32_t wasm_profile_get_evt_frame_bytes(void){ return WASM_EVT_FRAME_BYTES; }
+EMSCRIPTEN_KEEPALIVE const void *wasm_profile_get_dma_frame_ptr(int fi) {
+    if (!g_wprofDmaAll || fi < 0 || fi >= g_wprofDmaCount) return (void *)0;
+    return g_wprofDmaAll + (size_t)fi * WASM_DMA_FRAME_BYTES;
+}
+EMSCRIPTEN_KEEPALIVE const void *wasm_profile_get_evt_frame_ptr(int fi) {
+    if (!g_wprofEvtAll || fi < 0 || fi >= g_wprofDmaCount) return (void *)0;
+    return g_wprofEvtAll + (size_t)fi * WASM_EVT_FRAME_BYTES;
+}
+
 // Runs numFrames PAL/NTSC frames, sampling CPU call stacks and DMA slots.
+// For N>1, emits a WASM_PROFILE_FRAME_MARKER sentinel between consecutive frames in the
+// profile stream so the JS side can split into per-frame models without extra round-trips.
+// Thumbnails are saved after each retro_run(). DMA is serialized per-frame right after
+// each retro_run() while the toggle buffer still holds that frame's data — stored in
+// dynamically allocated g_wprofDmaAll / g_wprofEvtAll (accessible via the getters above).
 // Returns 1 on success.
 EMSCRIPTEN_KEEPALIVE
 int wasm_profile_start(int numFrames)
 {
+    // Free per-frame DMA buffers left over from the previous call before allocating new ones.
+    free(g_wprofDmaAll); g_wprofDmaAll = NULL;
+    free(g_wprofEvtAll); g_wprofEvtAll = NULL;
+    g_wprofDmaCount = 0;
+
     wasm_profile_prepare();
     record_dma_reset(1);   /* alloc if needed, toggle buffer, set debug_dma=1 */
+    g_wprofThumbCount = 0;
+
+    // Allocate per-frame DMA storage (numFrames frames, each WASM_DMA/EVT_FRAME_BYTES).
+    if (numFrames > 0) {
+        g_wprofDmaAll = (uint8_t *)malloc((size_t)numFrames * WASM_DMA_FRAME_BYTES);
+        g_wprofEvtAll = (uint8_t *)malloc((size_t)numFrames * WASM_EVT_FRAME_BYTES);
+    }
+
     int target = (int)g_frame_count + numFrames;
+    int framesDone = 0;
     while ((int)g_frame_count < target) {
         libretro_frame_end = false;
         retro_run();
+        wasm_profile_save_thumbnail();
+        // Serialize this frame's DMA immediately after retro_run() while the
+        // toggle buffer still holds its data (before the next frame can overwrite it).
+        if (g_wprofDmaAll)
+            wasm_dma_serialize_to_buf(g_wprofDmaAll + (size_t)framesDone * WASM_DMA_FRAME_BYTES);
+        if (g_wprofEvtAll)
+            wasm_dma_serialize_events_to_buf(g_wprofEvtAll + (size_t)framesDone * WASM_EVT_FRAME_BYTES);
+        g_wprofDmaCount = framesDone + 1;
+        // Emit frame marker between frames (not after the last one).
+        if ((int)g_frame_count < target)
+            wasm_profile_emit_frame_marker(framesDone);
+        framesDone++;
     }
     debug_dma = 0;
     wasm_profile_finish(numFrames);
-    wasm_dma_serialize_grid();
-    wasm_dma_serialize_events();
+    wasm_dma_serialize_grid();      /* last frame into g_dmaGrid — kept for backward compat */
+    wasm_dma_serialize_events();    /* last frame into g_dmaEvents — kept for backward compat */
     return 1;
 }
 

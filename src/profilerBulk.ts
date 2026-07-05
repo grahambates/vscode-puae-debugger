@@ -28,8 +28,8 @@ const HEADER_V2 = 40;
 const EMPTY = new Uint8Array(0);
 
 export function packBulk(raw: RawCapture): Uint8Array | undefined {
-  if (!raw.dma) return undefined;
-  const grid = raw.dma;
+  if (!raw.dma && !raw.thumbnail) return undefined;
+  const grid = raw.dma ?? EMPTY;
   const chip = raw.snapshot?.chip ?? EMPTY;
   const slow = raw.snapshot?.slow ?? EMPTY;
   const custom = raw.snapshot?.custom ?? EMPTY;
