@@ -1,4 +1,4 @@
-import { attachDisassembly, fetchDisassembly, RawDisassembledFunction, ProfilerRpcClient, InstructionSample, RawCapture } from "../profilerManager";
+import { attachDisassembly, fetchDisassembly, RawDisassembledFunction, InstructionSample, RawCapture } from "../profilerManager";
 import { encodeCapture, decodeCapture } from "../vamigaProfile";
 import { SourceMap } from "../sourceMap";
 import { IProfileModel } from "../shared/profilerTypes";
@@ -48,11 +48,18 @@ describe("fetchDisassembly", () => {
     ],
   });
 
-  it("aggregates exact per-PC hits/cycles and fetches each executed function's range once", async () => {
+  // Chip memory filled with NOPs — gives both functions something valid to decode.
+  const nopChipMem = (): Uint8Array => {
+    const mem = new Uint8Array(0x3000);
+    for (let i = 0; i < mem.length; i += 2) { mem[i] = 0x4e; mem[i + 1] = 0x71; }
+    return mem;
+  };
+
+  it("aggregates exact per-PC hits/cycles and decodes each executed function", () => {
     const samples: InstructionSample[] = [
       { stack: [0x1000], cycles: 4 },
       { stack: [0x1000], cycles: 6 }, // same PC again — aggregates
-      { stack: [0x1004], cycles: 2 }, // different PC, same function — no extra RPC call
+      { stack: [0x1004], cycles: 2 }, // different PC, same function
       { stack: [0x2000], cycles: 100 }, // a different, hotter function
     ];
     const map = sourceMap({
@@ -61,22 +68,7 @@ describe("fetchDisassembly", () => {
       0x2000: { symbol: "bar", offset: 0 },
     });
 
-    const calls: unknown[] = [];
-    const sendRpcCommand = jest.fn(async (_cmd: string, args?: unknown) => {
-      calls.push(args);
-      const a = args as { startAddr: number; endAddr: number };
-      return {
-        instructions: [{ address: a.startAddr, hex: "4e71", text: "nop", length: 2 }],
-      };
-    });
-    const rpc = { sendRpcCommand } as unknown as ProfilerRpcClient;
-
-    const result = await fetchDisassembly(rpc, baseModel(), samples, map);
-
-    expect(rpc.sendRpcCommand).toHaveBeenCalledTimes(2); // one per distinct function, not per sample/PC
-    expect(calls).toEqual(
-      expect.arrayContaining([{ startAddr: 0x1000, endAddr: 0x1010 }, { startAddr: 0x2000, endAddr: 0x2010 }]),
-    );
+    const result = fetchDisassembly(baseModel(), samples, map, nopChipMem());
 
     // Hottest function (bar, 100 cycles) sorted first.
     expect(result.map((f) => f.name)).toEqual(["bar", "foo"]);
@@ -85,24 +77,23 @@ describe("fetchDisassembly", () => {
     expect(foo.instructions[0]).toMatchObject({ address: 0x1000, hits: 2, cycles: 10 }); // 4+6
   });
 
-  it("skips PCs that don't resolve to a known symbol (Kickstart/[IRQ]/etc.)", async () => {
-    const samples: InstructionSample[] = [{ stack: [0xf80000], cycles: 50 }]; // out of program
-    const rpc: ProfilerRpcClient = { sendRpcCommand: jest.fn() };
-
-    const result = await fetchDisassembly(rpc, baseModel(), samples, sourceMap({}));
-    expect(result).toEqual([]);
-    expect(rpc.sendRpcCommand).not.toHaveBeenCalled();
+  it("returns [] when no chip memory is provided", () => {
+    const samples: InstructionSample[] = [{ stack: [0x1000], cycles: 10 }];
+    const map = sourceMap({ 0x1000: { symbol: "foo", offset: 0 } });
+    expect(fetchDisassembly(baseModel(), samples, map)).toEqual([]);
+    expect(fetchDisassembly(baseModel(), samples, map, undefined)).toEqual([]);
   });
 
-  it("skips a resolved symbol with no known size", async () => {
+  it("skips PCs that don't resolve to a known symbol (Kickstart/[IRQ]/etc.)", () => {
+    const samples: InstructionSample[] = [{ stack: [0xf80000], cycles: 50 }];
+    expect(fetchDisassembly(baseModel(), samples, sourceMap({}), nopChipMem())).toEqual([]);
+  });
+
+  it("skips a resolved symbol with no known size", () => {
     const samples: InstructionSample[] = [{ stack: [0x3000], cycles: 1 }];
     const map = sourceMap({ 0x3000: { symbol: "unsized", offset: 0 } });
-    const model = baseModel(); // "unsized" isn't in model.symbols at all
-    const rpc: ProfilerRpcClient = { sendRpcCommand: jest.fn() };
-
-    const result = await fetchDisassembly(rpc, model, samples, map);
-    expect(result).toEqual([]);
-    expect(rpc.sendRpcCommand).not.toHaveBeenCalled();
+    const model = baseModel(); // "unsized" isn't in model.symbols
+    expect(fetchDisassembly(model, samples, map, nopChipMem())).toEqual([]);
   });
 });
 

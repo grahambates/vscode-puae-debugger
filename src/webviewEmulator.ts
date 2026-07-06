@@ -6,7 +6,6 @@ import {
   CpuInfo,
   CpuTraceItem,
   CustomRegisters,
-  Disassembly,
   EmulatorMessage,
   MemoryInfo,
   RegisterSetStatus,
@@ -500,15 +499,6 @@ export abstract class WebviewEmulator implements Emulator {
     address: number,
   ): { start: number; end: number } | null {
     return getMemoryRegionForAddress(this.memoryInfo, address);
-  }
-
-  // --- Disassembly ---
-
-  public async disassemble(
-    address: number,
-    count: number,
-  ): Promise<Disassembly> {
-    return this.sendRpcCommand("disassemble", { address, count });
   }
 
   // --- Helpers ---

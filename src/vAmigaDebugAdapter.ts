@@ -64,6 +64,7 @@ import { BreakpointManager } from "./breakpointManager";
 import { StackManager } from "./stackManager";
 import { DisassemblyManager } from "./disassemblyManager";
 import { EvaluateManager } from "./evaluateManager";
+import { decodeInstruction as m68kDecode, instructionToString } from "m68kdecode";
 
 /**
  * Launch configuration arguments for starting a debug session.
@@ -647,19 +648,34 @@ export class VamigaDebugAdapter extends LoggingDebugSession {
   // vAmiga's built-in stepOver doesn't work correctly. It seems to only work with short branches.
   // Need to implement this ourselves.
   private async doInstructionStepOver(): Promise<void> {
-    // Disassemble at pc to get current and next instruction.
     const cpuInfo = await this.emulator.getCpuInfo();
     const pc = Number(cpuInfo.pc);
-    const disasm = await this.emulator.disassemble(pc, 2);
-    const currInst = disasm?.instructions[0]?.instruction ?? "";
-    const next = disasm?.instructions[1];
+    // Read enough bytes for 2 worst-case instructions and decode locally.
+    const memBuf = await this.emulator.readMemory(pc, 20);
+    const mem = new Uint8Array(memBuf.buffer, memBuf.byteOffset, memBuf.byteLength);
+    const instrs: { addr: number; text: string }[] = [];
+    let off = 0;
+    while (off < mem.length && instrs.length < 2) {
+      const slice = mem.subarray(off);
+      if (slice.length < 2) break;
+      let bytesUsed = 2;
+      let text = "";
+      try {
+        const d = m68kDecode(slice);
+        bytesUsed = Math.max(d.bytesUsed, 2);
+        text = instructionToString(d.instruction).trim();
+      } catch { /* unknown opcode */ }
+      instrs.push({ addr: pc + off, text });
+      off += bytesUsed;
+    }
+    const currInst = instrs[0]?.text ?? "";
+    const nextAddr = instrs[1]?.addr;
 
     // If current instruction is one of these i.e. it should eventually reach the next line,
     // set tmp breakpoint on next instruction, otherwise just use built-in stepInto.
     const isBranch = currInst.match(/^(jsr|bsr|dbra)/i);
-    if (next && isBranch) {
-      const addr = parseInt(next.addr, 16);
-      this.getBreakpointManager().setTmpBreakpoint(addr, "step");
+    if (nextAddr !== undefined && isBranch) {
+      this.getBreakpointManager().setTmpBreakpoint(nextAddr, "step");
       this.emulator.run();
     } else {
       this.stepping = true;

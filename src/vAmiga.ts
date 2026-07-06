@@ -152,14 +152,6 @@ export interface MemResult {
   data: string;
 }
 
-export interface Disassembly {
-  instructions: Array<{
-    addr: string;
-    instruction: string;
-    hex: string;
-  }>;
-}
-
 export interface Segment {
   start: number;
   size: number;

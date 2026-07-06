@@ -514,17 +514,17 @@ describe("VamigaDebugAdapter - Simplified Tests", () => {
     });
 
     it("should handle next (step over) request with JSR instruction", async () => {
-      // Setup: Mock CPU state and disassembly showing JSR
+      // Setup: Mock CPU state and memory showing JSR at PC
       setupMockCpuState({ pc: "0x1000" });
       const mockBreakpointManager = sinon.createStubInstance(BreakpointManager);
       (adapter as any).breakpointManager = mockBreakpointManager;
 
-      mockVAmiga.disassemble.resolves({
-        instructions: [
-          { addr: "0x00001000", instruction: "jsr $2000", hex: "000000" },
-          { addr: "0x00001006", instruction: "move.l d0,d1", hex: "00" },
-        ],
-      });
+      // JSR $00002000.L = [0x4E, 0xB9, 0x00, 0x00, 0x20, 0x00] (6 bytes), then NOPs
+      const jsrBytes = [0x4e, 0xb9, 0x00, 0x00, 0x20, 0x00];
+      const mem = Buffer.alloc(20);
+      jsrBytes.forEach((b, i) => { mem[i] = b; });
+      for (let i = jsrBytes.length; i < mem.length; i += 2) { mem[i] = 0x4e; mem[i + 1] = 0x71; }
+      mockVAmiga.readMemory.resolves(mem);
       mockVAmiga.run.resolves();
 
       const response = createMockResponse<DebugProtocol.NextResponse>("next");
@@ -532,23 +532,22 @@ describe("VamigaDebugAdapter - Simplified Tests", () => {
       // Test: Execute next request (instruction granularity)
       await (adapter as any).nextRequest(response, { threadId: 1, granularity: "instruction" });
 
-      // Verify: Breakpoint set on next instruction and run called
-      assert.ok(mockBreakpointManager.setTmpBreakpoint.called);
+      // Verify: Breakpoint set on next instruction (0x1006) and run called
+      assert.ok(mockBreakpointManager.setTmpBreakpoint.calledWith(0x1006, "step"));
       assert.ok(mockVAmiga.run.called);
       assert.strictEqual(response.success, true);
     });
 
     it("should handle next (step over) request with non-call instruction", async () => {
-      // Setup: Mock CPU state with move instruction (not a call)
+      // Setup: Mock CPU state with MOVE (not a call)
       setupMockCpuState({ pc: "0x1000" });
       mockVAmiga.stepInto.returns(undefined);
 
-      mockVAmiga.disassemble.resolves({
-        instructions: [
-          { addr: "0x00001000", instruction: "move.l d0,d1", hex: "0000" },
-          { addr: "0x00001002", instruction: "add.l d2,d3", hex: "0000" },
-        ],
-      });
+      // MOVE.L D0,D1 = [0x22, 0x00] (2 bytes), then NOPs
+      const mem = Buffer.alloc(20);
+      mem[0] = 0x22; mem[1] = 0x00;
+      for (let i = 2; i < mem.length; i += 2) { mem[i] = 0x4e; mem[i + 1] = 0x71; }
+      mockVAmiga.readMemory.resolves(mem);
 
       const response = createMockResponse<DebugProtocol.NextResponse>("next");
 

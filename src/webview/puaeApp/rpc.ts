@@ -692,52 +692,11 @@ export function setupRpcDispatcher(
   // e9k_debug_disassemble_quick (UAE's m68k_disasm_2) prefixes each line with
   // the address ("%08X ", 9 chars) followed by max(wordCount, disasm_min_words=5)
   // hex-word groups ("%04X " or "     ", 5 chars each) before the mnemonic +
-  // operands. Strip that prefix so `instruction` is mnemonic-only, matching
-  // vAmiga_ui.js's format (relied on by doInstructionStepOver's jsr/bsr/dbra
-  // detection in vAmigaDebugAdapter.ts).
+  // operands.
   function parseDisasmInstruction(raw: string, len: number): string {
     const words = Math.max(Math.min(Math.floor(len / 2), 16), 5);
     return raw.slice(9 + words * 5).trim();
   }
-
-  function disassemble(address: number, count: number) {
-    const instructions: { addr: string; instruction: string; hex: string }[] = [];
-    let addr = address >>> 0;
-    for (let i = 0; i < count; i++) {
-      const len = M._wasm_disassemble(addr);
-      const raw = M.UTF8ToString(M._wasm_get_disasm_buf());
-      const instruction = parseDisasmInstruction(raw, len);
-      const bytes = readMemory(addr, Math.max(len, 0));
-      const hexBytes = Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join(" ");
-      instructions.push({ addr: hex(addr, 6), instruction, hex: hexBytes });
-      addr = (addr + Math.max(len, 2)) >>> 0;
-    }
-    return { instructions };
-  }
-
-  // Disassemble a [startAddr, endAddr) range in one call, used by the profiler to fetch text for
-  // every executed function right after a capture (profilerManager.ts) — unlike `disassemble`
-  // above, which the live debugger's disassembly view drives with a fixed instruction COUNT
-  // instead of a byte-range end. MAX_INSTRUCTIONS is a safety valve against a corrupt/huge range
-  // (e.g. a symbol whose size couldn't be determined), not a real-world limit.
-  const DISASSEMBLE_RANGE_MAX_INSTRUCTIONS = 8192;
-  function disassembleRange(startAddr: number, endAddr: number) {
-    const instructions: { address: number; hex: string; text: string; length: number }[] = [];
-    let addr = startAddr >>> 0;
-    const end = endAddr >>> 0;
-    while (addr < end && instructions.length < DISASSEMBLE_RANGE_MAX_INSTRUCTIONS) {
-      const len = M._wasm_disassemble(addr);
-      const raw = M.UTF8ToString(M._wasm_get_disasm_buf());
-      const text = parseDisasmInstruction(raw, len);
-      const bytes = readMemory(addr, Math.max(len, 0));
-      const hexBytes = Array.from(bytes, (b: number) => b.toString(16).padStart(2, "0")).join(" ");
-      const length = Math.max(len, 2); // never advance by 0 — guards against a runaway loop
-      instructions.push({ address: addr, hex: hexBytes, text, length });
-      addr = (addr + length) >>> 0;
-    }
-    return { instructions };
-  }
-
 
   function getCpuTrace(count: number) {
     const maxCount = Math.min(Math.max(count >>> 0, 0), E9K_CPU_TRACE_CAP);
@@ -1036,12 +995,6 @@ export function setupRpcDispatcher(
         break;
       case "getAllCustomRegisters":
         rpcRequest(() => getAllCustomRegisters());
-        break;
-      case "disassemble":
-        rpcRequest(() => disassemble(args.address, args.count));
-        break;
-      case "disassembleRange":
-        rpcRequest(() => disassembleRange(args.startAddr, args.endAddr));
         break;
       case "disassembleCopper":
         rpcRequest(() => {

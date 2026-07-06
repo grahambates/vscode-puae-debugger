@@ -1,3 +1,4 @@
+import { decodeInstruction as m68kDecode, instructionToString } from "m68kdecode";
 import { SourceMap } from "./sourceMap";
 import { buildUnwindTable } from "./unwindTable";
 import {
@@ -469,18 +470,53 @@ function reweightDisassembly(
   }));
 }
 
+// Disassemble a [startAddr, endAddr) range directly from snapshot memory using m68kdecode.
+// chipMem starts at address 0x000000; slowMem (Bogo RAM) starts at 0xC00000. Functions outside
+// these regions (fast RAM, ROM) return an empty instruction array rather than erroring.
+function clientDisassembleRange(
+  chipMem: Uint8Array,
+  slowMem: Uint8Array | undefined,
+  startAddr: number,
+  endAddr: number,
+): { address: number; hex: string; text: string; length: number }[] {
+  const instructions: { address: number; hex: string; text: string; length: number }[] = [];
+  let addr = startAddr >>> 0;
+  const end = endAddr >>> 0;
+  while (addr < end && instructions.length < 8192) {
+    let mem: Uint8Array | null = null;
+    if (addr < chipMem.length) {
+      mem = chipMem.subarray(addr);
+    } else if (slowMem && addr >= 0xC00000 && addr < 0xC00000 + slowMem.length) {
+      mem = slowMem.subarray(addr - 0xC00000);
+    }
+    if (!mem || mem.length < 2) break;
+    let bytesUsed = 2;
+    let text = "dc.w $" + ((mem[0] << 8 | mem[1]) >>> 0).toString(16).toUpperCase().padStart(4, "0");
+    try {
+      const decoded = m68kDecode(mem);
+      bytesUsed = Math.max(decoded.bytesUsed, 2);
+      text = instructionToString(decoded.instruction).trim();
+    } catch { /* unknown opcode — keep dc.w fallback */ }
+    const hex = Array.from(mem.subarray(0, bytesUsed), (b: number) => b.toString(16).padStart(2, "0")).join(" ");
+    instructions.push({ address: addr, hex, text, length: bytesUsed });
+    addr = (addr + bytesUsed) >>> 0;
+  }
+  return instructions;
+}
+
 // Disassemble every function that executed this frame: aggregate exact per-PC hit/cycle counts
 // from `samples` (this profiler traces every retired instruction, not statistical sampling),
 // resolve each unique PC to its enclosing function's [start, end) via sourceMap + model.symbols,
-// then fetch each function's text via the live wasm session (disassembleRange — there's no
-// host-side objdump in this project, unlike the old extension, so this only works while `rpc` is
-// live; a loaded .vamigaprofile instead replays whatever was embedded at capture/save time).
-export async function fetchDisassembly(
-  rpc: ProfilerRpcClient,
+// then decode client-side from snapshot memory using m68kdecode. Returns [] if chipMem is absent.
+export function fetchDisassembly(
   model: IProfileModel,
   samples: InstructionSample[],
   sourceMap: SourceMap,
-): Promise<RawDisassembledFunction[]> {
+  chipMem?: Uint8Array,
+  slowMem?: Uint8Array,
+): RawDisassembledFunction[] {
+  if (!chipMem) return [];
+
   const pcStats = new Map<number, { hits: number; cycles: number }>();
   for (const s of samples) {
     const pc = s.stack[0];
@@ -490,12 +526,10 @@ export async function fetchDisassembly(
   }
 
   const symByName = new Map((model.symbols ?? []).map((s) => [s.name, s]));
-  // Dedupe by function start address; accumulate each function's total cycles for the
-  // hottest-first cap/order below.
   const functions = new Map<number, { name: string; end: number; totalCycles: number }>();
   for (const [pc, stat] of pcStats) {
     const off = sourceMap.findSymbolOffset(pc, true);
-    if (!off) continue; // out-of-program (Kickstart/[IRQ]/etc.) — no symbol to bound a range with
+    if (!off) continue;
     const sym = symByName.get(off.symbol);
     if (!sym || sym.size <= 0) continue;
     let fn = functions.get(sym.address);
@@ -507,11 +541,8 @@ export async function fetchDisassembly(
 
   const out: RawDisassembledFunction[] = [];
   for (const [startAddr, fn] of ordered) {
-    const res = await rpc.sendRpcCommand<{ instructions: { address: number; hex: string; text: string; length: number }[] }>(
-      "disassembleRange",
-      { startAddr, endAddr: fn.end },
-    );
-    const instructions: RawDisassembledInstruction[] = (res.instructions ?? []).map((ins) => {
+    const raw = clientDisassembleRange(chipMem, slowMem, startAddr, fn.end);
+    const instructions: RawDisassembledInstruction[] = raw.map((ins) => {
       const stat = pcStats.get(ins.address);
       return { address: ins.address, hex: ins.hex, text: ins.text, length: ins.length, hits: stat?.hits ?? 0, cycles: stat?.cycles ?? 0 };
     });
@@ -771,12 +802,8 @@ export class ProfilerManager {
         this._frameSamples[0] = samples;
         this._lastSamples0 = samples;
 
-        try {
-          raw.disassembly = await fetchDisassembly(rpc, model, samples, sourceMap);
-          if (raw.disassembly.length) model.disassembly = attachDisassembly(raw.disassembly, sourceMap);
-        } catch (e) {
-          console.warn("[profiler] disassembly capture failed (CPU profile unaffected):", e);
-        }
+        raw.disassembly = fetchDisassembly(model, samples, sourceMap, raw.snapshot?.chip, raw.snapshot?.slow);
+        if (raw.disassembly.length) model.disassembly = attachDisassembly(raw.disassembly, sourceMap);
 
         if (model.dma) {
           const writes = model.dma.flags.reduce((n, f) => n + (f & 1), 0);
@@ -967,12 +994,8 @@ export class ProfilerManager {
           }
 
           if (fi === 0) {
-            try {
-              raw.disassembly = await fetchDisassembly(rpc, model, samples, sourceMap);
-              if (raw.disassembly.length) model.disassembly = attachDisassembly(raw.disassembly, sourceMap);
-            } catch (e) {
-              console.warn("[profiler] disassembly capture failed (CPU profile unaffected):", e);
-            }
+            raw.disassembly = fetchDisassembly(model, samples, sourceMap, snapshotRaw?.chip, snapshotRaw?.slow);
+            if (raw.disassembly.length) model.disassembly = attachDisassembly(raw.disassembly, sourceMap);
             this._lastSamples0 = samples;
           } else if (frames[0].raw.disassembly?.length) {
             raw.disassembly = reweightDisassembly(frames[0].raw.disassembly, samples);

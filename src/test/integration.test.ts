@@ -178,13 +178,11 @@ describe("VamigaDebugAdapter Integration Tests", () => {
       const mockCpuInfo = createMockCpuInfo({ pc: "0x1000" });
       mockVAmiga.getCpuInfo.resolves(mockCpuInfo);
 
-      const mockDisasm = {
-        instructions: [
-          { addr: "1000", instruction: "jsr sub1", hex: "4e80" },
-          { addr: "1004", instruction: "move.l d0,d1", hex: "2200" },
-        ],
-      };
-      mockVAmiga.disassemble.resolves(mockDisasm);
+      // JSR (addr).W = [0x4E, 0xB8, 0x20, 0x00] (4 bytes) → next instruction at 0x1004
+      const jsrMem = Buffer.alloc(20);
+      jsrMem[0] = 0x4e; jsrMem[1] = 0xb8; jsrMem[2] = 0x20; jsrMem[3] = 0x00;
+      for (let i = 4; i < jsrMem.length; i += 2) { jsrMem[i] = 0x4e; jsrMem[i + 1] = 0x71; }
+      mockVAmiga.readMemory.resolves(jsrMem);
 
       const response: DebugProtocol.NextResponse = {
         seq: 1,
@@ -208,13 +206,11 @@ describe("VamigaDebugAdapter Integration Tests", () => {
       const mockCpuInfo = createMockCpuInfo({ pc: "0x1000" });
       mockVAmiga.getCpuInfo.resolves(mockCpuInfo);
 
-      const mockDisasm = {
-        instructions: [
-          { addr: "1000", instruction: "move.l d0,d1", hex: "2200" },
-          { addr: "1004", instruction: "add.l #4,d0", hex: "D080" },
-        ],
-      };
-      mockVAmiga.disassemble.resolves(mockDisasm);
+      // MOVE.L D0,D1 = [0x22, 0x00] (2 bytes) — not a branch
+      const moveMem = Buffer.alloc(20);
+      moveMem[0] = 0x22; moveMem[1] = 0x00;
+      for (let i = 2; i < moveMem.length; i += 2) { moveMem[i] = 0x4e; moveMem[i + 1] = 0x71; }
+      mockVAmiga.readMemory.resolves(moveMem);
 
       const response: DebugProtocol.NextResponse = {
         seq: 1,
@@ -401,13 +397,12 @@ describe("VamigaDebugAdapter Integration Tests", () => {
       (adapter as any).breakpointManager = mockBreakpointManager;
       (adapter as any).disassemblyManager = mockDisassemblyManager;
 
-      const mockDisasm = {
-        instructions: [
-          { addr: "1000", instruction: "move.l d0,d1", hex: "2200" },
-          { addr: "1004", instruction: "jsr sub1", hex: "4e80" },
-        ],
-      };
-      mockVAmiga.disassemble.resolves(mockDisasm);
+      // MOVE.L D0,D1 [0x22,0x00] then RTS [0x4E,0x75] then NOPs
+      const disasmMem = Buffer.alloc(16);
+      disasmMem[0] = 0x22; disasmMem[1] = 0x00; // MOVE.L D0,D1
+      disasmMem[2] = 0x4e; disasmMem[3] = 0x75; // RTS
+      for (let i = 4; i < disasmMem.length; i += 2) { disasmMem[i] = 0x4e; disasmMem[i + 1] = 0x71; }
+      mockVAmiga.readMemory.resolves(disasmMem);
 
       const response: DebugProtocol.DisassembleResponse = {
         seq: 1,
@@ -427,10 +422,7 @@ describe("VamigaDebugAdapter Integration Tests", () => {
       assert.ok(response.body);
       assert.strictEqual(response.body.instructions.length, 2);
       assert.strictEqual(response.body.instructions[0].address, "0x1000");
-      assert.strictEqual(
-        response.body.instructions[0].instruction,
-        "move.l d0,d1",
-      );
+      assert.strictEqual(response.body.instructions[1].address, "0x1002");
     });
   });
 

@@ -3,7 +3,6 @@ import {
   CpuInfo,
   CpuTraceItem,
   CustomRegisters,
-  Disassembly,
   EmulatorMessage,
   MemoryInfo,
   RegisterSetStatus,
@@ -365,13 +364,4 @@ export interface Emulator {
    */
   getMemoryRegion(address: number): { start: number; end: number } | null;
 
-  // --- Disassembly ---
-
-  /**
-   * Disassembles CPU instructions starting at the specified address
-   * @param address Starting memory address
-   * @param count Number of instructions to disassemble
-   * @returns Promise resolving to disassembly result
-   */
-  disassemble(address: number, count: number): Promise<Disassembly>;
 }
