@@ -2,7 +2,8 @@
 import * as assert from "assert";
 import * as sinon from "sinon";
 import { StackManager } from "../stackManager";
-import { VAmiga, CpuInfo } from "../vAmiga";
+import { CpuInfo } from "../vAmiga";
+import { PuaeEmulator } from "../puaeEmulator";
 
 // Helper function to create mock CPU info with required properties
 function createMockCpuInfo(overrides: Partial<CpuInfo> = {}): CpuInfo {
@@ -44,11 +45,11 @@ function createMockCpuInfo(overrides: Partial<CpuInfo> = {}): CpuInfo {
  */
 describe("StackManager - Comprehensive Tests", () => {
   let stackManager: StackManager;
-  let mockVAmiga: sinon.SinonStubbedInstance<VAmiga>;
+  let mockVAmiga: sinon.SinonStubbedInstance<PuaeEmulator>;
   let mockSourceMap: any;
 
   beforeEach(() => {
-    mockVAmiga = sinon.createStubInstance(VAmiga);
+    mockVAmiga = sinon.createStubInstance(PuaeEmulator);
     mockSourceMap = {
       lookupAddress: sinon.stub(),
       getSymbols: () => ({ main: 0x1000, sub1: 0x2000 }),

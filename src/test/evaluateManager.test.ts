@@ -2,7 +2,8 @@
 import * as assert from "assert";
 import * as sinon from "sinon";
 import { EvaluateManager, EvaluateResultType } from "../evaluateManager";
-import { VAmiga, CpuInfo } from "../vAmiga";
+import { CpuInfo } from "../vAmiga";
+import { PuaeEmulator } from "../puaeEmulator";
 import { VariablesManager } from "../variablesManager";
 import { DisassemblyManager } from "../disassemblyManager";
 
@@ -12,13 +13,13 @@ import { DisassemblyManager } from "../disassemblyManager";
  */
 describe("EvaluateManager - Comprehensive Tests", () => {
   let evaluateManager: EvaluateManager;
-  let mockVAmiga: sinon.SinonStubbedInstance<VAmiga>;
+  let mockVAmiga: sinon.SinonStubbedInstance<PuaeEmulator>;
   let mockVariablesManager: sinon.SinonStubbedInstance<VariablesManager>;
   let mockDisassemblyManager: sinon.SinonStubbedInstance<DisassemblyManager>;
   let mockSourceMap: any;
 
   beforeEach(() => {
-    mockVAmiga = sinon.createStubInstance(VAmiga);
+    mockVAmiga = sinon.createStubInstance(PuaeEmulator);
     mockVariablesManager = sinon.createStubInstance(VariablesManager);
     mockDisassemblyManager = sinon.createStubInstance(DisassemblyManager);
     mockSourceMap = createMockSourceMap();

@@ -73,13 +73,8 @@ export class MemoryViewerProvider {
 
   constructor(
     private readonly extensionUri: vscode.Uri,
-    private readonly vAmiga: Emulator,
     private readonly puaeEmulator: Emulator,
   ) {
-    // Listen for emulator state changes to auto-refresh all panels. Both
-    // backends are wired up since the active one depends on the debug
-    // session's type (see `emulator` getter below) and may not
-    // be known yet when this provider is constructed.
     const onMessage = (message: EmulatorMessage) => {
       if (!isEmulatorStateMessage(message)) {
         return;
@@ -87,10 +82,8 @@ export class MemoryViewerProvider {
       const wasRunning = this.isEmulatorRunning;
       this.isEmulatorRunning = message.state === "running";
 
-      // Update all panels
       for (const panel of this.panels.values()) {
         if (panel.liveUpdate) {
-          // Stop/start live update mode
           if (this.isEmulatorRunning && !wasRunning) {
             this.startLiveUpdate(panel);
           } else if (!this.isEmulatorRunning && wasRunning) {
@@ -100,8 +93,6 @@ export class MemoryViewerProvider {
           message.state === "paused" ||
           message.state === "stopped"
         ) {
-          // Re-evaluate address (handles dynamic expressions / newly-valid symbols),
-          // then push fresh data for any already-fetched chunks.
           this.updateContent(panel, false).then(() =>
             this.refreshChunks(panel),
           );
@@ -109,7 +100,6 @@ export class MemoryViewerProvider {
       }
     };
     this.emulatorMessageListeners = [
-      this.vAmiga.onDidReceiveMessage(onMessage),
       this.puaeEmulator.onDidReceiveMessage(onMessage),
     ];
 
@@ -130,13 +120,8 @@ export class MemoryViewerProvider {
     );
   }
 
-  /**
-   * The emulator backend to target: whichever backend the active debug
-   * session is using (VAmiga or PuaeEmulator), falling back to VAmiga if no
-   * debug session is active.
-   */
   private get emulator(): Emulator {
-    return VamigaDebugAdapter.getActiveAdapter()?.getEmulator() ?? this.vAmiga;
+    return VamigaDebugAdapter.getActiveAdapter()?.getEmulator() ?? this.puaeEmulator;
   }
 
   /**

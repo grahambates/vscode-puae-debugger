@@ -2,7 +2,8 @@
 import * as assert from "assert";
 import * as sinon from "sinon";
 import { VamigaDebugAdapter } from "../vAmigaDebugAdapter";
-import { VAmiga, CpuInfo } from "../vAmiga";
+import { CpuInfo } from "../vAmiga";
+import { PuaeEmulator } from "../puaeEmulator";
 import { DebugProtocol } from "@vscode/debugprotocol";
 import { VariablesManager } from "../variablesManager";
 import { BreakpointManager } from "../breakpointManager";
@@ -64,10 +65,10 @@ function createMockSourceMap(overrides: any = {}) {
  */
 describe("VamigaDebugAdapter Integration Tests", () => {
   let adapter: VamigaDebugAdapter;
-  let mockVAmiga: sinon.SinonStubbedInstance<VAmiga>;
+  let mockVAmiga: sinon.SinonStubbedInstance<PuaeEmulator>;
 
   beforeEach(() => {
-    mockVAmiga = sinon.createStubInstance(VAmiga);
+    mockVAmiga = sinon.createStubInstance(PuaeEmulator);
     adapter = new VamigaDebugAdapter(mockVAmiga);
   });
 

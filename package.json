@@ -18,12 +18,11 @@
     "amiga",
     "debugger",
     "m68k",
-    "vamiga",
+    "puae",
     "assembly"
   ],
   "icon": "images/icon.png",
   "activationEvents": [
-    "onDebugResolve:vamiga",
     "onDebugResolve:puae"
   ],
   "main": "./out/extension.js",
@@ -45,19 +44,19 @@
         "command": "vamiga-debugger.stepBackFrame",
         "title": "Start of Frame",
         "icon": "$(run-above)",
-        "enablement": "(debugType == 'vamiga' || debugType == 'puae') && debugState == 'stopped'"
+        "enablement": "debugType == 'puae' && debugState == 'stopped'"
       },
       {
         "command": "vamiga-debugger.eof",
         "title": "End of Frame",
         "icon": "$(run-below)",
-        "enablement": "(debugType == 'vamiga' || debugType == 'puae') && debugState == 'stopped'"
+        "enablement": "debugType == 'puae' && debugState == 'stopped'"
       },
       {
         "command": "vamiga-debugger.eol",
         "title": "End of Line",
         "icon": "$(debug-line-by-line)",
-        "enablement": "(debugType == 'vamiga' || debugType == 'puae') && debugState == 'stopped'"
+        "enablement": "debugType == 'puae' && debugState == 'stopped'"
       },
       {
         "command": "vamiga-debugger.openMemoryViewer",
@@ -91,7 +90,7 @@
       "commandPalette": [
         {
           "command": "vamiga-debugger.openMemoryViewer",
-          "when": "debugType == 'vamiga' || debugType == 'puae'"
+          "when": "debugType == 'puae'"
         },
         {
           "command": "vamiga-debugger.viewVariableInMemory",
@@ -99,49 +98,49 @@
         },
         {
           "command": "vamiga-debugger.openStateViewer",
-          "when": "debugType == 'vamiga' || debugType == 'puae'"
+          "when": "debugType == 'puae'"
         },
         {
           "command": "vamiga-debugger.openProfiler",
-          "when": "debugType == 'vamiga' || debugType == 'puae'"
+          "when": "debugType == 'puae'"
         }
       ],
       "debug/toolBar": [
         {
           "command": "vamiga-debugger.stepBackFrame",
-          "when": "debugType == 'vamiga' || debugType == 'puae'",
+          "when": "debugType == 'puae'",
           "group": "navigation@50"
         },
         {
           "command": "vamiga-debugger.eof",
-          "when": "debugType == 'vamiga' || debugType == 'puae'",
+          "when": "debugType == 'puae'",
           "group": "navigation@51"
         },
         {
           "command": "vamiga-debugger.eol",
-          "when": "debugType == 'vamiga' || debugType == 'puae'",
+          "when": "debugType == 'puae'",
           "group": "navigation@52"
         },
         {
           "command": "vamiga-debugger.openMemoryViewer",
-          "when": "debugType == 'vamiga' || debugType == 'puae'",
+          "when": "debugType == 'puae'",
           "group": "navigation@53"
         },
         {
           "command": "vamiga-debugger.openStateViewer",
-          "when": "debugType == 'vamiga' || debugType == 'puae'",
+          "when": "debugType == 'puae'",
           "group": "navigation@54"
         },
         {
           "command": "vamiga-debugger.openProfiler",
-          "when": "debugType == 'vamiga' || debugType == 'puae'",
+          "when": "debugType == 'puae'",
           "group": "navigation@54.5"
         }
       ],
       "debug/variables/context": [
         {
           "command": "vamiga-debugger.viewVariableInMemory",
-          "when": "debugType == 'vamiga' || debugType == 'puae'"
+          "when": "debugType == 'puae'"
         },
         {
           "command": "vamiga-debugger.setWatchpointLength",
@@ -191,267 +190,6 @@
       }
     ],
     "debuggers": [
-      {
-        "type": "vamiga",
-        "languages": [
-          "m68k"
-        ],
-        "label": "vAmiga Debug",
-        "configurationAttributes": {
-          "launch": {
-            "required": [
-              "program"
-            ],
-            "properties": {
-              "program": {
-                "type": "string",
-                "description": "Path to the Amiga program to run",
-                "default": "${workspaceFolder}/out/a.exe"
-              },
-              "debugProgram": {
-                "type": "string",
-                "description": "Optional alternate path to program file containing debug symbols. Defaults to same as 'program'. Making a separate build allows for a smaller exe loaded by the Amiga, which uses less RAM and loads faster.",
-                "default": null
-              },
-              "stopOnEntry": {
-                "type": "boolean",
-                "description": "Automatically stop after launch",
-                "default": true
-              },
-              "trace": {
-                "type": "boolean",
-                "description": "Enable logging of the Debug Adapter Protocol",
-                "default": false
-              },
-              "fastLoad": {
-                "type": "boolean",
-                "description": "Inject program directly into memory",
-                "default": false
-              },
-              "kickstartRom": {
-                "type": "string",
-                "description": "Path to the Kickstart ROM file"
-              },
-              "kickstartExt": {
-                "type": "string",
-                "description": "Path to the extended Kickstart ROM file"
-              },
-              "emulatorOptions": {
-                "type": "object",
-                "properties": {
-                  "cpuRevision": {
-                    "type": "string",
-                    "enum": [
-                      "68000",
-                      "68010",
-                      "68020",
-                      "68030",
-                      "fake_68030"
-                    ],
-                    "description": "CPU model. \"fake_68030\" is an approximate 68030 (no MMU)."
-                  },
-                  "chipRam": {
-                    "type": "string",
-                    "enum": [
-                      "256k",
-                      "512k",
-                      "1M",
-                      "2M"
-                    ],
-                    "description": "Chip RAM size"
-                  },
-                  "slowRam": {
-                    "type": "string",
-                    "enum": [
-                      "0",
-                      "256k",
-                      "512k"
-                    ],
-                    "description": "Slow RAM size"
-                  },
-                  "fastRam": {
-                    "type": "string",
-                    "enum": [
-                      "0",
-                      "256k",
-                      "512k",
-                      "1M",
-                      "2M",
-                      "8M"
-                    ],
-                    "description": "Fast RAM size"
-                  },
-                  "showNavBar": {
-                    "type": "boolean",
-                    "description": "Show navigation bar"
-                  },
-                  "wideScreen": {
-                    "type": "boolean",
-                    "description": "Stretch to full width, regardless of aspect ratio"
-                  },
-                  "darkMode": {
-                    "type": "boolean",
-                    "description": "Dark mode"
-                  },
-                  "enableMouse": {
-                    "type": "boolean",
-                    "description": "Enable mouse"
-                  },
-                  "displayZoom": {
-                    "type": "string",
-                    "enum": [
-                      "viewport tracking",
-                      "borderless",
-                      "narrow",
-                      "standard",
-                      "wider",
-                      "overscan",
-                      "extreme"
-                    ],
-                    "description": "Display zoom mode"
-                  },
-                  "useGpu": {
-                    "type": "boolean",
-                    "description": "Render with GPU, rather than software"
-                  },
-                  "agnusRevision": {
-                    "type": "string",
-                    "enum": [
-                      "OCS_OLD",
-                      "OCS",
-                      "ECS_1MB",
-                      "ECS_2MB"
-                    ],
-                    "description": "Agnus chip revision"
-                  },
-                  "deniseRevision": {
-                    "type": "string",
-                    "enum": [
-                      "OCS",
-                      "ECS"
-                    ],
-                    "description": "Denise chip revision"
-                  },
-                  "cpuSpeed": {
-                    "type": "string",
-                    "enum": [
-                      "7MHz",
-                      "14Hz",
-                      "21Hz",
-                      "28Hz",
-                      "35Hz",
-                      "43Hz",
-                      "57Hz",
-                      "85Hz",
-                      "99Hz"
-                    ],
-                    "description": "CPU speed"
-                  },
-                  "blitterAccuracy": {
-                    "type": "number",
-                    "enum": [
-                      0,
-                      1,
-                      2
-                    ],
-                    "description": "Blitter accuracy level"
-                  },
-                  "floppyDriveCount": {
-                    "type": "number",
-                    "enum": [
-                      1,
-                      2,
-                      3,
-                      4
-                    ],
-                    "description": "Number of floppy drives"
-                  },
-                  "driveSpeed": {
-                    "type": "number",
-                    "enum": [
-                      -1,
-                      1,
-                      2,
-                      4,
-                      8
-                    ],
-                    "description": "Floppy drive speed multiplier (-1: auto)"
-                  }
-                }
-              }
-            }
-          }
-        },
-        "initialConfigurations": [
-          {
-            "type": "vamiga",
-            "request": "launch",
-            "name": "Launch vAmiga",
-            "program": "${workspaceFolder}/out/a.exe",
-            "fastLoad": true,
-            "stopOnEntry": true,
-            "kickstartRom": "${workspaceFolder}/roms/kick13.rom",
-            "emulatorOptions": {
-              "chipRam": "512k",
-              "slowRam": "512k",
-              "fastRam": "0",
-              "cpuRevision": "68000",
-              "agnusRevision": "OCS",
-              "deniseRevision": "OCS",
-              "blitterAccuracy": 2,
-              "cpuSpeed": "7MHz"
-            }
-          }
-        ],
-        "configurationSnippets": [
-          {
-            "label": "vAmiga: OCS 512k + 512k Slow",
-            "description": "A500 OCS with 512k chip and slow RAM",
-            "body": {
-              "type": "vamiga",
-              "request": "launch",
-              "name": "vAmiga: OCS 512k + 512k Slow",
-              "program": "^\"\\${workspaceFolder\\}/${1:out/a.exe}\"",
-              "fastLoad": true,
-              "stopOnEntry": true,
-              "kickstartRom": "^\"\\${workspaceFolder\\}/${2:roms/kick13.rom}\"",
-              "emulatorOptions": {
-                "chipRam": "512k",
-                "slowRam": "512k",
-                "fastRam": "0",
-                "cpuRevision": "68000",
-                "agnusRevision": "OCS",
-                "deniseRevision": "OCS",
-                "blitterAccuracy": 2,
-                "cpuSpeed": "7MHz"
-              }
-            }
-          },
-          {
-            "label": "vAmiga: ECS 1M + 1M Fast",
-            "description": "A500 ECS with 1M chip and 1M fast RAM",
-            "body": {
-              "type": "vamiga",
-              "request": "launch",
-              "name": "vAmiga: ECS 1M + 1M Fast",
-              "program": "^\"\\${workspaceFolder\\}/${1:out/a.exe}\"",
-              "fastLoad": true,
-              "stopOnEntry": true,
-              "kickstartRom": "^\"\\${workspaceFolder\\}/${2:roms/kick310.rom}\"",
-              "emulatorOptions": {
-                "chipRam": "1M",
-                "slowRam": "0",
-                "fastRam": "1M",
-                "cpuRevision": "68000",
-                "agnusRevision": "ECS_2MB",
-                "deniseRevision": "ECS",
-                "blitterAccuracy": 2,
-                "cpuSpeed": "7MHz"
-              }
-            }
-          }
-        ]
-      },
       {
         "type": "puae",
         "languages": [

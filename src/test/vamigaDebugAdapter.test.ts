@@ -3,7 +3,8 @@ import * as assert from "assert";
 import * as sinon from "sinon";
 import { VamigaDebugAdapter } from "../vAmigaDebugAdapter";
 import { EvaluateManager, EvaluateResultType } from "../evaluateManager";
-import { VAmiga, CpuInfo } from "../vAmiga";
+import { CpuInfo } from "../vAmiga";
+import { PuaeEmulator } from "../puaeEmulator";
 import { DebugProtocol } from "@vscode/debugprotocol";
 import * as registerParsers from "../amigaRegisterParsers";
 import { VariablesManager } from "../variablesManager";
@@ -30,11 +31,10 @@ class TestableVamigaDebugAdapter extends VamigaDebugAdapter {
  */
 describe("VamigaDebugAdapter - Simplified Tests", () => {
   let adapter: TestableVamigaDebugAdapter;
-  let mockVAmiga: sinon.SinonStubbedInstance<VAmiga>;
+  let mockVAmiga: sinon.SinonStubbedInstance<PuaeEmulator>;
 
   beforeEach(() => {
-    // Create mock VAmiga with commonly needed methods
-    mockVAmiga = sinon.createStubInstance(VAmiga);
+    mockVAmiga = sinon.createStubInstance(PuaeEmulator);
 
     // Use constructor injection to provide mock
     adapter = new TestableVamigaDebugAdapter(mockVAmiga);

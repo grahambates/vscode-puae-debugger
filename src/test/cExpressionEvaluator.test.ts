@@ -1,7 +1,8 @@
 import * as assert from "assert";
 import * as sinon from "sinon";
 import { CExpressionEvaluator, expressionRangeAt } from "../cExpressionEvaluator";
-import { VAmiga, CpuInfo } from "../vAmiga";
+import { CpuInfo } from "../vAmiga";
+import { PuaeEmulator } from "../puaeEmulator";
 import { VariablesManager } from "../variablesManager";
 import { SourceMap, Variable } from "../sourceMap";
 
@@ -12,7 +13,7 @@ import { SourceMap, Variable } from "../sourceMap";
  */
 describe("CExpressionEvaluator", () => {
   let evaluator: CExpressionEvaluator;
-  let mockVAmiga: sinon.SinonStubbedInstance<VAmiga>;
+  let mockVAmiga: sinon.SinonStubbedInstance<PuaeEmulator>;
   let mockSourceMap: sinon.SinonStubbedInstance<SourceMap>;
   let variablesManager: VariablesManager;
 
@@ -37,7 +38,7 @@ describe("CExpressionEvaluator", () => {
   }
 
   beforeEach(() => {
-    mockVAmiga = sinon.createStubInstance(VAmiga);
+    mockVAmiga = sinon.createStubInstance(PuaeEmulator);
     mockSourceMap = sinon.createStubInstance(SourceMap);
     mockSourceMap.getLocalsForPc.returns([]);
     mockSourceMap.getGlobalVariables.returns([]);

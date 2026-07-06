@@ -83,9 +83,7 @@ interface LaunchRequestArguments extends DebugProtocol.LaunchRequestArguments {
   fastLoad?: boolean;
   /** Path to the Kickstart ROM file */
   kickstartRom?: string;
-  /** Path to the extended Kickstart ROM file (vAmiga only) */
-  kickstartExt?: string;
-  /** Path to a .uae config file loaded as the base configuration (PUAE only) */
+  /** Path to a .uae config file loaded as the base configuration */
   emulatorConfigFile?: string;
   /** Options to pass when opening the emulator */
   emulatorOptions?: Record<string, unknown>;
@@ -101,7 +99,7 @@ export enum ErrorCode {
   PROGRAM_NOT_SPECIFIED = 2001,
   /** Failed to read or parse debug symbols */
   DEBUG_SYMBOLS_READ_ERROR = 2002,
-  /** Failed to start the VAmiga emulator */
+  /** Failed to start the emulator */
   EMULATOR_START_ERROR = 2003,
   /** Launch configuration is invalid for the selected emulator backend */
   INVALID_LAUNCH_CONFIG = 2004,
@@ -213,16 +211,10 @@ export class VamigaDebugAdapter extends LoggingDebugSession {
     return VamigaDebugAdapter.activeAdapter;
   }
 
-  /**
-   * Returns the emulator backend (VAmiga or PuaeEmulator) this session is
-   * debugging against, so other views (memory/state viewers) can target the
-   * same backend instead of always defaulting to VAmiga.
-   */
   public getEmulator(): Emulator {
     return this.emulator;
   }
 
-  // Both VAmiga and PuaeEmulator are WebviewEmulators and satisfy ProfilerRpcClient.
   public getProfilerClient(): ProfilerRpcClient {
     return this.emulator as unknown as ProfilerRpcClient;
   }
@@ -385,29 +377,21 @@ export class VamigaDebugAdapter extends LoggingDebugSession {
     try {
       logger.log(`Starting emulator with program ${this.programPath}`);
 
-      // Backward compat: kickstartRomPath/kickstartExtPath inside emulatorOptions
       const kickstartRom =
         args.kickstartRom ??
         (args.emulatorOptions?.kickstartRomPath as string | undefined);
-      const kickstartExt =
-        args.kickstartExt ??
-        (args.emulatorOptions?.kickstartExtPath as string | undefined);
 
       if (this.fastLoad) {
-        // Use fast loading - inject program directly into memory
         logger.log("Using fast memory injection mode");
         this.emulator.open({
           kickstartRom,
-          kickstartExt,
           emulatorConfigFile: args.emulatorConfigFile,
           ...args.emulatorOptions,
         });
       } else {
-        // Traditional loading via floppy disk emulation
         this.emulator.open({
           programPath: this.programPath,
           kickstartRom,
-          kickstartExt,
           emulatorConfigFile: args.emulatorConfigFile,
           ...args.emulatorOptions,
         });

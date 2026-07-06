@@ -1,6 +1,5 @@
 import * as vscode from "vscode";
 import { VamigaDebugAdapter } from "./vAmigaDebugAdapter";
-import { VAmiga } from "./vAmiga";
 import { MemoryViewerProvider } from "./memoryViewerProvider";
 import { StateViewerProvider } from "./stateViewerProvider";
 import { PuaeEmulator } from "./puaeEmulator";
@@ -9,32 +8,17 @@ import { ProfileEditorProvider } from "./profileEditorProvider";
 import { ProfilerCodeLensProvider } from "./profilerCodeLensProvider";
 import { expressionRangeAt } from "./cExpressionEvaluator";
 
-/**
- * Activates the VAmiga debugger VS Code extension.
- *
- * Initializes the VAmiga emulator interface and registers the debug adapter
- * factory with VS Code's debugging infrastructure. The debug adapter handles
- * Amiga program debugging through the Debug Adapter Protocol.
- *
- * @param context VS Code extension context for managing resources
- */
 export function activate(context: vscode.ExtensionContext) {
-  const vAmiga = new VAmiga(context.extensionUri);
   const puaeEmulator = new PuaeEmulator(context.extensionUri);
   const memoryViewer = new MemoryViewerProvider(
     context.extensionUri,
-    vAmiga,
     puaeEmulator,
   );
   const stateViewer = new StateViewerProvider(
     context.extensionUri,
-    vAmiga,
     puaeEmulator,
   );
-  // Writable, webview-fetchable scratch dir for the profiler's bulk capture blobs.
   const profilerStorage = context.globalStorageUri;
-  // Per file:line self/total/ticks CodeLenses, shared by the live panel and the .vamigaprofile
-  // editor (both call .update() with their freshly-built model).
   const profilerCodeLens = new ProfilerCodeLensProvider();
   const profilerViewer = new ProfilerViewerProvider(
     context.extensionUri,
@@ -43,15 +27,7 @@ export function activate(context: vscode.ExtensionContext) {
     profilerCodeLens,
   );
 
-  // Register the debug adapters
   context.subscriptions.push(
-    vscode.debug.registerDebugAdapterDescriptorFactory("vamiga", {
-      createDebugAdapterDescriptor(): vscode.ProviderResult<vscode.DebugAdapterDescriptor> {
-        return new vscode.DebugAdapterInlineImplementation(
-          new VamigaDebugAdapter(vAmiga),
-        );
-      },
-    }),
     vscode.debug.registerDebugAdapterDescriptorFactory("puae", {
       createDebugAdapterDescriptor(): vscode.ProviderResult<vscode.DebugAdapterDescriptor> {
         return new vscode.DebugAdapterInlineImplementation(
@@ -61,11 +37,10 @@ export function activate(context: vscode.ExtensionContext) {
     }),
   );
 
-  // Register "step back a frame" command
   context.subscriptions.push(
     vscode.commands.registerCommand("vamiga-debugger.stepBackFrame", async () => {
       const adapter = VamigaDebugAdapter.getActiveAdapter();
-      const emulator = adapter?.getEmulator() ?? vAmiga;
+      const emulator = adapter?.getEmulator() ?? puaeEmulator;
       const moved = await emulator.stepBackFrame();
       if (!moved) {
         vscode.window.setStatusBarMessage(
@@ -78,38 +53,31 @@ export function activate(context: vscode.ExtensionContext) {
     }),
   );
 
-  // Register EOF command
   context.subscriptions.push(
     vscode.commands.registerCommand("vamiga-debugger.eof", () => {
-      const emulator = VamigaDebugAdapter.getActiveAdapter()?.getEmulator() ?? vAmiga;
+      const emulator = VamigaDebugAdapter.getActiveAdapter()?.getEmulator() ?? puaeEmulator;
       emulator.eof();
     }),
   );
 
-  // Register EOL command
   context.subscriptions.push(
     vscode.commands.registerCommand("vamiga-debugger.eol", () => {
-      const emulator = VamigaDebugAdapter.getActiveAdapter()?.getEmulator() ?? vAmiga;
+      const emulator = VamigaDebugAdapter.getActiveAdapter()?.getEmulator() ?? puaeEmulator;
       emulator.eol();
     }),
   );
 
-  // Register memory viewer command
   context.subscriptions.push(
     vscode.commands.registerCommand(
       "vamiga-debugger.openMemoryViewer",
       async (uri?: vscode.Uri, address?: string) => {
-        // If called from editor context menu, uri will be set
-        // Try to get the word under cursor or selection
         if (uri && !address) {
           const editor = vscode.window.activeTextEditor;
           if (editor) {
             const selection = editor.selection;
             if (!selection.isEmpty) {
-              // Use selected text
               address = editor.document.getText(selection);
             } else {
-              // Get word under cursor
               const range = editor.document.getWordRangeAtPosition(
                 selection.active,
               );
@@ -119,12 +87,8 @@ export function activate(context: vscode.ExtensionContext) {
             }
           }
         }
-
-        // Open panel directly with address (or empty if not provided)
-        // The panel will have autocomplete so user can easily search for symbols
         try {
           await memoryViewer.show(address || "");
-          return;
         } catch (error) {
           vscode.window.showErrorMessage(
             `Failed to open at address: ${error instanceof Error ? error.message : String(error)}`,
@@ -134,7 +98,6 @@ export function activate(context: vscode.ExtensionContext) {
     ),
   );
 
-  // Register view variable in memory command
   context.subscriptions.push(
     vscode.commands.registerCommand(
       "vamiga-debugger.viewVariableInMemory",
@@ -152,13 +115,6 @@ export function activate(context: vscode.ExtensionContext) {
     ),
   );
 
-  // Register "Set Watchpoint Length..." command — an override for the
-  // auto-derived watchpoint length (DWARF byte size, or assembly directive
-  // parsing), applied via a custom DAP request since DAP has no native
-  // field for this. Works alongside the normal "Break on Value..." menu:
-  // can be set before or after the data breakpoint itself exists. Symbols
-  // only — register watches break on the whole register changing, with no
-  // partial-length concept.
   context.subscriptions.push(
     vscode.commands.registerCommand(
       "vamiga-debugger.setWatchpointLength",
@@ -176,15 +132,11 @@ export function activate(context: vscode.ExtensionContext) {
         if (!session) return;
         const dataId = `${scope}:${name}`;
 
-        // Pre-fill with whatever's currently in effect — a previously set
-        // override takes priority, otherwise the auto-detected guess — so
-        // reopening the box shows what's actually being watched rather
-        // than starting blank every time.
         let info: { override?: number; auto?: number } = {};
         try {
           info = await session.customRequest("getWatchpointLength", { dataId });
         } catch {
-          // Older adapter or no info available — fall back to a blank box.
+          // Older adapter or no info available.
         }
         const current = info.override ?? info.auto;
         const autoHint =
@@ -202,7 +154,7 @@ export function activate(context: vscode.ExtensionContext) {
               : "Enter a positive number of bytes, or leave blank to auto-detect";
           },
         });
-        if (input === undefined) return; // cancelled
+        if (input === undefined) return;
 
         await session.customRequest("setWatchpointLength", {
           dataId,
@@ -212,7 +164,6 @@ export function activate(context: vscode.ExtensionContext) {
     ),
   );
 
-  // Register state viewer command
   context.subscriptions.push(
     vscode.commands.registerCommand(
       "vamiga-debugger.openStateViewer",
@@ -228,14 +179,12 @@ export function activate(context: vscode.ExtensionContext) {
     ),
   );
 
-  // Register PUAE/ami9000 emulator webview command
   context.subscriptions.push(
     vscode.commands.registerCommand("vamiga-debugger.openPuae", () => {
       puaeEmulator.open();
     }),
   );
 
-  // Register CPU profiler command
   context.subscriptions.push(
     vscode.commands.registerCommand(
       "vamiga-debugger.openProfiler",
@@ -251,7 +200,6 @@ export function activate(context: vscode.ExtensionContext) {
     ),
   );
 
-  // Register the read-only editor for .vamigaprofile files (opens the profiler webview).
   context.subscriptions.push(
     vscode.window.registerCustomEditorProvider(
       ProfileEditorProvider.viewType,
@@ -260,20 +208,10 @@ export function activate(context: vscode.ExtensionContext) {
     ),
   );
 
-  // Profiler CodeLenses: any file (the debugged program may be C/C++ or m68k assembly, and
-  // neither is guaranteed to have a language id registered) — provideCodeLenses itself is a
-  // cheap Map lookup that returns nothing for files outside the last captured/loaded profile.
   context.subscriptions.push(
     vscode.languages.registerCodeLensProvider({ scheme: "file" }, profilerCodeLens),
   );
 
-  // Widen the hover expression for C/C++ so compound navigation expressions evaluate. By default
-  // VS Code only sends the single identifier under the cursor; this returns the member/arrow/index
-  // chain truncated at the hovered token (matching VS Code's TypeScript behaviour) - hovering
-  // `SysBase` in `SysBase->ColdCapture` evaluates `SysBase`, hovering `ColdCapture` evaluates the
-  // whole `SysBase->ColdCapture`. See `expressionRangeAt` for the exact rule. Leading `*`/`&` are
-  // intentionally not auto-captured to avoid surprising deref/address-of on hover - they still work
-  // when typed in the Watch panel or REPL.
   context.subscriptions.push(
     vscode.languages.registerEvaluatableExpressionProvider(
       [{ language: "c" }, { language: "cpp" }],
@@ -281,7 +219,6 @@ export function activate(context: vscode.ExtensionContext) {
     ),
   );
 
-  // Clean up viewers on deactivation
   context.subscriptions.push({
     dispose: () => {
       memoryViewer.dispose();
@@ -292,11 +229,6 @@ export function activate(context: vscode.ExtensionContext) {
   });
 }
 
-/**
- * Returns the EvaluatableExpression for a hover position: the navigation chain truncated at the
- * token under the cursor (see `expressionRangeAt`), or undefined to let VS Code fall back to its
- * default word range.
- */
 export function provideEvaluatableExpression(
   document: vscode.TextDocument,
   position: vscode.Position,
@@ -308,10 +240,4 @@ export function provideEvaluatableExpression(
   return new vscode.EvaluatableExpression(range, found.text);
 }
 
-/**
- * Deactivates the VAmiga debugger extension.
- *
- * Called when the extension is deactivated. Currently performs no cleanup
- * as resources are managed by VS Code's disposal mechanisms.
- */
 export function deactivate() {}

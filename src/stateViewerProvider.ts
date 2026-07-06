@@ -31,21 +31,14 @@ export class StateViewerProvider {
 
   constructor(
     private readonly extensionUri: vscode.Uri,
-    private readonly vAmiga: Emulator,
     private readonly puaeEmulator: Emulator,
   ) {
-    // Listen for emulator state changes to auto-refresh panel. Both
-    // backends are wired up since the active one depends on the debug
-    // session's type (see `emulator` getter below) and may not
-    // be known yet when this provider is constructed.
     const onMessage = (message: EmulatorMessage) => {
       if (!isEmulatorStateMessage(message)) {
         return;
       }
-      // const wasRunning = this.isEmulatorRunning;
       this.isEmulatorRunning = message.state === "running";
 
-      // Update panel when emulator stops/pauses
       if (
         this.panel &&
         (message.state === "paused" || message.state === "stopped")
@@ -55,18 +48,12 @@ export class StateViewerProvider {
       }
     };
     this.emulatorMessageListeners = [
-      this.vAmiga.onDidReceiveMessage(onMessage),
       this.puaeEmulator.onDidReceiveMessage(onMessage),
     ];
   }
 
-  /**
-   * The emulator backend to target: whichever backend the active debug
-   * session is using (VAmiga or PuaeEmulator), falling back to VAmiga if no
-   * debug session is active.
-   */
   private get emulator(): Emulator {
-    return VamigaDebugAdapter.getActiveAdapter()?.getEmulator() ?? this.vAmiga;
+    return VamigaDebugAdapter.getActiveAdapter()?.getEmulator() ?? this.puaeEmulator;
   }
 
   /**
