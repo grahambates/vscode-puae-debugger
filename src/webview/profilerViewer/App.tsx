@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import "./App.css";
-import { ProfilerOutboundMessage, ISymbol, IProfileModel, IDmaModel, ComputeRangeMessage } from "../../shared/profilerTypes";
+import { ProfilerOutboundMessage, ISymbol, IProfileModel, IDmaModel, ComputeRangeMessage, DMA_HPOS, DMA_VPOS } from "../../shared/profilerTypes";
 import { unpackBulk } from "../../profilerBulk";
 import { setProfileModel, getProfileModel, useModelVersion } from "./modelStore";
 import { FlameGraph } from "./FlameGraph";
@@ -369,7 +369,22 @@ export function App() {
       </div>
     );
     if (tab === "customregs") return <CustomRegsView selectedSlot={selectedSlot} onSelectSlot={setSelectedSlot} />;
-    if (tab === "copper") return <CopperView selectedSlot={selectedSlot} onSelectSlot={setSelectedSlot} onOpenSource={openSource} />;
+    if (tab === "copper") {
+      // In combined multi-frame mode, selectedSlot spans N × frameSlots. The copper
+      // trace is from one frame, but the copper list restarts at vpos 0 each frame —
+      // so every frame shares the same slot-space layout. Modulo maps any frame's
+      // playhead to the equivalent position in the single-frame copper trace.
+      // On row-click, map back into the frame band the playhead was already in.
+      const frameSlots = DMA_HPOS * DMA_VPOS;
+      const copperSlot = selectedSlot !== undefined && selectedRange
+        ? selectedSlot % frameSlots
+        : selectedSlot;
+      const onCopperSelectSlot = (slot: number) => {
+        if (!selectedRange || selectedSlot === undefined) { setSelectedSlot(slot); return; }
+        setSelectedSlot(Math.floor(selectedSlot / frameSlots) * frameSlots + slot);
+      };
+      return <CopperView selectedSlot={copperSlot} onSelectSlot={onCopperSelectSlot} onOpenSource={openSource} />;
+    }
     if (tab === "blitter") return <BlitterView selectedSlot={selectedSlot} onSelectSlot={setSelectedSlot} displayUnit={unit} timing={timing} />;
     if (tab === "memory") return <MemoryView selectedSlot={selectedSlot} onSelectSlot={setSelectedSlot} onOpenSource={openSource} />;
     if (tab === "screen") return <ResourcesView selectedSlot={selectedSlot} model={screenModel} />;

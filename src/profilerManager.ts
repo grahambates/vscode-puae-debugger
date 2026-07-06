@@ -834,6 +834,7 @@ export class ProfilerManager {
         // total data volume, but we've already saved the snapshot + register round-trips.
         const perFrameDmaBytes: (Uint8Array | undefined)[] = new Array(numFrames).fill(undefined);
         const perFrameEvtBytes: (Uint8Array | undefined)[] = new Array(numFrames).fill(undefined);
+        const perFrameCopperBytes: (Uint8Array | undefined)[] = new Array(numFrames).fill(undefined);
         try {
           for (let fi = 0; fi < numFrames; fi++) {
             const dmaRes = await rpc.sendRpcCommand<{ data: Uint8Array }>("getDmaFrame", { frameIdx: fi });
@@ -842,14 +843,20 @@ export class ProfilerManager {
             const evtRes = await rpc.sendRpcCommand<{ data: Uint8Array }>("getDmaEventsFrame", { frameIdx: fi });
             const eb = u8(evtRes.data);
             if (eb.length) perFrameEvtBytes[fi] = eb;
+            try {
+              const copperRes = await rpc.sendRpcCommand<{ data: Uint8Array }>("getCopperFrame", { frameIdx: fi });
+              const cb = u8(copperRes.data);
+              if (cb.length) perFrameCopperBytes[fi] = cb;
+            } catch {
+              // unsupported backend or no copper tracking — copper trace just won't appear
+            }
           }
         } catch (e) {
           console.warn("[profiler] per-frame DMA capture failed:", e);
         }
 
-        // Snapshot and copper are captured at end-of-capture state (last frame).
-        // The snapshot is used for memory reconstruction — only attached to the last
-        // frame so we don't waste bulk-blob space duplicating 2.5MB per frame.
+        // Snapshot captured at end-of-capture state (last frame) — used for memory
+        // reconstruction; only attached to the last frame to avoid duplicating 2.5MB per frame.
         let snapshotRaw: { chip: Uint8Array; slow: Uint8Array; custom: Uint8Array } | undefined;
         try {
           if (perFrameDmaBytes[numFrames - 1]) {
@@ -858,15 +865,6 @@ export class ProfilerManager {
           }
         } catch (e) {
           console.warn("[profiler] snapshot fetch failed:", e);
-        }
-
-        let copperBytes: Uint8Array | undefined;
-        try {
-          const copperRes = await rpc.sendRpcCommand<{ data: Uint8Array }>("getCopperData");
-          const cb = u8(copperRes.data);
-          if (cb.length) copperBytes = cb;
-        } catch (e) {
-          console.warn("[profiler] copper trace failed:", e);
         }
 
         // Split the combined stream at WASM_PROFILE_FRAME_MARKER boundaries.
@@ -926,14 +924,13 @@ export class ProfilerManager {
               frameCycles: res.frameCycles ?? 0,
               isPAL: res.isPAL ?? true,
             },
-            // Every frame has its own DMA grid (serialized in C after each retro_run()).
+            // Every frame has its own DMA grid and copper trace (serialized in C after each retro_run()).
             dma: perFrameDmaBytes[fi],
             dmaEvents: perFrameEvtBytes[fi],
-            // Snapshot (2.5MB) and copper only on the last frame — memory reconstruction
-            // baseline is end-of-capture state; correct for the last frame, approximate
-            // for earlier ones (acceptable: demo loops tend to restore RAM each frame).
+            copper: perFrameCopperBytes[fi],
+            // Snapshot (2.5MB) only on the last frame — memory reconstruction baseline is
+            // end-of-capture state; correct for the last frame, approximate for earlier ones.
             snapshot: isLastFrame ? snapshotRaw : undefined,
-            copper: isLastFrame ? copperBytes : undefined,
             // Registers: only frame 0 has data in the buffer.
             registers: fi === 0 && allRegsBytes.length > 0 ? allRegsBytes : undefined,
             thumbnail,

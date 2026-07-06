@@ -782,8 +782,9 @@ extern void wasm_dma_serialize_grid(void);
 extern void wasm_dma_serialize_events(void);
 // Per-frame DMA serializers — write the just-completed frame's DMA into an
 // arbitrary caller-provided buffer (must be called right after retro_run()).
-extern void wasm_dma_serialize_to_buf(uint8_t *dst);
-extern void wasm_dma_serialize_events_to_buf(uint8_t *dst);
+extern void     wasm_dma_serialize_to_buf(uint8_t *dst);
+extern void     wasm_dma_serialize_events_to_buf(uint8_t *dst);
+extern uint32_t puae_copper_serialize(uint8_t *out);
 
 extern int  debug_dma;
 extern void record_dma_reset(int start);
@@ -848,6 +849,26 @@ EMSCRIPTEN_KEEPALIVE const void *wasm_profile_get_evt_frame_ptr(int fi) {
     return g_wprofEvtAll + (size_t)fi * WASM_EVT_FRAME_BYTES;
 }
 
+// Per-frame copper traces — dynamically allocated inside wasm_profile_start.
+// Each retro_run() is followed by a puae_copper_serialize() call while
+// cop_record[curr_cop_set ^ 1] still holds that frame's completed data.
+// Max size matches PUAE_COPPER_MAX_RECORDS * 12 bytes (the same cap used by
+// puae_debug.c's single-frame cache buffer).
+#define WASM_COPPER_FRAME_MAX_BYTES  (40000u * 12u)   /* 480 000 bytes per frame */
+static uint8_t  *g_wprofCopperAll   = NULL; /* [copperCount][WASM_COPPER_FRAME_MAX_BYTES] */
+static uint32_t *g_wprofCopperSizes = NULL; /* actual bytes written per frame */
+static int       g_wprofCopperCount = 0;
+
+EMSCRIPTEN_KEEPALIVE int wasm_profile_get_copper_count(void) { return g_wprofCopperCount; }
+EMSCRIPTEN_KEEPALIVE uint32_t wasm_profile_get_copper_frame_bytes(int fi) {
+    if (!g_wprofCopperSizes || fi < 0 || fi >= g_wprofCopperCount) return 0;
+    return g_wprofCopperSizes[fi];
+}
+EMSCRIPTEN_KEEPALIVE const void *wasm_profile_get_copper_frame_ptr(int fi) {
+    if (!g_wprofCopperAll || fi < 0 || fi >= g_wprofCopperCount) return (void *)0;
+    return g_wprofCopperAll + (size_t)fi * WASM_COPPER_FRAME_MAX_BYTES;
+}
+
 // Per-frame full-resolution RGBA images for hover-to-enlarge.
 // Allocated on the first retro_run() (once dimensions are known), freed at the start of
 // the next wasm_profile_start call.  All frames share the same W×H (taken from frame 0).
@@ -876,7 +897,10 @@ int wasm_profile_start(int numFrames)
     free(g_wprofDmaAll);     g_wprofDmaAll     = NULL;
     free(g_wprofEvtAll);     g_wprofEvtAll     = NULL;
     free(g_wprofFullFrames); g_wprofFullFrames = NULL;
+    free(g_wprofCopperAll);   g_wprofCopperAll   = NULL;
+    free(g_wprofCopperSizes); g_wprofCopperSizes = NULL;
     g_wprofDmaCount    = 0;
+    g_wprofCopperCount = 0;
     g_wprofFullFrameW  = 0;
     g_wprofFullFrameH  = 0;
 
@@ -884,10 +908,12 @@ int wasm_profile_start(int numFrames)
     record_dma_reset(1);   /* alloc if needed, toggle buffer, set debug_dma=1 */
     g_wprofThumbCount = 0;
 
-    // Allocate per-frame DMA storage (numFrames frames, each WASM_DMA/EVT_FRAME_BYTES).
+    // Allocate per-frame DMA and copper storage.
     if (numFrames > 0) {
-        g_wprofDmaAll = (uint8_t *)malloc((size_t)numFrames * WASM_DMA_FRAME_BYTES);
-        g_wprofEvtAll = (uint8_t *)malloc((size_t)numFrames * WASM_EVT_FRAME_BYTES);
+        g_wprofDmaAll    = (uint8_t *)malloc((size_t)numFrames * WASM_DMA_FRAME_BYTES);
+        g_wprofEvtAll    = (uint8_t *)malloc((size_t)numFrames * WASM_EVT_FRAME_BYTES);
+        g_wprofCopperAll   = (uint8_t *)malloc((size_t)numFrames * WASM_COPPER_FRAME_MAX_BYTES);
+        g_wprofCopperSizes = (uint32_t *)calloc((size_t)numFrames, sizeof(uint32_t));
     }
 
     int target = (int)g_frame_count + numFrames;
@@ -914,13 +940,19 @@ int wasm_profile_start(int numFrames)
                 }
             }
         }
-        // Serialize this frame's DMA immediately after retro_run() while the
-        // toggle buffer still holds its data (before the next frame can overwrite it).
+        // Serialize this frame's DMA and copper immediately after retro_run() while the
+        // toggle buffers still hold this frame's data (before the next frame overwrites them).
         if (g_wprofDmaAll)
             wasm_dma_serialize_to_buf(g_wprofDmaAll + (size_t)framesDone * WASM_DMA_FRAME_BYTES);
         if (g_wprofEvtAll)
             wasm_dma_serialize_events_to_buf(g_wprofEvtAll + (size_t)framesDone * WASM_EVT_FRAME_BYTES);
         g_wprofDmaCount = framesDone + 1;
+        if (g_wprofCopperAll && g_wprofCopperSizes) {
+            uint32_t csz = puae_copper_serialize(
+                g_wprofCopperAll + (size_t)framesDone * WASM_COPPER_FRAME_MAX_BYTES);
+            g_wprofCopperSizes[framesDone] = csz;
+            g_wprofCopperCount = framesDone + 1;
+        }
         // Emit frame marker between frames (not after the last one).
         if ((int)g_frame_count < target)
             wasm_profile_emit_frame_marker(framesDone);

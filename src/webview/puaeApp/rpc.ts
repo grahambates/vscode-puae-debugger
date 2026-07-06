@@ -1308,6 +1308,17 @@ export function setupRpcDispatcher(
         }));
         break;
       }
+      case "getCopperFrame": {
+        const fi = (args.frameIdx ?? 0) >>> 0;
+        const ptr  = M._wasm_profile_get_copper_frame_ptr(fi);
+        const size = ptr ? M._wasm_profile_get_copper_frame_bytes(fi) : 0;
+        rpcRequest(() => ({
+          data: size > 0
+            ? new Uint8Array(M.HEAPU8.buffer as ArrayBuffer, ptr, size).slice()
+            : new Uint8Array(0),
+        }));
+        break;
+      }
       case "getDmaSnapshot": {
         const chipPtr = M._wasm_dma_get_chip_ptr();
         const chipSize = M._wasm_dma_get_chip_size();
