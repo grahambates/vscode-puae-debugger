@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import "./App.css";
-import { ProfilerOutboundMessage, ISymbol, IProfileModel, IDmaModel, ComputeRangeMessage, DMA_HPOS, DMA_VPOS } from "../../shared/profilerTypes";
+import { ProfilerOutboundMessage, ISymbol, IProfileModel, IDmaModel, ComputeRangeMessage, DMA_HPOS, DMA_VPOS, ReadSourceFileMessage } from "../../shared/profilerTypes";
 import { unpackBulk } from "../../profilerBulk";
 import { setProfileModel, getProfileModel, useModelVersion } from "./modelStore";
 import { FlameGraph } from "./FlameGraph";
@@ -108,6 +108,9 @@ export function App() {
   const [combinedModel, setCombinedModel] = useState<IProfileModel | null>(null);
   // Model built server-side for a partial frame range (shift-click selection).
   const [rangeModel, setRangeModel] = useState<IProfileModel | null>(null);
+  // Cache of source file content for the disassembly "Show source" toggle.
+  // null = requested but not yet received; string[] = loaded lines (0-indexed).
+  const [sourceFiles, setSourceFiles] = useState<Map<string, string[] | null>>(new Map());
   // Track blob URLs so we can revoke them when frames are replaced (prevents memory leaks).
   const prevThumbUrlsRef = useRef<string[]>([]);
   // Filmstrip hover-to-enlarge state: which rect the pointer is over + the full-res JPEG URL.
@@ -262,6 +265,8 @@ export function App() {
       } else if (m.command === "capturing") {
         setBusy(true);
         setError(null);
+      } else if (m.command === "sourceFile") {
+        setSourceFiles(prev => new Map(prev).set(m.file, m.lines));
       }
     };
     window.addEventListener("message", handle);
@@ -287,6 +292,16 @@ export function App() {
       vscode.postMessage({ command: "openDocument", file, line, toSide }),
     [],
   );
+
+  // Request source file content from the extension host. Marks the file as pending (null)
+  // immediately so repeat calls (e.g. from re-renders before the response arrives) are no-ops.
+  const requestSourceFile = useCallback((file: string) => {
+    setSourceFiles(prev => {
+      if (prev.has(file)) return prev; // already requested or loaded
+      vscode.postMessage({ command: "readSourceFile", file } as ReadSourceFileMessage);
+      return new Map(prev).set(file, null);
+    });
+  }, []);
 
   const filter = useMemo<IRichFilter>(
     () => ({ text: filterText, caseSensitive, regex: useRegex }),
@@ -388,7 +403,7 @@ export function App() {
     if (tab === "blitter") return <BlitterView selectedSlot={selectedSlot} onSelectSlot={setSelectedSlot} displayUnit={unit} timing={timing} />;
     if (tab === "memory") return <MemoryView selectedSlot={selectedSlot} onSelectSlot={setSelectedSlot} onOpenSource={openSource} />;
     if (tab === "screen") return <ResourcesView selectedSlot={selectedSlot} model={screenModel} />;
-    return <DisassemblyView selectedSlot={selectedSlot} onSelectSlot={setSelectedSlot} onOpenSource={openSource} />;
+    return <DisassemblyView selectedSlot={selectedSlot} onSelectSlot={setSelectedSlot} onOpenSource={openSource} sourceFiles={sourceFiles} onRequestSourceFile={requestSourceFile} />;
   };
 
   // Render a single tab panel (tab bar + content). `isLeft` controls which panel

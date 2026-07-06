@@ -118,6 +118,14 @@ export class ProfilerViewerProvider {
         await this.saveProfile();
       } else if (message.command === "openDocument") {
         await openProfilerSource(message.file, message.line, message.toSide);
+      } else if (message.command === "readSourceFile") {
+        try {
+          const data = await vscode.workspace.fs.readFile(vscode.Uri.file(message.file));
+          const lines = Buffer.from(data).toString("utf8").split(/\r?\n/);
+          this.post({ command: "sourceFile", file: message.file, lines });
+        } catch {
+          this.post({ command: "sourceFile", file: message.file, lines: [] });
+        }
       }
     });
   }

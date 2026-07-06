@@ -9,10 +9,15 @@ import { interpretDataReg, interpretAddressReg } from "./registerInterpret";
 import { findPrevRegChangeSample, findRegNextChangeSample } from "./registerHistory";
 import { Tooltip } from "./Tooltip";
 
-const ROW_H = 18; // must match rowHeight passed to List
+const ROW_H = 18; // instruction row height (px)
+const SRC_H = 15; // source-line header row height (px)
 const LANE_W = 8; // px per arrow lane
 const MAX_LANES = 5;
 const GUTTER_W = MAX_LANES * LANE_W + 4; // 44px total width
+
+type Row =
+  | { kind: "source"; file: string; line: number; text: string }
+  | { kind: "instruction"; ins: IDisassembledInstruction };
 
 interface Arrow {
   fromIdx: number;
@@ -52,8 +57,9 @@ function computeArrows(instructions: IDisassembledInstruction[]): Arrow[] {
   return arrows;
 }
 
-function ArrowGutter({ arrows, scrollTop }: { arrows: Arrow[]; scrollTop: number }) {
-  const rowMid = (idx: number) => idx * ROW_H + ROW_H / 2 - scrollTop;
+function ArrowGutter({ arrows, instructionRowY, scrollTop }: { arrows: Arrow[]; instructionRowY: number[]; scrollTop: number }) {
+  // instructionRowY[i] = top pixel of instruction row i in content (pre-scroll) coordinates.
+  const rowMid = (idx: number) => (instructionRowY[idx] ?? idx * ROW_H) + ROW_H / 2 - scrollTop;
   const laneX = (lane: number) => GUTTER_W - 2 - (lane + 1) * LANE_W;
   const rightX = GUTTER_W - 1;
   const AH = 3; // arrowhead half-height in px
@@ -85,7 +91,7 @@ function ArrowGutter({ arrows, scrollTop }: { arrows: Arrow[]; scrollTop: number
 // Props shared across every row via the v2 rowProps channel (must not contain
 // ariaAttributes/index/style — see TimeView.tsx).
 type RowListProps = {
-  instructions: IDisassembledInstruction[];
+  rows: Row[];
   maxCycles: number;
   currentAddress: number | undefined;
   onOpenSource: (file: string, line: number, toSide: boolean) => void;
@@ -93,8 +99,17 @@ type RowListProps = {
   onJumpToExecution: ((address: number, prev: boolean) => void) | undefined;
 };
 
-function RowRenderer({ index, style, instructions, maxCycles, currentAddress, onOpenSource, onJumpToExecution }: RowComponentProps<RowListProps>) {
-  const ins = instructions[index];
+function RowRenderer({ index, style, rows, maxCycles, currentAddress, onOpenSource, onJumpToExecution }: RowComponentProps<RowListProps>) {
+  const row = rows[index];
+  if (row.kind === "source") {
+    return (
+      <div className="disasm-src-line" style={style}>
+        <span className="disasm-src-lineno">{row.line}</span>
+        <span className="disasm-src-text">{row.text || " "}</span>
+      </div>
+    );
+  }
+  const ins = row.ins;
   // Hot/cold tint: background alpha proportional to this instruction's share of the function's
   // hottest instruction (not the frame total) — keeps the heat map meaningful within a function
   // that's individually cold relative to the rest of the program.
@@ -265,16 +280,21 @@ export function DisassemblyView({
   selectedSlot,
   onSelectSlot,
   onOpenSource,
+  sourceFiles,
+  onRequestSourceFile,
 }: {
   selectedSlot: number | undefined;
   onSelectSlot: (slot: number) => void;
   onOpenSource: (file: string, line: number, toSide: boolean) => void;
+  sourceFiles: Map<string, string[] | null>;
+  onRequestSourceFile: (file: string) => void;
 }) {
   const model = getProfileModel();
   const disassembly = model?.disassembly;
   const [selectedFn, setSelectedFn] = useState<number | undefined>(undefined); // index into `functions`
   const [follow, setFollow] = useState(true);
   const [showRegs, setShowRegs] = useState(true);
+  const [showSource, setShowSource] = useState(false);
   const [scrollTop, setScrollTop] = useState(0);
   const listRef = useRef<ListImperativeAPI>(null);
   const symbolize = useMemo(() => createSymbolizer(model?.symbols), [model]);
@@ -336,11 +356,55 @@ export function DisassemblyView({
   const activeFnIndex = selectedFn !== undefined && selectedFn < functions.length ? selectedFn : 0;
   const active = functions[activeFnIndex];
 
+  // Fetch source files for the active function when "Show source" is on.
+  useEffect(() => {
+    if (!showSource || !active) return;
+    const needed = [...new Set(active.fn.instructions.flatMap(ins => ins.file ? [ins.file] : []))]
+      .filter(f => !sourceFiles.has(f));
+    for (const file of needed) onRequestSourceFile(file);
+  }, [showSource, active, sourceFiles, onRequestSourceFile]);
+
+  // Build the flat rows array and instructionRowY (top-of-row pixel in content coordinates
+  // for each instruction) together — instructionRowY is used by the arrow gutter to compute
+  // correct Y positions when source rows are interleaved.
+  const { rows, instructionRowY } = useMemo(() => {
+    if (!active) return { rows: [] as Row[], instructionRowY: [] as number[] };
+    const instructions = active.fn.instructions;
+    if (!showSource) {
+      return {
+        rows: instructions.map(ins => ({ kind: "instruction" as const, ins })),
+        instructionRowY: instructions.map((_, i) => i * ROW_H),
+      };
+    }
+    const result: Row[] = [];
+    const rowY: number[] = [];
+    let y = 0;
+    let lastKey = "";
+    for (const ins of instructions) {
+      if (ins.file && ins.line !== undefined) {
+        const key = `${ins.file}:${ins.line}`;
+        if (key !== lastKey) {
+          lastKey = key;
+          const fileLines = sourceFiles.get(ins.file);
+          const text = fileLines != null ? (fileLines[ins.line - 1] ?? "") : "…";
+          result.push({ kind: "source", file: ins.file, line: ins.line, text });
+          y += SRC_H;
+        }
+      } else {
+        lastKey = ""; // gap in source map resets grouping
+      }
+      rowY.push(y);
+      result.push({ kind: "instruction", ins });
+      y += ROW_H;
+    }
+    return { rows: result, instructionRowY: rowY };
+  }, [active, showSource, sourceFiles]);
+
   useEffect(() => {
     if (!active || currentAddress === undefined) return;
-    const idx = active.fn.instructions.findIndex((i) => i.address === currentAddress);
-    if (idx >= 0) listRef.current?.scrollToRow({ index: idx, align: "smart" });
-  }, [active, currentAddress]);
+    const listRowIdx = rows.findIndex(r => r.kind === "instruction" && r.ins.address === currentAddress);
+    if (listRowIdx >= 0) listRef.current?.scrollToRow({ index: listRowIdx, align: "smart" });
+  }, [active, currentAddress, rows]);
 
   const maxCycles = useMemo(() => (active ? Math.max(0, ...active.fn.instructions.map((i) => i.cycles)) : 0), [active]);
   const arrows = useMemo(() => computeArrows(active?.fn.instructions ?? []), [active]);
@@ -370,8 +434,8 @@ export function DisassemblyView({
   }, [model, currentIdx, columns, dmaSlots, onSelectSlot]);
 
   const rowProps = useMemo<RowListProps>(
-    () => ({ instructions: active?.fn.instructions ?? [], maxCycles, currentAddress, onOpenSource, onJumpToExecution: jumpToExecution }),
-    [active, maxCycles, currentAddress, onOpenSource, jumpToExecution],
+    () => ({ rows, maxCycles, currentAddress, onOpenSource, onJumpToExecution: jumpToExecution }),
+    [rows, maxCycles, currentAddress, onOpenSource, jumpToExecution],
   );
 
   if (!model) return null;
@@ -400,6 +464,10 @@ export function DisassemblyView({
           <input type="checkbox" checked={showRegs} onChange={(e) => setShowRegs(e.target.checked)} />
           Registers
         </label>
+        <label className="disasm-follow">
+          <input type="checkbox" checked={showSource} onChange={(e) => setShowSource(e.target.checked)} />
+          Source
+        </label>
         {columns.length > 0 && dmaSlots && (
           <span className="cr-nav">
             <button
@@ -421,14 +489,14 @@ export function DisassemblyView({
       </div>
       <div className="disasm-body">
         <div className="disasm-rows">
-          <ArrowGutter arrows={arrows} scrollTop={scrollTop} />
+          <ArrowGutter arrows={arrows} instructionRowY={instructionRowY} scrollTop={scrollTop} />
           <List
             style={{ flex: 1, minWidth: 0, minHeight: 0 }}
             listRef={listRef}
             rowComponent={RowRenderer}
             rowProps={rowProps}
-            rowCount={active?.fn.instructions.length ?? 0}
-            rowHeight={18}
+            rowCount={rows.length}
+            rowHeight={(index) => rows[index]?.kind === "source" ? SRC_H : ROW_H}
             onScroll={(e) => setScrollTop(e.currentTarget.scrollTop)}
           />
         </div>

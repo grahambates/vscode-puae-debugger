@@ -292,11 +292,17 @@ export interface RangeResultMessage {
   command: "rangeResult";
   model: IProfileModel;
 }
+export interface SourceFileMessage {
+  command: "sourceFile";
+  file: string;
+  lines: string[]; // full file content, 0-indexed; empty if unreadable
+}
 export type ProfilerOutboundMessage =
   | CaptureResultMessage
   | RangeResultMessage
   | ProfilerErrorMessage
-  | CaptureBusyMessage;
+  | CaptureBusyMessage
+  | SourceFileMessage;
 
 // --- messages: webview -> extension ---
 export interface ReadyMessage {
@@ -329,10 +335,15 @@ export interface ComputeRangeMessage {
   command: "computeRange";
   range: [number, number]; // [a, b] inclusive frame indices
 }
+export interface ReadSourceFileMessage {
+  command: "readSourceFile";
+  file: string; // absolute path
+}
 export type ProfilerInboundMessage =
   | ReadyMessage
   | CaptureMessage
   | ComputeRangeMessage
   | OpenDocumentMessage
   | SaveProfileMessage
-  | SetNumFramesMessage;
+  | SetNumFramesMessage
+  | ReadSourceFileMessage;

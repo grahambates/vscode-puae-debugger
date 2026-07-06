@@ -1307,6 +1307,31 @@ body {
   opacity: 0.75;
 }
 
+.disasm-src-line {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 0 10px;
+  box-sizing: border-box;
+  white-space: nowrap;
+  opacity: 0.55;
+  font-style: italic;
+  background: var(--vscode-editor-inactiveSelectionBackground, rgba(128,128,128,0.08));
+  border-left: 2px solid var(--vscode-editorLineNumber-foreground, #888);
+}
+
+.disasm-src-lineno {
+  color: var(--vscode-editorLineNumber-foreground);
+  min-width: 3ch;
+  text-align: right;
+  flex-shrink: 0;
+}
+
+.disasm-src-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .disasm-row {
   display: flex;
   align-items: center;
