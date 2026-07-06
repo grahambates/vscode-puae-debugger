@@ -694,6 +694,8 @@ static int g_dmaOverlaySavedCropId = -1;
 extern unsigned short int defaultw, defaulth;
 static int g_dmaOverlaySavedDefaultW = -1, g_dmaOverlaySavedDefaultH = -1;
 
+static int g_blitTrackingEnabled = 0; // forward-declared here; defined in blit section below
+
 PUAE_DEBUG_EXPORT void
 wasm_dma_overlay_enable(int on)
 {
@@ -703,7 +705,8 @@ wasm_dma_overlay_enable(int on)
 	// dma_record[]/puae_dma_draw_overlay — turning it on costs real
 	// performance, so it must turn back off once no channel needs it,
 	// rather than staying on for the rest of the session.
-	debug_dma = on ? 1 : 0;
+	// Also keep it on if blit-region tracking needs the records.
+	debug_dma = (g_dmaOverlayEnabled || g_blitTrackingEnabled) ? 1 : 0;
 
 	if (on) {
 		if (g_dmaOverlaySavedOverscanmode < 0)
@@ -754,6 +757,141 @@ wasm_dma_overlay_set_opacity(int opacity)
 	if (opacity > 255) opacity = 255;
 	g_dmaOverlayOpacity = opacity;
 }
+
+// ---- Blit-region tracking (independent of the DMA visual overlay) ----
+// Enables debug_dma (to populate dma_record[]) and cycle-exact blitter
+// operation (required for per-cycle records) without enabling the DMA
+// visual overlay. The JS side scans the last-completed-frame records for
+// blitter D-channel writes and draws fading highlight boxes over those areas.
+
+static int g_blitTrackingSavedCE = 0;
+
+PUAE_DEBUG_EXPORT void
+wasm_blit_tracking_enable(int enable)
+{
+	g_blitTrackingEnabled = enable ? 1 : 0;
+	debug_dma = (g_dmaOverlayEnabled || g_blitTrackingEnabled) ? 1 : 0;
+
+	if (enable) {
+		// Cycle-exact blitter is required for per-cycle DMA records to capture
+		// blitter D-channel writes in the DMA grid. Display geometry is unchanged —
+		// the JS side derives the visible display offset from BITPLANE DMA activity.
+		g_blitTrackingSavedCE = currprefs.blitter_cycle_exact;
+		currprefs.blitter_cycle_exact = 1;
+		changed_prefs.blitter_cycle_exact = 1;
+	} else {
+		currprefs.blitter_cycle_exact = g_blitTrackingSavedCE;
+		changed_prefs.blitter_cycle_exact = g_blitTrackingSavedCE;
+	}
+	set_config_changed();
+}
+
+// Two-pass scan that maps blitter writes to visible screen positions:
+//   Pass 1 — for each BLITTER D-channel DMA cell, stamp g_blitTagBuf[chip_ram_word]
+//             with the current frame counter.
+//   Pass 2 — scan every DMA cell. For BITPLANE cells: track the minimum hpos/vpos
+//             seen (= left/top edge of the visible display), then check if the fetched
+//             chip RAM word was recently blitter-tagged.
+//
+// The display window offset (g_blitDisplayHposMin, g_blitDisplayVposMin) is derived
+// from BITPLANE DMA activity rather than by forcing OVERSCANMODE_ULTRA, so the display
+// geometry stays unchanged. JS converts (hpos,vpos) → screen pixel via:
+//   x = (hpos - hposMin) * 16   (each BITPLANE DMA slot = one 16-bit word = 16 px)
+//   y = (vpos - vposMin)         (one slot per scan-line)
+//
+// Scan range matches profilerTypes.ts DMA_HPOS/DMA_VPOS (display-mapped grid).
+#define BLIT_SCAN_HPOS 227
+#define BLIT_SCAN_VPOS 313
+
+// Per chip-RAM-word frame-counter stamp: word_idx = chip_ram_byte_addr >> 1.
+// Using a generation counter avoids a per-frame decrement sweep of the whole array.
+// Max chip RAM = 2MB => max words = 1M. Initialised to 0; g_blitVisFrame starts
+// at BLIT_VIS_DECAY so unwritten entries compare as "too old" from the start.
+#define BLIT_TAG_WORDS (2 * 1024 * 1024 / 2)
+#define BLIT_VIS_DECAY 8
+static uint32_t g_blitTagBuf[BLIT_TAG_WORDS];
+static uint32_t g_blitVisFrame = BLIT_VIS_DECAY;
+
+// Visible display window extent in DMA-grid coordinates, derived from BITPLANE DMA
+// activity each frame. JS uses (hposMin,hposMax,vposMin,vposMax) to map DMA positions
+// to framebuffer pixel coordinates without changing display geometry:
+//   x = (hpos-hposMin)/(hposMax-hposMin) * (fbWidth-16)   [left edge of 16-px word]
+//   y = (vpos-vposMin)/(vposSpan+1) * fbHeight              [scanline → pixel row]
+static int g_blitDisplayHposMin = 0;
+static int g_blitDisplayHposMax = BLIT_SCAN_HPOS - 1;
+static int g_blitDisplayVposMin = 0;
+static int g_blitDisplayVposMax = BLIT_SCAN_VPOS - 1;
+
+// Output: (hpos:u16, vpos:u16) per hit BITPLANE cell, max one per grid cell.
+#define BLIT_PIX_MAX (BLIT_SCAN_HPOS * BLIT_SCAN_VPOS)
+static uint16_t g_blitPixelsBuf[BLIT_PIX_MAX * 2];
+static int g_blitPixelsCount = 0;
+
+PUAE_DEBUG_EXPORT void *
+wasm_blit_vis_get_pixels_ptr(void)
+{
+	return g_blitPixelsBuf;
+}
+
+PUAE_DEBUG_EXPORT int
+wasm_blit_vis_update(void)
+{
+	if (!g_blitTrackingEnabled) return 0;
+	g_blitVisFrame++;
+
+	// Pass 1: stamp blitter D-channel write addresses with the current frame.
+	for (int vpos = 0; vpos < BLIT_SCAN_VPOS; vpos++) {
+		for (int hpos = 0; hpos < BLIT_SCAN_HPOS; hpos++) {
+			if (puae_dma_get_cell_type(hpos, vpos) == DMARECORD_BLITTER &&
+			    (puae_dma_get_cell_extra(hpos, vpos) & 7) == 3) {
+				uint32_t word_idx = puae_dma_get_cell_addr(hpos, vpos) >> 1;
+				if (word_idx < BLIT_TAG_WORDS)
+					g_blitTagBuf[word_idx] = g_blitVisFrame;
+			}
+		}
+	}
+
+	// Pass 2: scan all BITPLANE DMA cells.
+	//   - Track the full extent (min/max) of BITPLANE DMA activity to derive the
+	//     visible display window in DMA-grid coordinates.
+	//   - Collect cells whose chip RAM address was recently blitter-written.
+	int hposMin = BLIT_SCAN_HPOS, hposMax = 0;
+	int vposMin = BLIT_SCAN_VPOS, vposMax = 0;
+	g_blitPixelsCount = 0;
+	for (int vpos = 0; vpos < BLIT_SCAN_VPOS; vpos++) {
+		for (int hpos = 0; hpos < BLIT_SCAN_HPOS; hpos++) {
+			if (puae_dma_get_cell_type(hpos, vpos) == DMARECORD_BITPLANE) {
+				if (hpos < hposMin) hposMin = hpos;
+				if (hpos > hposMax) hposMax = hpos;
+				if (vpos < vposMin) vposMin = vpos;
+				if (vpos > vposMax) vposMax = vpos;
+				if (g_blitPixelsCount < BLIT_PIX_MAX) {
+					uint32_t word_idx = puae_dma_get_cell_addr(hpos, vpos) >> 1;
+					if (word_idx < BLIT_TAG_WORDS &&
+					    g_blitVisFrame - g_blitTagBuf[word_idx] < BLIT_VIS_DECAY) {
+						g_blitPixelsBuf[g_blitPixelsCount * 2 + 0] = (uint16_t)hpos;
+						g_blitPixelsBuf[g_blitPixelsCount * 2 + 1] = (uint16_t)vpos;
+						g_blitPixelsCount++;
+					}
+				}
+			}
+		}
+	}
+	if (hposMin < BLIT_SCAN_HPOS) {
+		g_blitDisplayHposMin = hposMin;
+		g_blitDisplayHposMax = hposMax;
+	}
+	if (vposMin < BLIT_SCAN_VPOS) {
+		g_blitDisplayVposMin = vposMin;
+		g_blitDisplayVposMax = vposMax;
+	}
+	return g_blitPixelsCount;
+}
+
+PUAE_DEBUG_EXPORT int wasm_blit_get_display_hpos_min(void) { return g_blitDisplayHposMin; }
+PUAE_DEBUG_EXPORT int wasm_blit_get_display_hpos_max(void) { return g_blitDisplayHposMax; }
+PUAE_DEBUG_EXPORT int wasm_blit_get_display_vpos_min(void) { return g_blitDisplayVposMin; }
+PUAE_DEBUG_EXPORT int wasm_blit_get_display_vpos_max(void) { return g_blitDisplayVposMax; }
 
 // ---- Channel visibility: bitplanes, sprites, audio, blitter ----
 extern int debug_bpl_mask;   /* drawing.c: bits 0-5 = BPL1-6, default 0xff */
