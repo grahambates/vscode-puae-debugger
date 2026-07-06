@@ -1295,6 +1295,16 @@ body {
   overflow: hidden;
   font-family: var(--vscode-editor-font-family), monospace;
   font-size: var(--vscode-editor-font-size, 12px);
+  display: flex;
+  flex-direction: row;
+}
+
+.disasm-arrow-gutter {
+  flex-shrink: 0;
+  height: 100%;
+  overflow: hidden;
+  display: block;
+  opacity: 0.75;
 }
 
 .disasm-row {
@@ -1320,21 +1330,21 @@ body {
 }
 
 .disasm-hits {
-  width: 3.5em;
+  width: 3em;
   flex-shrink: 0;
   text-align: right;
   color: var(--vscode-terminal-ansiYellow);
 }
 
 .disasm-cycles {
-  width: 4.5em;
+  width: 4em;
   flex-shrink: 0;
   text-align: right;
   color: var(--vscode-descriptionForeground);
 }
 
 .disasm-addr {
-  width: 6em;
+  width: 5em;
   flex-shrink: 0;
   color: var(--vscode-descriptionForeground);
 }

@@ -326,6 +326,7 @@ export interface RawDisassembledInstruction {
   length: number;
   hits: number;
   cycles: number;
+  jumpTarget?: number;
 }
 export interface RawDisassembledFunction {
   address: number;
@@ -478,8 +479,8 @@ function clientDisassembleRange(
   slowMem: Uint8Array | undefined,
   startAddr: number,
   endAddr: number,
-): { address: number; hex: string; text: string; length: number }[] {
-  const instructions: { address: number; hex: string; text: string; length: number }[] = [];
+): { address: number; hex: string; text: string; length: number; jumpTarget?: number }[] {
+  const instructions: { address: number; hex: string; text: string; length: number; jumpTarget?: number }[] = [];
   let addr = startAddr >>> 0;
   const end = endAddr >>> 0;
   while (addr < end && instructions.length < 8192) {
@@ -492,13 +493,25 @@ function clientDisassembleRange(
     if (!mem || mem.length < 2) break;
     let bytesUsed = 2;
     let text = "dc.w $" + ((mem[0] << 8 | mem[1]) >>> 0).toString(16).toUpperCase().padStart(4, "0");
+    let jumpTarget: number | undefined;
     try {
       const decoded = m68kDecode(mem);
       bytesUsed = Math.max(decoded.bytesUsed, 2);
       text = instructionToString(decoded.instruction).trim();
+      const { operation, operands } = decoded.instruction;
+      if (operation === "BRA" || operation === "BCC" || operation === "BSR") {
+        const op = operands[0];
+        if (op?.kind === "PCDISP") jumpTarget = (addr + op.offset + op.disp.baseDisplacement) >>> 0;
+      } else if (operation === "DBCC") {
+        const op = operands[1];
+        if (op?.kind === "PCDISP") jumpTarget = (addr + op.offset + op.disp.baseDisplacement) >>> 0;
+      } else if (operation === "JMP" || operation === "JSR") {
+        const op = operands[0];
+        if (op?.kind === "ABS32" || op?.kind === "ABS16") jumpTarget = op.value >>> 0;
+      }
     } catch { /* unknown opcode — keep dc.w fallback */ }
     const hex = Array.from(mem.subarray(0, bytesUsed), (b: number) => b.toString(16).padStart(2, "0")).join(" ");
-    instructions.push({ address: addr, hex, text, length: bytesUsed });
+    instructions.push({ address: addr, hex, text, length: bytesUsed, jumpTarget });
     addr = (addr + bytesUsed) >>> 0;
   }
   return instructions;
@@ -544,7 +557,7 @@ export function fetchDisassembly(
     const raw = clientDisassembleRange(chipMem, slowMem, startAddr, fn.end);
     const instructions: RawDisassembledInstruction[] = raw.map((ins) => {
       const stat = pcStats.get(ins.address);
-      return { address: ins.address, hex: ins.hex, text: ins.text, length: ins.length, hits: stat?.hits ?? 0, cycles: stat?.cycles ?? 0 };
+      return { address: ins.address, hex: ins.hex, text: ins.text, length: ins.length, hits: stat?.hits ?? 0, cycles: stat?.cycles ?? 0, jumpTarget: ins.jumpTarget };
     });
     out.push({ address: startAddr, name: fn.name, instructions });
   }

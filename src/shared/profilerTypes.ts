@@ -196,6 +196,7 @@ export interface IDisassembledInstruction {
   cycles: number; // total cycles attributed to this PC this frame
   file?: string;
   line?: number; // 1-based, straight from SourceMap.lookupAddress().line — see ProfileFrame.line
+  jumpTarget?: number; // resolved branch/jump target address, for arrow-gutter visualization
 }
 
 // One executed function's full disassembly. Only functions that actually executed (per the

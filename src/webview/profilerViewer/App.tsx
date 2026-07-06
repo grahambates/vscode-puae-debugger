@@ -23,7 +23,7 @@ const TAB_LABELS: Record<TabId, string> = {
   time: "Time View", customregs: "Custom Registers", copper: "Copper",
   blitter: "Blitter", memory: "Memory", disasm: "CPU", screen: "Screen",
 };
-const ALL_TABS: TabId[] = ["time", "disasm", "copper", "blitter", "memory", "screen", "customregs"];
+const ALL_TABS: TabId[] = ["time", "disasm", "copper", "blitter", "memory", "customregs", "screen"];
 
 interface FrameInfo {
   model: IProfileModel;
@@ -179,9 +179,9 @@ export function App() {
     if (!selectedRange) return;
     const [a, b] = selectedRange;
     if (a === 0 && b === frames.length - 1) return; // all-frames: use combinedModel
-    setRangeModel(null);
+    setRangeModel(null); // eslint-disable-line react-hooks/set-state-in-effect
     vscode.postMessage({ command: "computeRange", range: [a, b] } as ComputeRangeMessage);
-  }, [selectedRange, frames.length]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [selectedRange, frames.length]);
 
   useEffect(() => {
     vscode.postMessage({ command: "ready" });

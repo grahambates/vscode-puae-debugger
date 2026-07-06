@@ -380,14 +380,17 @@ export function ResourcesView({ model }: ResourcesViewProps) {
   useEffect(() => { modelRef.current = model;  }, [model]);
   useEffect(() => { screenRef.current = screen; }, [screen]);
 
-  // Reset plane visibility when plane count changes.
+  // Reset plane visibility when the plane count changes to a new value.
   const prevNumPlanes = useRef(0);
-  if (screen && screen.numPlanes !== prevNumPlanes.current) {
+  useEffect(() => {
+    if (!screen || screen.numPlanes === prevNumPlanes.current) return;
     prevNumPlanes.current = screen.numPlanes;
-    if (planeVis.slice(0, screen.numPlanes).some((v, i) => !v && i < screen.numPlanes)) {
-      setPlaneVis(Array(6).fill(true));
-    }
-  }
+    setPlaneVis(prev => // eslint-disable-line react-hooks/set-state-in-effect
+      prev.slice(0, screen.numPlanes).some((v, i) => !v && i < screen.numPlanes)
+        ? Array(6).fill(true)
+        : prev,
+    );
+  }, [screen]);
 
   useEffect(() => {
     const cvs = canvas.current;
@@ -585,7 +588,7 @@ export function ResourcesView({ model }: ResourcesViewProps) {
       palettes: linePalettes, spriteMask: pixSprite,
       width, height, firstLine, numPlanes, ham,
     };
-    setActiveSpritesMask(activeSpritesMask);
+    setActiveSpritesMask(activeSpritesMask); // eslint-disable-line react-hooks/set-state-in-effect
   }, [canvas, screen, model, scale, planeVis, spriteVis]);
 
   const onMouseMove = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {

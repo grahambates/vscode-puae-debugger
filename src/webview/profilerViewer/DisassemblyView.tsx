@@ -9,6 +9,79 @@ import { interpretDataReg, interpretAddressReg } from "./registerInterpret";
 import { findPrevRegChangeSample, findRegNextChangeSample } from "./registerHistory";
 import { Tooltip } from "./Tooltip";
 
+const ROW_H = 18; // must match rowHeight passed to List
+const LANE_W = 8; // px per arrow lane
+const MAX_LANES = 5;
+const GUTTER_W = MAX_LANES * LANE_W + 4; // 44px total width
+
+interface Arrow {
+  fromIdx: number;
+  toIdx: number;
+  lane: number;
+  isBackward: boolean;
+}
+
+function computeArrows(instructions: IDisassembledInstruction[]): Arrow[] {
+  const addrToIdx = new Map(instructions.map((ins, i) => [ins.address, i]));
+  const arrows: Arrow[] = [];
+  for (let i = 0; i < instructions.length; i++) {
+    const target = instructions[i].jumpTarget;
+    if (target === undefined) continue;
+    const toIdx = addrToIdx.get(target);
+    if (toIdx === undefined) continue;
+    arrows.push({ fromIdx: i, toIdx, lane: 0, isBackward: toIdx < i });
+  }
+  // Shorter spans get inner (rightmost) lanes so they don't cross wider arrows.
+  arrows.sort((a, b) => Math.abs(a.toIdx - a.fromIdx) - Math.abs(b.toIdx - b.fromIdx));
+  const laneOccupied: Array<[number, number][]> = [];
+  for (const arrow of arrows) {
+    const lo = Math.min(arrow.fromIdx, arrow.toIdx);
+    const hi = Math.max(arrow.fromIdx, arrow.toIdx);
+    let lane = 0;
+    for (;;) {
+      const occupied = laneOccupied[lane] ?? [];
+      if (!occupied.some(([a, b]) => a <= hi && b >= lo)) {
+        arrow.lane = lane;
+        if (!laneOccupied[lane]) laneOccupied[lane] = [];
+        laneOccupied[lane].push([lo, hi]);
+        break;
+      }
+      lane++;
+    }
+  }
+  return arrows;
+}
+
+function ArrowGutter({ arrows, scrollTop }: { arrows: Arrow[]; scrollTop: number }) {
+  const rowMid = (idx: number) => idx * ROW_H + ROW_H / 2 - scrollTop;
+  const laneX = (lane: number) => GUTTER_W - 2 - (lane + 1) * LANE_W;
+  const rightX = GUTTER_W - 1;
+  const AH = 3; // arrowhead half-height in px
+  return (
+    <svg className="disasm-arrow-gutter" width={GUTTER_W}>
+      {arrows.map((arrow, i) => {
+        const fromY = rowMid(arrow.fromIdx);
+        const toY = rowMid(arrow.toIdx);
+        const x = laneX(Math.min(arrow.lane, MAX_LANES - 1));
+        const color = arrow.isBackward
+          ? "var(--vscode-charts-blue, #75beff)"
+          : "var(--vscode-charts-green, #89d185)";
+        return (
+          <g key={i} stroke={color} fill={color} strokeWidth={1}>
+            <line x1={rightX} y1={fromY} x2={x} y2={fromY} />
+            <line x1={x} y1={fromY} x2={x} y2={toY} />
+            <line x1={x} y1={toY} x2={rightX - AH * 2} y2={toY} />
+            <polygon
+              points={`${rightX},${toY} ${rightX - AH * 2},${toY - AH} ${rightX - AH * 2},${toY + AH}`}
+              stroke="none"
+            />
+          </g>
+        );
+      })}
+    </svg>
+  );
+}
+
 // Props shared across every row via the v2 rowProps channel (must not contain
 // ariaAttributes/index/style — see TimeView.tsx).
 type RowListProps = {
@@ -36,7 +109,6 @@ function RowRenderer({ index, style, instructions, maxCycles, currentAddress, on
       <span className="disasm-hits" title="Executions this frame">{ins.hits > 0 ? `${ins.hits}×` : ""}</span>
       <span className="disasm-cycles" title="Total cycles this frame">{ins.cycles > 0 ? `${ins.cycles}cy` : ""}</span>
       <span className="disasm-addr">${ins.address.toString(16).padStart(6, "0")}</span>
-      <span className="disasm-hex">{ins.hex}</span>
       <span className="disasm-text">{ins.text}</span>
       {ins.file && (
         <a
@@ -188,7 +260,7 @@ function RegistersPanel({
 // sampling), linked to the shared selectedSlot playhead and to source. The vscode-amiga-debug
 // equivalent (objdump.tsx) parsed pre-built objdump text; we have no host-side disassembler, so
 // the text/bytes/stats come from the live wasm session right after capture (profilerManager.ts's
-// fetchDisassembly) — see model.disassembly. Jump-arrow visualization isn't ported.
+// fetchDisassembly) — see model.disassembly.
 export function DisassemblyView({
   selectedSlot,
   onSelectSlot,
@@ -203,6 +275,7 @@ export function DisassemblyView({
   const [selectedFn, setSelectedFn] = useState<number | undefined>(undefined); // index into `functions`
   const [follow, setFollow] = useState(true);
   const [showRegs, setShowRegs] = useState(true);
+  const [scrollTop, setScrollTop] = useState(0);
   const listRef = useRef<ListImperativeAPI>(null);
   const symbolize = useMemo(() => createSymbolizer(model?.symbols), [model]);
 
@@ -270,6 +343,7 @@ export function DisassemblyView({
   }, [active, currentAddress]);
 
   const maxCycles = useMemo(() => (active ? Math.max(0, ...active.fn.instructions.map((i) => i.cycles)) : 0), [active]);
+  const arrows = useMemo(() => computeArrows(active?.fn.instructions ?? []), [active]);
 
   // Scan model.pcs forward (prev=false) or backward (prev=true) from currentIdx to find the
   // next/previous execution of a specific instruction address, then jump the playhead there.
@@ -347,12 +421,15 @@ export function DisassemblyView({
       </div>
       <div className="disasm-body">
         <div className="disasm-rows">
+          <ArrowGutter arrows={arrows} scrollTop={scrollTop} />
           <List
+            style={{ flex: 1, minWidth: 0, minHeight: 0 }}
             listRef={listRef}
             rowComponent={RowRenderer}
             rowProps={rowProps}
             rowCount={active?.fn.instructions.length ?? 0}
             rowHeight={18}
+            onScroll={(e) => setScrollTop(e.currentTarget.scrollTop)}
           />
         </div>
         {currentRegs && showRegs && (
