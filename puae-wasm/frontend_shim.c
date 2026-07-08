@@ -74,6 +74,11 @@ extern int  g_dmaOverlayEnabled;
 extern int  g_dmaOverlayOpacity;
 extern void puae_dma_draw_overlay(uint8_t *rgba, int width, int height, int opacity);
 
+// Blit-region pixel highlight — marked during render in drawing.c (bvis_*),
+// blended here as a fading tint over the picture. Independent of the DMA overlay.
+extern int  g_blitTrackingEnabled;
+extern void bvis_blend_rgba(unsigned char *rgba, int width, int height);
+
 // Converts the last-received core framebuffer (g_fb_data/g_fb_width/
 // g_fb_height/g_fb_pitch) to RGBA8888 and, if enabled, composites the DMA
 // overlay on top, writing into g_rgba_buf. Shared by shim_video_refresh
@@ -139,6 +144,8 @@ static void convert_and_overlay_frame(void) {
 
     if (g_dmaOverlayEnabled)
         puae_dma_draw_overlay(g_rgba_buf, (int)safe_w, (int)safe_h, g_dmaOverlayOpacity);
+    if (g_blitTrackingEnabled)
+        bvis_blend_rgba(g_rgba_buf, (int)safe_w, (int)safe_h);
 }
 
 // Re-applies the current DMA overlay settings to the last-received frame

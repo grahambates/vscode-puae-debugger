@@ -694,7 +694,8 @@ static int g_dmaOverlaySavedCropId = -1;
 extern unsigned short int defaultw, defaulth;
 static int g_dmaOverlaySavedDefaultW = -1, g_dmaOverlaySavedDefaultH = -1;
 
-static int g_blitTrackingEnabled = 0; // forward-declared here; defined in blit section below
+// Non-static: read by the render-time marking hooks in drawing.c/custom.c.
+int g_blitTrackingEnabled = 0;
 
 PUAE_DEBUG_EXPORT void
 wasm_dma_overlay_enable(int on)
@@ -704,9 +705,10 @@ wasm_dma_overlay_enable(int on)
 	// newcpu.c, dozens of call sites in the hot per-cycle path) that feeds
 	// dma_record[]/puae_dma_draw_overlay — turning it on costs real
 	// performance, so it must turn back off once no channel needs it,
-	// rather than staying on for the rest of the session.
-	// Also keep it on if blit-region tracking needs the records.
-	debug_dma = (g_dmaOverlayEnabled || g_blitTrackingEnabled) ? 1 : 0;
+	// rather than staying on for the rest of the session. Blit-region tracking
+	// does NOT need it (it tags at the blitter write funnel and marks on the
+	// fast fetch path), so only the DMA overlay drives it.
+	debug_dma = g_dmaOverlayEnabled ? 1 : 0;
 
 	if (on) {
 		if (g_dmaOverlaySavedOverscanmode < 0)
@@ -759,139 +761,118 @@ wasm_dma_overlay_set_opacity(int opacity)
 }
 
 // ---- Blit-region tracking (independent of the DMA visual overlay) ----
-// Enables debug_dma (to populate dma_record[]) and cycle-exact blitter
-// operation (required for per-cycle records) without enabling the DMA
-// visual overlay. The JS side scans the last-completed-frame records for
-// blitter D-channel writes and draws fading highlight boxes over those areas.
+// Highlights, pixel-accurately, the on-screen areas whose bitplane source was
+// recently written by the blitter. Each blitter D-channel write stamps its
+// chip-RAM word with the current generation (blitter.c blit_chipmem_agnus_wput
+// -> puae_blitvis_stamp_write); as the frame renders, the bitplane fetch
+// (custom.c long_fetch_16 / fetch) checks each fetched word via
+// puae_blitvis_fetch_level and marks the corresponding source pixels; drawing.c
+// projects those to screen pixels and frontend_shim blends a fading tint over
+// them. No DMA-grid geometry or display-window reconstruction is involved, and
+// the display size is unchanged (the highlight lives in the normal cropped frame).
 
-static int g_blitTrackingSavedCE = 0;
+// Cumulative diagnostics (reset on enable): blitter writes stamped, bitplane
+// fetch-level queries, and how many of those matched a recent stamp.
+static uint32_t g_bvisStampCalls = 0, g_bvisFetchCalls = 0, g_bvisFetchHits = 0;
 
 PUAE_DEBUG_EXPORT void
 wasm_blit_tracking_enable(int enable)
 {
 	g_blitTrackingEnabled = enable ? 1 : 0;
-	debug_dma = (g_dmaOverlayEnabled || g_blitTrackingEnabled) ? 1 : 0;
-
-	if (enable) {
-		// Cycle-exact blitter is required for per-cycle DMA records to capture
-		// blitter D-channel writes in the DMA grid. Display geometry is unchanged —
-		// the JS side derives the visible display offset from BITPLANE DMA activity.
-		g_blitTrackingSavedCE = currprefs.blitter_cycle_exact;
-		currprefs.blitter_cycle_exact = 1;
-		changed_prefs.blitter_cycle_exact = 1;
-	} else {
-		currprefs.blitter_cycle_exact = g_blitTrackingSavedCE;
-		changed_prefs.blitter_cycle_exact = g_blitTrackingSavedCE;
-	}
-	set_config_changed();
+	g_bvisStampCalls = g_bvisFetchCalls = g_bvisFetchHits = 0;
+	// Deliberately does NOT force debug_dma or cycle-exact blitter. The write-tag
+	// is stamped at the D-channel write funnel (works for the fast blitter), and
+	// bitplane fetches are marked on the fast long_fetch path — so tracking runs
+	// at near-normal speed. When the DMA overlay is also active it turns debug_dma
+	// on (routing fetches through the per-cycle fetch(), which is hooked too), but
+	// blit-vis never requires it.
 }
 
-// Two-pass scan that maps blitter writes to visible screen positions:
-//   Pass 1 — for each BLITTER D-channel DMA cell, stamp g_blitTagBuf[chip_ram_word]
-//             with the current frame counter.
-//   Pass 2 — scan every DMA cell. For BITPLANE cells: track the minimum hpos/vpos
-//             seen (= left/top edge of the visible display), then check if the fetched
-//             chip RAM word was recently blitter-tagged.
-//
-// The display window offset (g_blitDisplayHposMin, g_blitDisplayVposMin) is derived
-// from BITPLANE DMA activity rather than by forcing OVERSCANMODE_ULTRA, so the display
-// geometry stays unchanged. JS converts (hpos,vpos) → screen pixel via:
-//   x = (hpos - hposMin) * 16   (each BITPLANE DMA slot = one 16-bit word = 16 px)
-//   y = (vpos - vposMin)         (one slot per scan-line)
-//
 // Scan range matches profilerTypes.ts DMA_HPOS/DMA_VPOS (display-mapped grid).
 #define BLIT_SCAN_HPOS 227
 #define BLIT_SCAN_VPOS 313
 
-// Per chip-RAM-word frame-counter stamp: word_idx = chip_ram_byte_addr >> 1.
-// Using a generation counter avoids a per-frame decrement sweep of the whole array.
-// Max chip RAM = 2MB => max words = 1M. Initialised to 0; g_blitVisFrame starts
-// at BLIT_VIS_DECAY so unwritten entries compare as "too old" from the start.
+// Per chip-RAM-word generation stamp: word_idx = chip_ram_byte_addr >> 1.
+// A generation counter avoids a per-frame decay sweep of the whole array.
+// Max chip RAM = 2MB => 1M words. Unwritten entries (stamp 0) are excluded by
+// the explicit stamp==0 check in puae_blitvis_fetch_level.
 #define BLIT_TAG_WORDS (2 * 1024 * 1024 / 2)
-#define BLIT_VIS_DECAY 8
 static uint32_t g_blitTagBuf[BLIT_TAG_WORDS];
-static uint32_t g_blitVisFrame = BLIT_VIS_DECAY;
+static uint32_t g_blitVisFrame = 8;
 
-// Visible display window extent in DMA-grid coordinates, derived from BITPLANE DMA
-// activity each frame. JS uses (hposMin,hposMax,vposMin,vposMax) to map DMA positions
-// to framebuffer pixel coordinates without changing display geometry:
-//   x = (hpos-hposMin)/(hposMax-hposMin) * (fbWidth-16)   [left edge of 16-px word]
-//   y = (vpos-vposMin)/(vposSpan+1) * fbHeight              [scanline → pixel row]
-static int g_blitDisplayHposMin = 0;
-static int g_blitDisplayHposMax = BLIT_SCAN_HPOS - 1;
-static int g_blitDisplayVposMin = 0;
-static int g_blitDisplayVposMax = BLIT_SCAN_VPOS - 1;
+// Highlight lifetime in displayed frames (runtime-configurable via
+// wasm_blit_set_decay). A blitted word stays highlighted this many frames,
+// fading out. Longer values suit triple buffering / deep frame rings, where a
+// blit is shown several frames after it is written. Clamped to [1,255] — it is
+// the max decay level, and levels are stored in uint8 pixel arrays (drawing.c).
+int g_blitVisDecay = 8;
 
-// Output: (hpos:u16, vpos:u16) per hit BITPLANE cell, max one per grid cell.
-#define BLIT_PIX_MAX (BLIT_SCAN_HPOS * BLIT_SCAN_VPOS)
-static uint16_t g_blitPixelsBuf[BLIT_PIX_MAX * 2];
-static int g_blitPixelsCount = 0;
-
-PUAE_DEBUG_EXPORT void *
-wasm_blit_vis_get_pixels_ptr(void)
-{
-	return g_blitPixelsBuf;
-}
-
+// Generation tick: called once per frame from JS (after wasm_tick). The tag
+// stamping itself happens LIVE in the blitter D-channel write (blitter.c calls
+// puae_blitvis_stamp_write), so a write is visible to the SAME frame's display
+// fetch. That is essential for double-buffered content, where the buffer being
+// shown this frame was blitted this very frame — a post-frame scan against last
+// frame's tags would never match it.
 PUAE_DEBUG_EXPORT int
 wasm_blit_vis_update(void)
 {
-	if (!g_blitTrackingEnabled) return 0;
-	g_blitVisFrame++;
-
-	// Pass 1: stamp blitter D-channel write addresses with the current frame.
-	for (int vpos = 0; vpos < BLIT_SCAN_VPOS; vpos++) {
-		for (int hpos = 0; hpos < BLIT_SCAN_HPOS; hpos++) {
-			if (puae_dma_get_cell_type(hpos, vpos) == DMARECORD_BLITTER &&
-			    (puae_dma_get_cell_extra(hpos, vpos) & 7) == 3) {
-				uint32_t word_idx = puae_dma_get_cell_addr(hpos, vpos) >> 1;
-				if (word_idx < BLIT_TAG_WORDS)
-					g_blitTagBuf[word_idx] = g_blitVisFrame;
-			}
-		}
-	}
-
-	// Pass 2: scan all BITPLANE DMA cells.
-	//   - Track the full extent (min/max) of BITPLANE DMA activity to derive the
-	//     visible display window in DMA-grid coordinates.
-	//   - Collect cells whose chip RAM address was recently blitter-written.
-	int hposMin = BLIT_SCAN_HPOS, hposMax = 0;
-	int vposMin = BLIT_SCAN_VPOS, vposMax = 0;
-	g_blitPixelsCount = 0;
-	for (int vpos = 0; vpos < BLIT_SCAN_VPOS; vpos++) {
-		for (int hpos = 0; hpos < BLIT_SCAN_HPOS; hpos++) {
-			if (puae_dma_get_cell_type(hpos, vpos) == DMARECORD_BITPLANE) {
-				if (hpos < hposMin) hposMin = hpos;
-				if (hpos > hposMax) hposMax = hpos;
-				if (vpos < vposMin) vposMin = vpos;
-				if (vpos > vposMax) vposMax = vpos;
-				if (g_blitPixelsCount < BLIT_PIX_MAX) {
-					uint32_t word_idx = puae_dma_get_cell_addr(hpos, vpos) >> 1;
-					if (word_idx < BLIT_TAG_WORDS &&
-					    g_blitVisFrame - g_blitTagBuf[word_idx] < BLIT_VIS_DECAY) {
-						g_blitPixelsBuf[g_blitPixelsCount * 2 + 0] = (uint16_t)hpos;
-						g_blitPixelsBuf[g_blitPixelsCount * 2 + 1] = (uint16_t)vpos;
-						g_blitPixelsCount++;
-					}
-				}
-			}
-		}
-	}
-	if (hposMin < BLIT_SCAN_HPOS) {
-		g_blitDisplayHposMin = hposMin;
-		g_blitDisplayHposMax = hposMax;
-	}
-	if (vposMin < BLIT_SCAN_VPOS) {
-		g_blitDisplayVposMin = vposMin;
-		g_blitDisplayVposMax = vposMax;
-	}
-	return g_blitPixelsCount;
+	if (g_blitTrackingEnabled)
+		g_blitVisFrame++;
+	return 0;
 }
 
-PUAE_DEBUG_EXPORT int wasm_blit_get_display_hpos_min(void) { return g_blitDisplayHposMin; }
-PUAE_DEBUG_EXPORT int wasm_blit_get_display_hpos_max(void) { return g_blitDisplayHposMax; }
-PUAE_DEBUG_EXPORT int wasm_blit_get_display_vpos_min(void) { return g_blitDisplayVposMin; }
-PUAE_DEBUG_EXPORT int wasm_blit_get_display_vpos_max(void) { return g_blitDisplayVposMax; }
+// Called from the blitter D-channel write (blitter.c) for each word written to
+// chip RAM. Stamps it with the current generation so a later display fetch of
+// that word (puae_blitvis_fetch_level) highlights the resulting pixels.
+void
+puae_blitvis_stamp_write(uaecptr addr)
+{
+	g_bvisStampCalls++;
+	uint32_t w = (uint32_t)addr >> 1;
+	if (w < BLIT_TAG_WORDS)
+		g_blitTagBuf[w] = g_blitVisFrame;
+}
+
+// Called from the bitplane fetch (custom.c long_fetch_16) for each fetched
+// source word. Returns a decay level 1..BLIT_VIS_DECAY if the word was recently
+// blitter-written (higher = fresher), else 0. drawing.c bakes this into the
+// pixel mark, so the highlight fades over BLIT_VIS_DECAY frames.
+unsigned int
+puae_blitvis_fetch_level(uaecptr addr)
+{
+	g_bvisFetchCalls++;
+	uint32_t w = (uint32_t)addr >> 1;
+	if (w >= BLIT_TAG_WORDS) return 0;
+	uint32_t stamp = g_blitTagBuf[w];
+	if (stamp == 0) return 0;
+	int age = (int)(g_blitVisFrame - stamp);
+	if (age >= g_blitVisDecay) return 0;
+	g_bvisFetchHits++;
+	return (unsigned int)(g_blitVisDecay - age);
+}
+
+// Set the highlight lifetime (frames) at runtime. See g_blitVisDecay.
+PUAE_DEBUG_EXPORT void
+wasm_blit_set_decay(int frames)
+{
+	if (frames < 1) frames = 1;
+	if (frames > 255) frames = 255;
+	g_blitVisDecay = frames;
+}
+
+// Diagnostic: which=0 source marks, 1 native pixels marked, 2 pixels blended,
+// this frame. Lets JS surface where the highlight pipeline breaks if invisible.
+extern unsigned int bvis_debug_count(int which); /* drawing.c */
+PUAE_DEBUG_EXPORT unsigned int
+wasm_blit_vis_debug(int which)
+{
+	switch (which) {
+	case 3: return g_bvisStampCalls;
+	case 4: return g_bvisFetchCalls;
+	case 5: return g_bvisFetchHits;
+	default: return bvis_debug_count(which);
+	}
+}
 
 // ---- Channel visibility: bitplanes, sprites, audio, blitter ----
 extern int debug_bpl_mask;   /* drawing.c: bits 0-5 = BPL1-6, default 0xff */

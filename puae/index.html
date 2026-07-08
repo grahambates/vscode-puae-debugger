@@ -67,6 +67,10 @@
   .chan-btn.all-btn { font-weight: bold; }
   .opacity-row { display: flex; align-items: center; gap: 4px; }
   .opacity-row input[type=range] { width: 70px; vertical-align: middle; }
+  .blit-decay { display: inline-flex; align-items: center; gap: 4px; }
+  .blit-decay input[type=range] { width: 56px; vertical-align: middle; }
+  .blit-decay #blit-decay-val { opacity: 0.65; min-width: 3ch; }
+  .blit-decay.disabled { opacity: 0.4; pointer-events: none; }
   #audio-toggle {
     margin-left: auto;
     width: 22px;
@@ -98,6 +102,10 @@
   </select>
   <button id="warp" type="button" class="chan-btn" title="Toggle warp mode">WARP</button>
   <button id="blit-vis" type="button" class="chan-btn" title="Highlight blit regions" style="--chan-color:#008888">BLIT</button>
+  <span id="blit-decay-row" class="blit-decay disabled" title="How many frames a blit stays highlighted — raise it for triple buffering / longer frame rings">
+    <input id="blit-decay" type="range" min="1" max="60" value="8">
+    <span id="blit-decay-val">8f</span>
+  </span>
   <button id="audio-toggle" type="button" title="Unmute audio"><i class="codicon codicon-mute"></i></button>
 </div>
 <div id="dma-overlay"></div>

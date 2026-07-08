@@ -400,7 +400,6 @@ export async function main(config: MainConfig = {}): Promise<void> {
     if (!imgData) imgData = ctx.createImageData(w, h);
     imgData.data.set(new Uint8ClampedArray(M.HEAPU8.buffer, M._wasm_get_fb_rgba(), w * h * 4));
     ctx.putImageData(imgData, 0, 0);
-    if (blitTrackingEnabled) drawBlitOverlay(w, h);
     lastFbFrameCount = M._wasm_get_frame_count();
   };
 
@@ -535,19 +534,13 @@ export async function main(config: MainConfig = {}): Promise<void> {
   // which ones are toggled for the visual overlay).
   const enabledChannelTypes = new Set<number>();
 
-  // Blit-region highlight state. Per-DMA-cell (227×313) decay counter:
-  // refreshed each frame C reports a BITPLANE fetch reading a blitter-written
-  // chip-RAM address; decrements to zero (= invisible) when the blit is done.
-  const BLIT_DMA_HPOS = 227;
-  const BLIT_DMA_VPOS = 313;
-  const BLIT_DECAY_FRAMES = 8;
+  // Blit-region highlight. The actual pixel-accurate highlight is drawn C-side:
+  // wasm_blit_vis_update() (called each frame below) stamps blitter-written
+  // chip-RAM words; the emulator's render marks the on-screen pixels whose
+  // source was recently blitted and blends a fading tint straight into the
+  // framebuffer (see puae_debug.c / drawing.c / frontend_shim.c). JS only drives
+  // the per-frame tag update and the enable toggle.
   let blitTrackingEnabled = false;
-  const blitDecayBuf = new Uint8Array(BLIT_DMA_HPOS * BLIT_DMA_VPOS);
-  // Visible display window in DMA-grid coordinates, derived from BITPLANE DMA activity
-  // each frame. The DMA grid (227×313) covers the full PAL beam including blanking, so
-  // hposMin/hposMax and vposMin/vposMax identify the visible portion within it.
-  let blitHposMin = 0, blitHposMax = 226;
-  let blitVposMin = 0, blitVposMax = 312;
 
   const dmaOverlayPanel = document.getElementById("dma-overlay");
   if (dmaOverlayPanel) {
@@ -701,104 +694,41 @@ export async function main(config: MainConfig = {}): Promise<void> {
     ));
   }
 
-  // Blit-region highlight toggle (#blit-vis, optional).
+  // Blit-region highlight toggle (#blit-vis, optional). The highlight itself is
+  // rendered C-side (pixel-accurate tint blended into the framebuffer); here we
+  // just flip tracking on/off. Force a redraw while paused so the change (in
+  // particular clearing the tint on disable) shows immediately.
   const blitVisBtn = document.getElementById("blit-vis");
+  const blitDecayRow = document.getElementById("blit-decay-row");
+  const blitDecaySlider = document.getElementById("blit-decay") as HTMLInputElement | null;
+  const blitDecayVal = document.getElementById("blit-decay-val");
   if (blitVisBtn) {
     blitVisBtn.addEventListener("click", () => {
       blitTrackingEnabled = !blitTrackingEnabled;
       blitVisBtn.classList.toggle("active", blitTrackingEnabled);
+      blitDecayRow?.classList.toggle("disabled", !blitTrackingEnabled);
       M._wasm_blit_tracking_enable(blitTrackingEnabled ? 1 : 0);
-      if (!blitTrackingEnabled) {
-        blitDecayBuf.fill(0);
-        blitHposMin = 0; blitHposMax = 226;
-        blitVposMin = 0; blitVposMax = 312;
-      }
+      if (M._wasm_is_paused()) M._wasm_redraw_frame();
     });
   }
-
-  // Draw fading highlight boxes over screen positions whose bitplane DMA reads
-  // fetched data the blitter recently wrote. Bitplane DMA doesn't occupy every
-  // hpos slot (CPU/sprites/copper interleave), so we draw ONE rectangle per
-  // scan-line spanning leftmost to rightmost hit cell on that line.
-  //
-  // The DMA grid (227×313) covers the full PAL beam including blanking periods.
-  // blitHposMin/Max and blitVposMin/Max identify the visible display window within
-  // the grid. Mapping to framebuffer pixels:
-  //   x = (hpos - hposMin) / (hposMax - hposMin) * (w - 16)   [left edge of word]
-  //   right edge of word = x + 16
-  //   y = (vpos - vposMin) / (vposSpan + 1) * h
-  function drawBlitOverlay(w: number, h: number): void {
-    let anyActive = false;
-    for (let i = 0; i < blitDecayBuf.length; i++) {
-      if (blitDecayBuf[i] > 0) { anyActive = true; break; }
-    }
-    if (!anyActive) return;
-
-    const hposSpan = Math.max(blitHposMax - blitHposMin, 1);
-    const vposSpan = Math.max(blitVposMax - blitVposMin, 1);
-    // hScale: maps each DMA slot step to its pixel offset within [0, w-16]
-    const hScale = (w - 16) / hposSpan;
-    // vScale: maps each scanline to its pixel height (1 for 1:1, 2 for line-doubled)
-    const vScale = h / (vposSpan + 1);
-
-    ctx.save();
-    for (let vpos = 0; vpos < BLIT_DMA_VPOS; vpos++) {
-      const vRel = vpos - blitVposMin;
-      if (vRel < 0 || vRel > vposSpan) continue;
-
-      // Find bounding hpos range and peak decay for this scan-line.
-      let minHpos = BLIT_DMA_HPOS;
-      let maxHpos = -1;
-      let maxDecay = 0;
-      for (let hpos = 0; hpos < BLIT_DMA_HPOS; hpos++) {
-        const decay = blitDecayBuf[vpos * BLIT_DMA_HPOS + hpos];
-        if (decay > 0) {
-          if (hpos < minHpos) minHpos = hpos;
-          if (hpos > maxHpos) maxHpos = hpos;
-          if (decay > maxDecay) maxDecay = decay;
-        }
-      }
-      if (maxHpos < 0) continue; // no hits on this line
-
-      // Left edge of leftmost word; right edge of rightmost word (+16 px per word).
-      const x0 = Math.round((minHpos - blitHposMin) * hScale);
-      const x1 = Math.round((maxHpos - blitHposMin) * hScale) + 16;
-      const y0 = Math.round(vRel * vScale);
-      const y1 = Math.round((vRel + 1) * vScale);
-      const alpha = (maxDecay / BLIT_DECAY_FRAMES) * 0.75;
-      ctx.fillStyle = `rgba(0,220,210,${alpha.toFixed(2)})`;
-      ctx.fillRect(x0, y0, Math.max(16, x1 - x0), Math.max(1, y1 - y0));
-    }
-    ctx.restore();
+  // Decay slider: how many frames a blit stays highlighted (C-side fade).
+  if (blitDecaySlider) {
+    const applyDecay = (): void => {
+      const frames = parseInt(blitDecaySlider.value, 10);
+      M._wasm_blit_set_decay(frames);
+      if (blitDecayVal) blitDecayVal.textContent = `${frames}f`;
+      if (blitTrackingEnabled && M._wasm_is_paused()) M._wasm_redraw_frame();
+    };
+    blitDecaySlider.addEventListener("input", applyDecay);
+    applyDecay(); // push the initial value to wasm
   }
 
-  // Ask C to scan DMA records: tag blitter D-writes, find BITPLANE fetches reading
-  // those tagged addresses. Each returned (hpos, vpos) is a screen-position DMA cell
-  // whose bitplane read used blitter-written data. Refresh those cells' decay counters;
-  // let all others decay toward zero (= fade out the highlight after the blit is done).
-  function updateBlitVis(w: number, h: number): void {
-    // Age all cells first so cells no longer hit by C will fade.
-    for (let i = 0; i < blitDecayBuf.length; i++) {
-      if (blitDecayBuf[i] > 0) blitDecayBuf[i]--;
-    }
-    // C does the tag+scan and returns which BITPLANE cells read blitter-written data.
-    const count = M._wasm_blit_vis_update() as number;
-    // Update display window extent (derived from BITPLANE DMA activity this frame).
-    blitHposMin = M._wasm_blit_get_display_hpos_min() as number;
-    blitHposMax = M._wasm_blit_get_display_hpos_max() as number;
-    blitVposMin = M._wasm_blit_get_display_vpos_min() as number;
-    blitVposMax = M._wasm_blit_get_display_vpos_max() as number;
-    if (count > 0) {
-      const ptr = M._wasm_blit_vis_get_pixels_ptr() as number;
-      // Output: pairs of uint16 (hpos, vpos), 4 bytes per entry.
-      const cells = new Uint16Array(M.HEAPU8.buffer, ptr, count * 2);
-      for (let i = 0; i < count; i++) {
-        const hpos = cells[i * 2];
-        const vpos = cells[i * 2 + 1];
-        blitDecayBuf[vpos * BLIT_DMA_HPOS + hpos] = BLIT_DECAY_FRAMES;
-      }
-    }
-    drawBlitOverlay(w, h);
+  // Per-frame tag update: stamps the chip-RAM words the blitter wrote this frame
+  // so the NEXT frame's render can highlight the pixels that read them. The
+  // highlight is blended into the framebuffer C-side, so there is nothing to
+  // draw here.
+  function updateBlitVis(): void {
+    M._wasm_blit_vis_update();
   }
 
   // Set up the audio graph now — this doesn't itself need a user gesture.
@@ -976,7 +906,7 @@ export async function main(config: MainConfig = {}): Promise<void> {
     imgData.data.set(new Uint8ClampedArray(M.HEAPU8.buffer, ptr, w * h * 4));
     const tBlitStart = performance.now();
     ctx.putImageData(imgData, 0, 0);
-    if (blitTrackingEnabled) updateBlitVis(w, h);
+    if (blitTrackingEnabled) updateBlitVis();
     const tBlitEnd = performance.now();
     // Re-read rather than reuse fbFrameCount (captured before this frame()
     // call's own tick loop, if any) so the comparison next time is accurate.
@@ -990,6 +920,19 @@ export async function main(config: MainConfig = {}): Promise<void> {
         const msSet = (tBlitStart - tSetStart).toFixed(1);
         const msBlit = (tBlitEnd - tBlitStart).toFixed(1);
         if (status) status.textContent = `${fps} fps | wasm=${msWasm}ms set=${msSet}ms blit=${msBlit}ms`;
+        if (blitTrackingEnabled) {
+          const s = M._wasm_blit_vis_debug(0) as number;
+          const n = M._wasm_blit_vis_debug(1) as number;
+          const b = M._wasm_blit_vis_debug(2) as number;
+          const stamps = M._wasm_blit_vis_debug(3) as number;
+          const fCalls = M._wasm_blit_vis_debug(4) as number;
+          const fHits = M._wasm_blit_vis_debug(5) as number;
+          const mkCalls = M._wasm_blit_vis_debug(6) as number;
+          const rejLine = M._wasm_blit_vis_debug(7) as number;
+          const rejRange = M._wasm_blit_vis_debug(8) as number;
+          const maxPs = M._wasm_blit_vis_debug(9) as number;
+          console.log(`[blit-vis] srcMarks=${s} nativePx=${n} blendPx=${b} | stamps=${stamps} fetchCalls=${fCalls} fetchHits=${fHits} | markSrc=${mkCalls} rejLine=${rejLine} rejRange=${rejRange} maxPixelStart=${maxPs}`);
+        }
         fpsCnt = 0;
         fpsTime = ts;
       }
