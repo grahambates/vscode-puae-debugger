@@ -468,17 +468,20 @@ export class VariablesManager {
     }
   }
 
+  /** Read m68k register `index` (0-7 = D0-D7, 8-15 = A0-A7) from a frame snapshot or live CPU. */
+  private readReg(index: number, cpuInfo: CpuInfo, regs: Map<number, number> | null): number {
+    if (regs) return regs.get(index) ?? 0;
+    if (index < 8) return Number(cpuInfo[`d${index}` as keyof CpuInfo]);
+    return Number(cpuInfo[`a${index - 8}` as keyof CpuInfo]);
+  }
+
   private locationToAddress(
     location: LocalLocation,
     cpuInfo: CpuInfo,
     pc: number,
     regs: Map<number, number> | null,
   ): number | undefined {
-    const getReg = (index: number): number => {
-      if (regs) return regs.get(index) ?? 0;
-      if (index < 8) return Number(cpuInfo[`d${index}` as keyof CpuInfo]);
-      return Number(cpuInfo[`a${index - 8}` as keyof CpuInfo]);
-    };
+    const getReg = (index: number): number => this.readReg(index, cpuInfo, regs);
     switch (location.kind) {
       case 'fbreg': return getReg(13) + location.offset; // A5 = DWARF reg 13
       case 'breg': return getReg(location.reg) + location.offset;
@@ -488,6 +491,8 @@ export class VariablesManager {
         if (!cfa) return undefined;
         return getReg(cfa.reg) + cfa.offset + location.offset;
       }
+      // 'reg' (register-resident) has no memory address — handled directly by
+      // the caller (renderRegisterValue), which reads the register value.
       default: return undefined;
     }
   }
@@ -527,12 +532,21 @@ export class VariablesManager {
     const locals = await Promise.all(rawLocals.map(async (v) => {
       let value = '???';
       let variablesReference = 0;
-      const address = this.locationToAddress(v.location, cpuInfo, effectivePc, regs);
-      if (address !== undefined) {
+      if (v.location.kind === 'reg') {
         try {
-          ({ value, variablesReference } = await this.renderTypedValue(address, v.typeDescriptor));
+          const regValue = this.readReg(v.location.reg, cpuInfo, regs);
+          ({ value, variablesReference } = await this.renderRegisterValue(regValue, v.typeDescriptor));
         } catch {
           value = '???';
+        }
+      } else {
+        const address = this.locationToAddress(v.location, cpuInfo, effectivePc, regs);
+        if (address !== undefined) {
+          try {
+            ({ value, variablesReference } = await this.renderTypedValue(address, v.typeDescriptor));
+          } catch {
+            value = '???';
+          }
         }
       }
       return {
@@ -631,31 +645,57 @@ export class VariablesManager {
       }
       case 'pointer': {
         const ptrVal = await this.vAmiga.peek32(address);
-        const ptrStr = formatAddress(ptrVal, this.sourceMap);
-        if (!this.vAmiga.isValidAddress(ptrVal))
-          return { value: ptrStr, variablesReference: 0 };
-        const pointee = type.pointee;
-        if (pointee.kind === 'struct') {
-          const ref = this.variableHandles.create('struct_ptr');
-          this.structPtrByRef.set(ref, { ptrAddress: ptrVal, getFields: pointee.getFields });
-          return { value: ptrStr, variablesReference: ref };
-        }
-        if (pointee.kind === 'primitive' && [1, 2, 4].includes(pointee.byteSize)) {
-          if (pointee.byteSize === 1 && ['char', 'unsigned char', 'signed char'].includes(pointee.typeName)) {
-            const str = await this.peekString(ptrVal);
-            const quoted = str.truncated ? `"${str.content}..."` : `"${str.content}"`;
-            return { value: `${ptrStr} ${quoted}`, variablesReference: 0 };
-          }
-          let derefVal: number | undefined;
-          try { derefVal = await this.peekBySize(ptrVal, pointee.byteSize); } catch { /* leave undefined */ }
-          if (derefVal !== undefined) {
-            const ref = this.variableHandles.create(`local_ptr:${pointee.typeName}:${pointee.byteSize}:${derefVal}`);
-            return { value: `${ptrStr} (${formatNumber(derefVal, pointee.byteSize * 2)})`, variablesReference: ref };
-          }
-        }
-        return { value: ptrStr, variablesReference: 0 };
+        return this.renderPointerValue(ptrVal, type);
       }
     }
+  }
+
+  /** Render a pointer given its value directly (from memory or a register). */
+  private async renderPointerValue(
+    ptrVal: number,
+    type: Extract<TypeDescriptor, { kind: 'pointer' }>,
+  ): Promise<{ value: string; variablesReference: number }> {
+    const ptrStr = formatAddress(ptrVal, this.sourceMap);
+    if (!this.vAmiga.isValidAddress(ptrVal))
+      return { value: ptrStr, variablesReference: 0 };
+    const pointee = type.pointee;
+    if (pointee.kind === 'struct') {
+      const ref = this.variableHandles.create('struct_ptr');
+      this.structPtrByRef.set(ref, { ptrAddress: ptrVal, getFields: pointee.getFields });
+      return { value: ptrStr, variablesReference: ref };
+    }
+    if (pointee.kind === 'primitive' && [1, 2, 4].includes(pointee.byteSize)) {
+      if (pointee.byteSize === 1 && ['char', 'unsigned char', 'signed char'].includes(pointee.typeName)) {
+        const str = await this.peekString(ptrVal);
+        const quoted = str.truncated ? `"${str.content}..."` : `"${str.content}"`;
+        return { value: `${ptrStr} ${quoted}`, variablesReference: 0 };
+      }
+      let derefVal: number | undefined;
+      try { derefVal = await this.peekBySize(ptrVal, pointee.byteSize); } catch { /* leave undefined */ }
+      if (derefVal !== undefined) {
+        const ref = this.variableHandles.create(`local_ptr:${pointee.typeName}:${pointee.byteSize}:${derefVal}`);
+        return { value: `${ptrStr} (${formatNumber(derefVal, pointee.byteSize * 2)})`, variablesReference: ref };
+      }
+    }
+    return { value: ptrStr, variablesReference: 0 };
+  }
+
+  /**
+   * Render a register-resident variable's value. Its value lives in the register
+   * itself (no memory address), so scalars are formatted directly and pointers
+   * are dereferenced from the register value.
+   */
+  private async renderRegisterValue(
+    regValue: number,
+    type: TypeDescriptor,
+  ): Promise<{ value: string; variablesReference: number }> {
+    const size = type.byteSize > 0 && type.byteSize <= 4 ? type.byteSize : 4;
+    const masked = size >= 4 ? regValue >>> 0 : regValue & ((1 << (size * 8)) - 1);
+    if (type.kind === 'pointer') {
+      return this.renderPointerValue(regValue >>> 0, type);
+    }
+    // primitive / unknown / (struct or array can't be register-resident)
+    return { value: formatNumber(masked, size * 2), variablesReference: 0 };
   }
 
   private arrayPageSize(count: number): number {

@@ -20,6 +20,7 @@ export interface InlineEntry {
 export type LocalLocation =
   | { kind: 'fbreg';  offset: number }
   | { kind: 'breg';   reg: number; offset: number }
+  | { kind: 'reg';    reg: number }  // value lives in a register (no memory address)
   | { kind: 'addr';   address: number }
   | { kind: 'cfa';    offset: number }
   | { kind: 'unknown' };

@@ -22,6 +22,9 @@ export interface Hunk {
   symbols: SourceSymbol[];
   /** Offsets of source files / lines (if exported in Line Debug data) */
   lineDebugInfo: DebugInfo[];
+  /** Raw GNU stabs debug sections (HUNK_DEBUG magic 0x10b), if present. One per
+   *  HUNK_DEBUG stabs block. Decoded by stabsParser. */
+  stabs: StabData[];
   /** Size of code/data binary in this hunk or to allocate in case of BSS */
   dataSize?: number;
   /** Byte offset of code/data binary relative to this hunk */
@@ -63,6 +66,20 @@ export interface DebugInfo {
   lines: SourceLine[];
 }
 
+/**
+ * Raw GNU stabs debug data from a HUNK_DEBUG block (magic 0x10b). The nlist
+ * table and string table are captured verbatim; stabsParser decodes them.
+ */
+export interface StabData {
+  /** nlist table: 12 bytes/entry, big-endian (n_strx u32, n_type u8, n_other u8, n_desc u16, n_value u32) */
+  stabs: Buffer;
+  /** String table referenced by n_strx offsets */
+  strings: Buffer;
+}
+
+/** HUNK_DEBUG GNU-stabs magic (first longword of the block payload). */
+const STAB_MAGIC = 0x0000010b;
+
 type Allocation = { memType: MemoryType; allocSize: number };
 
 const BlockTypes = {
@@ -101,9 +118,52 @@ export function parseHunks(contents: Buffer): Hunk[] {
     );
   }
 
-  return parseHeader(reader).map((hunkInfo, index) =>
+  const hunks = parseHeader(reader).map((hunkInfo, index) =>
     createHunk(hunkInfo, index, reader),
   );
+
+  // Some linkers (notably vlink for GNU stabs) emit debug/symbol blocks at the
+  // top level AFTER all the hunks' HUNK_END, rather than inside each hunk. Drain
+  // them here and attach stabs blocks to CODE hunks in order (the i-th trailing
+  // stabs section describes the i-th code hunk; its function/line addresses are
+  // relative to that hunk).
+  readTrailingBlocks(reader, hunks);
+
+  return hunks;
+}
+
+function readTrailingBlocks(reader: BufferReader, hunks: Hunk[]): void {
+  const codeHunks = hunks.filter((h) => h.hunkType === HunkType.CODE);
+  let codeIdx = 0;
+  while (!reader.finished()) {
+    let blockType: number;
+    try {
+      blockType = reader.readLong();
+    } catch {
+      break;
+    }
+    switch (blockType) {
+      case BlockTypes.DEBUG: {
+        const info = parseDebug(reader);
+        const target = codeHunks[codeIdx] ?? hunks[0];
+        if (info?.stabs) {
+          target?.stabs.push(info.stabs);
+          codeIdx++;
+        } else if (info?.line) {
+          target?.lineDebugInfo.push(info.line);
+        }
+        break;
+      }
+      case BlockTypes.SYMBOL:
+        // Trailing symbols (already have per-hunk HUNK_SYMBOL); consume & ignore.
+        parseSymbols(reader);
+        break;
+      case BlockTypes.END:
+        break; // separator between trailing groups
+      default:
+        return; // unknown block — stop draining
+    }
+  }
 }
 
 /**
@@ -167,6 +227,7 @@ function createHunk(
     symbols: [],
     reloc32: [],
     lineDebugInfo: [],
+    stabs: [],
   };
 
   // Populate with block data from the reader:
@@ -201,8 +262,11 @@ function createHunk(
       // These provide additional properties
       case BlockTypes.DEBUG: {
         const info = parseDebug(reader);
-        if (info) {
-          hunk.lineDebugInfo.push(info);
+        if (info?.line) {
+          hunk.lineDebugInfo.push(info.line);
+        }
+        if (info?.stabs) {
+          hunk.stabs.push(info.stabs);
         }
         break;
       }
@@ -264,19 +328,36 @@ function parseSymbols(reader: BufferReader): SourceSymbol[] {
   return symbols;
 }
 
-function parseDebug(reader: BufferReader): DebugInfo | null {
-  // "LINE" - Generic debug hunk format
-  // uint32 N      The number of longwords following in the given hunk. If this value is zero,
-  //               then it indicates the immediate end of this block.
-  // uint32        The base offset within the source file.
-  // char[4]        "LINE"
-  // string        The source file name.
-  // line_info[M]  The table of line offsets within the local code, data or bss section.
+function parseDebug(
+  reader: BufferReader,
+): { line?: DebugInfo; stabs?: StabData } | null {
+  // HUNK_DEBUG:
+  //   uint32 N      Number of longwords following. Zero ends the block.
+  //   uint32 first  Either the "LINE" base offset, or the GNU-stabs magic 0x10b.
   const numLongs = reader.readLong();
-  const baseOffset = reader.readLong();
+  const first = reader.readLong();
+
+  // GNU stabs sub-format (GCC): magic 0x10b, then two byte-sizes, the nlist
+  // table, and the string table (padded to a longword). Total after numLongs:
+  //   12 + stabSize + pad4(strSize) == numLongs*4
+  if (first === STAB_MAGIC) {
+    const stabSize = reader.readLong();
+    const strSize = reader.readLong();
+    const stabs = reader.readBytes(stabSize);
+    const paddedStrSize = (strSize + 3) & ~3;
+    const strings = reader.readBytes(paddedStrSize).slice(0, strSize);
+    return { stabs: { stabs, strings } };
+  }
+
+  // "LINE" - Generic debug hunk format (SAS/C, vasm linedebug)
+  //   uint32        The base offset within the source file. (== `first`)
+  //   char[4]        "LINE"
+  //   string        The source file name.
+  //   line_info[M]  The table of line offsets within the local code/data/bss section.
+  const baseOffset = first;
   const debugTag = reader.readString(4);
 
-  // We only support debug line as debug format currently so skip others
+  // Skip any other debug sub-format we don't handle.
   if (debugTag !== "LINE") {
     reader.skip((numLongs - 2) * 4);
     return null;
@@ -301,7 +382,7 @@ function parseDebug(reader: BufferReader): DebugInfo | null {
       offset: baseOffset + reader.readLong(),
     });
   }
-  return { sourceFilename, lines, baseOffset };
+  return { line: { sourceFilename, lines, baseOffset } };
 }
 
 function parseReloc32(reader: BufferReader): RelocInfo32[] {
