@@ -312,8 +312,9 @@ function TimeViewRow({
   onJumpToExecution: ((locationId: number, prev: boolean) => void) | undefined;
   style: React.CSSProperties;
 }) {
+  // Basename only, not the full absolute path — matches DisassemblyView/CopperView's convention.
   const location = node.callFrame.url
-    ? `${node.callFrame.url}${node.callFrame.lineNumber >= 0 ? `:${node.callFrame.lineNumber}` : ""}`
+    ? `${node.callFrame.url.split(/[/\\]/).pop()}${node.callFrame.lineNumber >= 0 ? `:${node.callFrame.lineNumber}` : ""}`
     : undefined;
 
   const onClickFile = (e: React.MouseEvent) => {
