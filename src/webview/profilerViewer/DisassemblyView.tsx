@@ -3,6 +3,7 @@ import { List, ListImperativeAPI, RowComponentProps } from "react-window";
 import { getProfileModel } from "./modelStore";
 import { buildColumns, columnIndexAtX, columnIndexToSlot, IColumn } from "./columns";
 import { IDisassembledInstruction, REG_COUNT, REG_D0, REG_A0, REG_SR, REG_PC, REG_USP } from "../../shared/profilerTypes";
+import { heatColor } from "../../shared/profilerColor";
 import { srFlags } from "../shared/cpuFlags";
 import { createSymbolizer, Symbolizer } from "./symbols";
 import { interpretDataReg, interpretAddressReg } from "./registerInterpret";
@@ -113,11 +114,10 @@ function RowRenderer({ index, style, rows, maxCycles, currentAddress, onOpenSour
   // Hot/cold tint: background alpha proportional to this instruction's share of the function's
   // hottest instruction (not the frame total) — keeps the heat map meaningful within a function
   // that's individually cold relative to the rest of the program.
-  const heat = maxCycles > 0 ? ins.cycles / maxCycles : 0;
   return (
     <div
       className={"disasm-row" + (ins.address === currentAddress ? " disasm-current" : "") + (onJumpToExecution ? " disasm-clickable" : "")}
-      style={{ ...style, background: heat > 0 ? `rgba(255,140,0,${(heat * 0.5).toFixed(3)})` : undefined }}
+      style={{ ...style, background: heatColor(ins.cycles, maxCycles) }}
       onClick={onJumpToExecution ? (e) => onJumpToExecution(ins.address, e.shiftKey) : undefined}
       title={onJumpToExecution ? "Click: next execution · Shift+Click: previous execution" : undefined}
     >

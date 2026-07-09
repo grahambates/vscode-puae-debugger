@@ -6,6 +6,7 @@ import { PuaeEmulator } from "./puaeEmulator";
 import { ProfilerViewerProvider } from "./profilerViewerProvider";
 import { ProfileEditorProvider } from "./profileEditorProvider";
 import { ProfilerCodeLensProvider } from "./profilerCodeLensProvider";
+import { ProfilerLineDecorationProvider } from "./profilerLineDecorationProvider";
 import { expressionRangeAt } from "./cExpressionEvaluator";
 
 export function activate(context: vscode.ExtensionContext) {
@@ -20,11 +21,13 @@ export function activate(context: vscode.ExtensionContext) {
   );
   const profilerStorage = context.globalStorageUri;
   const profilerCodeLens = new ProfilerCodeLensProvider();
+  const profilerLineDecorations = new ProfilerLineDecorationProvider();
   const profilerViewer = new ProfilerViewerProvider(
     context.extensionUri,
     profilerStorage,
     () => VamigaDebugAdapter.getActiveAdapter()?.getProfilerClient(),
     profilerCodeLens,
+    profilerLineDecorations,
   );
 
   context.subscriptions.push(
@@ -203,13 +206,37 @@ export function activate(context: vscode.ExtensionContext) {
   context.subscriptions.push(
     vscode.window.registerCustomEditorProvider(
       ProfileEditorProvider.viewType,
-      new ProfileEditorProvider(context.extensionUri, profilerStorage, profilerCodeLens),
+      new ProfileEditorProvider(context.extensionUri, profilerStorage, profilerCodeLens, profilerLineDecorations),
       { webviewOptions: { retainContextWhenHidden: true }, supportsMultipleEditorsPerDocument: false },
     ),
   );
 
   context.subscriptions.push(
     vscode.languages.registerCodeLensProvider({ scheme: "file" }, profilerCodeLens),
+  );
+
+  context.subscriptions.push(
+    vscode.languages.registerHoverProvider({ scheme: "file" }, profilerLineDecorations),
+  );
+
+  context.subscriptions.push(profilerLineDecorations);
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand("vamiga-debugger.toggleLineProfilerAnnotations", () => {
+      profilerLineDecorations.setEnabled(!profilerLineDecorations.isEnabled());
+    }),
+  );
+
+  context.subscriptions.push(
+    vscode.window.onDidChangeVisibleTextEditors((editors) => {
+      for (const editor of editors) profilerLineDecorations.refreshEditor(editor);
+    }),
+  );
+
+  context.subscriptions.push(
+    vscode.window.onDidChangeActiveTextEditor((editor) => {
+      if (editor) profilerLineDecorations.refreshEditor(editor);
+    }),
   );
 
   context.subscriptions.push(

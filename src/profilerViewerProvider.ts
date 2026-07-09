@@ -6,6 +6,7 @@ import { encodeCapture } from "./vamigaProfile";
 import { packBulk } from "./profilerBulk";
 import { ProfileEditorProvider } from "./profileEditorProvider";
 import { ProfilerCodeLensProvider } from "./profilerCodeLensProvider";
+import { ProfilerLineDecorationProvider } from "./profilerLineDecorationProvider";
 import { ProfilerInboundMessage, ProfilerOutboundMessage, IProfileModel, CaptureFrameInfo, ComputeRangeMessage } from "./shared/profilerTypes";
 
 /**
@@ -34,6 +35,7 @@ export class ProfilerViewerProvider {
     private readonly storageUri: vscode.Uri,
     private readonly getClient: () => ProfilerRpcClient | undefined,
     private readonly codeLens?: ProfilerCodeLensProvider,
+    private readonly lineDecorations?: ProfilerLineDecorationProvider,
   ) {
     this.manager = new ProfilerManager(getClient, () => {
       try {
@@ -58,6 +60,7 @@ export class ProfilerViewerProvider {
     this.lastSaveData = undefined;
     this.lastSaveAdapter = undefined;
     this.codeLens?.clear();
+    this.lineDecorations?.clear();
   }
 
   private bulkFileUri(index: number): vscode.Uri {
@@ -174,6 +177,7 @@ export class ProfilerViewerProvider {
       const frames = await this.manager.capture(this.numFrames);
       this.lastFrames = frames;
       this.codeLens?.update(frames[0].model);
+      this.lineDecorations?.update(frames[0].model);
       await this.cacheSaveData();
       this.lastBulkUris = await this.writeAllBulks(frames);
       this.postResult(frames, this.lastBulkUris);

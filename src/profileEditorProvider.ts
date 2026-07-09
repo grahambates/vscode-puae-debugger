@@ -3,6 +3,7 @@ import { loadProfile } from "./profileLoader";
 import { packBulk } from "./profilerBulk";
 import { getProfilerHtml, openProfilerSource } from "./profilerViewerProvider";
 import { ProfilerCodeLensProvider } from "./profilerCodeLensProvider";
+import { ProfilerLineDecorationProvider } from "./profilerLineDecorationProvider";
 import { ProfilerInboundMessage, IProfileModel } from "./shared/profilerTypes";
 
 /**
@@ -23,6 +24,7 @@ export class ProfileEditorProvider implements vscode.CustomReadonlyEditorProvide
     private readonly extensionUri: vscode.Uri,
     private readonly storageUri: vscode.Uri,
     private readonly codeLens?: ProfilerCodeLensProvider,
+    private readonly lineDecorations?: ProfilerLineDecorationProvider,
   ) {}
 
   public openCustomDocument(uri: vscode.Uri): vscode.CustomDocument {
@@ -49,6 +51,7 @@ export class ProfileEditorProvider implements vscode.CustomReadonlyEditorProvide
       const loaded = loadProfile(bytes);
       model = loaded.model;
       this.codeLens?.update(model);
+      this.lineDecorations?.update(model);
       const blob = packBulk(loaded.raw);
       if (blob) {
         await vscode.workspace.fs.createDirectory(this.storageUri);

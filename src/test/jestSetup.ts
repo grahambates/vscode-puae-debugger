@@ -9,6 +9,8 @@ jest.mock(
       showInformationMessage: jest.fn(),
       setStatusBarMessage: jest.fn(),
       createWebviewPanel: jest.fn(),
+      createTextEditorDecorationType: jest.fn(() => ({ dispose: jest.fn() })),
+      visibleTextEditors: [] as unknown[],
     },
     workspace: {
       getConfiguration: jest.fn(() => ({
@@ -61,8 +63,22 @@ jest.mock(
         for (const l of this.listeners) l(e);
       }
     },
+    ThemeColor: class MockThemeColor {
+      constructor(public id: string) {}
+    },
+    MarkdownString: class MockMarkdownString {
+      public value = "";
+      public appendMarkdown(s: string): this {
+        this.value += s;
+        return this;
+      }
+    },
+    Hover: class MockHover {
+      constructor(public contents: unknown) {}
+    },
     languages: {
       registerCodeLensProvider: jest.fn(),
+      registerHoverProvider: jest.fn(),
     },
   }),
   { virtual: true },
