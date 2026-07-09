@@ -98,15 +98,27 @@ type RowListProps = {
   onOpenSource: (file: string, line: number, toSide: boolean) => void;
   // Jump to the next (or Shift: previous) execution of the clicked instruction in the trace.
   onJumpToExecution: ((address: number, prev: boolean) => void) | undefined;
+  // When source lines are interleaved, the file:line link lives on the source row itself
+  // (once per source line) instead of repeating on every instruction compiled from it.
+  showSource: boolean;
 };
 
-function RowRenderer({ index, style, rows, maxCycles, currentAddress, onOpenSource, onJumpToExecution }: RowComponentProps<RowListProps>) {
+function RowRenderer({ index, style, rows, maxCycles, currentAddress, onOpenSource, onJumpToExecution, showSource }: RowComponentProps<RowListProps>) {
   const row = rows[index];
   if (row.kind === "source") {
     return (
       <div className="disasm-src-line" style={style}>
-        <span className="disasm-src-lineno">{row.line}</span>
-        <span className="disasm-src-text">{row.text || " "}</span>
+        <span className="disasm-src-text">{row.text || " "}</span>
+        <a
+          href="#"
+          className="disasm-src"
+          onClick={(e) => {
+            e.preventDefault();
+            onOpenSource(row.file, row.line, e.altKey);
+          }}
+        >
+          {row.file.split(/[/\\]/).pop()}:{row.line}
+        </a>
       </div>
     );
   }
@@ -125,7 +137,7 @@ function RowRenderer({ index, style, rows, maxCycles, currentAddress, onOpenSour
       <span className="disasm-cycles" title="Total cycles this frame">{ins.cycles > 0 ? `${ins.cycles}cy` : ""}</span>
       <span className="disasm-addr">${ins.address.toString(16).padStart(6, "0")}</span>
       <span className="disasm-text">{ins.text}</span>
-      {ins.file && (
+      {!showSource && ins.file && (
         <a
           href="#"
           className="disasm-src"
@@ -423,8 +435,8 @@ export function DisassemblyView({
   }, [model, currentIdx, columns, dmaSlots, onSelectSlot]);
 
   const rowProps = useMemo<RowListProps>(
-    () => ({ rows, maxCycles, currentAddress, onOpenSource, onJumpToExecution: jumpToExecution }),
-    [rows, maxCycles, currentAddress, onOpenSource, jumpToExecution],
+    () => ({ rows, maxCycles, currentAddress, onOpenSource, onJumpToExecution: jumpToExecution, showSource }),
+    [rows, maxCycles, currentAddress, onOpenSource, jumpToExecution, showSource],
   );
 
   if (!model) return null;

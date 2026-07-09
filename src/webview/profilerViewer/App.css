@@ -1355,14 +1355,9 @@ body {
   border-left: 2px solid var(--vscode-editorLineNumber-foreground, #888);
 }
 
-.disasm-src-lineno {
-  color: var(--vscode-editorLineNumber-foreground);
-  min-width: 3ch;
-  text-align: right;
-  flex-shrink: 0;
-}
-
 .disasm-src-text {
+  flex: 1;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
 }
