@@ -99,27 +99,80 @@ export class ProfilerLineDecorationProvider implements vscode.HoverProvider, vsc
       }
     }
 
-    const maxCyclesByFile = new Map<string, number>();
-    const totalCyclesByFile = new Map<string, number>();
-    for (const [file, lines] of byFile) {
-      let max = 0;
-      let total = 0;
-      for (const { cycles } of lines.values()) {
-        if (cycles > max) max = cycles;
-        total += cycles;
-      }
-      maxCyclesByFile.set(file, max);
-      totalCyclesByFile.set(file, total);
-    }
-
     this.byFile = byFile;
-    this.maxCyclesByFile = maxCyclesByFile;
-    this.totalCyclesByFile = totalCyclesByFile;
+    this.maxCyclesByFile = new Map();
+    this.totalCyclesByFile = new Map();
+    for (const key of byFile.keys()) this.recomputeFileAggregates(key);
     this.refreshVisibleEditors();
   }
 
   public clear(): void {
     this.update(undefined);
+  }
+
+  // Recomputes maxCyclesByFile/totalCyclesByFile for one file from its current byFile entry —
+  // shared by update() (fresh data) and handleDocumentChange() (existing data with some lines
+  // dropped/shifted, which can change the max/total).
+  private recomputeFileAggregates(key: string): void {
+    const lines = this.byFile.get(key);
+    if (!lines || lines.size === 0) {
+      this.maxCyclesByFile.delete(key);
+      this.totalCyclesByFile.delete(key);
+      return;
+    }
+    let max = 0;
+    let total = 0;
+    for (const { cycles } of lines.values()) {
+      if (cycles > max) max = cycles;
+      total += cycles;
+    }
+    this.maxCyclesByFile.set(key, max);
+    this.totalCyclesByFile.set(key, total);
+  }
+
+  // Keeps cached line data roughly in sync with live edits, so decorations don't silently drift
+  // onto the wrong line (e.g. inserting a line above profiled code). For each content change in
+  // the event (processed bottom-to-top, since VS Code expresses every change in one event
+  // relative to the SAME pre-event document — applying top-to-bottom would let an earlier change
+  // invalidate later changes' line numbers): lines strictly before the edited span are kept as-is;
+  // lines strictly after are shifted by linesAdded-linesRemoved; lines touching the edited span
+  // itself are DROPPED rather than guessed at — deliberately conservative, since this profiler's
+  // whole value is exact (not estimated) numbers, and a dropped line just reappears at the next
+  // capture, whereas a wrongly-shifted one would look authoritative while being silently wrong.
+  public handleDocumentChange(event: vscode.TextDocumentChangeEvent): void {
+    const key = normalize(event.document.uri.fsPath).toUpperCase();
+    const lines = this.byFile.get(key);
+    if (!lines || lines.size === 0) return;
+
+    const changes = [...event.contentChanges].sort((a, b) => b.range.start.line - a.range.start.line);
+    for (const change of changes) {
+      const startLine = change.range.start.line + 1; // 0-based -> 1-based
+      const endLine = change.range.end.line + 1;
+      const linesAdded = (change.text.match(/\n/g) ?? []).length;
+      const linesRemoved = endLine - startLine;
+      const delta = linesAdded - linesRemoved;
+      // Even a delta=0 edit (e.g. typing within one line) still must drop the touched line below
+      // — its content changed, so its cached count can no longer be trusted — hence no early-out
+      // here regardless of delta.
+      const next = new Map<number, LineStats>();
+      for (const [line, stats] of lines) {
+        if (line < startLine) next.set(line, stats);
+        else if (line > endLine) next.set(line + delta, stats);
+        // else: line falls within [startLine, endLine] — dropped.
+      }
+      lines.clear();
+      for (const [line, stats] of next) lines.set(line, stats);
+    }
+
+    if (lines.size === 0) this.byFile.delete(key);
+    this.recomputeFileAggregates(key);
+    this.refreshEditorsForDocument(event.document);
+  }
+
+  private refreshEditorsForDocument(document: vscode.TextDocument): void {
+    for (const editor of vscode.window.visibleTextEditors) {
+      if (editor.document === document) this.refreshEditor(editor);
+    }
   }
 
   public refreshVisibleEditors(): void {

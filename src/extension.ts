@@ -240,6 +240,12 @@ export function activate(context: vscode.ExtensionContext) {
   );
 
   context.subscriptions.push(
+    vscode.workspace.onDidChangeTextDocument((event) => {
+      profilerLineDecorations.handleDocumentChange(event);
+    }),
+  );
+
+  context.subscriptions.push(
     vscode.languages.registerEvaluatableExpressionProvider(
       [{ language: "c" }, { language: "cpp" }],
       { provideEvaluatableExpression },

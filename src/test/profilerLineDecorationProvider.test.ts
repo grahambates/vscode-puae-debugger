@@ -189,4 +189,137 @@ describe("ProfilerLineDecorationProvider", () => {
     p.refreshEditor(editor);
     expect(nonEmptyCall(editor)).toBeDefined();
   });
+
+  describe("handleDocumentChange (live-edit tracking)", () => {
+    // Real vscode.TextDocumentContentChangeEvent shape ({range: {start: {line}, end: {line}},
+    // text}) — distinct from this test file's flat MockRange (used elsewhere for constructed
+    // vscode.Range instances), since contentChanges arrive from VS Code's live API untouched.
+    const change = (startLine0: number, endLine0: number, text: string) => ({
+      range: { start: { line: startLine0, character: 0 }, end: { line: endLine0, character: 0 } },
+      text,
+    });
+    const changeEvent = (
+      doc: vscode.TextDocument,
+      changes: ReturnType<typeof change>[],
+    ): vscode.TextDocumentChangeEvent =>
+      ({ document: doc, contentChanges: changes }) as unknown as vscode.TextDocumentChangeEvent;
+
+    function lineAt(p: ProfilerLineDecorationProvider, path: string, oneBasedLine: number): { cycles: number; hits: number } | undefined {
+      const hover = p.provideHover(
+        { uri: { fsPath: path } } as vscode.TextDocument,
+        { line: oneBasedLine - 1 } as vscode.Position,
+      ) as vscode.Hover | undefined;
+      if (!hover) return undefined;
+      const text = (hover.contents as unknown as { value: string }).value;
+      const cycles = Number(text.match(/([\d,]+) cycles/)?.[1].replace(/,/g, ""));
+      const hits = Number(text.match(/([\d,]+) execution/)?.[1].replace(/,/g, ""));
+      return { cycles, hits };
+    }
+
+    it("shifts lines after an inserted line down, leaves earlier lines untouched", () => {
+      const p = new ProfilerLineDecorationProvider();
+      p.update(
+        model([
+          fn("a", [
+            ins({ file: "C:\\proj\\a.c", line: 3, cycles: 10, hits: 1, address: 0x1000 }),
+            ins({ file: "C:\\proj\\a.c", line: 10, cycles: 200, hits: 9, address: 0x1002 }),
+          ]),
+        ]),
+      );
+      const doc = { uri: { fsPath: "C:\\proj\\a.c" } } as vscode.TextDocument;
+      // Cursor at end of (0-based) line 4 = (1-based) line 5, press Enter: insert one line
+      // between line 5 and line 6. Nothing before line 5 is touched; line 10 -> line 11.
+      p.handleDocumentChange(changeEvent(doc, [change(4, 4, "\n")]));
+
+      expect(lineAt(p, "C:\\proj\\a.c", 3)).toEqual({ cycles: 10, hits: 1 }); // unaffected
+      expect(lineAt(p, "C:\\proj\\a.c", 10)).toBeUndefined(); // moved away from here
+      expect(lineAt(p, "C:\\proj\\a.c", 11)).toEqual({ cycles: 200, hits: 9 }); // shifted down by 1
+    });
+
+    it("shifts lines up when a whole line is deleted", () => {
+      const p = new ProfilerLineDecorationProvider();
+      p.update(model([fn("a", [ins({ file: "C:\\proj\\a.c", line: 10, cycles: 200, hits: 9 })])]));
+      const doc = { uri: { fsPath: "C:\\proj\\a.c" } } as vscode.TextDocument;
+      // Delete the whole of (0-based) line 5 = (1-based) line 6, i.e. range [line5,char0)..[line6,char0), text="".
+      p.handleDocumentChange(changeEvent(doc, [change(5, 6, "")]));
+      expect(lineAt(p, "C:\\proj\\a.c", 10)).toBeUndefined();
+      expect(lineAt(p, "C:\\proj\\a.c", 9)).toEqual({ cycles: 200, hits: 9 }); // shifted up by 1
+    });
+
+    it("drops (does not guess at) a line whose own content was edited, even with no line-count change", () => {
+      const p = new ProfilerLineDecorationProvider();
+      p.update(
+        model([
+          fn("a", [
+            ins({ file: "C:\\proj\\a.c", line: 5, cycles: 100, hits: 5, address: 0x1000 }),
+            ins({ file: "C:\\proj\\a.c", line: 6, cycles: 50, hits: 2, address: 0x1002 }),
+          ]),
+        ]),
+      );
+      const doc = { uri: { fsPath: "C:\\proj\\a.c" } } as vscode.TextDocument;
+      // Same-line edit entirely within (0-based) line 4 = (1-based) line 5 — no newline change.
+      p.handleDocumentChange(changeEvent(doc, [change(4, 4, "xyz")]));
+      expect(lineAt(p, "C:\\proj\\a.c", 5)).toBeUndefined(); // dropped — its code changed
+      expect(lineAt(p, "C:\\proj\\a.c", 6)).toEqual({ cycles: 50, hits: 2 }); // untouched line, unaffected
+    });
+
+    it("is a no-op for a file with no cached data (doesn't throw)", () => {
+      const p = new ProfilerLineDecorationProvider();
+      const doc = { uri: { fsPath: "C:\\proj\\untouched.c" } } as vscode.TextDocument;
+      expect(() => p.handleDocumentChange(changeEvent(doc, [change(0, 0, "\n")]))).not.toThrow();
+    });
+
+    it("ignores edits to a different file", () => {
+      const p = new ProfilerLineDecorationProvider();
+      p.update(model([fn("a", [ins({ file: "C:\\proj\\a.c", line: 10, cycles: 200, hits: 9 })])]));
+      const otherDoc = { uri: { fsPath: "C:\\proj\\other.c" } } as vscode.TextDocument;
+      p.handleDocumentChange(changeEvent(otherDoc, [change(0, 0, "\n")]));
+      expect(lineAt(p, "C:\\proj\\a.c", 10)).toEqual({ cycles: 200, hits: 9 }); // unaffected
+    });
+
+    it("applies multiple changes in one event correctly regardless of array order", () => {
+      const p = new ProfilerLineDecorationProvider();
+      p.update(
+        model([
+          fn("a", [
+            ins({ file: "C:\\proj\\a.c", line: 3, cycles: 10, hits: 1, address: 0x1000 }),
+            ins({ file: "C:\\proj\\a.c", line: 10, cycles: 20, hits: 2, address: 0x1002 }),
+            ins({ file: "C:\\proj\\a.c", line: 20, cycles: 30, hits: 3, address: 0x1004 }),
+          ]),
+        ]),
+      );
+      const doc = { uri: { fsPath: "C:\\proj\\a.c" } } as vscode.TextDocument;
+      // Two separate single-line insertions: one before line 10 (0-based line 4 => 1-based 5),
+      // one before line 20 (0-based line 14 => 1-based 15). Listed out of line-order to confirm
+      // handleDocumentChange sorts/orders them correctly rather than relying on input order.
+      p.handleDocumentChange(changeEvent(doc, [change(14, 14, "\n"), change(4, 4, "\n")]));
+
+      expect(lineAt(p, "C:\\proj\\a.c", 3)).toEqual({ cycles: 10, hits: 1 }); // before both edits
+      expect(lineAt(p, "C:\\proj\\a.c", 11)).toEqual({ cycles: 20, hits: 2 }); // shifted by the first insertion only (+1)
+      expect(lineAt(p, "C:\\proj\\a.c", 22)).toEqual({ cycles: 30, hits: 3 }); // shifted by both insertions (+2)
+    });
+
+    it("recomputes per-file max/total after a line is dropped", () => {
+      const p = new ProfilerLineDecorationProvider();
+      p.update(
+        model([
+          fn("a", [
+            ins({ file: "C:\\proj\\a.c", line: 5, cycles: 100, hits: 5, address: 0x1000 }), // was the file's hottest line
+            ins({ file: "C:\\proj\\a.c", line: 10, cycles: 50, hits: 2, address: 0x1002 }),
+          ]),
+        ]),
+      );
+      const doc = { uri: { fsPath: "C:\\proj\\a.c" } } as vscode.TextDocument;
+      // Edit line 5 itself away — drops it, leaving line 10 as the file's only (and so hottest) line.
+      p.handleDocumentChange(changeEvent(doc, [change(4, 4, "xyz")]));
+      // % of file total should now be 100% (50/50), not 33% (50/150) from before the edit.
+      const stats = lineAt(p, "C:\\proj\\a.c", 10);
+      expect(stats).toEqual({ cycles: 50, hits: 2 });
+      const hover = p.provideHover(
+        { uri: { fsPath: "C:\\proj\\a.c" } } as vscode.TextDocument,
+        { line: 9 } as vscode.Position,
+      ) as vscode.Hover;
+      expect((hover.contents as unknown as { value: string }).value).toContain("100.0%");
+    });
+  });
 });
