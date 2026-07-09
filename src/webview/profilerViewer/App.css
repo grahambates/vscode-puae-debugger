@@ -176,6 +176,32 @@ body {
   overflow: auto;
   padding: 8px;
 }
+.resources-canvas-inner {
+  position: relative;
+  display: inline-block;
+}
+
+/* Beam-position crosshair, synced to the shared timeline playhead (selectedSlot) — matches
+   the flame graph's own .time-handle playhead color for a consistent "this is the current
+   cycle" indicator across the profiler. pointer-events:none so it doesn't intercept the
+   canvas's own hover tooltip. */
+.resources-beam-h,
+.resources-beam-v {
+  position: absolute;
+  pointer-events: none;
+  background: #e8c547;
+  opacity: 0.85;
+}
+.resources-beam-h {
+  left: 0;
+  right: 0;
+  height: 1px;
+}
+.resources-beam-v {
+  top: 0;
+  bottom: 0;
+  width: 1px;
+}
 .resources-empty {
   padding: 16px;
   color: var(--vscode-descriptionForeground);

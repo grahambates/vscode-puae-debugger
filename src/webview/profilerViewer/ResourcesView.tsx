@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { BusOwner, IProfileModel } from "../../shared/profilerTypes";
 import { disassembleCopperInstruction } from "../../shared/copperDisassembler";
-import { buildScreenFromModel, DMA_HPOS, IScreen } from "./gfxResources";
+import { buildScreenFromModel, computeBeamPosition, DMA_HPOS, IScreen } from "./gfxResources";
 import { CUSTOM_REGISTER_OFFSETS as R } from "../shared/customRegisters";
 
 interface ResourcesViewProps {
@@ -363,7 +363,7 @@ function computeHoverExtra(
 
 // ── Component ─────────────────────────────────────────────────────────────────
 
-export function ResourcesView({ model }: ResourcesViewProps) {
+export function ResourcesView({ model, selectedSlot }: ResourcesViewProps) {
   const canvas   = useRef<HTMLCanvasElement>(null);
   const [scale, setScale]           = useState(2);
   const [planeVis, setPlaneVis]     = useState<boolean[]>(Array(6).fill(true));
@@ -379,6 +379,13 @@ export function ResourcesView({ model }: ResourcesViewProps) {
 
   useEffect(() => { modelRef.current = model;  }, [model]);
   useEffect(() => { screenRef.current = screen; }, [screen]);
+
+  // Beam-position crosshair, synced to the shared timeline playhead — as the old extension's
+  // resource view showed. See computeBeamPosition's doc comment for the mapping.
+  const beamPos = useMemo(
+    () => (selectedSlot === undefined || !screen ? undefined : computeBeamPosition(screen, selectedSlot)),
+    [selectedSlot, screen],
+  );
 
   // Reset plane visibility when the plane count changes to a new value.
   const prevNumPlanes = useRef(0);
@@ -704,12 +711,20 @@ export function ResourcesView({ model }: ResourcesViewProps) {
         )}
       </div>
       <div className="resources-canvas-wrap">
-        <canvas
-          ref={canvas}
-          style={{ imageRendering: "pixelated", cursor: "crosshair" }}
-          onMouseMove={onMouseMove}
-          onMouseLeave={onMouseLeave}
-        />
+        <div className="resources-canvas-inner">
+          <canvas
+            ref={canvas}
+            style={{ imageRendering: "pixelated", cursor: "crosshair" }}
+            onMouseMove={onMouseMove}
+            onMouseLeave={onMouseLeave}
+          />
+          {beamPos && (
+            <>
+              <div className="resources-beam-h" style={{ top: beamPos.y * scale }} />
+              <div className="resources-beam-v" style={{ left: beamPos.x * scale }} />
+            </>
+          )}
+        </div>
       </div>
       {hover && (
         <div

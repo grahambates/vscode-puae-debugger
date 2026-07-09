@@ -20,6 +20,7 @@ export interface IScreen {
 }
 
 export const DMA_HPOS = 227; // slots per scan line in the DMA grid
+export const DMA_VPOS = 313; // scan lines per frame in the DMA grid
 
 /**
  * Derive screen geometry from the DMA grid + copper trace.
@@ -108,4 +109,35 @@ export function buildScreenFromModel(model: IProfileModel): IScreen | undefined 
   }
 
   return { numPlanes, width, height, firstLine, hires, ham, dpf, modeChanges, displayLeft: ddfStart * 2 };
+}
+
+/**
+ * Maps a shared-playhead DMA slot to a canvas pixel position within a rendered IScreen, for the
+ * beam-position crosshair — as the old extension's resource view showed, synced to the timeline.
+ *
+ * `slot % (DMA_HPOS * DMA_VPOS)` handles multi-frame combined mode, where the shared selectedSlot
+ * spans N × frameSlots (a no-op when already within a single frame — same simplification
+ * CopperView's own playhead sync uses for the same reason).
+ *
+ * hpos (CCK) -> lores-pixel-x -> canvas-x reuses the proven HSTRT sprite-positioning formula
+ * (see displayLeft's own doc comment above): canvas_x = (x - displayLeft) * (hires ? 2 : 1),
+ * with hpos*2 converting CCK to lores-pixel units (matching HSTRT's own "9-bit lores-pixel"
+ * convention and ddfStart*2 above).
+ *
+ * Clamped into the visible bitplane rect [0,width)x[0,height) — a beam position in vblank/border
+ * (outside the DMA-active area this IScreen covers) snaps to the nearest edge rather than being
+ * omitted, so the indicator is always visible somewhere while scrubbing.
+ */
+export function computeBeamPosition(screen: IScreen, slot: number): { x: number; y: number } {
+  const frameSlots = DMA_HPOS * DMA_VPOS;
+  const localSlot = slot % frameSlots;
+  const vpos = Math.floor(localSlot / DMA_HPOS);
+  const hpos = localSlot % DMA_HPOS;
+  const loresX = hpos * 2;
+  const canvasX = (loresX - screen.displayLeft) * (screen.hires ? 2 : 1);
+  const canvasY = vpos - screen.firstLine;
+  return {
+    x: Math.max(0, Math.min(screen.width - 1, canvasX)),
+    y: Math.max(0, Math.min(screen.height - 1, canvasY)),
+  };
 }
