@@ -33,6 +33,15 @@ extern bool libretro_frame_end;
 
 static int puae_debug_paused = 0;
 static uint32_t puae_debug_callstack[PUAE_DEBUG_CALLSTACK_MAX];
+/* Parallel to puae_debug_callstack[]: the A7 value that will be current once this frame's
+ * call/exception returns ("resume SP"), and whether the CPU was in supervisor mode when the
+ * frame was pushed. Used by the self-correcting check in puae_debug_instructionHookImpl (see
+ * its comment) to detect frames that were "returned from" via something other than a plain
+ * RTS/RTD/RTE/RTR opcode — e.g. a hand-optimised `MOVE.L (A7)+,A0 / JMP (A0)` tail-return, a
+ * known trick in some Kickstart ROM routines — which the opcode-pattern matcher below can't see
+ * and would otherwise leave permanently un-popped. */
+static uint32_t puae_debug_callstackSP[PUAE_DEBUG_CALLSTACK_MAX];
+static uint8_t  puae_debug_callstackSuper[PUAE_DEBUG_CALLSTACK_MAX];
 static size_t puae_debug_callstackDepth = 0;
 
 static int puae_debug_stepInstr = 0;
@@ -2314,12 +2323,20 @@ puae_debug_memhook_afterWrite(uint32_t addr24, uint32_t value, uint32_t oldValue
  * `pc` is the interrupted code's own PC (Exception_normal's `currpc`, captured before any
  * stack/mode switch) — the call-site convention used for JSR/BSR: "where control was
  * transferred FROM", matching what the profiler attributes the caller frame at.
+ *
+ * `resumeSp` and `wasSuper` are A7 and the supervisor-mode bit as they were at the VERY START
+ * of the dispatch function, before any exception-frame pushes or stack-pointer switch — i.e.
+ * exactly the state that will be restored once this specific exception's RTE fires. Recorded
+ * alongside the PC so the self-correcting check in puae_debug_instructionHookImpl can validate
+ * this frame the same way it validates JSR/BSR frames (see that function's comment).
  */
 void
-puae_debug_exceptionEnter(uaecptr pc)
+puae_debug_exceptionEnter(uaecptr pc, uae_u32 resumeSp, int wasSuper)
 {
 	uint32_t pc24 = puae_debug_maskAddr(pc);
 	if (puae_debug_callstackDepth < PUAE_DEBUG_CALLSTACK_MAX) {
+		puae_debug_callstackSP[puae_debug_callstackDepth] = resumeSp;
+		puae_debug_callstackSuper[puae_debug_callstackDepth] = (uint8_t)(wasSuper != 0);
 		puae_debug_callstack[puae_debug_callstackDepth++] = pc24;
 	}
 }
@@ -2328,6 +2345,33 @@ static int
 puae_debug_instructionHookImpl(uaecptr pc, uae_u16 opcode)
 {
 	uint32_t pc24 = puae_debug_maskAddr(pc);
+
+	/* Self-correct the JSR/BSR/exception shadow stack against the actual CPU stack pointer
+	 * before the profiler (or anything else) samples it. A frame is popped once execution has
+	 * genuinely returned past it — evidenced by A7 (compared only against frames pushed in the
+	 * SAME cpu mode; see puae_debug_callstackSuper's comment) rising to or past the SP recorded
+	 * at push time — regardless of whether that return happened via a recognised
+	 * RTS/RTD/RTE/RTR opcode or something else entirely (e.g. a hand-optimised
+	 * `MOVE.L (A7)+,A0 / JMP (A0)` tail-return, a known trick in some Kickstart ROM routines,
+	 * which the opcode matcher below can't detect). Without this, such a frame is never popped
+	 * and the shadow stack grows without bound for the rest of the capture — corrupting
+	 * call-tree attribution, and, since the profiler's "most recent N callers" window then
+	 * never repeats sample to sample, forcing the flame graph's call tree to allocate a fresh
+	 * node chain for nearly every sample instead of reusing one (what made deep captures, e.g.
+	 * during a slow real-speed floppy load, dramatically slower to process).
+	 * Skipped during replay (see puae_debug_replayMode below): replay re-walks already-executed
+	 * instructions against a callstack built during the original forward pass and must not
+	 * re-mutate it. */
+	if (!puae_debug_replayMode) {
+		uae_u32 curSp = m68k_areg(regs, 7);
+		int curSuper = regs.s != 0;
+		while (puae_debug_callstackDepth > 0) {
+			size_t top = puae_debug_callstackDepth - 1;
+			if (puae_debug_callstackSuper[top] != curSuper) break;
+			if (curSp < puae_debug_callstackSP[top]) break;
+			puae_debug_callstackDepth--;
+		}
+	}
 
 	wasm_profile_instrHook(pc24);
 	puae_debug_cpuTrace_instrHook(pc24);
@@ -2378,11 +2422,15 @@ puae_debug_instructionHookImpl(uaecptr pc, uae_u16 opcode)
 		}
 		if (ext >= 0) {
 			if (puae_debug_callstackDepth < PUAE_DEBUG_CALLSTACK_MAX) {
+				puae_debug_callstackSP[puae_debug_callstackDepth] = m68k_areg(regs, 7);
+				puae_debug_callstackSuper[puae_debug_callstackDepth] = (uint8_t)(regs.s != 0);
 				puae_debug_callstack[puae_debug_callstackDepth++] = pc24;
 			}
 		}
 	} else if ((opcode & 0xFF00u) == 0x6100u) {
 		if (puae_debug_callstackDepth < PUAE_DEBUG_CALLSTACK_MAX) {
+			puae_debug_callstackSP[puae_debug_callstackDepth] = m68k_areg(regs, 7);
+			puae_debug_callstackSuper[puae_debug_callstackDepth] = (uint8_t)(regs.s != 0);
 			puae_debug_callstack[puae_debug_callstackDepth++] = pc24;
 		}
 	} else if (opcode == 0x4E75u || opcode == 0x4E74u || opcode == 0x4E73u || opcode == 0x4E77u) {
