@@ -471,6 +471,12 @@ export async function main(config: MainConfig = {}): Promise<void> {
   // Builds a labelled group of small numbered toggle squares (toolbar-style,
   // replacing the previous checkbox lists). `items` is [{ key, text, color? }];
   // onToggle(item, active) is called whenever a square is clicked.
+  //
+  // Groups with more than one item get an "ALL" toggle (mirroring the DMA overlay panel's
+  // hand-rolled one below: state is derived, not stored — its `active` class is just "are all
+  // items currently active", recomputed after every change, and clicking it drives every item
+  // through the same per-item setter a normal click uses). Shift-clicking an item isolates it:
+  // that item turns on and every other item in the group turns off.
   function makeToggleGroup(label: string, items: ToggleItem[], onToggle: (item: ToggleItem, active: boolean) => void): HTMLDivElement {
     const group = document.createElement("div");
     group.className = "chan-group";
@@ -480,20 +486,53 @@ export async function main(config: MainConfig = {}): Promise<void> {
     group.appendChild(lbl);
     const grid = document.createElement("div");
     grid.className = "chan-grid";
-    for (const item of items) {
+
+    const btns: HTMLButtonElement[] = [];
+    const setItem = (idx: number, active: boolean): void => {
+      btns[idx].classList.toggle("active", active);
+      onToggle(items[idx], active);
+    };
+
+    let allBtn: HTMLButtonElement | undefined;
+    const syncAllBtn = (): void => {
+      allBtn?.classList.toggle("active", btns.every(b => b.classList.contains("active")));
+    };
+
+    if (items.length > 1) {
+      allBtn = document.createElement("button");
+      allBtn.type = "button";
+      allBtn.className = "chan-btn all-btn active";
+      allBtn.textContent = "ALL";
+      allBtn.title = `Toggle all ${label.toLowerCase()}`;
+      allBtn.addEventListener("click", () => {
+        const turnOn = !btns.every(b => b.classList.contains("active"));
+        items.forEach((_, idx) => setItem(idx, turnOn));
+        syncAllBtn();
+      });
+      grid.appendChild(allBtn);
+    }
+
+    items.forEach((item, idx) => {
       const btn = document.createElement("button");
       btn.type = "button";
       btn.className = "chan-btn active";
       btn.textContent = item.text;
-      btn.title = item.title || item.text;
+      btn.title = items.length > 1
+        ? `${item.title || item.text} (Shift-click to isolate)`
+        : item.title || item.text;
       if (item.color) btn.style.setProperty("--chan-color", item.color);
-      btn.addEventListener("click", () => {
-        const active = !btn.classList.contains("active");
-        btn.classList.toggle("active", active);
-        onToggle(item, active);
+      btn.addEventListener("click", (e) => {
+        if (e.shiftKey && items.length > 1) {
+          items.forEach((_, i) => setItem(i, i === idx));
+        } else {
+          setItem(idx, !btn.classList.contains("active"));
+        }
+        syncAllBtn();
       });
       grid.appendChild(btn);
-    }
+      btns.push(btn);
+    });
+
     group.appendChild(grid);
     return group;
   }

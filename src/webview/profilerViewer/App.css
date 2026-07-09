@@ -228,6 +228,9 @@ body {
   opacity: 1;
   border-color: var(--vscode-focusBorder, #007fd4);
 }
+.resources-bpl-all {
+  font-weight: bold;
+}
 
 /* Screen pixel hover tooltip */
 .screen-tooltip {

@@ -628,11 +628,13 @@ export function ResourcesView({ model, selectedSlot }: ResourcesViewProps) {
   }, [scale]);
 
   const onMouseLeave = useCallback(() => setHover(null), []);
-  const togglePlane  = useCallback((i: number) => {
-    setPlaneVis(v => { const n = [...v]; n[i] = !n[i]; return n; });
+  // `isolate` (shift-click): turn this one on and every other item in the group off, instead
+  // of just flipping this one.
+  const togglePlane  = useCallback((i: number, isolate = false) => {
+    setPlaneVis(v => (isolate ? v.map((_, j) => j === i) : v.map((b, j) => (j === i ? !b : b))));
   }, []);
-  const toggleSprite = useCallback((i: number) => {
-    setSpriteVis(v => { const n = [...v]; n[i] = !n[i]; return n; });
+  const toggleSprite = useCallback((i: number, isolate = false) => {
+    setSpriteVis(v => (isolate ? v.map((_, j) => j === i) : v.map((b, j) => (j === i ? !b : b))));
   }, []);
 
   if (!model?.dma) {
@@ -647,6 +649,13 @@ export function ResourcesView({ model, selectedSlot }: ResourcesViewProps) {
     ? "variable mode"
     : `${numPlanes}-plane${hires ? " hires" : " lores"}${ham ? " HAM" : ""}${dpf ? " DPF" : ""}`;
   const info = `${width}×${height} · ${modeStr}`;
+
+  // "All" buttons' state is derived (not stored) — same pattern as the emulator webview's
+  // channel-visibility toggles: active iff every item currently shown for this group is on.
+  const allPlanesOn = planeVis.slice(0, numPlanes).every(Boolean);
+  const activeSpriteIndices: number[] = [];
+  for (let i = 0; i < 8; i++) if (activeSpritesMask & (1 << i)) activeSpriteIndices.push(i);
+  const allSpritesOn = activeSpriteIndices.every(i => spriteVis[i]);
 
   // Tooltip derived display values.
   let copperText: string | undefined;
@@ -681,12 +690,24 @@ export function ResourcesView({ model, selectedSlot }: ResourcesViewProps) {
           <option value="3">3×</option>
         </select>
         <span className="resources-bpl-label">BPL</span>
+        {numPlanes > 1 && (
+          <button
+            className={"resources-bpl-btn resources-bpl-all" + (allPlanesOn ? " active" : "")}
+            onClick={() => {
+              const on = !allPlanesOn;
+              setPlaneVis(v => v.map((b, j) => (j < numPlanes ? on : b)));
+            }}
+            title="Toggle all bitplanes"
+          >
+            All
+          </button>
+        )}
         {Array.from({ length: numPlanes }, (_, i) => (
           <button
             key={i}
             className={"resources-bpl-btn" + (planeVis[i] ? " active" : "")}
-            onClick={() => togglePlane(i)}
-            title={`${planeVis[i] ? "Hide" : "Show"} bitplane ${i + 1}`}
+            onClick={(e) => togglePlane(i, e.shiftKey)}
+            title={`${planeVis[i] ? "Hide" : "Show"} bitplane ${i + 1}${numPlanes > 1 ? " (Shift-click to isolate)" : ""}`}
           >
             {i + 1}
           </button>
@@ -694,19 +715,28 @@ export function ResourcesView({ model, selectedSlot }: ResourcesViewProps) {
         {activeSpritesMask !== 0 && (
           <>
             <span className="resources-bpl-label">SPR</span>
-            {Array.from({ length: 8 }, (_, i) => {
-              if (!(activeSpritesMask & (1 << i))) return null;
-              return (
-                <button
-                  key={i}
-                  className={"resources-bpl-btn" + (spriteVis[i] ? " active" : "")}
-                  onClick={() => toggleSprite(i)}
-                  title={`${spriteVis[i] ? "Hide" : "Show"} sprite ${i}`}
-                >
-                  {i}
-                </button>
-              );
-            })}
+            {activeSpriteIndices.length > 1 && (
+              <button
+                className={"resources-bpl-btn resources-bpl-all" + (allSpritesOn ? " active" : "")}
+                onClick={() => {
+                  const on = !allSpritesOn;
+                  setSpriteVis(v => v.map((b, j) => (activeSpritesMask & (1 << j) ? on : b)));
+                }}
+                title="Toggle all sprites"
+              >
+                All
+              </button>
+            )}
+            {activeSpriteIndices.map(i => (
+              <button
+                key={i}
+                className={"resources-bpl-btn" + (spriteVis[i] ? " active" : "")}
+                onClick={(e) => toggleSprite(i, e.shiftKey)}
+                title={`${spriteVis[i] ? "Hide" : "Show"} sprite ${i}${activeSpriteIndices.length > 1 ? " (Shift-click to isolate)" : ""}`}
+              >
+                {i}
+              </button>
+            ))}
           </>
         )}
       </div>
