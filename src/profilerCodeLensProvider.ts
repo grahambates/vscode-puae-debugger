@@ -32,7 +32,14 @@ export class ProfilerCodeLensProvider implements vscode.CodeLensProvider {
         const selfPct = model.duration > 0 ? (loc.selfTime / model.duration) * 100 : 0;
         const totalPct = model.duration > 0 ? (loc.aggregateTime / model.duration) * 100 : 0;
         const title = `${selfPct.toFixed(1)}% Self, ${totalPct.toFixed(1)}% Total`;
-        const range = new vscode.Range(loc.callFrame.lineNumber, 0, loc.callFrame.lineNumber, 0);
+        // callFrame.lineNumber is 1-based (see shared/profilerTypes.ts); vscode.Range/Position
+        // are 0-based, so convert here — same conversion openProfilerSource already applies for
+        // this exact field. Missing it previously put the lens one line low: harmless-looking in
+        // C/C++ (still lands on some nearby statement) but visibly wrong in assembly, where it
+        // showed under the function's first instruction instead of anchored to it (i.e. visually
+        // right below the label, where a CodeLens for that line naturally renders).
+        const line = Math.max(0, loc.callFrame.lineNumber - 1);
+        const range = new vscode.Range(line, 0, line, 0);
         const lens = new vscode.CodeLens(range, { title, command: "" });
 
         const key = normalize(file).toUpperCase();

@@ -25,14 +25,14 @@ const model = (locations: ILocation[]): IProfileModel => ({
 const doc = (path: string): vscode.TextDocument => ({ uri: { fsPath: path } }) as vscode.TextDocument;
 
 describe("ProfilerCodeLensProvider", () => {
-  it("provides a lens at the location's line for a matching file", () => {
+  it("provides a lens at the location's line for a matching file, converted from 1-based to 0-based", () => {
     const p = new ProfilerCodeLensProvider();
-    p.update(model([loc({ selfTime: 250, aggregateTime: 500 })]));
+    p.update(model([loc({ selfTime: 250, aggregateTime: 500 })])); // callFrame.lineNumber: 4 (1-based)
 
     const lenses = p.provideCodeLenses(doc("C:\\proj\\a.c"));
     expect(lenses).toHaveLength(1);
     const lens = (lenses as vscode.CodeLens[])[0];
-    expect((lens.range as unknown as { startLine: number }).startLine).toBe(4);
+    expect((lens.range as unknown as { startLine: number }).startLine).toBe(3);
     expect((lens.command as { title: string }).title).toBe("25.0% Self, 50.0% Total");
   });
 
