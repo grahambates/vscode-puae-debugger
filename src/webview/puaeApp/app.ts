@@ -7,6 +7,7 @@
 import { setupRpcDispatcher, getCurrentStopMessage, tryExec, getCurrentProcess, isExecReady } from "./rpc";
 import { installDmaHoverTooltip, handleDmaHoverMessage } from "./dmaHover";
 import { installMouseCapture } from "./mouseCapture";
+import { installKeyboardCapture } from "./keyboardCapture";
 import { DmaRecordType } from "../../shared/profilerTypes";
 import type { PuaeModule } from "./types";
 
@@ -692,6 +693,11 @@ export async function main(config: MainConfig = {}): Promise<void> {
   // its click listener runs second — the tooltip suppresses this one (via
   // stopImmediatePropagation) when a click instead opens a source file.
   installMouseCapture(canvas, M);
+
+  // Keyboard capture for the emulated Amiga keyboard: click the canvas to
+  // focus it, then keys are forwarded until focus moves elsewhere (e.g. to
+  // one of this toolbar's own <select>/<input> controls).
+  installKeyboardCapture(canvas, M);
 
   // Channel visibility panel (#channel-visibility, optional).
   // Numbered toggle squares to disable individual bitplanes, sprites, and

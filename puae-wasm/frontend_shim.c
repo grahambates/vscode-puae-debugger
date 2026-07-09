@@ -287,6 +287,29 @@ void wasm_set_mouse_button(int button, int pressed) {
     }
 }
 
+// --- Keyboard input ---
+// libretro-core.c's retro_init() registers a retro_keyboard_callback via
+// RETRO_ENVIRONMENT_SET_KEYBOARD_CALLBACK (shim_environment below), giving us
+// the core's own retro_keyboard_event (libretro-mapper.c) as a function
+// pointer — that function just records down/up state per RETROK_* code into
+// retro_key_event_state[], which update_input()'s process_key() (called every
+// core frame from retro_run()) diffs and forwards into UAE's keyboard
+// emulation via keyboard_translation[] (RETROK_* -> Amiga AK_* keycodes).
+// JS (app.ts's keyboardCapture, mirroring the mouse setup) calls
+// wasm_key_event() with a RETROK_* code translated from KeyboardEvent.code.
+static retro_keyboard_event_t g_keyboard_event_cb = NULL;
+
+// `code` is a RETROK_* value (enum retro_key in libretro.h); `character`/`mod`
+// are unused by this core's own handling (see retro_keyboard_event's `switch`
+// in libretro-mapper.c, which only inspects `code`) but are accepted for
+// libretro API completeness — pass 0 if the caller doesn't have them.
+EMSCRIPTEN_KEEPALIVE
+void wasm_key_event(int down, unsigned code, unsigned character, unsigned mod) {
+    if (g_keyboard_event_cb) {
+        g_keyboard_event_cb(down != 0, code, (uint32_t)character, (uint16_t)mod);
+    }
+}
+
 static void shim_input_poll(void) {}
 
 static int16_t shim_input_state(unsigned port, unsigned device, unsigned index, unsigned id) {
@@ -340,6 +363,11 @@ static bool shim_environment(unsigned cmd, void *data) {
             g_geom_base_height = geo->base_height;
             EM_ASM_({ console.log('[shim] SET_GEOMETRY base=' + $0 + 'x' + $1); },
                     geo->base_width, geo->base_height);
+            return true;
+        }
+        case RETRO_ENVIRONMENT_SET_KEYBOARD_CALLBACK: {
+            const struct retro_keyboard_callback *cb = (const struct retro_keyboard_callback *)data;
+            g_keyboard_event_cb = cb->callback;
             return true;
         }
         case RETRO_ENVIRONMENT_SET_VARIABLES:

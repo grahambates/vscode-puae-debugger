@@ -6,6 +6,12 @@
 <style>
   body { margin: 0; padding: 0; }
   #screen { display: block; width: 100%; }
+  /* Click-to-focus keyboard capture (keyboardCapture.ts) — a subtle cue that
+     the canvas, not the page, currently receives key events. Plain :focus
+     (not :focus-visible): focus is acquired via a mouse click here, which
+     :focus-visible heuristics would otherwise treat as "not keyboard
+     intent" and suppress the very indicator this is for. */
+  #screen:focus { outline: 1px solid var(--vscode-focusBorder, #007fd4); outline-offset: -1px; }
   #controls, #dma-overlay, #channel-visibility {
     display: flex;
     align-items: center;
