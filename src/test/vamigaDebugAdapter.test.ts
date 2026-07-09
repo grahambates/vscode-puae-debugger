@@ -494,6 +494,78 @@ describe("VamigaDebugAdapter - Simplified Tests", () => {
     });
   });
 
+  // VS Code's built-in Variables/Disassembly panels only auto-select a stopped
+  // frame with no source when StoppedEvent.reason is "instruction breakpoint"
+  // (see applyNoSourceReasonHint's doc comment). Without this override, pausing
+  // or breaking with the PC outside user code left both panels empty until the
+  // next step happened to trigger the same fix elsewhere.
+  describe("Sourceless stop reason hint", () => {
+    function stubBreakpointManager(reason: string) {
+      const mockBreakpointManager = sinon.createStubInstance(BreakpointManager);
+      mockBreakpointManager.handleBreakpointStop.returns({ reason: reason as DebugProtocol.StoppedEvent["body"]["reason"] });
+      (adapter as any).breakpointManager = mockBreakpointManager;
+      return mockBreakpointManager;
+    }
+
+    it("overrides a breakpoint stop's reason when the PC has no source", async () => {
+      setupMockCpuState({ pc: "0x00fc0000" }); // e.g. inside Kickstart ROM
+      setupMockSourceMap(); // lookupAddress -> null by default
+      stubBreakpointManager("breakpoint");
+      const sendEventSpy = sinon.spy(adapter as any, "sendEvent");
+
+      await (adapter as any).handleStop({ name: "BREAKPOINT_REACHED", payload: { pc: 0x00fc0000 } });
+
+      const stopped = sendEventSpy.args.find(([evt]) => evt.event === "stopped");
+      assert.strictEqual(stopped?.[0].body.reason, "instruction breakpoint");
+    });
+
+    it("leaves a breakpoint stop's reason alone when the PC has source", async () => {
+      setupMockCpuState({ pc: "0x00001000" });
+      const mockSourceMap = setupMockSourceMap();
+      mockSourceMap.lookupAddress.returns({ path: "main.c", line: 10 });
+      stubBreakpointManager("breakpoint");
+      const sendEventSpy = sinon.spy(adapter as any, "sendEvent");
+
+      await (adapter as any).handleStop({ name: "BREAKPOINT_REACHED", payload: { pc: 0x1000 } });
+
+      const stopped = sendEventSpy.args.find(([evt]) => evt.event === "stopped");
+      assert.strictEqual(stopped?.[0].body.reason, "breakpoint");
+    });
+
+    it("overrides a manual pause's reason when the PC has no source", async () => {
+      setupMockCpuState({ pc: "0x00fc0000" });
+      setupMockSourceMap();
+      (adapter as any).isRunning = true;
+      const sendEventSpy = sinon.spy(adapter as any, "sendEvent");
+
+      await (adapter as any).updateState({
+        type: "emulator-state",
+        state: "paused",
+        message: { hasMessage: false, name: "", payload: {} },
+      });
+
+      const stopped = sendEventSpy.args.find(([evt]) => evt.event === "stopped");
+      assert.strictEqual(stopped?.[0].body.reason, "instruction breakpoint");
+    });
+
+    it("leaves a manual pause's reason alone when the PC has source", async () => {
+      setupMockCpuState({ pc: "0x00001000" });
+      const mockSourceMap = setupMockSourceMap();
+      mockSourceMap.lookupAddress.returns({ path: "main.c", line: 10 });
+      (adapter as any).isRunning = true;
+      const sendEventSpy = sinon.spy(adapter as any, "sendEvent");
+
+      await (adapter as any).updateState({
+        type: "emulator-state",
+        state: "paused",
+        message: { hasMessage: false, name: "", payload: {} },
+      });
+
+      const stopped = sendEventSpy.args.find(([evt]) => evt.event === "stopped");
+      assert.strictEqual(stopped?.[0].body.reason, "pause");
+    });
+  });
+
   describe("Stepping and Execution Control", () => {
     it("should handle stepIn request", async () => {
       // Setup: Mock stepInto functionality

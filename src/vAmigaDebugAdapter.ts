@@ -1433,7 +1433,9 @@ export class VamigaDebugAdapter extends LoggingDebugSession {
     if (state === "paused") {
       if (this.isRunning) {
         this.isRunning = false;
-        this.sendEvent(new StoppedEvent("pause", VamigaDebugAdapter.THREAD_ID));
+        const evt = new StoppedEvent("pause", VamigaDebugAdapter.THREAD_ID);
+        await this.applyNoSourceReasonHint(evt);
+        this.sendEvent(evt);
       }
     } else if (state === "running") {
       if (!this.isRunning) {
@@ -1446,6 +1448,39 @@ export class VamigaDebugAdapter extends LoggingDebugSession {
       } else {
         this.handleStop(message);
       }
+    }
+  }
+
+  /**
+   * VS Code's built-in Variables/Disassembly panels only auto-select (and
+   * therefore query, via scopesRequest/variablesRequest/disassembleRequest)
+   * the top stack frame on a stop when that frame has no source IF
+   * StoppedEvent.reason is "instruction breakpoint" — see
+   * https://github.com/microsoft/vscode/pull/143649/files. Without this,
+   * pausing or breaking with the PC outside user code (Kickstart ROM,
+   * unmapped memory, ...) leaves both panels empty until the next step
+   * happens to trigger this same override elsewhere.
+   *
+   * Overrides `evt`'s reason to "instruction breakpoint" when `pc` (or, if
+   * omitted, the emulator's current PC) has no source-map coverage. No-op if
+   * the reason is already "instruction breakpoint" (a real instruction
+   * breakpoint already gets this reason) or the PC can't be determined.
+   */
+  private async applyNoSourceReasonHint(
+    evt: DebugProtocol.StoppedEvent,
+    pc?: number,
+  ): Promise<void> {
+    if (evt.body.reason === "instruction breakpoint") return;
+    if (pc === undefined) {
+      try {
+        const cpuInfo = await this.emulator.getCpuInfo();
+        pc = Number(cpuInfo.pc);
+      } catch {
+        return;
+      }
+    }
+    if (!this.sourceMap?.lookupAddress(pc)) {
+      evt.body.reason = "instruction breakpoint";
     }
   }
 
@@ -1492,13 +1527,10 @@ export class VamigaDebugAdapter extends LoggingDebugSession {
 
     const evt = new StoppedEvent("step", VamigaDebugAdapter.THREAD_ID);
 
-    // Fake stop reason as 'instruction breakpoint' to allow selecting a stack frame with no source, and open disassembly
-    // Don't need to do this for step with instruction granularity, as this is already handled
-    // see: https://github.com/microsoft/vscode/pull/143649/files
-    if (this.lastStepGranularity !== "instruction" && pc !== undefined) {
-      if (!this.sourceMap?.lookupAddress(pc)) {
-        evt.body.reason = "instruction breakpoint";
-      }
+    // Don't need this for step with instruction granularity — VS Code already
+    // selects a sourceless top frame fine for a plain "step" reason there.
+    if (this.lastStepGranularity !== "instruction") {
+      await this.applyNoSourceReasonHint(evt, pc);
     }
 
     this.sendEvent(evt);
@@ -1633,6 +1665,16 @@ export class VamigaDebugAdapter extends LoggingDebugSession {
         console.warn("Failed to get CPU trace:", error);
       }
     }
+
+    // For an exception stop, frame 0 is built from exceptionInstruction.address
+    // (the faulting instruction, not the raw PC which sits inside the exception
+    // vector handler) — see getStackFrames' use of it below. Check source there
+    // instead of re-fetching the current (always-no-source, in-ROM-vector) PC.
+    // Other reasons: let the helper fetch the (still-current) PC itself.
+    await this.applyNoSourceReasonHint(
+      evt,
+      result.reason === "exception" ? this.exceptionInstruction?.address : undefined,
+    );
 
     this.sendEvent(evt);
   }
