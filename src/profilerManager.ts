@@ -180,6 +180,38 @@ export function applyContextReuse(samples: InstructionSample[], sourceMap: Sourc
   });
 }
 
+// Drop the OS/Kickstart ancestor prefix from the ROOT end of a leaf-first stack, so the
+// flame graph starts at the user's own program instead of showing the DOS/Kickstart call
+// chain that launched it (process creation, task scheduler, library JSRs, ...) sitting
+// above every sample. Only relevant for a branch-stack (assembly/LINE, no-DWARF) capture:
+// the shadow call stack (puae_debug_callstack) accumulates from emulator boot, so it still
+// carries whatever was on it when the program's own entry point started running.
+//
+// Scans from the root (stack's last element) toward the leaf (index 0) and trims off every
+// out-of-program frame up to — but not including — the first in-program one; frames from
+// there to the leaf are kept as-is, including any Kickstart/External calls made FROM within
+// the program (AllocMem, WaitBlit, ...), since those are genuine nested calls, not launch
+// ancestry. A stack with no in-program frame at all (e.g. a pure-Kickstart/External sample)
+// is left untouched — there's no "first user code" to start at.
+//
+// "In program" is judged via syntheticLabel, NOT sourceMap.findSegmentForAddress directly:
+// addSymbolModule() (used to merge Kickstart ROM symbols in) registers the ROM range as a
+// `segment` too, so findSegmentForAddress alone returns truthy for Kickstart addresses once
+// those symbols are loaded — which would make this function a no-op. syntheticLabel already
+// excludes the Kickstart ROM range (and the IRQ marker) before falling back to the segment
+// check, so it's the correct "is this genuinely the user's own program" predicate.
+export function trimToProgramRoot(samples: InstructionSample[], sourceMap: SourceMap): InstructionSample[] {
+  const inProgram = (pc: number) => syntheticLabel(pc, sourceMap) === undefined;
+  return samples.map((s) => {
+    const stack = s.stack;
+    let rootIdx = stack.length - 1;
+    while (rootIdx > 0 && !inProgram(stack[rootIdx])) rootIdx--;
+    if (rootIdx === stack.length - 1) return s; // already starts in-program
+    if (!inProgram(stack[rootIdx])) return s; // no in-program frame at all
+    return { stack: stack.slice(0, rootIdx + 1), cycles: s.cycles };
+  });
+}
+
 // Build the time-ordered IProfileModel the flame chart renders, from the per-
 // instruction samples. Ports the structure of the old vscode-amiga-debug
 // `buildModel` but sources it from our stacks instead of a CDP profile:
@@ -270,7 +302,7 @@ export function buildProfileModel(samples: InstructionSample[], sourceMap: Sourc
   // the actual current instruction (not just the current function) as the time cursor moves.
   const pcs: number[] = [];
   let duration = 0;
-  for (const s of applyContextReuse(samples, sourceMap)) {
+  for (const s of applyContextReuse(trimToProgramRoot(samples, sourceMap), sourceMap)) {
     // Stacks are leaf-first; descend outermost→leaf so the path hangs off the root.
     // Each physical PC expands to physical + inlined frames (outermost→innermost), so
     // inlined callees appear as their own boxes stacked above the caller.

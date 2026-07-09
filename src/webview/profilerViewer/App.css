@@ -356,8 +356,14 @@ body {
 }
 
 .split-divider {
-  flex: 0 0 1px;
+  flex: 0 0 4px;
   background: var(--vscode-panel-border);
+  cursor: row-resize;
+  transition: background 0.1s;
+}
+
+.split-divider:hover {
+  background: var(--vscode-focusBorder);
 }
 
 .flame {

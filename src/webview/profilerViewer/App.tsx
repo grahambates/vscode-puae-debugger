@@ -95,6 +95,10 @@ export function App() {
   const [splitMode, setSplitMode] = useState<"none" | "h" | "v">("none");
   const [splitRatio, setSplitRatio] = useState(0.5); // fraction of first dimension (width or height)
   const panelContainerRef = useRef<HTMLDivElement>(null);
+  // Manual override for the flame graph's height (px), set by dragging .split-divider.
+  // undefined = FlameGraph auto-sizes to the (capped) call-stack depth, as before.
+  const [flameHeightPx, setFlameHeightPx] = useState<number | undefined>(undefined);
+  const splitPaneRef = useRef<HTMLDivElement>(null);
   // Time View's tree direction: top-down (call-tree, "what does main() spend time in") or
   // bottom-up (leaf→callers, "what does Foo's time actually come from").
   const [treeMode, setTreeMode] = useState<"top" | "bottom">("top");
@@ -386,6 +390,30 @@ export function App() {
     document.addEventListener("mouseup", onUp);
   }, [splitMode]);
 
+  // Drag the divider between the flame graph and the tabs below it. Sets an explicit pixel
+  // height (clamped to [15%, 85%] of the split-pane) that overrides FlameGraph's own
+  // content-driven auto height until the panel is reset by a fresh capture.
+  const onFlameDividerMouseDown = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    const container = splitPaneRef.current;
+    if (!container) return;
+    document.body.style.cursor = "row-resize";
+    document.body.style.userSelect = "none";
+    const rect = container.getBoundingClientRect();
+    const onMove = (me: MouseEvent) => {
+      const h = Math.max(rect.height * 0.15, Math.min(rect.height * 0.85, me.clientY - rect.top));
+      setFlameHeightPx(h);
+    };
+    const onUp = () => {
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+      document.removeEventListener("mousemove", onMove);
+      document.removeEventListener("mouseup", onUp);
+    };
+    document.addEventListener("mousemove", onMove);
+    document.addEventListener("mouseup", onUp);
+  }, []);
+
   // Render the content for a given tab (shared between left and right panels). `setTab` is the
   // specific panel's own tab-setter, so a click-to-jump feature (Time View's function names)
   // opens the CPU tab in whichever panel it was clicked from, not always a fixed one.
@@ -626,15 +654,16 @@ export function App() {
       )}
       {error && <div className="error">{error}</div>}
       {model ? (
-        <div className="split-pane">
+        <div className="split-pane" ref={splitPaneRef}>
           <FlameGraph
             displayUnit={unit}
             filter={filter}
             onOpenSource={openSource}
             selectedSlot={selectedSlot}
             onSelectSlot={setSelectedSlot}
+            heightOverridePx={flameHeightPx}
           />
-          <div className="split-divider" />
+          <div className="split-divider" onMouseDown={onFlameDividerMouseDown} />
           <div
             className={"right-pane" + (splitMode === "v" ? " right-pane-v" : "")}
             ref={panelContainerRef}

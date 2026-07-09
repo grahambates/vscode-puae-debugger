@@ -1,4 +1,4 @@
-import { decodeProfileStream, applyContextReuse, syntheticLabel, InstructionSample, buildModelFromCapture, RawCapture } from "../profilerManager";
+import { decodeProfileStream, applyContextReuse, trimToProgramRoot, syntheticLabel, InstructionSample, buildModelFromCapture, RawCapture } from "../profilerManager";
 import { SourceMap } from "../sourceMap";
 
 describe("decodeProfileStream", () => {
@@ -70,6 +70,52 @@ describe("applyContextReuse", () => {
       asmSm,
     );
     expect(out[1].stack).toEqual([0x300]);
+  });
+});
+
+describe("trimToProgramRoot", () => {
+  // Segments [0x1000, 0x2000): in-program. Everything else (e.g. 0xf80000+ Kickstart,
+  // or an arbitrary OS/library address) is out-of-program.
+  //
+  // findSegmentForAddress ALSO reports the Kickstart range as a "segment" here — mirroring
+  // addSymbolModule(), which registers the ROM range as a segment so symbol lookups work
+  // there. This is the exact real-world shape that broke a naive findSegmentForAddress-only
+  // check (it always found the ROOT frame "in a segment" and never trimmed anything).
+  const sm = {
+    findSegmentForAddress: (pc: number) => (pc >= 0x1000 && pc < 0x2000) || pc >= 0xf80000 ? {} : undefined,
+    findSymbolOffset: () => undefined,
+  } as unknown as SourceMap;
+
+  it("still trims Kickstart ancestors even though they're ALSO registered as a segment (addSymbolModule regression)", () => {
+    const out = trimToProgramRoot([{ stack: [0x1100, 0x1200, 0xf80010, 0xf80020], cycles: 5 }], sm);
+    expect(out[0].stack).toEqual([0x1100, 0x1200]);
+  });
+
+  it("drops the Kickstart/DOS ancestor prefix above the first in-program frame", () => {
+    // leaf-first: 0x1100 (leaf, in-program) <- 0x1200 (in-program) <- 0xf80010 (Kickstart)
+    // <- 0xf80020 (Kickstart, root/launch ancestor).
+    const out = trimToProgramRoot([{ stack: [0x1100, 0x1200, 0xf80010, 0xf80020], cycles: 5 }], sm);
+    expect(out[0].stack).toEqual([0x1100, 0x1200]);
+  });
+
+  it("leaves a stack that already starts in-program untouched", () => {
+    const out = trimToProgramRoot([{ stack: [0x1100, 0x1200], cycles: 5 }], sm);
+    expect(out[0].stack).toEqual([0x1100, 0x1200]);
+  });
+
+  it("trims down to a single-frame root when only the leaf is in-program", () => {
+    const out = trimToProgramRoot([{ stack: [0x1100, 0xf80010, 0xf80020], cycles: 5 }], sm);
+    expect(out[0].stack).toEqual([0x1100]);
+  });
+
+  it("leaves a stack with no in-program frame at all untouched", () => {
+    const out = trimToProgramRoot([{ stack: [0xf80010, 0xf80020], cycles: 5 }], sm);
+    expect(out[0].stack).toEqual([0xf80010, 0xf80020]);
+  });
+
+  it("leaves a single-frame stack untouched regardless of category", () => {
+    const out = trimToProgramRoot([{ stack: [0xf80010], cycles: 5 }], sm);
+    expect(out[0].stack).toEqual([0xf80010]);
   });
 });
 

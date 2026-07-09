@@ -178,6 +178,7 @@ export function FlameGraph({
   onOpenSource,
   selectedSlot,
   onSelectSlot,
+  heightOverridePx,
 }: {
   displayUnit: DisplayUnit;
   filter: IRichFilter;
@@ -186,6 +187,9 @@ export function FlameGraph({
   // DMA band. Persists across hover, unlike `dmaHover` — drawn as a vertical marker line.
   selectedSlot?: number;
   onSelectSlot?: (slot: number) => void;
+  // Manual override for the flame area's height (px), set by dragging the split divider in
+  // App.tsx. undefined = auto-size to the (capped) call-stack depth, capped at 70% (default).
+  heightOverridePx?: number;
 }) {
   // The model is read from the external store (not a prop) so its large arrays never go through
   // React's serializer. FlameGraph is only rendered when a model exists (App guards it), and it
@@ -881,7 +885,13 @@ export function FlameGraph({
     // Size the flame area to the actual (capped) call-stack depth — canvas height plus the pan
     // scrollbar — instead of flex-filling the pane, so a shallow capture leaves the rest of the
     // space to the TimeView. A CSS max-height keeps the TimeView visible when the depth is large.
-    <div className="flame" style={{ height: height + HSCROLL_H }}>
+    // heightOverridePx (set by dragging the split divider in App.tsx) replaces both the
+    // auto-computed height and the CSS max-height cap; canvas-wrap's own overflow-y:auto still
+    // scrolls to any content that doesn't fit, same as the auto-sized case.
+    <div
+      className="flame"
+      style={heightOverridePx !== undefined ? { height: heightOverridePx, maxHeight: "none" } : { height: height + HSCROLL_H }}
+    >
       <div className="canvas-wrap" ref={canvasWrapRef}>
         <canvas
           ref={canvasRef}

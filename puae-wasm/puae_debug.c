@@ -384,10 +384,17 @@ wasm_profile_instrHook(uint32_t pc24)
 	if (g_wprofUnwindLen > 0) {
 		stkDepth = wasm_profile_dwarf_walk(pc24, callers, 63);
 	} else {
-		stkDepth = (uint32_t)puae_debug_callstackDepth;
-		if (stkDepth > 63) stkDepth = 63;
+		/* Keep the MOST RECENT <=63 frames (closest to the current leaf), not the oldest —
+		 * indexing off the unclamped actual depth, not the clamped stkDepth. Indexing off
+		 * stkDepth itself here would, once the real shadow stack grows past 63 (long/slow
+		 * boot with many nested library/interrupt frames — easily hit with fastLoad off),
+		 * always re-read the SAME oldest 63 entries (the earliest boot-time frames) for
+		 * every sample for the rest of the capture, no matter what the program is actually
+		 * doing right now. */
+		uint32_t actualDepth = (uint32_t)puae_debug_callstackDepth;
+		stkDepth = actualDepth > 63 ? 63 : actualDepth;
 		for (uint32_t i = 0; i < stkDepth; i++)
-			callers[i] = puae_debug_callstack[stkDepth - 1 - i];
+			callers[i] = puae_debug_callstack[actualDepth - 1 - i];
 	}
 
 	uint32_t depth  = 1 + stkDepth;
@@ -2279,6 +2286,42 @@ puae_debug_memhook_afterWrite(uint32_t addr24, uint32_t value, uint32_t oldValue
 	addr24 &= 0x00ffffffu;
 	puae_debug_watchpointWrite(addr24, value, oldValue, sizeBits, oldValueValid, source);
 	puae_debug_memprotectCheckWrite(addr24, value, sizeBits, source);
+}
+
+/*
+ * Push a synthetic frame onto the JSR/BSR/RTS/RTE shadow call stack (see
+ * puae_debug_instructionHookImpl below) when a 68k exception/interrupt is dispatched.
+ *
+ * Interrupts and exceptions are NOT triggered by executing a JSR/BSR instruction — the
+ * CPU's exception dispatch is hardware microcode, invisible to the opcode-based push
+ * detection in puae_debug_instructionHookImpl — but they always RETURN via RTE, which
+ * *is* already recognised there as a pop (opcode 0x4E73, alongside RTS/RTD/RTR). Without
+ * this push, an interrupt's own instructions get attributed under whatever function was
+ * interrupted (the ISR's samples silently REPLACE that context instead of nesting under
+ * it, since the shadow stack never changed), and its eventual RTE then pops a frame that
+ * was never pushed — a spurious extra pop each time. Since Amiga hardware interrupts
+ * (VBlank, CIA timers, ...) fire many times a frame, this desyncs the shadow-stack depth
+ * from the real 68k stack depth more and more over a capture, corrupting caller-chain
+ * attribution for the rest of the trace, not just the interrupted instructions.
+ *
+ * Called from Exception_normal in newcpu.c, at the single point (shared by every 68k
+ * exception type — interrupts, TRAP #n, address/bus error, ...) where WinUAE's own
+ * built-in debugger calls branch_stack_push for the exact same reason (see
+ * retrodep/stubs/debugmem.c — its dual user/supervisor-stack branch_stack_push /
+ * branch_stack_pop_rte pair is the correct, already-proven model this mirrors in the
+ * simpler single-counter form puae_debug_callstack already uses for JSR/BSR/RTS).
+ *
+ * `pc` is the interrupted code's own PC (Exception_normal's `currpc`, captured before any
+ * stack/mode switch) — the call-site convention used for JSR/BSR: "where control was
+ * transferred FROM", matching what the profiler attributes the caller frame at.
+ */
+void
+puae_debug_exceptionEnter(uaecptr pc)
+{
+	uint32_t pc24 = puae_debug_maskAddr(pc);
+	if (puae_debug_callstackDepth < PUAE_DEBUG_CALLSTACK_MAX) {
+		puae_debug_callstack[puae_debug_callstackDepth++] = pc24;
+	}
 }
 
 static int
