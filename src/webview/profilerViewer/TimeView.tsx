@@ -8,6 +8,8 @@ import { List, ListImperativeAPI, RowComponentProps } from "react-window";
 import { IGraphNode } from "./topDownGraph";
 import { compileFilter, IRichFilter } from "./filter";
 import { dataName, DisplayUnit, formatValue, Timing } from "./display";
+import { getProfileModel } from "./modelStore";
+import { buildColumns, columnIndexAtX, columnIndexToSlot, findNextSample } from "./columns";
 
 enum SortFn { Self, Agg }
 
@@ -25,6 +27,10 @@ type RowListProps = {
   timing: Timing;
   onOpenSource: (file: string, line: number, toSide: boolean) => void;
   hideTotalTime: boolean;
+  // Jump to the next (or Shift: previous) execution of the clicked function in the timeline,
+  // and switch to the CPU tab. undefined if the trace data needed to do this isn't available
+  // (mirrors DisassemblyView's onJumpToExecution).
+  onJumpToExecution: ((locationId: number, prev: boolean) => void) | undefined;
 };
 
 const getGlobalUniqueId = (node: IGraphNode): string => {
@@ -42,7 +48,7 @@ const getSortedChildren = (node: IGraphNode, sortFn: SortFn): IGraphNode[] => {
 
 // Defined outside TimeView so the reference is stable across renders (v2 memoises by rowComponent identity).
 // v2 injects ariaAttributes (listitem role) but our rows use treeitem — we don't spread it.
-function RowRenderer({ index, style, rows, expanded, onExpandChange, onKeyDown, onFocus, displayUnit, timing, onOpenSource, hideTotalTime }: RowComponentProps<RowListProps>) {
+function RowRenderer({ index, style, rows, expanded, onExpandChange, onKeyDown, onFocus, displayUnit, timing, onOpenSource, hideTotalTime, onJumpToExecution }: RowComponentProps<RowListProps>) {
   const row = rows[index];
   if (!row) return null;
   const { node, depth, position } = row;
@@ -60,6 +66,7 @@ function RowRenderer({ index, style, rows, expanded, onExpandChange, onKeyDown, 
       timing={timing}
       onOpenSource={onOpenSource}
       hideTotalTime={hideTotalTime}
+      onJumpToExecution={onJumpToExecution}
       style={style}
     />
   );
@@ -72,6 +79,9 @@ export function TimeView({
   timing,
   onOpenSource,
   hideTotalTime = false,
+  selectedSlot,
+  onSelectSlot,
+  onOpenCpuTab,
 }: {
   data: readonly IGraphNode[];
   filter: IRichFilter;
@@ -79,6 +89,9 @@ export function TimeView({
   timing: Timing;
   onOpenSource: (file: string, line: number, toSide: boolean) => void;
   hideTotalTime?: boolean;
+  selectedSlot: number | undefined;
+  onSelectSlot: (slot: number) => void;
+  onOpenCpuTab: () => void;
 }) {
   // v2 ListImperativeAPI: scrollToRow({index, align}) — v2 auto-sizes the container via CSS.
   const listRef = useRef<ListImperativeAPI>(null);
@@ -199,6 +212,34 @@ export function TimeView({
     [visibleRows, expanded, focused],
   );
 
+  // "Jump to next/previous execution of this function" (a function name click) — the Time
+  // View's counterpart to DisassemblyView's per-instruction version, matching by location id
+  // (any leaf execution of this exact function, anywhere in the tree) instead of an exact PC.
+  // See findNextSample's comment for why the two share the scan; the model/columns/currentIdx
+  // setup here directly mirrors DisassemblyView's own (kept local rather than lifted into
+  // App.tsx — the extra buildColumns() call is cheap and memoised per model change).
+  const model = getProfileModel();
+  const columns = useMemo(() => (model ? buildColumns(model) : []), [model]);
+  const dmaSlots = model?.dma?.owner.length;
+  const currentIdx = useMemo(() => {
+    if (selectedSlot === undefined || !dmaSlots || !model?.pcs.length) return undefined;
+    return columnIndexAtX(columns, (selectedSlot + 0.5) / dmaSlots);
+  }, [columns, selectedSlot, dmaSlots, model]);
+
+  const jumpToExecution = useMemo(() => {
+    if (!model?.pcs.length || !dmaSlots || columns.length === 0) return undefined;
+    return (locationId: number, prev: boolean) => {
+      const count = model.pcs.length;
+      const from = currentIdx ?? (prev ? count - 1 : -1);
+      // samples[i+1] pairs with pcs[i] (samples[0] is a dummy — see shared/profilerTypes.ts).
+      const k = findNextSample(count, from, prev, (i) => model.nodes[model.samples[i + 1]].locationId === locationId);
+      if (k !== undefined) {
+        onSelectSlot(columnIndexToSlot(columns, k, dmaSlots));
+        onOpenCpuTab();
+      }
+    };
+  }, [model, currentIdx, columns, dmaSlots, onSelectSlot, onOpenCpuTab]);
+
   // Stable rowProps object — v2 re-renders rows only when this changes.
   const rowListProps = useMemo<RowListProps>(() => ({
     rows: visibleRows,
@@ -210,7 +251,8 @@ export function TimeView({
     timing,
     onOpenSource,
     hideTotalTime,
-  }), [visibleRows, expanded, onKeyDown, displayUnit, timing, onOpenSource, hideTotalTime]);
+    onJumpToExecution: jumpToExecution,
+  }), [visibleRows, expanded, onKeyDown, displayUnit, timing, onOpenSource, hideTotalTime, jumpToExecution]);
 
   return (
     <div className="time-view">
@@ -258,7 +300,7 @@ function TimeViewHeader({
 
 function TimeViewRow({
   node, depth, position, expanded, onExpandChange, onKeyDown: onKeyDownRaw,
-  onFocus: onFocusRaw, displayUnit, timing, onOpenSource, hideTotalTime, style,
+  onFocus: onFocusRaw, displayUnit, timing, onOpenSource, hideTotalTime, onJumpToExecution, style,
 }: {
   node: IGraphNode; depth: number; position: number;
   expanded: ReadonlySet<IGraphNode>; onExpandChange: React.Dispatch<React.SetStateAction<ReadonlySet<IGraphNode>>>;
@@ -267,6 +309,7 @@ function TimeViewRow({
   displayUnit: DisplayUnit; timing: Timing;
   onOpenSource: (file: string, line: number, toSide: boolean) => void;
   hideTotalTime: boolean;
+  onJumpToExecution: ((locationId: number, prev: boolean) => void) | undefined;
   style: React.CSSProperties;
 }) {
   const location = node.callFrame.url
@@ -278,6 +321,15 @@ function TimeViewRow({
     // lineNumber is already 1-based (raw SourceMap.lookupAddress().line), matching what
     // openProfilerSource expects. Normalize unknown (-1) to 1.
     if (node.callFrame.url) onOpenSource(node.callFrame.url, node.callFrame.lineNumber >= 0 ? node.callFrame.lineNumber : 1, e.altKey);
+  };
+
+  // Only real functions (a genuine ILocation, id >= 0) are jumpable — synthetic rows (the
+  // "(root)" node id -1, and topDownGraph's synthetic DMA/group rows, ids <= -1000) don't
+  // correspond to any single instruction execution.
+  const canJump = onJumpToExecution !== undefined && node.id >= 0;
+  const onClickFn = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    onJumpToExecution!(node.id, e.shiftKey);
   };
 
   const onToggleExpand = (e: React.MouseEvent) => {
@@ -334,7 +386,13 @@ function TimeViewRow({
             : null}
         </span>
         {node.dmaColor && <span className="dma-dot" style={{ background: node.dmaColor }} />}
-        <span className="tv-fn">{node.callFrame.functionName}</span>
+        <span
+          className={"tv-fn" + (canJump ? " tv-fn-clickable" : "")}
+          onClick={canJump ? onClickFn : undefined}
+          title={canJump ? "Click: next execution · Shift+Click: previous execution (opens CPU tab)" : undefined}
+        >
+          {node.callFrame.functionName}
+        </span>
         {location && (
           <span className="tv-file">
             <a href="#" onClick={onClickFile}>{location}</a>

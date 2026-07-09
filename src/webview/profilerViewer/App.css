@@ -1616,6 +1616,14 @@ body {
   max-width: 80%;
 }
 
+.tv-fn-clickable {
+  cursor: pointer;
+}
+
+.tv-fn-clickable:hover {
+  text-decoration: underline;
+}
+
 /* DMA channel color swatch (TimeView rows + flame DMA tooltip). A square-cornered
    rectangle (~2 chars wide), matching the old extension's inline "&nbsp;&nbsp;" swatch. */
 .dma-dot {

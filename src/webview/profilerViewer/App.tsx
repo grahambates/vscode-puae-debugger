@@ -360,8 +360,10 @@ export function App() {
     document.addEventListener("mouseup", onUp);
   }, [splitMode]);
 
-  // Render the content for a given tab (shared between left and right panels).
-  const renderTabContent = (tab: TabId) => {
+  // Render the content for a given tab (shared between left and right panels). `setTab` is the
+  // specific panel's own tab-setter, so a click-to-jump feature (Time View's function names)
+  // opens the CPU tab in whichever panel it was clicked from, not always a fixed one.
+  const renderTabContent = (tab: TabId, setTab: (t: TabId) => void) => {
     if (tab === "time") return (
       <div className="time-mode-wrap">
         <div className="time-mode-toggle">
@@ -380,7 +382,17 @@ export function App() {
             Bottom Up
           </button>
         </div>
-        <TimeView data={dataTable} filter={filter} displayUnit={unit} timing={timing} onOpenSource={openSource} hideTotalTime={treeMode === "bottom"} />
+        <TimeView
+          data={dataTable}
+          filter={filter}
+          displayUnit={unit}
+          timing={timing}
+          onOpenSource={openSource}
+          hideTotalTime={treeMode === "bottom"}
+          selectedSlot={selectedSlot}
+          onSelectSlot={setSelectedSlot}
+          onOpenCpuTab={() => setTab("disasm")}
+        />
       </div>
     );
     if (tab === "customregs") return <CustomRegsView selectedSlot={selectedSlot} onSelectSlot={setSelectedSlot} />;
@@ -440,7 +452,7 @@ export function App() {
           </div>
         )}
       </div>
-      {renderTabContent(tab)}
+      {renderTabContent(tab, setTab)}
     </div>
   );
 

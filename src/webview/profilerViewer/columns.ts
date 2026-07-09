@@ -128,6 +128,24 @@ export function columnIndexToSlot(columns: IColumn[], idx: number, dmaSlots: num
 // is fine there, a run IS one function the whole way through) and (for the function name only,
 // not the address) the Disassembly view's function-selection. For the exact current instruction,
 // use columnIndexAtX against model.pcs instead — see that function's comment for why.
+// Scans samples forward (prev=false) or backward (prev=true) from `from`, wrapping around
+// `count`, for the first index satisfying `matches`. Shared by the Disassembly view's "jump to
+// next/previous execution of this instruction" (matches an exact PC) and the Time view's
+// "jump to next/previous execution of this function" (matches a location id) — both cycle
+// through every matching sample the same way.
+export function findNextSample(
+  count: number,
+  from: number,
+  prev: boolean,
+  matches: (index: number) => boolean,
+): number | undefined {
+  for (let d = 1; d < count; d++) {
+    const k = prev ? (from - d + count) % count : (from + d) % count;
+    if (matches(k)) return k;
+  }
+  return undefined;
+}
+
 export function resolveStackAtX(columns: IColumn[], x: number): IColumnLocation[] {
   const col = columnIndexAtX(columns, x);
   const column = columns[col];

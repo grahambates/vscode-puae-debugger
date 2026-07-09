@@ -1,7 +1,7 @@
 import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { List, ListImperativeAPI, RowComponentProps } from "react-window";
 import { getProfileModel } from "./modelStore";
-import { buildColumns, columnIndexAtX, columnIndexToSlot, IColumn } from "./columns";
+import { buildColumns, columnIndexAtX, columnIndexToSlot, findNextSample, IColumn } from "./columns";
 import { IDisassembledInstruction, REG_COUNT, REG_D0, REG_A0, REG_SR, REG_PC, REG_USP } from "../../shared/profilerTypes";
 import { heatColor } from "../../shared/profilerColor";
 import { srFlags } from "../shared/cpuFlags";
@@ -417,19 +417,8 @@ export function DisassemblyView({
     return (address: number, prev: boolean) => {
       const pcs = model.pcs;
       const from = currentIdx ?? (prev ? pcs.length - 1 : -1);
-      if (prev) {
-        // Search backward, wrapping to the end if not found before current position.
-        for (let d = 1; d < pcs.length; d++) {
-          const k = (from - d + pcs.length) % pcs.length;
-          if (pcs[k] === address) { onSelectSlot(columnIndexToSlot(columns, k, dmaSlots)); return; }
-        }
-      } else {
-        // Search forward, wrapping to the beginning if not found after current position.
-        for (let d = 1; d < pcs.length; d++) {
-          const k = (from + d) % pcs.length;
-          if (pcs[k] === address) { onSelectSlot(columnIndexToSlot(columns, k, dmaSlots)); return; }
-        }
-      }
+      const k = findNextSample(pcs.length, from, prev, (i) => pcs[i] === address);
+      if (k !== undefined) onSelectSlot(columnIndexToSlot(columns, k, dmaSlots));
     };
   }, [model, currentIdx, columns, dmaSlots, onSelectSlot]);
 
