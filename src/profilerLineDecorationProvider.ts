@@ -77,6 +77,14 @@ export class ProfilerLineDecorationProvider implements vscode.HoverProvider, vsc
     return this.enabled;
   }
 
+  // Does this line currently carry a decoration? Used to gate the "Jump to Next Execution in
+  // Profiler" editor-context-menu command before bothering to reveal the profiler panel — see
+  // vamiga-debugger.jumpToProfilerExecution in extension.ts. `line` is 1-based.
+  public hasDataAt(file: string, line: number): boolean {
+    if (!this.enabled) return false;
+    return !!this.byFile.get(normalize(file).toUpperCase())?.has(line);
+  }
+
   public update(model: IProfileModel | undefined): void {
     const byFile = new Map<string, Map<number, LineStats>>();
     for (const fn of model?.disassembly ?? []) {

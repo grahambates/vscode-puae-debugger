@@ -15,6 +15,7 @@ import { createTopDownGraph } from "./topDownGraph";
 import { createBottomUpGraph } from "./bottomUpGraph";
 import { DisplayUnit, unitOptions, Timing } from "./display";
 import { IRichFilter } from "./filter";
+import { findLineExecutionSlot } from "./columns";
 
 const vscode = acquireVsCodeApi();
 
@@ -61,6 +62,14 @@ function computeDmaBar(owner: Uint8Array | undefined): Array<{ color: string; fl
   return segs.length > 0 ? segs : undefined;
 }
 
+// Loose path equality for matching a jumpToExecutionAtLine message's file (VS Code's
+// editor.document.uri.fsPath, sent as-is from the extension) against IDisassembledInstruction.file
+// (resolved by the extension-side SourceMap) — no Node "path" module in the webview bundle, so
+// this just tolerates separator/case differences rather than doing full path normalization.
+function normalizePath(p: string): string {
+  return p.replace(/\\/g, "/").toLowerCase();
+}
+
 export function App() {
   useModelVersion(); // re-render when the model changes (the model lives in modelStore, not state)
   const model = getProfileModel();
@@ -75,6 +84,11 @@ export function App() {
   // The pinned DMA-cycle cursor, shared between the flame graph (which sets it on click) and the
   // custom-registers view (which reads it). Reset on a fresh capture, below.
   const [selectedSlot, setSelectedSlot] = useState<number | undefined>(undefined);
+  // "Latest ref" for selectedSlot — the jumpToExecutionAtLine message handler (registered once,
+  // [] deps, see the message-listener effect below) needs the CURRENT slot to search forward
+  // from, not whatever it was when the listener was first attached.
+  const selectedSlotRef = useRef(selectedSlot);
+  useEffect(() => { selectedSlotRef.current = selectedSlot; }, [selectedSlot]);
   const [leftTab, setLeftTab] = useState<TabId>("time");
   const [rightTab, setRightTab] = useState<TabId>("memory");
   // Split mode for the right pane: "none" = single panel, "h" = side-by-side, "v" = stacked.
@@ -267,6 +281,18 @@ export function App() {
         setError(null);
       } else if (m.command === "sourceFile") {
         setSourceFiles(prev => new Map(prev).set(m.file, m.lines));
+      } else if (m.command === "jumpToExecutionAtLine") {
+        // "Jump to Next Execution in Profiler" editor context-menu command (extension.ts /
+        // profilerLineDecorationProvider.ts). Always opens in the left panel, same as TimeView's
+        // own function-name jump.
+        const curModel = getProfileModel();
+        const slot = curModel
+          ? findLineExecutionSlot(curModel, m.file, m.line, selectedSlotRef.current, (a, b) => normalizePath(a) === normalizePath(b))
+          : undefined;
+        if (slot !== undefined) {
+          setSelectedSlot(slot);
+          setLeftTab("disasm");
+        }
       }
     };
     window.addEventListener("message", handle);

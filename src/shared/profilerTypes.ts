@@ -297,12 +297,23 @@ export interface SourceFileMessage {
   file: string;
   lines: string[]; // full file content, 0-indexed; empty if unreadable
 }
+// Editor context-menu "Jump to Next Execution in Profiler" on a line carrying profiler line
+// decorations (see profilerLineDecorationProvider.ts) — the webview finds the next execution of
+// any instruction on this source line and switches to the CPU tab, the same as clicking a
+// function/instruction elsewhere in the profiler. `line` is 1-based, matching
+// IDisassembledInstruction.line/CallFrame.lineNumber's convention.
+export interface JumpToLineMessage {
+  command: "jumpToExecutionAtLine";
+  file: string;
+  line: number;
+}
 export type ProfilerOutboundMessage =
   | CaptureResultMessage
   | RangeResultMessage
   | ProfilerErrorMessage
   | CaptureBusyMessage
-  | SourceFileMessage;
+  | SourceFileMessage
+  | JumpToLineMessage;
 
 // --- messages: webview -> extension ---
 export interface ReadyMessage {

@@ -88,6 +88,10 @@
       {
         "command": "vamiga-debugger.toggleLineProfilerAnnotations",
         "title": "Toggle Line Profiler Annotations"
+      },
+      {
+        "command": "vamiga-debugger.jumpToProfilerExecution",
+        "title": "Jump to Next Execution in Profiler"
       }
     ],
     "menus": {
@@ -107,6 +111,10 @@
         {
           "command": "vamiga-debugger.openProfiler",
           "when": "debugType == 'puae'"
+        },
+        {
+          "command": "vamiga-debugger.jumpToProfilerExecution",
+          "when": "editorLangId == c || editorLangId == cpp || editorLangId == m68k"
         }
       ],
       "debug/toolBar": [
@@ -156,6 +164,11 @@
           "command": "vamiga-debugger.openMemoryViewer",
           "when": "(debugType == 'vamiga' || debugType == 'puae') && editorLangId == m68k",
           "group": "debug@1"
+        },
+        {
+          "command": "vamiga-debugger.jumpToProfilerExecution",
+          "when": "editorLangId == c || editorLangId == cpp || editorLangId == m68k",
+          "group": "debug@2"
         }
       ]
     },

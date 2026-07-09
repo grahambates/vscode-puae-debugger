@@ -246,6 +246,22 @@ export function activate(context: vscode.ExtensionContext) {
   );
 
   context.subscriptions.push(
+    vscode.commands.registerCommand("vamiga-debugger.jumpToProfilerExecution", () => {
+      const editor = vscode.window.activeTextEditor;
+      if (!editor) return;
+      const file = editor.document.uri.fsPath;
+      const line = editor.selection.active.line + 1; // 1-based, matching IDisassembledInstruction.line
+      if (!profilerLineDecorations.hasDataAt(file, line)) {
+        vscode.window.showInformationMessage("No profiler data for this line.");
+        return;
+      }
+      if (!profilerViewer.jumpToLine(file, line)) {
+        vscode.window.showInformationMessage("Open the Profiler panel to jump to this execution.");
+      }
+    }),
+  );
+
+  context.subscriptions.push(
     vscode.languages.registerEvaluatableExpressionProvider(
       [{ language: "c" }, { language: "cpp" }],
       { provideEvaluatableExpression },

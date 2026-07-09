@@ -59,6 +59,35 @@ describe("ProfilerLineDecorationProvider", () => {
     expect(p.isEnabled()).toBe(true);
   });
 
+  describe("hasDataAt (gates the 'Jump to Next Execution in Profiler' editor command)", () => {
+    it("is true for a decorated line, false for an undecorated one", () => {
+      const p = new ProfilerLineDecorationProvider();
+      p.update(model([fn("a", [ins({ file: "C:\\proj\\a.c", line: 10, cycles: 100, hits: 5 })])]));
+      expect(p.hasDataAt("C:\\proj\\a.c", 10)).toBe(true);
+      expect(p.hasDataAt("C:\\proj\\a.c", 11)).toBe(false);
+    });
+
+    it("matches files case-insensitively and normalizes separators", () => {
+      const p = new ProfilerLineDecorationProvider();
+      p.update(model([fn("a", [ins({ file: "c:/proj/A.C", line: 10, cycles: 100, hits: 5 })])]));
+      expect(p.hasDataAt("C:\\proj\\a.c", 10)).toBe(true);
+    });
+
+    it("is false when tracking is disabled, even for an otherwise-decorated line", () => {
+      const p = new ProfilerLineDecorationProvider();
+      p.update(model([fn("a", [ins({ file: "C:\\proj\\a.c", line: 10, cycles: 100, hits: 5 })])]));
+      p.setEnabled(false);
+      expect(p.hasDataAt("C:\\proj\\a.c", 10)).toBe(false);
+    });
+
+    it("is false after clear()", () => {
+      const p = new ProfilerLineDecorationProvider();
+      p.update(model([fn("a", [ins({ file: "C:\\proj\\a.c", line: 10, cycles: 100, hits: 5 })])]));
+      p.clear();
+      expect(p.hasDataAt("C:\\proj\\a.c", 10)).toBe(false);
+    });
+  });
+
   it("aggregates instructions by (file, line), merging across functions sharing a line", () => {
     const p = new ProfilerLineDecorationProvider();
     p.setEnabled(true);

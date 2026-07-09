@@ -82,6 +82,19 @@ export class ProfilerViewerProvider {
     return uris;
   }
 
+  // Reveals the panel and asks the webview to jump to the next execution of a source line,
+  // opening the CPU tab — see vamiga-debugger.jumpToProfilerExecution in extension.ts. Unlike
+  // show(), this deliberately does NOT trigger a fresh capture: the line decorations the command
+  // originates from reflect whatever model is ALREADY loaded, and starting a new capture would
+  // jump into different (unrelated) execution data. Returns false if the panel isn't currently
+  // open, so the caller can tell the user to open it first rather than the jump silently no-oping.
+  public jumpToLine(file: string, line: number): boolean {
+    if (!this.panel) return false;
+    this.panel.reveal();
+    this.post({ command: "jumpToExecutionAtLine", file, line });
+    return true;
+  }
+
   public async show(): Promise<void> {
     if (this.panel) {
       this.panel.reveal();

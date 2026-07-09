@@ -122,12 +122,6 @@ export function columnIndexToSlot(columns: IColumn[], idx: number, dmaSlots: num
   return Math.max(0, Math.min(dmaSlots - 1, Math.floor(mid * dmaSlots)));
 }
 
-// Resolve the call stack (outermost→leaf) executing at normalized x (0..1) — the column covering
-// x, its rows resolved through the "merged with column n" indirection. Shared by the DMA
-// tooltip's call-stack line (FlameGraph's stackAtX, which maps this to function names — coalescing
-// is fine there, a run IS one function the whole way through) and (for the function name only,
-// not the address) the Disassembly view's function-selection. For the exact current instruction,
-// use columnIndexAtX against model.pcs instead — see that function's comment for why.
 // Scans samples forward (prev=false) or backward (prev=true) from `from`, wrapping around
 // `count`, for the first index satisfying `matches`. Shared by the Disassembly view's "jump to
 // next/previous execution of this instruction" (matches an exact PC) and the Time view's
@@ -146,6 +140,43 @@ export function findNextSample(
   return undefined;
 }
 
+// Finds the DMA slot of the next execution (searching forward from currentSlot, wrapping) of
+// any instruction on the given (file, line), for the "Jump to Next Execution in Profiler" editor
+// context-menu command (see profilerLineDecorationProvider.ts / App.tsx's jumpToExecutionAtLine
+// message handler). Matches by LINE — unlike DisassemblyView's exact-PC match or TimeView's
+// location-id match — since a source line commonly compiles to several instructions and any of
+// them executing counts as "this line ran". Returns undefined if there's no data for the line or
+// the model lacks the DMA trace needed to search it. `isSameFile` lets the caller supply its own
+// path-equality (the webview has no Node "path" module — see App.tsx's normalizePath).
+export function findLineExecutionSlot(
+  model: IProfileModel,
+  file: string,
+  line: number,
+  currentSlot: number | undefined,
+  isSameFile: (a: string, b: string) => boolean,
+): number | undefined {
+  const dmaSlots = model.dma?.owner.length;
+  if (!model.pcs.length || !dmaSlots) return undefined;
+  const addrs = new Set(
+    (model.disassembly ?? [])
+      .flatMap((fn) => fn.instructions)
+      .filter((ins) => ins.file && ins.line === line && isSameFile(ins.file, file))
+      .map((ins) => ins.address),
+  );
+  if (addrs.size === 0) return undefined;
+  const columns = buildColumns(model);
+  if (columns.length === 0) return undefined;
+  const from = currentSlot !== undefined ? columnIndexAtX(columns, (currentSlot + 0.5) / dmaSlots) : -1;
+  const k = findNextSample(model.pcs.length, from, false, (i) => addrs.has(model.pcs[i]));
+  return k !== undefined ? columnIndexToSlot(columns, k, dmaSlots) : undefined;
+}
+
+// Resolve the call stack (outermost→leaf) executing at normalized x (0..1) — the column covering
+// x, its rows resolved through the "merged with column n" indirection. Shared by the DMA
+// tooltip's call-stack line (FlameGraph's stackAtX, which maps this to function names — coalescing
+// is fine there, a run IS one function the whole way through) and (for the function name only,
+// not the address) the Disassembly view's function-selection. For the exact current instruction,
+// use columnIndexAtX against model.pcs instead — see that function's comment for why.
 export function resolveStackAtX(columns: IColumn[], x: number): IColumnLocation[] {
   const col = columnIndexAtX(columns, x);
   const column = columns[col];
