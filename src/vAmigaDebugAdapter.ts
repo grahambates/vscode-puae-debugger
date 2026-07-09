@@ -40,12 +40,18 @@ import {
   isExecReadyMessage,
 } from "./vAmiga";
 import { Emulator } from "./emulator";
-import { Hunk, parseHunks } from "./amigaHunkParser";
+import { Hunk, parseHunks, StabData } from "./amigaHunkParser";
 import { DWARFData, parseDwarf } from "./dwarfParser";
 import { loadAmigaProgram } from "./amigaHunkLoader";
 import { LoadedProgram } from "./amigaMemoryMapper";
 import { sourceMapFromDwarf } from "./dwarfSourceMap";
 import { sourceMapFromHunks } from "./amigaHunkSourceMap";
+import { extractElfStabs, sourceMapFromElfStabs } from "./elfStabsSourceMap";
+import {
+  detectContainer,
+  hasDwarfSections,
+  hasElfStabsSections,
+} from "./debugSymbolFormat";
 import { SourceMap } from "./sourceMap";
 import { kickstartSymbolModule, KickstartSymbolModule } from "./kickstart";
 import { formatHex } from "./numbers";
@@ -190,8 +196,20 @@ export class VamigaDebugAdapter extends LoggingDebugSession {
   // instead of silently dropping the request (see setExceptionBreakPointsRequest).
   private pendingExceptionFilters?: string[];
 
+  // Hunks needed to inject the program into memory (fastLoad) — always parsed
+  // from `programPath` (the bootable Amiga executable, always hunk-format).
+  // Also doubles as the debug-info source when debugFormat is 'hunk' and
+  // debugProgram === programPath (the common case), avoiding a second parse.
   private hunks: Hunk[] = [];
   private dwarfData?: DWARFData;
+  // Which debug format debugProgram actually contains, decided by content
+  // (container magic + section presence — see debugSymbolFormat.ts), never by
+  // filename extension. 'hunk' covers both "LINE" and hunk-embedded stabs
+  // (auto-detected per-block in amigaHunkParser); dwarfData carries the parsed
+  // ELF section/symbol table for both 'elf-dwarf' and 'elf-stabs' (parseDwarf
+  // always parses sections+symtab regardless of which debug sections exist).
+  private debugFormat?: "hunk" | "elf-dwarf" | "elf-stabs";
+  private elfStabs?: StabData;
   private sourceMap?: SourceMap;
   // Resolved Kickstart ROM symbols (if the loaded ROM matched), merged into the source map on attach.
   private kickstartSymbols?: KickstartSymbolModule;
@@ -320,23 +338,39 @@ export class VamigaDebugAdapter extends LoggingDebugSession {
     this.debugProgramPath = debugProgram;
     logger.log(`Reading debug symbols from ${debugProgram}`);
 
-    // Read debug symbols:
-    // We can support either Amiga hunks from vasm linedebug option, of elf files with dwarf data (must be a separate file).
-    // Elf is useful to have compatibility with bartman's profiler in a single build.
+    // Read debug symbols. Container (ELF vs Amiga hunk) and, within ELF, debug
+    // format (DWARF vs GNU stabs) are both detected from file content — never
+    // from the filename — since vasm/vbcc/GCC can each target either container
+    // independently of which debug format they emit (see debugSymbolFormat.ts).
+    // Hunk-embedded debug info (vasm/vbcc "LINE", or GCC stabs) is
+    // auto-detected per-HUNK_DEBUG-block inside parseHunks/sourceMapFromHunks.
+    // ELF is also useful for compatibility with bartman's profiler in a single build.
     try {
       const buffer = await readFile(debugProgram);
-      // Detect file format from extension
-      // TODO: could check file header instead of extension
-      if (debugProgram.match(/\.(elf|o)$/i)) {
-        logger.log("Interpreting as dwarf data");
-        this.dwarfData = parseDwarf(buffer);
-        // Still need hunks for loading
+      const container = detectContainer(buffer);
+      if (container === "elf") {
+        this.dwarfData = parseDwarf(buffer); // always parses sections + .symtab
+        if (hasDwarfSections(this.dwarfData)) {
+          logger.log("Interpreting as ELF/DWARF debug data");
+          this.debugFormat = "elf-dwarf";
+        } else if (hasElfStabsSections(this.dwarfData)) {
+          logger.log("Interpreting as ELF/stabs debug data");
+          this.debugFormat = "elf-stabs";
+          this.elfStabs = extractElfStabs(buffer, this.dwarfData);
+        } else {
+          throw new Error(
+            `ELF file "${debugProgram}" contains neither DWARF (.debug_info) nor ` +
+              "GNU stabs (.stab/.stabstr) debug sections",
+          );
+        }
+        // Program loading always needs the (always hunk-format) bootable executable.
         if (this.fastLoad) {
           const hunkExeBuffer = await readFile(this.programPath);
           this.hunks = parseHunks(hunkExeBuffer);
         }
       } else {
-        logger.log("Interpreting as hunk data");
+        logger.log("Interpreting as Amiga hunk debug data");
+        this.debugFormat = "hunk";
         this.hunks = parseHunks(buffer);
       }
     } catch (err) {
@@ -1315,16 +1349,23 @@ export class VamigaDebugAdapter extends LoggingDebugSession {
   private attach(offsets: number[]) {
     try {
       this.segmentOffsets = offsets;
-      if (this.dwarfData) {
-        // Elf doesn't contain absolute path of sources. Assume it's one level up e.g. `out/a.elf`
-        // TODO: find a better way to do this, add launch option, check files exist there
-        const baseDir = path.dirname(path.dirname(this.programPath));
-        this.sourceBaseDir = baseDir;
-        this.sourceMap = sourceMapFromDwarf(this.dwarfData, offsets, baseDir);
-      } else if (this.hunks) {
-        this.sourceMap = sourceMapFromHunks(this.hunks, offsets);
-      } else {
-        throw new Error("No debug symbols");
+      switch (this.debugFormat) {
+        case "elf-dwarf": {
+          // Elf doesn't contain absolute path of sources. Assume it's one level up e.g. `out/a.elf`
+          // TODO: find a better way to do this, add launch option, check files exist there
+          const baseDir = path.dirname(path.dirname(this.programPath));
+          this.sourceBaseDir = baseDir;
+          this.sourceMap = sourceMapFromDwarf(this.dwarfData!, offsets, baseDir);
+          break;
+        }
+        case "elf-stabs":
+          this.sourceMap = sourceMapFromElfStabs(this.dwarfData!, this.elfStabs!, offsets);
+          break;
+        case "hunk":
+          this.sourceMap = sourceMapFromHunks(this.hunks, offsets);
+          break;
+        default:
+          throw new Error("No debug symbols");
       }
 
       // Merge Kickstart ROM symbols (if resolved) so OS calls show names in stack/disassembly.

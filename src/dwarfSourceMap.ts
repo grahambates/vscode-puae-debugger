@@ -13,36 +13,28 @@ import { DebugFrame } from "./dwarfParser";
 import { MemoryType } from "./amigaHunkParser";
 import { demangle } from "./demangle";
 
+/** One ELF section's relocation: runtime address = elfVaddr + offset (unloaded sections have none). */
+export type SectionOffset = { loaded: true; offset: number } | { loaded: false };
+
 /**
- * Creates a source map from DWARF debug information.
- *
- * Processes DWARF debug data to create a mapping between memory addresses
- * and source file locations. Handles line number tables, compilation units,
- * and symbol information from DWARF debugging format.
- *
- * @param dwarfData Parsed DWARF debug information
- * @param offsets Memory offset addresses for loaded sections
- * @param baseDir Base directory for resolving relative source paths
- * @returns SourceMap instance for address-to-source resolution
+ * Builds SourceMap segments from an ELF's section headers, and the per-section
+ * relocation delta (runtime load address - link-time ELF vaddr) needed to
+ * convert any ELF-vaddr-space value (DWARF low_pc, ELF symbol value, or — for
+ * the same toolchain family — a GNU-stabs n_value) to a runtime address.
+ * `sectionOffsets` has one entry per section in `dwarfData.sections`' iteration
+ * order (matching ELFSymbol.sectionIndex), `{ loaded: false }` for sections
+ * that aren't part of the runtime image (debug sections, empty sections, etc).
+ * Shared by sourceMapFromDwarf and sourceMapFromElfStabs so both relocate
+ * identically.
  */
-export function sourceMapFromDwarf(
+export function buildElfSegments(
   dwarfData: DWARFData,
   offsets: number[],
-  baseDir: string,
-): SourceMap {
-  const sources = new Set<string>();
-  const symbols: Record<string, number> = {};
-  // Keyed by final address. C/C++ source files (.c* / .h*) use last-wins so the
-  // compiler's prologue line is overwritten by the first real statement at the same
-  // address. Everything else (assembly, unknown) keeps first-wins.
-  const locationMap = new Map<number, Location>();
+): { segments: Segment[]; sectionOffsets: SectionOffset[] } {
   const segments: Segment[] = [];
-
-  // Section offsets matching original, unfiltered indexes
-  const sectionOffsets: ({ loaded: true; offset: number } | { loaded: false })[] = [];
+  const sectionOffsets: SectionOffset[] = [];
   let i = 0;
 
-  // Build sections from ELF section headers
   for (const [originalName, header] of dwarfData.sections) {
     // Extract memory type and clean section name
     const memTypeMap = {
@@ -81,6 +73,63 @@ export function sourceMapFromDwarf(
       sectionOffsets.push({ loaded: false });
     }
   }
+
+  return { segments, sectionOffsets };
+}
+
+/**
+ * Resolve a raw value in ELF-vaddr-space (a DWARF low_pc, or — for the same
+ * toolchain family, since GNU BFD applies real ELF relocations to `.stab` at
+ * link time same as any other section — a GNU-stabs n_value) to a runtime
+ * address, by finding which loaded section's [addr, addr+size) contains it
+ * and applying that section's relocation delta. Returns undefined if the
+ * value doesn't fall within any loaded section (e.g. a debug-only address).
+ *
+ * `segmentIndex` in the result is the LOADED-ONLY compact index matching
+ * `SourceMap.segments[]` / `buildElfSegments`'s `segments` array (i.e. what
+ * `Location.segmentIndex` / `getSegmentInfo` expect) — NOT the raw ELF
+ * section-header index (which is what `sectionOffsets[]` itself, and
+ * `ELFSymbol.sectionIndex`, are indexed by). The two differ whenever an
+ * unloaded section (e.g. a debug section) precedes a loaded one, so both
+ * counters are tracked separately here.
+ */
+export function resolveElfAddress(
+  value: number,
+  dwarfData: DWARFData,
+  sectionOffsets: SectionOffset[],
+): { segmentIndex: number; segmentOffset: number; address: number } | undefined {
+  let rawSectionIndex = 0;
+  let loadedSectionIndex = 0;
+  for (const [, header] of dwarfData.sections) {
+    const so = sectionOffsets[rawSectionIndex];
+    if (so.loaded) {
+      if (value >= header.addr && value < header.addr + header.size) {
+        return {
+          segmentIndex: loadedSectionIndex,
+          segmentOffset: value - header.addr,
+          address: value + so.offset,
+        };
+      }
+      loadedSectionIndex++;
+    }
+    rawSectionIndex++;
+  }
+  return undefined;
+}
+
+export function sourceMapFromDwarf(
+  dwarfData: DWARFData,
+  offsets: number[],
+  baseDir: string,
+): SourceMap {
+  const sources = new Set<string>();
+  const symbols: Record<string, number> = {};
+  // Keyed by final address. C/C++ source files (.c* / .h*) use last-wins so the
+  // compiler's prologue line is overwritten by the first real statement at the same
+  // address. Everything else (assembly, unknown) keeps first-wins.
+  const locationMap = new Map<number, Location>();
+
+  const { segments, sectionOffsets } = buildElfSegments(dwarfData, offsets);
 
   // Process line number programs, prioritizing C/C++ files over assembly files
   // Assembly files often have confusing line info (macro expansions, etc.)
@@ -166,54 +215,21 @@ export function sourceMapFromDwarf(
             path = join(baseDir, path);
           }
 
-          // Find which ELF section this DWARF address belongs to
-          // state.address is from the line number program and represents an address
-          // in the ELF file's address space (usually section virtual address + offset)
-          let sectionIndex = 0;
-          let sectionOffset = 0;
-          let found = false;
-
-          // Need to compare against original ELF section addresses, not loaded addresses
-          let elfSectionIndex = 0;
-          for (const [sectionName, header] of dwarfData.sections) {
-            // Extract clean section name (remove memory type suffix if present)
-            let cleanName = sectionName;
-            if (cleanName.endsWith(".MEMF_CHIP") || cleanName.endsWith(".MEMF_FAST") || cleanName.endsWith(".MEMF_ANY")) {
-              cleanName = cleanName.substring(0, cleanName.lastIndexOf('.'));
-            }
-
-            // Check if this section was included in segments (has size > 0 and valid addr)
-            const isIncluded = header.size > 0 && (header.addr > 0 ||
-              cleanName === ".text" || cleanName === ".data" ||
-              cleanName === ".bss" || cleanName === ".rodata");
-
-            if (isIncluded) {
-              // Check if state.address falls within this ELF section's address range
-              if (state.address >= header.addr &&
-                  state.address < header.addr + header.size) {
-                sectionIndex = elfSectionIndex;
-                sectionOffset = state.address - header.addr;
-                found = true;
-                break;
-              }
-              elfSectionIndex++;
-            }
-          }
-
-          if (!found) {
+          // Find which ELF section this DWARF address (state.address) belongs to
+          // and relocate it to a runtime address.
+          const resolved = resolveElfAddress(state.address, dwarfData, sectionOffsets);
+          if (!resolved) {
             // Address doesn't belong to any known section, skip it
             continue;
           }
-
-          // Calculate final loaded address: base address + offset within section
-          const finalAddress = offsets[sectionIndex] + sectionOffset;
+          const finalAddress = resolved.address;
 
           const location: Location = {
             path,
             line: state.line,
             address: finalAddress,
-            segmentIndex: sectionIndex,
-            segmentOffset: sectionOffset,
+            segmentIndex: resolved.segmentIndex,
+            segmentOffset: resolved.segmentOffset,
           };
           const isCpp = /\.[ch]\w*$/i.test(path);
           if (isCpp || !locationMap.has(finalAddress))

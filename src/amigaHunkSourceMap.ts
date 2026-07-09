@@ -215,11 +215,14 @@ function addStabs(
   }
 
   for (const g of program.globals) {
-    // N_GSYM carries no address — resolve via the linker symbol table. Statics
-    // (STSYM/LCSYM) carry a hunk-relative address, but their owning hunk is
-    // ambiguous, so prefer the symbol table there too and skip if unresolved.
-    // C symbols are underscore-prefixed in HUNK_SYMBOL but bare in stabs.
-    const address = symbols[g.name] ?? symbols["_" + g.name];
+    // Statics (STSYM/LCSYM) carry their own hunk-relative address — this hunk's
+    // base is known here, so resolve directly rather than via the symbol table
+    // (file-static C variables are often not exported into HUNK_SYMBOL at all).
+    // N_GSYM carries no address, so it must fall back to the symbol table;
+    // C symbols are underscore-prefixed there but bare in stabs.
+    const address = g.address !== undefined
+      ? base + g.address
+      : symbols[g.name] ?? symbols["_" + g.name];
     if (address === undefined) continue;
     const td = program.resolveType(g.typeKey);
     globalVars.push({
