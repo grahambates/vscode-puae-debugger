@@ -1,8 +1,8 @@
 // Webview-side RPC dispatcher for the PUAE/ami9000 wasm backend.
 //
 // Implements the same {command, args:{..., _rpcId?}} -> postMessage contract
-// as vamiga/js/vAmiga_ui.js's window.addEventListener('message', ...) handler
-// (see lines ~2589-2773 there): one-way commands are applied directly,
+// as the vAmiga emulator project's vAmiga_ui.js window.addEventListener('message', ...)
+// handler (see lines ~2589-2773 there): one-way commands are applied directly,
 // commands with `args._rpcId` reply via postMessage({type:'rpcResponse', id,
 // result}), where `result` is either the value or `{error: message}`.
 //
@@ -64,7 +64,7 @@ const REG_INDEX: Record<string, number> = {
   sr: 16, pc: 17, usp: 18,
 };
 
-// MemSrc enum values (src/vAmiga.ts) that e9k_debug_read_memory_map's output
+// MemSrc enum values (src/emulatorProtocol.ts) that e9k_debug_read_memory_map's output
 // bytes already use directly.
 const MEM_SRC_CHIP = 1;
 const MEM_SRC_CHIP_MIRROR = 2;
@@ -263,7 +263,7 @@ export interface StopMessage {
 }
 
 // Builds the StopMessage-shaped payload for an `emulator-state: stopped`
-// message (see src/vAmiga.ts's StopMessage), matching vAmiga_ui.js's
+// message (see src/emulatorProtocol.ts's StopMessage), matching vAmiga_ui.js's
 // handleStop: a pending catchbreak (consumed here) means a 68k exception
 // matching an enabled catchpoint vector was raised, with payload.vector set
 // to the exception vector number and payload.pc set to the faulting PC. A
@@ -864,7 +864,7 @@ export function setupRpcDispatcher(
           if (M._wasm_is_paused()) break;
         }
         // Tells the DAP adapter the step completed so it can send a
-        // StoppedEvent("step") (handleStep, vAmigaDebugAdapter.ts).
+        // StoppedEvent("step") (handleStep, debugAdapter.ts).
         postMessage({ type: "emulator-state", state: "stopped", message: getCurrentStopMessage(M) });
         break;
       }

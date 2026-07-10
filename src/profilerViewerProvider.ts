@@ -1,8 +1,8 @@
 import * as vscode from "vscode";
 import * as path from "path";
-import { VamigaDebugAdapter } from "./vAmigaDebugAdapter";
+import { DebugAdapter } from "./debugAdapter";
 import { ProfilerManager, ProfilerRpcClient, FrameCapture } from "./profilerManager";
-import { encodeCapture } from "./vamigaProfile";
+import { encodeCapture } from "./profileFormat";
 import { packBulk } from "./profilerBulk";
 import { ProfileEditorProvider } from "./profileEditorProvider";
 import { ProfilerCodeLensProvider } from "./profilerCodeLensProvider";
@@ -15,7 +15,7 @@ import { ProfilerInboundMessage, ProfilerOutboundMessage, IProfileModel, Capture
  * Capture is user-triggered (it advances the emulator), not automatic.
  */
 export class ProfilerViewerProvider {
-  public static readonly viewType = "vamiga-debugger.profilerViewer";
+  public static readonly viewType = "puae-debugger.profilerViewer";
 
   private panel?: vscode.WebviewPanel;
   private readonly manager: ProfilerManager;
@@ -25,7 +25,7 @@ export class ProfilerViewerProvider {
   private lastBulkUris: string[] = [];
   // Everything Save needs, grabbed at capture time while the debug session is live.
   private lastSaveData?: { elf: Uint8Array; programName: string; segmentOffsets: number[]; baseDir: string; kickstart: { sha1: string; name: string } };
-  private lastSaveAdapter?: VamigaDebugAdapter;
+  private lastSaveAdapter?: DebugAdapter;
   private symbolsSent = false; // symbols are session-constant — send them only once per webview mount
   private capturing = false;   // a frame capture is in flight (drops re-entrant requests)
   private numFrames = 1;       // updated by "setNumFrames" from the webview toolbar
@@ -39,7 +39,7 @@ export class ProfilerViewerProvider {
   ) {
     this.manager = new ProfilerManager(getClient, () => {
       try {
-        return VamigaDebugAdapter.getActiveAdapter()?.getSourceMap();
+        return DebugAdapter.getActiveAdapter()?.getSourceMap();
       } catch {
         return undefined;
       }
@@ -83,7 +83,7 @@ export class ProfilerViewerProvider {
   }
 
   // Reveals the panel and asks the webview to jump to the next execution of a source line,
-  // opening the CPU tab — see vamiga-debugger.jumpToProfilerExecution in extension.ts. Unlike
+  // opening the CPU tab — see puae-debugger.jumpToProfilerExecution in extension.ts. Unlike
   // show(), this deliberately does NOT trigger a fresh capture: the line decorations the command
   // originates from reflect whatever model is ALREADY loaded, and starting a new capture would
   // jump into different (unrelated) execution data. Returns false if the panel isn't currently
@@ -205,7 +205,7 @@ export class ProfilerViewerProvider {
   }
 
   private async cacheSaveData(): Promise<void> {
-    const adapter = VamigaDebugAdapter.getActiveAdapter();
+    const adapter = DebugAdapter.getActiveAdapter();
     const elfPath = adapter?.getDebugProgramPath();
     if (!adapter || !elfPath) return;
     if (adapter === this.lastSaveAdapter && this.lastSaveData) return;
@@ -240,10 +240,10 @@ export class ProfilerViewerProvider {
     }
 
     const folder = vscode.workspace.workspaceFolders?.[0];
-    const base = save.programName.replace(/\.[^.]+$/, "") + ".vamigaprofile";
+    const base = save.programName.replace(/\.[^.]+$/, "") + ".puaeprofile";
     const target = await vscode.window.showSaveDialog({
       defaultUri: folder ? vscode.Uri.joinPath(folder.uri, base) : undefined,
-      filters: { "vAmiga Profile": ["vamigaprofile"] },
+      filters: { "PUAE Profile": ["puaeprofile"] },
       saveLabel: "Save Profile",
     });
     if (!target) return;
@@ -271,7 +271,7 @@ export class ProfilerViewerProvider {
 
 // Ctrl/Cmd+click in the flame graph: open the function's source at `line` (1-based, as
 // carried in the model). Absolute paths open directly; relative paths resolve against the
-// first workspace folder. Shared by the live panel and the .vamigaprofile editor.
+// first workspace folder. Shared by the live panel and the .puaeprofile editor.
 export async function openProfilerSource(file: string, line: number, toSide?: boolean): Promise<void> {
   try {
     let uri: vscode.Uri | undefined;

@@ -1,10 +1,8 @@
 # CLAUDE.md
 
-Guidance for working in this repo (vscode-vamiga-debugger), a VS Code extension
-that debugs Amiga programs against two in-browser/webview emulator backends:
-**vAmiga** (`vamiga/`, `vamigaweb_fork/` — the C++ source) and **PUAE**
-(`puae/`, `puae-wasm/` — the C source, currently the active development
-focus, branch `puae-spike`).
+Guidance for working in this repo (vscode-puae-debugger), a VS Code extension
+that debugs Amiga programs against an in-browser/webview PUAE (WinUAE-derived)
+emulator backend (`puae/`, `puae-wasm/` — the C source).
 
 ## Repo layout (the parts that aren't obvious)
 
@@ -32,12 +30,9 @@ focus, branch `puae-spike`).
   `puae_debug.h` (the debug-bridge glue this project adds, labeled
   `puae_debug:` in comments) / `frontend_shim.c` (the minimal libretro
   frontend driving it from JS), `libretro-uae/` (a **git submodule**,
-  patched fork of libretro-uae, branch `vscode_vamiga_debugger`),
-  `build.sh` (builds `puae.js`/`puae.wasm`, normally invoked via `npm run
-  build:wasm`), `test/*.mjs` (Node-driven integration tests, run by `npm
-  run test:wasm`).
-- `vamigaweb_fork/` — the C++ vAmiga core (a fork, not a submodule — check
-  `git log` there before assuming it's pristine upstream vAmiga).
+  patched fork of libretro-uae), `build.sh` (builds `puae.js`/`puae.wasm`,
+  normally invoked via `npm run build:wasm`), `test/*.mjs` (Node-driven
+  integration tests, run by `npm run test:wasm`).
 
 ## Building/rebuilding the PUAE wasm binary
 
@@ -59,7 +54,7 @@ already on `PATH`). Equivalent manual invocation, if you need to tweak
 something the wrapper doesn't expose:
 
 ```bash
-wsl -e bash -lc "source ~/emsdk/emsdk_env.sh > /dev/null 2>&1 && cd /mnt/c/Users/hello/Documents/projects/vscode-vamiga-debugger/puae-wasm && bash build.sh"
+wsl -e bash -lc "source ~/emsdk/emsdk_env.sh > /dev/null 2>&1 && cd /mnt/c/Users/hello/Documents/projects/vscode-puae-debugger/puae-wasm && bash build.sh"
 ```
 
 Notes/gotchas, all hit during the first attempt at this:

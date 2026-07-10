@@ -186,7 +186,7 @@ static size_t puae_debug_textCount = 0;
 static void puae_debug_requestBreak(void);
 static int puae_debug_regwatchCheck(uint32_t pc24);
 
-// ---- wasm_profile: vAmiga-format profiler ----
+// ---- wasm_profile: CPU profiler (record format matches the vAmiga emulator project's own) ----
 // Each record: [depth, leaf_pc, callerN-1, ..., caller0, cycleDelta] (uint32_t).
 // Address range + optional DWARF unwind table from wasm_profile_set_unwind.
 // When a table is present (C/C++ programs): call stack reconstructed by walking
@@ -519,7 +519,7 @@ wasm_profile_get_stats(void)
 	return g_wprof_stats_buf;
 }
 
-// ---- DMA profiler grid (vAmiga Cell[] format) ----
+// ---- DMA profiler grid (matches the vAmiga emulator project's own Cell[] format) ----
 // Populated by wasm_dma_serialize_grid() after wasm_profile_start completes.
 // 227 * 313 * 8 bytes = ~568KB; serialised by puae_dma_serialize() in debug.c.
 #define PUAE_DMA_CELL_BYTES 8
@@ -1498,7 +1498,7 @@ puae_debug_peek_memory(uint32_t addr, uint8_t *out, size_t cap)
 	return cap;
 }
 
-// Numeric values mirror src/vAmiga.ts's MemSrc enum.
+// Numeric values mirror src/emulatorProtocol.ts's MemSrc enum.
 #define PUAE_MEMSRC_NONE          0
 #define PUAE_MEMSRC_CHIP          1
 #define PUAE_MEMSRC_CHIP_MIRROR   2
@@ -2200,7 +2200,7 @@ puae_debug_get_cycle_exact(void)
 // checksum AmigaOS itself relies on (ChkBase == ~addr, and the words in
 // [0x22, 0x52] sum to 0xFFFF), via raw get_long/get_word peeks only — no
 // intermediate struct, deliberately, so there's nothing left uninitialized
-// for a failed check to fall through to (see the vAmiga backend's
+// for a failed check to fall through to (see the vAmiga emulator project's own
 // MemProtect.cpp, where OSDebugger::getExecBase() had exactly that hazard:
 // it declares an uninitialized struct and only populates it if its own
 // looser pointer check passes, but runs the checksum check regardless).

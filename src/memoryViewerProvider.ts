@@ -1,7 +1,7 @@
 import * as vscode from "vscode";
-import { EmulatorMessage, isEmulatorStateMessage, MemSrc } from "./vAmiga";
+import { EmulatorMessage, isEmulatorStateMessage, MemSrc } from "./emulatorProtocol";
 import { Emulator } from "./emulator";
-import { VamigaDebugAdapter } from "./vAmigaDebugAdapter";
+import { DebugAdapter } from "./debugAdapter";
 import { formatHex } from "./numbers";
 import { EvaluateResultType } from "./evaluateManager";
 import {
@@ -63,7 +63,7 @@ const memTypeLabels: Record<MemSrc, string> = {
  * Supports multiple instances for viewing different memory regions simultaneously.
  */
 export class MemoryViewerProvider {
-  public static readonly viewType = "vamiga-debugger.memoryViewer";
+  public static readonly viewType = "puae-debugger.memoryViewer";
 
   private panels = new Map<string, MemoryViewerPanel>();
   private emulatorMessageListeners: vscode.Disposable[] = [];
@@ -108,7 +108,7 @@ export class MemoryViewerProvider {
       (e) => {
         if (
           e.affectsConfiguration(
-            "vamiga-debugger.memoryViewer.colorCodeHexBytes",
+            "puae-debugger.memoryViewer.colorCodeHexBytes",
           )
         ) {
           const colorCodeHexBytes = this.getColorCodeHexBytes();
@@ -121,7 +121,7 @@ export class MemoryViewerProvider {
   }
 
   private get emulator(): Emulator {
-    return VamigaDebugAdapter.getActiveAdapter()?.getEmulator() ?? this.puaeEmulator;
+    return DebugAdapter.getActiveAdapter()?.getEmulator() ?? this.puaeEmulator;
   }
 
   /**
@@ -129,7 +129,7 @@ export class MemoryViewerProvider {
    */
   private getColorCodeHexBytes(): boolean {
     return vscode.workspace
-      .getConfiguration("vamiga-debugger")
+      .getConfiguration("puae-debugger")
       .get<boolean>("memoryViewer.colorCodeHexBytes", true);
   }
 
@@ -186,7 +186,7 @@ export class MemoryViewerProvider {
     webviewPanel.webview.onDidReceiveMessage(async (message) => {
       switch (message.command) {
         case "ready": {
-          const adapter = VamigaDebugAdapter.getActiveAdapter();
+          const adapter = DebugAdapter.getActiveAdapter();
           if (!adapter) {
             return;
           }
@@ -233,7 +233,7 @@ export class MemoryViewerProvider {
           break;
         case "goToSource": {
           const goToSourceMsg = message as GoToSourceMessage;
-          const sourceMap = VamigaDebugAdapter.getActiveAdapter()?.getSourceMap();
+          const sourceMap = DebugAdapter.getActiveAdapter()?.getSourceMap();
           const location = sourceMap?.lookupAddress(goToSourceMsg.address);
           if (location) {
             const document = await vscode.workspace.openTextDocument(
@@ -266,7 +266,7 @@ export class MemoryViewerProvider {
         }
         case "getSuggestions": {
           const getSuggestionsMsg = message as GetSuggestionsMessage;
-          const adapter = VamigaDebugAdapter.getActiveAdapter();
+          const adapter = DebugAdapter.getActiveAdapter();
           if (adapter) {
             const suggestions = this.getSymbolSuggestions(
               adapter,
@@ -299,7 +299,7 @@ export class MemoryViewerProvider {
       return "visual";
     }
     // Try to guess from source code
-    const sourceMap = VamigaDebugAdapter.getActiveAdapter()?.getSourceMap();
+    const sourceMap = DebugAdapter.getActiveAdapter()?.getSourceMap();
     if (!sourceMap) {
       return;
     }
@@ -366,7 +366,7 @@ export class MemoryViewerProvider {
   private async evaluateAddressInput(
     panel: MemoryViewerPanel,
   ): Promise<MemoryRange | undefined> {
-    const adapter = VamigaDebugAdapter.getActiveAdapter();
+    const adapter = DebugAdapter.getActiveAdapter();
     if (!adapter) {
       throw new Error("Debugger is not running");
     }
@@ -617,7 +617,7 @@ export class MemoryViewerProvider {
    * Gets symbol name suggestions based on query string
    */
   private getSymbolSuggestions(
-    adapter: VamigaDebugAdapter,
+    adapter: DebugAdapter,
     query: string,
     showAll: boolean = false,
   ): Suggestion[] {
@@ -661,7 +661,7 @@ export class MemoryViewerProvider {
     return suggestions;
   }
 
-  private getAvailableRegions(adapter: VamigaDebugAdapter): MemoryRegion[] {
+  private getAvailableRegions(adapter: DebugAdapter): MemoryRegion[] {
     // Add segments from source map
     const regions: MemoryRegion[] = adapter
       .getSourceMap()

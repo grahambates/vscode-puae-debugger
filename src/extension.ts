@@ -1,5 +1,5 @@
 import * as vscode from "vscode";
-import { VamigaDebugAdapter } from "./vAmigaDebugAdapter";
+import { DebugAdapter } from "./debugAdapter";
 import { MemoryViewerProvider } from "./memoryViewerProvider";
 import { StateViewerProvider } from "./stateViewerProvider";
 import { PuaeEmulator } from "./puaeEmulator";
@@ -25,7 +25,7 @@ export function activate(context: vscode.ExtensionContext) {
   const profilerViewer = new ProfilerViewerProvider(
     context.extensionUri,
     profilerStorage,
-    () => VamigaDebugAdapter.getActiveAdapter()?.getProfilerClient(),
+    () => DebugAdapter.getActiveAdapter()?.getProfilerClient(),
     profilerCodeLens,
     profilerLineDecorations,
   );
@@ -34,15 +34,15 @@ export function activate(context: vscode.ExtensionContext) {
     vscode.debug.registerDebugAdapterDescriptorFactory("puae", {
       createDebugAdapterDescriptor(): vscode.ProviderResult<vscode.DebugAdapterDescriptor> {
         return new vscode.DebugAdapterInlineImplementation(
-          new VamigaDebugAdapter(puaeEmulator),
+          new DebugAdapter(puaeEmulator),
         );
       },
     }),
   );
 
   context.subscriptions.push(
-    vscode.commands.registerCommand("vamiga-debugger.stepBackFrame", async () => {
-      const adapter = VamigaDebugAdapter.getActiveAdapter();
+    vscode.commands.registerCommand("puae-debugger.stepBackFrame", async () => {
+      const adapter = DebugAdapter.getActiveAdapter();
       const emulator = adapter?.getEmulator() ?? puaeEmulator;
       const moved = await emulator.stepBackFrame();
       if (!moved) {
@@ -57,22 +57,22 @@ export function activate(context: vscode.ExtensionContext) {
   );
 
   context.subscriptions.push(
-    vscode.commands.registerCommand("vamiga-debugger.eof", () => {
-      const emulator = VamigaDebugAdapter.getActiveAdapter()?.getEmulator() ?? puaeEmulator;
+    vscode.commands.registerCommand("puae-debugger.eof", () => {
+      const emulator = DebugAdapter.getActiveAdapter()?.getEmulator() ?? puaeEmulator;
       emulator.eof();
     }),
   );
 
   context.subscriptions.push(
-    vscode.commands.registerCommand("vamiga-debugger.eol", () => {
-      const emulator = VamigaDebugAdapter.getActiveAdapter()?.getEmulator() ?? puaeEmulator;
+    vscode.commands.registerCommand("puae-debugger.eol", () => {
+      const emulator = DebugAdapter.getActiveAdapter()?.getEmulator() ?? puaeEmulator;
       emulator.eol();
     }),
   );
 
   context.subscriptions.push(
     vscode.commands.registerCommand(
-      "vamiga-debugger.openMemoryViewer",
+      "puae-debugger.openMemoryViewer",
       async (uri?: vscode.Uri, address?: string) => {
         if (uri && !address) {
           const editor = vscode.window.activeTextEditor;
@@ -103,7 +103,7 @@ export function activate(context: vscode.ExtensionContext) {
 
   context.subscriptions.push(
     vscode.commands.registerCommand(
-      "vamiga-debugger.viewVariableInMemory",
+      "puae-debugger.viewVariableInMemory",
       async (item) => {
         if (item?.container?.name === "Symbols" || item?.container?.name === "Custom Registers") {
           await memoryViewer.show(item.variable.name);
@@ -120,7 +120,7 @@ export function activate(context: vscode.ExtensionContext) {
 
   context.subscriptions.push(
     vscode.commands.registerCommand(
-      "vamiga-debugger.setWatchpointLength",
+      "puae-debugger.setWatchpointLength",
       async (item) => {
         const name = item?.variable?.name;
         if (item?.container?.name !== "Symbols" || !name) {
@@ -169,7 +169,7 @@ export function activate(context: vscode.ExtensionContext) {
 
   context.subscriptions.push(
     vscode.commands.registerCommand(
-      "vamiga-debugger.openStateViewer",
+      "puae-debugger.openStateViewer",
       async () => {
         try {
           await stateViewer.show();
@@ -183,14 +183,14 @@ export function activate(context: vscode.ExtensionContext) {
   );
 
   context.subscriptions.push(
-    vscode.commands.registerCommand("vamiga-debugger.openPuae", () => {
+    vscode.commands.registerCommand("puae-debugger.openPuae", () => {
       puaeEmulator.open();
     }),
   );
 
   context.subscriptions.push(
     vscode.commands.registerCommand(
-      "vamiga-debugger.openProfiler",
+      "puae-debugger.openProfiler",
       async () => {
         try {
           await profilerViewer.show();
@@ -222,7 +222,7 @@ export function activate(context: vscode.ExtensionContext) {
   context.subscriptions.push(profilerLineDecorations);
 
   context.subscriptions.push(
-    vscode.commands.registerCommand("vamiga-debugger.toggleLineProfilerAnnotations", () => {
+    vscode.commands.registerCommand("puae-debugger.toggleLineProfilerAnnotations", () => {
       profilerLineDecorations.setEnabled(!profilerLineDecorations.isEnabled());
     }),
   );
@@ -246,7 +246,7 @@ export function activate(context: vscode.ExtensionContext) {
   );
 
   context.subscriptions.push(
-    vscode.commands.registerCommand("vamiga-debugger.jumpToProfilerExecution", () => {
+    vscode.commands.registerCommand("puae-debugger.jumpToProfilerExecution", () => {
       const editor = vscode.window.activeTextEditor;
       if (!editor) return;
       const file = editor.document.uri.fsPath;

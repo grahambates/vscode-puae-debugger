@@ -1,7 +1,7 @@
-// .vamigaprofile container codec (extension-side; Node zlib/crypto/Buffer only — never
+// .puaeprofile container codec (extension-side; Node zlib/crypto/Buffer only — never
 // imported by the webview). A profile document is the gzip of a small binary container:
 //
-//   [ magic "VAMIGAPROF1" ][ u32 LE manifestLen ][ manifest: JSON utf8 ][ section bytes… ]
+//   [ magic "PUAEPROF1" ][ u32 LE manifestLen ][ manifest: JSON utf8 ][ section bytes… ]
 //
 // The manifest indexes the raw binary sections (offsets relative to the section blob). This
 // stores the *raw* capture (RawCapture) plus the program ELF, not the built model — so it's
@@ -13,7 +13,7 @@ import { gzipSync, gunzipSync } from "zlib";
 import { createHash } from "crypto";
 import type { RawCapture, RawDisassembledFunction } from "./profilerManager";
 
-const MAGIC = "VAMIGAPROF1";
+const MAGIC = "PUAEPROF1";
 const FORMAT_VERSION = 1;
 
 export interface ProfileManifest {
@@ -124,18 +124,18 @@ export function encodeCapture(raw: RawCapture, opts: EncodeOptions = {}): Buffer
 export function decodeCapture(file: Uint8Array): DecodedCapture {
   const container = gunzipSync(file);
   const magic = container.toString("ascii", 0, MAGIC.length);
-  if (magic !== MAGIC) throw new Error(`Not a .vamigaprofile file (bad magic ${JSON.stringify(magic)})`);
+  if (magic !== MAGIC) throw new Error(`Not a .puaeprofile file (bad magic ${JSON.stringify(magic)})`);
 
   const manifestLen = container.readUInt32LE(MAGIC.length);
   const manifestStart = MAGIC.length + 4;
   // Bounds-check before slicing: a truncated/corrupt file must fail with a clear message
   // rather than an out-of-range read or a giant allocation.
   if (manifestStart + manifestLen > container.length) {
-    throw new Error(`.vamigaprofile manifest length ${manifestLen} exceeds container (${container.length} bytes)`);
+    throw new Error(`.puaeprofile manifest length ${manifestLen} exceeds container (${container.length} bytes)`);
   }
   const manifest = JSON.parse(container.toString("utf8", manifestStart, manifestStart + manifestLen)) as ProfileManifest;
   if (manifest.version !== FORMAT_VERSION) {
-    throw new Error(`Unsupported .vamigaprofile version ${manifest.version} (expected ${FORMAT_VERSION})`);
+    throw new Error(`Unsupported .puaeprofile version ${manifest.version} (expected ${FORMAT_VERSION})`);
   }
   // Normalize legacy files (pre-kickstart-field) to the empty sentinel here, at the decode boundary,
   // so every consumer reads manifest.kickstart.sha1 without a guard.
@@ -149,13 +149,13 @@ export function decodeCapture(file: Uint8Array): DecodedCapture {
     if (!s) return undefined;
     const start = blobStart + s.offset;
     if (s.offset < 0 || s.length < 0 || start + s.length > container.length) {
-      throw new Error(`.vamigaprofile section '${name}' is out of bounds (offset ${s.offset}, length ${s.length}, container ${container.length})`);
+      throw new Error(`.puaeprofile section '${name}' is out of bounds (offset ${s.offset}, length ${s.length}, container ${container.length})`);
     }
     return new Uint8Array(container.subarray(start, start + s.length));
   };
 
   const profile = get("profile");
-  if (!profile) throw new Error(".vamigaprofile is missing the required 'profile' section");
+  if (!profile) throw new Error(".puaeprofile is missing the required 'profile' section");
   const chip = get("chip");
   const slow = get("slow");
 

@@ -1,18 +1,18 @@
 import { readFileSync } from "fs";
 import * as path from "path";
-import { decodeCapture } from "../vamigaProfile";
+import { decodeCapture } from "../profileFormat";
 import { loadProfile } from "../profileLoader";
 import { DMA_HPOS, DMA_VPOS } from "../shared/profilerTypes";
 import { buildColumns } from "../webview/profilerViewer/columns";
 import { createTopDownGraph } from "../webview/profilerViewer/topDownGraph";
 
 // End-to-end replay of a real captured frame (template/a.elf, minted via the Save button):
-// decode the .vamigaprofile -> rebuild the SourceMap from the embedded ELF + relocation ->
+// decode the .puaeprofile -> rebuild the SourceMap from the embedded ELF + relocation ->
 // build the model (extension layer) -> turn it into columns + the CPU/DMA tree (webview
 // layer). No emulator needed; the bundle is the deterministic fixture.
-const FIXTURE = path.join(__dirname, "fixtures/vamigaProfiles/template.vamigaprofile");
+const FIXTURE = path.join(__dirname, "fixtures/profiles/template.puaeprofile");
 
-describe("replay template.vamigaprofile", () => {
+describe("replay template.puaeprofile", () => {
   const file = readFileSync(FIXTURE);
 
   it("decodes a complete, relocation-bearing bundle", () => {

@@ -1,4 +1,4 @@
-// Loads a .vamigaprofile into an IProfileModel — the file-side counterpart of a live
+// Loads a .puaeprofile into an IProfileModel — the file-side counterpart of a live
 // capture. Reconstructs the exact SourceMap the capture used (from the embedded ELF +
 // the manifest's relocation), then runs the same buildModelFromCapture as live capture.
 // Pure (no vscode/fs): the CustomEditor provider passes in the file bytes, and the replay
@@ -10,7 +10,7 @@ import { sourceMapFromDwarf } from "./dwarfSourceMap";
 import { sourceMapFromHunks } from "./amigaHunkSourceMap";
 import { SourceMap } from "./sourceMap";
 import { kickstartSymbolModuleBySha1 } from "./kickstart";
-import { decodeCapture, ProfileManifest } from "./vamigaProfile";
+import { decodeCapture, ProfileManifest } from "./profileFormat";
 import { buildModelFromCapture, RawCapture } from "./profilerManager";
 import { IProfileModel } from "./shared/profilerTypes";
 
@@ -40,7 +40,7 @@ export function loadProfile(file: Uint8Array): { model: IProfileModel; raw: RawC
   const { raw, elf, manifest } = decodeCapture(file);
   if (!elf) {
     // The path+sha1 fallback (load the ELF from disk) is a future addition for the UI.
-    throw new Error("This .vamigaprofile has no embedded program; loading by path isn't supported yet.");
+    throw new Error("This .puaeprofile has no embedded program; loading by path isn't supported yet.");
   }
   const sourceMap = buildSourceMapFromBundle(elf, manifest);
   const { model } = buildModelFromCapture(raw, sourceMap);

@@ -2,7 +2,7 @@
 import * as assert from "assert";
 import * as sinon from "sinon";
 import { StackManager } from "../stackManager";
-import { CpuInfo } from "../vAmiga";
+import { CpuInfo } from "../emulatorProtocol";
 import { PuaeEmulator } from "../puaeEmulator";
 
 // Helper function to create mock CPU info with required properties
@@ -45,11 +45,11 @@ function createMockCpuInfo(overrides: Partial<CpuInfo> = {}): CpuInfo {
  */
 describe("StackManager - Comprehensive Tests", () => {
   let stackManager: StackManager;
-  let mockVAmiga: sinon.SinonStubbedInstance<PuaeEmulator>;
+  let mockEmulator: sinon.SinonStubbedInstance<PuaeEmulator>;
   let mockSourceMap: any;
 
   beforeEach(() => {
-    mockVAmiga = sinon.createStubInstance(PuaeEmulator);
+    mockEmulator = sinon.createStubInstance(PuaeEmulator);
     mockSourceMap = {
       lookupAddress: sinon.stub(),
       getSymbols: () => ({ main: 0x1000, sub1: 0x2000 }),
@@ -61,7 +61,7 @@ describe("StackManager - Comprehensive Tests", () => {
       getInlineFramesForPc: sinon.stub().returns([]), // no inline frames by default
     };
 
-    stackManager = new StackManager(mockVAmiga, mockSourceMap);
+    stackManager = new StackManager(mockEmulator, mockSourceMap);
   });
 
   afterEach(() => {
@@ -72,9 +72,9 @@ describe("StackManager - Comprehensive Tests", () => {
     it("should return current PC as first stack frame", async () => {
       // Setup: Mock CPU state and empty stack
       const mockCpuInfo = createMockCpuInfo({ pc: "0x1000", a7: "0x8000" });
-      mockVAmiga.getCpuInfo.resolves(mockCpuInfo);
-      mockVAmiga.readMemory.resolves(Buffer.alloc(128));
-      mockVAmiga.isValidAddress.returns(false); // No valid return addresses in stack
+      mockEmulator.getCpuInfo.resolves(mockCpuInfo);
+      mockEmulator.readMemory.resolves(Buffer.alloc(128));
+      mockEmulator.isValidAddress.returns(false); // No valid return addresses in stack
 
       // Test: Get stack frames
       const { frames } = await stackManager.getStackFrames(0, 5);
@@ -87,8 +87,8 @@ describe("StackManager - Comprehensive Tests", () => {
     it("should create source-based frames when debug info available", async () => {
       // Setup: Mock CPU state, stack, and source map
       const mockCpuInfo = createMockCpuInfo({ pc: "0x1000", a7: "0x8000" });
-      mockVAmiga.getCpuInfo.resolves(mockCpuInfo);
-      mockVAmiga.readMemory.resolves(Buffer.alloc(128));
+      mockEmulator.getCpuInfo.resolves(mockCpuInfo);
+      mockEmulator.readMemory.resolves(Buffer.alloc(128));
 
       // Mock source location lookup
       mockSourceMap.lookupAddress.withArgs(0x1000).returns({
@@ -116,8 +116,8 @@ describe("StackManager - Comprehensive Tests", () => {
     it("should create disassembly frames when no debug info available", async () => {
       // Setup: Mock CPU state with no source mapping
       const mockCpuInfo = createMockCpuInfo({ pc: "0x1000", a7: "0x8000" });
-      mockVAmiga.getCpuInfo.resolves(mockCpuInfo);
-      mockVAmiga.readMemory.resolves(Buffer.alloc(128));
+      mockEmulator.getCpuInfo.resolves(mockCpuInfo);
+      mockEmulator.readMemory.resolves(Buffer.alloc(128));
 
       // No source location found
       mockSourceMap.lookupAddress.returns(null);
@@ -136,7 +136,7 @@ describe("StackManager - Comprehensive Tests", () => {
     it("should stop at ROM calls after finding user code", async () => {
       // Setup: Mock stack analysis that finds ROM address after user code
       const mockCpuInfo = createMockCpuInfo({ pc: "0x1000", a7: "0x8000" });
-      mockVAmiga.getCpuInfo.resolves(mockCpuInfo);
+      mockEmulator.getCpuInfo.resolves(mockCpuInfo);
 
       // Mock guessStack to return user code then ROM
       sinon.stub(stackManager, "guessStack").resolves([
@@ -165,7 +165,7 @@ describe("StackManager - Comprehensive Tests", () => {
     it("should handle pagination with startFrame and maxLevels", async () => {
       // Setup: Mock CPU info and stub guessStack with multiple frames
       const mockCpuInfo = createMockCpuInfo({ pc: "0x1000", a7: "0x8000" });
-      mockVAmiga.getCpuInfo.resolves(mockCpuInfo);
+      mockEmulator.getCpuInfo.resolves(mockCpuInfo);
       sinon.stub(stackManager, "guessStack").resolves([
         [0x1000, 0x1000], // Frame 0
         [0x2000, 0x2000], // Frame 1
@@ -189,8 +189,8 @@ describe("StackManager - Comprehensive Tests", () => {
   describe("Stack Analysis Algorithm", () => {
     it("should include current PC as first frame", async () => {
       // Setup: Mock CPU state
-      mockVAmiga.readMemory.resolves(Buffer.alloc(128));
-      mockVAmiga.isValidAddress.returns(false);
+      mockEmulator.readMemory.resolves(Buffer.alloc(128));
+      mockEmulator.isValidAddress.returns(false);
 
       // Test: Analyze stack with explicit pc and stackAddress
       const addresses = await stackManager.guessStack(0x1000, 0x8000, 5);
@@ -205,15 +205,15 @@ describe("StackManager - Comprehensive Tests", () => {
       // Create stack buffer with return address at offset 0
       const stackBuffer = Buffer.alloc(128);
       stackBuffer.writeInt32BE(0x2000, 0); // Return address to 0x2000
-      mockVAmiga.readMemory.withArgs(0x8000, 128).resolves(stackBuffer);
+      mockEmulator.readMemory.withArgs(0x8000, 128).resolves(stackBuffer);
 
       // Mock valid address check
-      mockVAmiga.isValidAddress.withArgs(0x2000).returns(true);
+      mockEmulator.isValidAddress.withArgs(0x2000).returns(true);
 
       // Mock instruction bytes showing JSR at 0x2000-2
       const instrBuffer = Buffer.alloc(6);
       instrBuffer.writeUInt16BE(0x4e80, 4); // JSR instruction at offset 4 (0x2000-2)
-      mockVAmiga.readMemory.withArgs(0x2000 - 6, 6).resolves(instrBuffer);
+      mockEmulator.readMemory.withArgs(0x2000 - 6, 6).resolves(instrBuffer);
 
       // Test: Analyze stack with explicit pc and stackAddress
       const addresses = await stackManager.guessStack(0x1000, 0x8000, 5);
@@ -228,14 +228,14 @@ describe("StackManager - Comprehensive Tests", () => {
       // Setup: Mock stack containing BSR return
       const stackBuffer = Buffer.alloc(128);
       stackBuffer.writeInt32BE(0x2004, 0); // Return address after BSR
-      mockVAmiga.readMemory.withArgs(0x8000, 128).resolves(stackBuffer);
+      mockEmulator.readMemory.withArgs(0x8000, 128).resolves(stackBuffer);
 
-      mockVAmiga.isValidAddress.withArgs(0x2004).returns(true);
+      mockEmulator.isValidAddress.withArgs(0x2004).returns(true);
 
       // Mock BSR instruction bytes
       const instrBuffer = Buffer.alloc(6);
       instrBuffer.writeUInt16BE(0x6100, 2); // BSR instruction at offset 2
-      mockVAmiga.readMemory.withArgs(0x2004 - 6, 6).resolves(instrBuffer);
+      mockEmulator.readMemory.withArgs(0x2004 - 6, 6).resolves(instrBuffer);
 
       // Test: Analyze stack with explicit pc and stackAddress
       const addresses = await stackManager.guessStack(0x1000, 0x8000, 5);
@@ -251,17 +251,17 @@ describe("StackManager - Comprehensive Tests", () => {
       stackBuffer.writeInt32BE(0x1001, 0); // Odd address - should skip
       stackBuffer.writeInt32BE(0x2000, 4); // Valid even address
       stackBuffer.writeUInt32BE(0xffffffff, 8); // Invalid address (use unsigned)
-      mockVAmiga.readMemory.withArgs(0x8000, 128).resolves(stackBuffer);
+      mockEmulator.readMemory.withArgs(0x8000, 128).resolves(stackBuffer);
 
       // Mock address validation
-      mockVAmiga.isValidAddress.withArgs(0x1001).returns(false); // Odd
-      mockVAmiga.isValidAddress.withArgs(0x2000).returns(true); // Valid
-      mockVAmiga.isValidAddress.withArgs(0xffffffff).returns(false); // Invalid
+      mockEmulator.isValidAddress.withArgs(0x1001).returns(false); // Odd
+      mockEmulator.isValidAddress.withArgs(0x2000).returns(true); // Valid
+      mockEmulator.isValidAddress.withArgs(0xffffffff).returns(false); // Invalid
 
       // Mock JSR for valid address
       const instrBuffer = Buffer.alloc(6);
       instrBuffer.writeUInt16BE(0x4e80, 4);
-      mockVAmiga.readMemory.withArgs(0x2000 - 6, 6).resolves(instrBuffer);
+      mockEmulator.readMemory.withArgs(0x2000 - 6, 6).resolves(instrBuffer);
 
       // Test: Analyze stack with explicit pc and stackAddress
       const addresses = await stackManager.guessStack(0x1000, 0x8000, 5);
@@ -275,12 +275,12 @@ describe("StackManager - Comprehensive Tests", () => {
       // Setup: Mock stack with return address
       const stackBuffer = Buffer.alloc(128);
       stackBuffer.writeInt32BE(0x2000, 0);
-      mockVAmiga.readMemory.withArgs(0x8000, 128).resolves(stackBuffer);
+      mockEmulator.readMemory.withArgs(0x8000, 128).resolves(stackBuffer);
 
-      mockVAmiga.isValidAddress.withArgs(0x2000).returns(true);
+      mockEmulator.isValidAddress.withArgs(0x2000).returns(true);
 
       // Mock memory read failure when checking for JSR/BSR
-      mockVAmiga.readMemory
+      mockEmulator.readMemory
         .withArgs(0x2000 - 6, 6)
         .rejects(new Error("Invalid memory"));
 
@@ -299,17 +299,17 @@ describe("StackManager - Comprehensive Tests", () => {
       for (let i = 0; i < 20; i++) {
         stackBuffer.writeInt32BE(0x2000 + i * 4, i * 4);
       }
-      mockVAmiga.readMemory.withArgs(0x8000, 128).resolves(stackBuffer);
+      mockEmulator.readMemory.withArgs(0x8000, 128).resolves(stackBuffer);
 
       // Mock all as valid with JSR instructions
-      mockVAmiga.isValidAddress.returns(true);
+      mockEmulator.isValidAddress.returns(true);
       const instrBuffer = Buffer.alloc(6);
       instrBuffer.writeUInt16BE(0x4e80, 4); // JSR instruction at position 4
 
       // Mock instruction reads for each potential return address
       for (let i = 0; i < 20; i++) {
         const retAddr = 0x2000 + i * 4;
-        mockVAmiga.readMemory.withArgs(retAddr - 6, 6).resolves(instrBuffer);
+        mockEmulator.readMemory.withArgs(retAddr - 6, 6).resolves(instrBuffer);
       }
 
       // Test: Limit to 3 frames with explicit pc and stackAddress
@@ -324,7 +324,7 @@ describe("StackManager - Comprehensive Tests", () => {
     it("should use source map for frame naming when available", async () => {
       // Setup: Mock CPU info and stub guessStack
       const mockCpuInfo = createMockCpuInfo({ pc: "0x1000", a7: "0x8000" });
-      mockVAmiga.getCpuInfo.resolves(mockCpuInfo);
+      mockEmulator.getCpuInfo.resolves(mockCpuInfo);
       sinon.stub(stackManager, "guessStack").resolves([[0x1000, 0x1000]]);
 
       mockSourceMap.lookupAddress.withArgs(0x1000).returns({
@@ -352,7 +352,7 @@ describe("StackManager - Comprehensive Tests", () => {
     it("should fall back to disassembly frames when source map has no info", async () => {
       // Setup: Mock CPU info and stub guessStack
       const mockCpuInfo = createMockCpuInfo({ pc: "0x1000", a7: "0x8000" });
-      mockVAmiga.getCpuInfo.resolves(mockCpuInfo);
+      mockEmulator.getCpuInfo.resolves(mockCpuInfo);
       sinon.stub(stackManager, "guessStack").resolves([[0x1000, 0x1000]]);
 
       // Mock source map returns null (no debug info for this address)
@@ -377,8 +377,8 @@ describe("StackManager - Comprehensive Tests", () => {
       // Frame 1: PC=0x2000, SP=0x8004, CFA=SP+4=0x8008, return addr at mem[0x8004]=0x3000
       // Frame 2: PC=0x3000, no DWARF info → stop
       const mockCpuInfo = createMockCpuInfo({ pc: "0x1000", a7: "0x8000" });
-      mockVAmiga.getCpuInfo.resolves(mockCpuInfo);
-      mockVAmiga.isValidAddress.returns(true);
+      mockEmulator.getCpuInfo.resolves(mockCpuInfo);
+      mockEmulator.isValidAddress.returns(true);
       mockSourceMap.lookupAddress.returns(null);
 
       mockSourceMap.getCfaForPc.withArgs(0x1000).returns({ reg: 15, offset: 4 });
@@ -387,8 +387,8 @@ describe("StackManager - Comprehensive Tests", () => {
 
       const buf1 = Buffer.alloc(4); buf1.writeUInt32BE(0x2000, 0);
       const buf2 = Buffer.alloc(4); buf2.writeUInt32BE(0x3000, 0);
-      mockVAmiga.readMemory.withArgs(0x8000, 4).resolves(buf1); // CFA-4 for frame 0
-      mockVAmiga.readMemory.withArgs(0x8004, 4).resolves(buf2); // CFA-4 for frame 1
+      mockEmulator.readMemory.withArgs(0x8000, 4).resolves(buf1); // CFA-4 for frame 0
+      mockEmulator.readMemory.withArgs(0x8004, 4).resolves(buf2); // CFA-4 for frame 1
 
       const { frames } = await stackManager.getStackFrames(0, 10);
 
@@ -405,16 +405,16 @@ describe("StackManager - Comprehensive Tests", () => {
       // Saved old A5   at mem[CFA-8] = mem[0x7FF8] = 0x7000
       // After unwind: SP=0x8000, A5=0x7000; no DWARF info at 0x2000→ stop
       const mockCpuInfo = createMockCpuInfo({ pc: "0x1000", a5: "0x7FF8", a7: "0x7FEC" });
-      mockVAmiga.getCpuInfo.resolves(mockCpuInfo);
-      mockVAmiga.isValidAddress.returns(true);
+      mockEmulator.getCpuInfo.resolves(mockCpuInfo);
+      mockEmulator.isValidAddress.returns(true);
       mockSourceMap.lookupAddress.returns(null);
 
       mockSourceMap.getCfaForPc.withArgs(0x1000).returns({ reg: 13, offset: 8 }); // A5 = DWARF r13
 
       const retBuf = Buffer.alloc(4); retBuf.writeUInt32BE(0x2000, 0);
       const a5Buf = Buffer.alloc(4); a5Buf.writeUInt32BE(0x7000, 0);
-      mockVAmiga.readMemory.withArgs(0x7FFC, 4).resolves(retBuf); // CFA-4 = 0x7FFC
-      mockVAmiga.readMemory.withArgs(0x7FF8, 4).resolves(a5Buf); // CFA-8 = 0x7FF8 (saved A5)
+      mockEmulator.readMemory.withArgs(0x7FFC, 4).resolves(retBuf); // CFA-4 = 0x7FFC
+      mockEmulator.readMemory.withArgs(0x7FF8, 4).resolves(a5Buf); // CFA-8 = 0x7FF8 (saved A5)
 
       const { frames } = await stackManager.getStackFrames(0, 10);
 
@@ -425,13 +425,13 @@ describe("StackManager - Comprehensive Tests", () => {
 
     it("should insert synthetic inline frames before the real frame (DWARF path only)", async () => {
       const mockCpuInfo = createMockCpuInfo({ pc: "0x1000", a7: "0x8000" });
-      mockVAmiga.getCpuInfo.resolves(mockCpuInfo);
-      mockVAmiga.isValidAddress.returns(true);
+      mockEmulator.getCpuInfo.resolves(mockCpuInfo);
+      mockEmulator.isValidAddress.returns(true);
 
       // DWARF CFA at 0x1000: SP+4 → CFA=0x8004, return address at mem[0x8000]=0x2000
       mockSourceMap.getCfaForPc.withArgs(0x1000).returns({ reg: 15, offset: 4 });
       const retBuf = Buffer.alloc(4); retBuf.writeUInt32BE(0x2000, 0);
-      mockVAmiga.readMemory.withArgs(0x8000, 4).resolves(retBuf);
+      mockEmulator.readMemory.withArgs(0x8000, 4).resolves(retBuf);
       // No DWARF info at 0x2000 → unwind stops
       mockSourceMap.lookupAddress.withArgs(0x2000).returns(null);
 
@@ -457,7 +457,7 @@ describe("StackManager - Comprehensive Tests", () => {
 
     it("should fall back to guessStack when getCfaForPc returns undefined for current PC", async () => {
       const mockCpuInfo = createMockCpuInfo({ pc: "0x1000", a7: "0x8000" });
-      mockVAmiga.getCpuInfo.resolves(mockCpuInfo);
+      mockEmulator.getCpuInfo.resolves(mockCpuInfo);
       // getCfaForPc returns undefined (default stub) → guessStack path
       sinon.stub(stackManager, "guessStack").resolves([[0x1000, 0x1000], [0x2000, 0x2000]]);
       mockSourceMap.lookupAddress.returns(null);

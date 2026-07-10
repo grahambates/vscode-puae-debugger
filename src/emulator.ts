@@ -6,7 +6,7 @@ import {
   EmulatorMessage,
   MemoryInfo,
   RegisterSetStatus,
-} from "./vAmiga";
+} from "./emulatorProtocol";
 import { SourceMap } from "./sourceMap";
 
 /**
@@ -27,9 +27,8 @@ export interface WatchpointOptions {
 }
 
 /**
- * Generic interface for an Amiga 68k emulator backend running in a VS Code
- * webview. `VAmiga` is the current implementation; a future PUAE/ami9000
- * backend would also implement this interface.
+ * Interface for an Amiga 68k emulator backend running in a VS Code webview.
+ * `PuaeEmulator` is the (sole) implementation.
  */
 export interface Emulator {
   // --- Lifecycle ---
@@ -138,10 +137,7 @@ export interface Emulator {
    * Sets a watchpoint at the specified memory address
    * @param address Memory address for the watchpoint
    * @param ignores Number of times to ignore the watchpoint before stopping
-   * @param options Access-type filter and watched-region length. PUAE-only
-   * for now — vamiga_rpc.js's "setWatchpoint" handler doesn't look at these
-   * fields, so vAmiga always watches a single address for both read and
-   * write regardless of what's passed here.
+   * @param options Access-type filter and watched-region length.
    */
   setWatchpoint(
     address: number,
@@ -163,8 +159,6 @@ export interface Emulator {
    * of a memory access function for registers, so this works by diffing
    * the register's value once per retired instruction, which also means
    * no read/write distinction (only "changed" is observable this way).
-   * PUAE-only for now — vAmiga has no backend implementation yet, so this
-   * is a no-op there.
    */
   setRegisterWatch(regIndex: number): void;
 

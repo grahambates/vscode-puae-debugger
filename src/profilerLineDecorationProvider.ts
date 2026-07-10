@@ -29,7 +29,7 @@ function formatCount(n: number): string {
 // ILocation/CallFrame — carries exact per-instruction hits/cycles/file/line; see
 // shared/profilerTypes.ts), grouped here by (file, line) since multiple instructions commonly
 // share one source line. On by default, same as the function-level CodeLens — toggled off/on
-// via the "vamiga-debugger.toggleLineProfilerAnnotations" command for anyone who finds
+// via the "puae-debugger.toggleLineProfilerAnnotations" command for anyone who finds
 // decorating every profiled line too visually heavy for routine editing.
 //
 // model.disassembly only covers the hottest ~64 functions (MAX_DISASSEMBLE_FUNCTIONS in
@@ -79,7 +79,7 @@ export class ProfilerLineDecorationProvider implements vscode.HoverProvider, vsc
 
   // Does this line currently carry a decoration? Used to gate the "Jump to Next Execution in
   // Profiler" editor-context-menu command before bothering to reveal the profiler panel — see
-  // vamiga-debugger.jumpToProfilerExecution in extension.ts. `line` is 1-based.
+  // puae-debugger.jumpToProfilerExecution in extension.ts. `line` is 1-based.
   public hasDataAt(file: string, line: number): boolean {
     if (!this.enabled) return false;
     return !!this.byFile.get(normalize(file).toUpperCase())?.has(line);

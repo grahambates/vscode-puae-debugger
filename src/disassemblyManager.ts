@@ -19,11 +19,11 @@ export class DisassemblyManager {
   /**
    * Creates a new DisassemblyManager instance.
    *
-   * @param vAmiga VAmiga instance for disassembly operations
+   * @param emulator Emulator instance for disassembly operations
    * @param sourceMap Source map for adding symbol information to instructions
    */
   constructor(
-    private vAmiga: Emulator,
+    private emulator: Emulator,
     private sourceMap: SourceMap,
   ) {}
 
@@ -58,7 +58,7 @@ export class DisassemblyManager {
       requestCount += instructionOffset;
     }
 
-    const memBuf = await this.vAmiga.readMemory(startAddress, requestCount * MAX_BYTES_PER_INSTRUCTION);
+    const memBuf = await this.emulator.readMemory(startAddress, requestCount * MAX_BYTES_PER_INSTRUCTION);
     const mem = new Uint8Array(memBuf.buffer, memBuf.byteOffset, memBuf.byteLength);
 
     type RawInstr = { addr: number; instruction: string; hex: string };
@@ -127,7 +127,7 @@ export class DisassemblyManager {
     address: number,
     instructionCount: number,
   ): Promise<DebugProtocol.DisassembledInstruction[]> {
-    const data = await this.vAmiga.readMemory(address, instructionCount * 4);
+    const data = await this.emulator.readMemory(address, instructionCount * 4);
 
     const result: DebugProtocol.DisassembledInstruction[] = [];
     for (let i = 0; i < instructionCount; i++) {

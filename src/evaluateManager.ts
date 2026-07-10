@@ -15,7 +15,7 @@ import {
   u8,
 } from "./numbers";
 import { Emulator } from "./emulator";
-import { CpuTraceItem } from "./vAmiga";
+import { CpuTraceItem } from "./emulatorProtocol";
 import { SourceMap } from "./sourceMap";
 import { VariablesManager } from "./variablesManager";
 import { DisassemblyManager } from "./disassemblyManager";
@@ -149,7 +149,7 @@ export class EvaluateManager {
   /**
    * Creates a new EvaluateManager instance.
    *
-   * @param vAmiga VAmiga instance for memory access and register reads
+   * @param emulator Emulator instance for memory access and register reads
    * @param sourceMap Source map for symbol resolution and address formatting
    * @param variablesManager Variables manager for accessing flat variable data and registering array handles
    * @param disassemblyManager Disassembly manager for code inspection

@@ -1,8 +1,8 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import * as assert from "assert";
 import * as sinon from "sinon";
-import { VamigaDebugAdapter } from "../vAmigaDebugAdapter";
-import { CpuInfo } from "../vAmiga";
+import { DebugAdapter } from "../debugAdapter";
+import { CpuInfo } from "../emulatorProtocol";
 import { PuaeEmulator } from "../puaeEmulator";
 import { DebugProtocol } from "@vscode/debugprotocol";
 import { VariablesManager } from "../variablesManager";
@@ -60,16 +60,16 @@ function createMockSourceMap(overrides: any = {}) {
 }
 
 /**
- * Integration tests for VamigaDebugAdapter
+ * Integration tests for DebugAdapter
  * Tests the full debug adapter protocol flow
  */
-describe("VamigaDebugAdapter Integration Tests", () => {
-  let adapter: VamigaDebugAdapter;
-  let mockVAmiga: sinon.SinonStubbedInstance<PuaeEmulator>;
+describe("DebugAdapter Integration Tests", () => {
+  let adapter: DebugAdapter;
+  let mockEmulator: sinon.SinonStubbedInstance<PuaeEmulator>;
 
   beforeEach(() => {
-    mockVAmiga = sinon.createStubInstance(PuaeEmulator);
-    adapter = new VamigaDebugAdapter(mockVAmiga);
+    mockEmulator = sinon.createStubInstance(PuaeEmulator);
+    adapter = new DebugAdapter(mockEmulator);
   });
 
   afterEach(() => {
@@ -141,7 +141,7 @@ describe("VamigaDebugAdapter Integration Tests", () => {
   // These integration tests focus on core debugger functionality
 
   describe("Stepping Operations", () => {
-    it("step in should call vAmiga stepInto", async () => {
+    it("step in should call emulator stepInto", async () => {
       const response: DebugProtocol.StepInResponse = {
         seq: 1,
         type: "response",
@@ -152,7 +152,7 @@ describe("VamigaDebugAdapter Integration Tests", () => {
 
       await (adapter as any).stepInRequest(response, { threadId: 1 });
 
-      assert.ok(mockVAmiga.stepInto.calledOnce);
+      assert.ok(mockEmulator.stepInto.calledOnce);
       assert.strictEqual((adapter as any).stepping, true);
       assert.strictEqual((adapter as any).isRunning, true);
     });
@@ -177,13 +177,13 @@ describe("VamigaDebugAdapter Integration Tests", () => {
       (adapter as any).breakpointManager = mockBreakpointManager;
 
       const mockCpuInfo = createMockCpuInfo({ pc: "0x1000" });
-      mockVAmiga.getCpuInfo.resolves(mockCpuInfo);
+      mockEmulator.getCpuInfo.resolves(mockCpuInfo);
 
       // JSR (addr).W = [0x4E, 0xB8, 0x20, 0x00] (4 bytes) → next instruction at 0x1004
       const jsrMem = Buffer.alloc(20);
       jsrMem[0] = 0x4e; jsrMem[1] = 0xb8; jsrMem[2] = 0x20; jsrMem[3] = 0x00;
       for (let i = 4; i < jsrMem.length; i += 2) { jsrMem[i] = 0x4e; jsrMem[i + 1] = 0x71; }
-      mockVAmiga.readMemory.resolves(jsrMem);
+      mockEmulator.readMemory.resolves(jsrMem);
 
       const response: DebugProtocol.NextResponse = {
         seq: 1,
@@ -200,18 +200,18 @@ describe("VamigaDebugAdapter Integration Tests", () => {
       assert.strictEqual(tmpBps.length, 1);
       assert.strictEqual(tmpBps[0].address, 0x1004);
       assert.strictEqual(tmpBps[0].reason, "step");
-      assert.ok(mockVAmiga.run.calledOnce);
+      assert.ok(mockEmulator.run.calledOnce);
     });
 
     it("next should step into for non-branch instruction", async () => {
       const mockCpuInfo = createMockCpuInfo({ pc: "0x1000" });
-      mockVAmiga.getCpuInfo.resolves(mockCpuInfo);
+      mockEmulator.getCpuInfo.resolves(mockCpuInfo);
 
       // MOVE.L D0,D1 = [0x22, 0x00] (2 bytes) — not a branch
       const moveMem = Buffer.alloc(20);
       moveMem[0] = 0x22; moveMem[1] = 0x00;
       for (let i = 2; i < moveMem.length; i += 2) { moveMem[i] = 0x4e; moveMem[i + 1] = 0x71; }
-      mockVAmiga.readMemory.resolves(moveMem);
+      mockEmulator.readMemory.resolves(moveMem);
 
       const response: DebugProtocol.NextResponse = {
         seq: 1,
@@ -224,7 +224,7 @@ describe("VamigaDebugAdapter Integration Tests", () => {
       await (adapter as any).nextRequest(response);
 
       // Should step into for non-branch
-      assert.ok(mockVAmiga.stepInto.calledOnce);
+      assert.ok(mockEmulator.stepInto.calledOnce);
       assert.strictEqual((adapter as any).stepping, true);
     });
   });
@@ -333,7 +333,7 @@ describe("VamigaDebugAdapter Integration Tests", () => {
   describe("Memory Operations", () => {
     it("readMemoryRequest should read memory from emulator", async () => {
       const mockMemResult = Buffer.from("hello");
-      mockVAmiga.readMemory.resolves(mockMemResult);
+      mockEmulator.readMemory.resolves(mockMemResult);
 
       const response: DebugProtocol.ReadMemoryResponse = {
         seq: 1,
@@ -354,11 +354,11 @@ describe("VamigaDebugAdapter Integration Tests", () => {
       assert.strictEqual(response.body.address, "0x1000");
       assert.strictEqual(response.body.data, mockMemResult.toString("base64"));
       assert.strictEqual(response.body.unreadableBytes, 0);
-      assert.ok(mockVAmiga.readMemory.calledWith(0x1000, 5));
+      assert.ok(mockEmulator.readMemory.calledWith(0x1000, 5));
     });
 
     it("writeMemoryRequest should write memory to emulator", async () => {
-      mockVAmiga.writeMemory.resolves();
+      mockEmulator.writeMemory.resolves();
 
       const response: DebugProtocol.WriteMemoryResponse = {
         seq: 1,
@@ -377,7 +377,7 @@ describe("VamigaDebugAdapter Integration Tests", () => {
       await (adapter as any).writeMemoryRequest(response, args);
 
       assert.ok(response.body);
-      assert.ok(mockVAmiga.writeMemory.calledWith(0x1000, data));
+      assert.ok(mockEmulator.writeMemory.calledWith(0x1000, data));
     });
   });
 
@@ -388,7 +388,7 @@ describe("VamigaDebugAdapter Integration Tests", () => {
       const mockBreakpointManager = sinon.createStubInstance(BreakpointManager);
       const mockVariablesManager = sinon.createStubInstance(VariablesManager);
       const mockDisassemblyManager = new DisassemblyManager(
-        mockVAmiga,
+        mockEmulator,
         mockSourceMap,
       );
 
@@ -403,7 +403,7 @@ describe("VamigaDebugAdapter Integration Tests", () => {
       disasmMem[0] = 0x22; disasmMem[1] = 0x00; // MOVE.L D0,D1
       disasmMem[2] = 0x4e; disasmMem[3] = 0x75; // RTS
       for (let i = 4; i < disasmMem.length; i += 2) { disasmMem[i] = 0x4e; disasmMem[i + 1] = 0x71; }
-      mockVAmiga.readMemory.resolves(disasmMem);
+      mockEmulator.readMemory.resolves(disasmMem);
 
       const response: DebugProtocol.DisassembleResponse = {
         seq: 1,

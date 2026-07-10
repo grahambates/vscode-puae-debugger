@@ -1,13 +1,13 @@
 {
-  "name": "vscode-vamiga-debugger",
-  "displayName": "VAmiga Debugger",
-  "description": "Debug Amiga programs with an integrated VAmiga emulator in vscode",
+  "name": "vscode-puae-debugger",
+  "displayName": "PUAE Debugger",
+  "description": "Debug Amiga programs with an integrated PUAE (WinUAE-derived) emulator in vscode",
   "version": "1.3.0",
   "author": "Graham Bates",
   "publisher": "gigabates",
   "license": "SEE LICENSE IN LICENSE.txt",
   "preview": false,
-  "repository": "https://github.com/grahambates/vscode-vamiga-debugger.git",
+  "repository": "https://github.com/grahambates/vscode-puae-debugger.git",
   "engines": {
     "vscode": "^1.104.0"
   },
@@ -29,11 +29,11 @@
   "contributes": {
     "customEditors": [
       {
-        "viewType": "vamiga-debugger.profileEditor",
-        "displayName": "vAmiga Profile",
+        "viewType": "puae-debugger.profileEditor",
+        "displayName": "PUAE Profile",
         "selector": [
           {
-            "filenamePattern": "*.vamigaprofile"
+            "filenamePattern": "*.puaeprofile"
           }
         ],
         "priority": "default"
@@ -41,141 +41,141 @@
     ],
     "commands": [
       {
-        "command": "vamiga-debugger.stepBackFrame",
+        "command": "puae-debugger.stepBackFrame",
         "title": "Start of Frame",
         "icon": "$(run-above)",
         "enablement": "debugType == 'puae' && debugState == 'stopped'"
       },
       {
-        "command": "vamiga-debugger.eof",
+        "command": "puae-debugger.eof",
         "title": "End of Frame",
         "icon": "$(run-below)",
         "enablement": "debugType == 'puae' && debugState == 'stopped'"
       },
       {
-        "command": "vamiga-debugger.eol",
+        "command": "puae-debugger.eol",
         "title": "End of Line",
         "icon": "$(debug-line-by-line)",
         "enablement": "debugType == 'puae' && debugState == 'stopped'"
       },
       {
-        "command": "vamiga-debugger.openMemoryViewer",
+        "command": "puae-debugger.openMemoryViewer",
         "title": "Open Memory Viewer",
         "icon": "$(symbol-array)"
       },
       {
-        "command": "vamiga-debugger.viewVariableInMemory",
+        "command": "puae-debugger.viewVariableInMemory",
         "title": "View in Memory Viewer"
       },
       {
-        "command": "vamiga-debugger.setWatchpointLength",
+        "command": "puae-debugger.setWatchpointLength",
         "title": "Set Watchpoint Length..."
       },
       {
-        "command": "vamiga-debugger.openStateViewer",
+        "command": "puae-debugger.openStateViewer",
         "title": "Open Amiga State",
         "icon": "$(symbol-misc)"
       },
       {
-        "command": "vamiga-debugger.openPuae",
-        "title": "vAmiga (PUAE): Open Webview"
+        "command": "puae-debugger.openPuae",
+        "title": "PUAE: Open Webview"
       },
       {
-        "command": "vamiga-debugger.openProfiler",
+        "command": "puae-debugger.openProfiler",
         "title": "Capture Frame Profile",
         "icon": "$(dashboard)"
       },
       {
-        "command": "vamiga-debugger.toggleLineProfilerAnnotations",
+        "command": "puae-debugger.toggleLineProfilerAnnotations",
         "title": "Toggle Line Profiler Annotations"
       },
       {
-        "command": "vamiga-debugger.jumpToProfilerExecution",
+        "command": "puae-debugger.jumpToProfilerExecution",
         "title": "Jump to Next Execution in Profiler"
       }
     ],
     "menus": {
       "commandPalette": [
         {
-          "command": "vamiga-debugger.openMemoryViewer",
+          "command": "puae-debugger.openMemoryViewer",
           "when": "debugType == 'puae'"
         },
         {
-          "command": "vamiga-debugger.viewVariableInMemory",
+          "command": "puae-debugger.viewVariableInMemory",
           "when": "false"
         },
         {
-          "command": "vamiga-debugger.openStateViewer",
+          "command": "puae-debugger.openStateViewer",
           "when": "debugType == 'puae'"
         },
         {
-          "command": "vamiga-debugger.openProfiler",
+          "command": "puae-debugger.openProfiler",
           "when": "debugType == 'puae'"
         },
         {
-          "command": "vamiga-debugger.jumpToProfilerExecution",
+          "command": "puae-debugger.jumpToProfilerExecution",
           "when": "editorLangId == c || editorLangId == cpp || editorLangId == m68k"
         }
       ],
       "debug/toolBar": [
         {
-          "command": "vamiga-debugger.stepBackFrame",
+          "command": "puae-debugger.stepBackFrame",
           "when": "debugType == 'puae'",
           "group": "navigation@50"
         },
         {
-          "command": "vamiga-debugger.eof",
+          "command": "puae-debugger.eof",
           "when": "debugType == 'puae'",
           "group": "navigation@51"
         },
         {
-          "command": "vamiga-debugger.eol",
+          "command": "puae-debugger.eol",
           "when": "debugType == 'puae'",
           "group": "navigation@52"
         },
         {
-          "command": "vamiga-debugger.openMemoryViewer",
+          "command": "puae-debugger.openMemoryViewer",
           "when": "debugType == 'puae'",
           "group": "navigation@53"
         },
         {
-          "command": "vamiga-debugger.openStateViewer",
+          "command": "puae-debugger.openStateViewer",
           "when": "debugType == 'puae'",
           "group": "navigation@54"
         },
         {
-          "command": "vamiga-debugger.openProfiler",
+          "command": "puae-debugger.openProfiler",
           "when": "debugType == 'puae'",
           "group": "navigation@54.5"
         }
       ],
       "debug/variables/context": [
         {
-          "command": "vamiga-debugger.viewVariableInMemory",
+          "command": "puae-debugger.viewVariableInMemory",
           "when": "debugType == 'puae'"
         },
         {
-          "command": "vamiga-debugger.setWatchpointLength",
+          "command": "puae-debugger.setWatchpointLength",
           "when": "debugType == 'puae'"
         }
       ],
       "editor/context": [
         {
-          "command": "vamiga-debugger.openMemoryViewer",
-          "when": "(debugType == 'vamiga' || debugType == 'puae') && editorLangId == m68k",
+          "command": "puae-debugger.openMemoryViewer",
+          "when": "debugType == 'puae' && editorLangId == m68k",
           "group": "debug@1"
         },
         {
-          "command": "vamiga-debugger.jumpToProfilerExecution",
+          "command": "puae-debugger.jumpToProfilerExecution",
           "when": "editorLangId == c || editorLangId == cpp || editorLangId == m68k",
           "group": "debug@2"
         }
       ]
     },
     "configuration": {
-      "title": "Vamiga Debugger",
+      "title": "PUAE Debugger",
       "properties": {
-        "vamiga-debugger.defaultViewColumn": {
+        "puae-debugger.defaultViewColumn": {
           "type": "string",
           "enum": [
             "one",
@@ -192,9 +192,9 @@
             "Same column as active editor"
           ],
           "default": "beside",
-          "description": "Default position for the Vamiga emulator window"
+          "description": "Default position for the PUAE emulator window"
         },
-        "vamiga-debugger.memoryViewer.colorCodeHexBytes": {
+        "puae-debugger.memoryViewer.colorCodeHexBytes": {
           "type": "boolean",
           "default": true,
           "description": "Color-code byte/word/longword values in the memory viewer's Hex view by their leading hex digit, making patterns in the data easier to spot at a glance"

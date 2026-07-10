@@ -1,9 +1,9 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import * as assert from "assert";
 import * as sinon from "sinon";
-import { VamigaDebugAdapter } from "../vAmigaDebugAdapter";
+import { DebugAdapter } from "../debugAdapter";
 import { EvaluateManager, EvaluateResultType } from "../evaluateManager";
-import { CpuInfo } from "../vAmiga";
+import { CpuInfo } from "../emulatorProtocol";
 import { PuaeEmulator } from "../puaeEmulator";
 import { DebugProtocol } from "@vscode/debugprotocol";
 import * as registerParsers from "../amigaRegisterParsers";
@@ -14,14 +14,14 @@ import { DisassemblyManager } from "../disassemblyManager";
 /**
  * Test subclass that exposes protected methods for testing
  */
-class TestableVamigaDebugAdapter extends VamigaDebugAdapter {
+class TestableDebugAdapter extends DebugAdapter {
   public getTestEvaluateManager(): EvaluateManager | undefined {
     return (this as any).evaluateManager;
   }
 }
 
 /**
- * Simplified behavior-focused tests for VamigaDebugAdapter.
+ * Simplified behavior-focused tests for DebugAdapter.
  *
  * These tests use minimal refactoring (protected methods + constructor injection)
  * to test behavior without over-engineering the architecture.
@@ -29,15 +29,15 @@ class TestableVamigaDebugAdapter extends VamigaDebugAdapter {
  * Note: Comprehensive variable management tests are now in VariablesManager test suite.
  * This test suite focuses on core debugger behavior, evaluation, and integration.
  */
-describe("VamigaDebugAdapter - Simplified Tests", () => {
-  let adapter: TestableVamigaDebugAdapter;
-  let mockVAmiga: sinon.SinonStubbedInstance<PuaeEmulator>;
+describe("DebugAdapter - Simplified Tests", () => {
+  let adapter: TestableDebugAdapter;
+  let mockEmulator: sinon.SinonStubbedInstance<PuaeEmulator>;
 
   beforeEach(() => {
-    mockVAmiga = sinon.createStubInstance(PuaeEmulator);
+    mockEmulator = sinon.createStubInstance(PuaeEmulator);
 
     // Use constructor injection to provide mock
-    adapter = new TestableVamigaDebugAdapter(mockVAmiga);
+    adapter = new TestableDebugAdapter(mockEmulator);
   });
 
   afterEach(() => {
@@ -53,7 +53,7 @@ describe("VamigaDebugAdapter - Simplified Tests", () => {
       const mockVariablesManager = setupMockVariablesManager();
       const mockDisassemblyManager = setupMockDisassemblyManager();
       const evaluateManager = new EvaluateManager(
-        mockVAmiga,
+        mockEmulator,
         mockSourceMap,
         mockVariablesManager,
         mockDisassemblyManager,
@@ -74,7 +74,7 @@ describe("VamigaDebugAdapter - Simplified Tests", () => {
       const mockVariablesManager = setupMockVariablesManager({ d0: 0x100 });
       const mockDisassemblyManager = setupMockDisassemblyManager();
       const evaluateManager = new EvaluateManager(
-        mockVAmiga,
+        mockEmulator,
         mockSourceMap,
         mockVariablesManager,
         mockDisassemblyManager,
@@ -99,7 +99,7 @@ describe("VamigaDebugAdapter - Simplified Tests", () => {
       });
       const mockDisassemblyManager = setupMockDisassemblyManager();
       const evaluateManager = new EvaluateManager(
-        mockVAmiga,
+        mockEmulator,
         mockSourceMap,
         mockVariablesManager,
         mockDisassemblyManager,
@@ -118,13 +118,13 @@ describe("VamigaDebugAdapter - Simplified Tests", () => {
       // Setup: Mock memory read
       const mockBuffer = Buffer.alloc(4);
       mockBuffer.writeUInt32BE(0x12345678, 0);
-      mockVAmiga.readMemory.resolves(mockBuffer);
+      mockEmulator.readMemory.resolves(mockBuffer);
       setupMockCpuState();
       const mockSourceMap = setupMockSourceMap();
       const mockVariablesManager = setupMockVariablesManager();
       const mockDisassemblyManager = setupMockDisassemblyManager();
       const evaluateManager = new EvaluateManager(
-        mockVAmiga,
+        mockEmulator,
         mockSourceMap,
         mockVariablesManager,
         mockDisassemblyManager,
@@ -135,7 +135,7 @@ describe("VamigaDebugAdapter - Simplified Tests", () => {
       const result = await evaluateManager.evaluate("0x1000");
 
       // Verify: Memory was read and result formatted correctly
-      assert.ok(mockVAmiga.readMemory.calledWith(0x1000, 4));
+      assert.ok(mockEmulator.readMemory.calledWith(0x1000, 4));
       assert.strictEqual(result.value, 0x12345678);
       assert.strictEqual(result.memoryReference, "0x00001000");
     });
@@ -150,7 +150,7 @@ describe("VamigaDebugAdapter - Simplified Tests", () => {
       const mockVariablesManager = setupMockVariablesManager({ main: 0x1000 });
       const mockDisassemblyManager = setupMockDisassemblyManager();
       const evaluateManager = new EvaluateManager(
-        mockVAmiga,
+        mockEmulator,
         mockSourceMap,
         mockVariablesManager,
         mockDisassemblyManager,
@@ -177,7 +177,7 @@ describe("VamigaDebugAdapter - Simplified Tests", () => {
       const mockVariablesManager = setupMockVariablesManager({ d0: 0x42 });
       const mockDisassemblyManager = setupMockDisassemblyManager();
       const evaluateManager = new EvaluateManager(
-        mockVAmiga,
+        mockEmulator,
         mockSourceMap,
         mockVariablesManager,
         mockDisassemblyManager,
@@ -205,7 +205,7 @@ describe("VamigaDebugAdapter - Simplified Tests", () => {
       const mockVariablesManager = setupMockVariablesManager();
       const mockDisassemblyManager = setupMockDisassemblyManager();
       const evaluateManager = new EvaluateManager(
-        mockVAmiga,
+        mockEmulator,
         mockSourceMap,
         mockVariablesManager,
         mockDisassemblyManager,
@@ -233,7 +233,7 @@ describe("VamigaDebugAdapter - Simplified Tests", () => {
       for (let i = 0; i < 16; i++) {
         mockBuffer[i] = i * 0x10;
       }
-      mockVAmiga.readMemory.resolves(mockBuffer);
+      mockEmulator.readMemory.resolves(mockBuffer);
 
       const response =
         createMockResponse<DebugProtocol.ReadMemoryResponse>("readMemory");
@@ -246,7 +246,7 @@ describe("VamigaDebugAdapter - Simplified Tests", () => {
       await (adapter as any).readMemoryRequest(response, args);
 
       // Verify: Memory read was called and result encoded
-      assert.ok(mockVAmiga.readMemory.calledWith(0x1000, 16));
+      assert.ok(mockEmulator.readMemory.calledWith(0x1000, 16));
       assert.strictEqual(response.success, true);
       assert.ok(response.body?.data);
       assert.strictEqual(response.body?.address, "0x00001000"); // formatHex returns padded hex
@@ -254,7 +254,7 @@ describe("VamigaDebugAdapter - Simplified Tests", () => {
 
     it("should handle writeMemory request", async () => {
       // Setup: Mock memory write
-      mockVAmiga.writeMemory.resolves();
+      mockEmulator.writeMemory.resolves();
 
       const response =
         createMockResponse<DebugProtocol.WriteMemoryResponse>("writeMemory");
@@ -268,8 +268,8 @@ describe("VamigaDebugAdapter - Simplified Tests", () => {
       await (adapter as any).writeMemoryRequest(response, args);
 
       // Verify: Memory write was called
-      assert.ok(mockVAmiga.writeMemory.calledOnce);
-      const writeCall = mockVAmiga.writeMemory.getCall(0);
+      assert.ok(mockEmulator.writeMemory.calledOnce);
+      const writeCall = mockEmulator.writeMemory.getCall(0);
       assert.strictEqual(writeCall.args[0], 0x2000);
       assert.deepStrictEqual(
         writeCall.args[1],
@@ -396,7 +396,7 @@ describe("VamigaDebugAdapter - Simplified Tests", () => {
       const mockVariablesManager = setupMockVariablesManager({ d0: 0x10 });
       const mockDisassemblyManager = setupMockDisassemblyManager();
       (adapter as any).evaluateManager = new EvaluateManager(
-        mockVAmiga,
+        mockEmulator,
         mockSourceMap,
         mockVariablesManager,
         mockDisassemblyManager,
@@ -406,7 +406,7 @@ describe("VamigaDebugAdapter - Simplified Tests", () => {
 
       await (adapter as any).handleStop({ name: "BREAKPOINT_REACHED", payload: { pc: 0x1000 } });
 
-      assert.ok(mockVAmiga.run.notCalled);
+      assert.ok(mockEmulator.run.notCalled);
       assert.ok(
         sendEventSpy.args.some(
           ([evt]) => evt.event === "stopped" && evt.body.hitBreakpointIds?.[0] === 1,
@@ -420,7 +420,7 @@ describe("VamigaDebugAdapter - Simplified Tests", () => {
       const mockVariablesManager = setupMockVariablesManager({ d0: 0x0 });
       const mockDisassemblyManager = setupMockDisassemblyManager();
       (adapter as any).evaluateManager = new EvaluateManager(
-        mockVAmiga,
+        mockEmulator,
         mockSourceMap,
         mockVariablesManager,
         mockDisassemblyManager,
@@ -430,7 +430,7 @@ describe("VamigaDebugAdapter - Simplified Tests", () => {
 
       await (adapter as any).handleStop({ name: "BREAKPOINT_REACHED", payload: { pc: 0x1000 } });
 
-      assert.ok(mockVAmiga.run.calledOnce);
+      assert.ok(mockEmulator.run.calledOnce);
       assert.ok(sendEventSpy.args.every(([evt]) => evt.event !== "stopped"));
     });
   });
@@ -453,7 +453,7 @@ describe("VamigaDebugAdapter - Simplified Tests", () => {
       const mockVariablesManager = setupMockVariablesManager({ d0: 0x2a });
       const mockDisassemblyManager = setupMockDisassemblyManager();
       (adapter as any).evaluateManager = new EvaluateManager(
-        mockVAmiga,
+        mockEmulator,
         mockSourceMap,
         mockVariablesManager,
         mockDisassemblyManager,
@@ -463,7 +463,7 @@ describe("VamigaDebugAdapter - Simplified Tests", () => {
 
       await (adapter as any).handleStop({ name: "BREAKPOINT_REACHED", payload: { pc: 0x1000 } });
 
-      assert.ok(mockVAmiga.run.calledOnce);
+      assert.ok(mockEmulator.run.calledOnce);
       assert.ok(sendEventSpy.args.every(([evt]) => evt.event !== "stopped"));
       assert.ok(
         sendEventSpy.args.some(
@@ -478,7 +478,7 @@ describe("VamigaDebugAdapter - Simplified Tests", () => {
       const mockVariablesManager = setupMockVariablesManager();
       const mockDisassemblyManager = setupMockDisassemblyManager();
       (adapter as any).evaluateManager = new EvaluateManager(
-        mockVAmiga,
+        mockEmulator,
         mockSourceMap,
         mockVariablesManager,
         mockDisassemblyManager,
@@ -488,7 +488,7 @@ describe("VamigaDebugAdapter - Simplified Tests", () => {
 
       await (adapter as any).handleStop({ name: "BREAKPOINT_REACHED", payload: { pc: 0x1000 } });
 
-      assert.ok(mockVAmiga.run.calledOnce);
+      assert.ok(mockEmulator.run.calledOnce);
       const outputEvt = sendEventSpy.args.find(([evt]) => evt.event === "output");
       assert.ok(outputEvt?.[0].body.output.startsWith("oops <"));
     });
@@ -569,7 +569,7 @@ describe("VamigaDebugAdapter - Simplified Tests", () => {
   describe("Stepping and Execution Control", () => {
     it("should handle stepIn request", async () => {
       // Setup: Mock stepInto functionality
-      mockVAmiga.stepInto.returns(undefined);
+      mockEmulator.stepInto.returns(undefined);
 
       const response =
         createMockResponse<DebugProtocol.StepInResponse>("stepIn");
@@ -581,7 +581,7 @@ describe("VamigaDebugAdapter - Simplified Tests", () => {
       await (adapter as any).stepInRequest(response, args);
 
       // Verify: stepInto was called
-      assert.ok(mockVAmiga.stepInto.calledOnce);
+      assert.ok(mockEmulator.stepInto.calledOnce);
       assert.strictEqual(response.success, true);
     });
 
@@ -596,8 +596,8 @@ describe("VamigaDebugAdapter - Simplified Tests", () => {
       const mem = Buffer.alloc(20);
       jsrBytes.forEach((b, i) => { mem[i] = b; });
       for (let i = jsrBytes.length; i < mem.length; i += 2) { mem[i] = 0x4e; mem[i + 1] = 0x71; }
-      mockVAmiga.readMemory.resolves(mem);
-      mockVAmiga.run.resolves();
+      mockEmulator.readMemory.resolves(mem);
+      mockEmulator.run.resolves();
 
       const response = createMockResponse<DebugProtocol.NextResponse>("next");
 
@@ -606,20 +606,20 @@ describe("VamigaDebugAdapter - Simplified Tests", () => {
 
       // Verify: Breakpoint set on next instruction (0x1006) and run called
       assert.ok(mockBreakpointManager.setTmpBreakpoint.calledWith(0x1006, "step"));
-      assert.ok(mockVAmiga.run.called);
+      assert.ok(mockEmulator.run.called);
       assert.strictEqual(response.success, true);
     });
 
     it("should handle next (step over) request with non-call instruction", async () => {
       // Setup: Mock CPU state with MOVE (not a call)
       setupMockCpuState({ pc: "0x1000" });
-      mockVAmiga.stepInto.returns(undefined);
+      mockEmulator.stepInto.returns(undefined);
 
       // MOVE.L D0,D1 = [0x22, 0x00] (2 bytes), then NOPs
       const mem = Buffer.alloc(20);
       mem[0] = 0x22; mem[1] = 0x00;
       for (let i = 2; i < mem.length; i += 2) { mem[i] = 0x4e; mem[i + 1] = 0x71; }
-      mockVAmiga.readMemory.resolves(mem);
+      mockEmulator.readMemory.resolves(mem);
 
       const response = createMockResponse<DebugProtocol.NextResponse>("next");
 
@@ -627,7 +627,7 @@ describe("VamigaDebugAdapter - Simplified Tests", () => {
       await (adapter as any).nextRequest(response, { threadId: 1, granularity: "instruction" });
 
       // Verify: Just calls stepInto for non-call instructions
-      assert.ok(mockVAmiga.stepInto.called);
+      assert.ok(mockEmulator.stepInto.called);
       assert.strictEqual(response.success, true);
     });
 
@@ -644,7 +644,7 @@ describe("VamigaDebugAdapter - Simplified Tests", () => {
 
       (adapter as any).stackManager = mockStackManager;
       (adapter as any).breakpointManager = mockBreakpointManager;
-      mockVAmiga.run.returns(undefined);
+      mockEmulator.run.returns(undefined);
 
       const response =
         createMockResponse<DebugProtocol.StepOutResponse>("stepOut");
@@ -656,13 +656,13 @@ describe("VamigaDebugAdapter - Simplified Tests", () => {
       assert.ok(
         mockBreakpointManager.setTmpBreakpoint.calledWith(0x2010, "step"),
       );
-      assert.ok(mockVAmiga.run.calledOnce);
+      assert.ok(mockEmulator.run.calledOnce);
       assert.strictEqual(response.success, true);
     });
 
     it("should handle continue request", async () => {
       // Setup: Mock continue functionality
-      mockVAmiga.run.resolves();
+      mockEmulator.run.resolves();
 
       const response =
         createMockResponse<DebugProtocol.ContinueResponse>("continue");
@@ -671,13 +671,13 @@ describe("VamigaDebugAdapter - Simplified Tests", () => {
       (adapter as any).continueRequest(response);
 
       // Verify: run was called
-      assert.ok(mockVAmiga.run.calledOnce);
+      assert.ok(mockEmulator.run.calledOnce);
       assert.strictEqual(response.success, true);
     });
 
     it("should handle pause request", async () => {
       // Setup: Mock pause functionality
-      mockVAmiga.pause.resolves();
+      mockEmulator.pause.resolves();
 
       const response = createMockResponse<DebugProtocol.PauseResponse>("pause");
 
@@ -685,7 +685,7 @@ describe("VamigaDebugAdapter - Simplified Tests", () => {
       (adapter as any).pauseRequest(response);
 
       // Verify: pause was called
-      assert.ok(mockVAmiga.pause.calledOnce);
+      assert.ok(mockEmulator.pause.calledOnce);
       assert.strictEqual(response.success, true);
     });
   });
@@ -693,7 +693,7 @@ describe("VamigaDebugAdapter - Simplified Tests", () => {
   describe("Reverse Debugging Features", () => {
     it("should handle stepBack request", async () => {
       // Setup: Mock stepBack functionality
-      mockVAmiga.stepBack.resolves();
+      mockEmulator.stepBack.resolves();
 
       const response =
         createMockResponse<DebugProtocol.StepBackResponse>("stepBack");
@@ -702,13 +702,13 @@ describe("VamigaDebugAdapter - Simplified Tests", () => {
       await (adapter as any).stepBackRequest(response);
 
       // Verify: stepBack was called and stopped event sent
-      assert.ok(mockVAmiga.stepBack.calledOnce);
+      assert.ok(mockEmulator.stepBack.calledOnce);
       assert.strictEqual(response.success, true);
     });
 
     it("should handle stepBack errors gracefully", async () => {
       // Setup: Mock stepBack to fail
-      mockVAmiga.stepBack.rejects(new Error("Step back failed"));
+      mockEmulator.stepBack.rejects(new Error("Step back failed"));
 
       const response =
         createMockResponse<DebugProtocol.StepBackResponse>("stepBack");
@@ -724,7 +724,7 @@ describe("VamigaDebugAdapter - Simplified Tests", () => {
 
     it("should handle reverseContinue request", async () => {
       // Setup: Mock reverseContinue functionality
-      mockVAmiga.continueReverse.resolves();
+      mockEmulator.continueReverse.resolves();
 
       const response =
         createMockResponse<DebugProtocol.ReverseContinueResponse>(
@@ -735,13 +735,13 @@ describe("VamigaDebugAdapter - Simplified Tests", () => {
       await (adapter as any).reverseContinueRequest(response);
 
       // Verify: continueReverse was called and stopped event sent
-      assert.ok(mockVAmiga.continueReverse.calledOnce);
+      assert.ok(mockEmulator.continueReverse.calledOnce);
       assert.strictEqual(response.success, true);
     });
 
     it("should handle reverseContinue errors gracefully", async () => {
       // Setup: Mock reverseContinue to fail
-      mockVAmiga.continueReverse.rejects(new Error("Reverse continue failed"));
+      mockEmulator.continueReverse.rejects(new Error("Reverse continue failed"));
 
       const response =
         createMockResponse<DebugProtocol.ReverseContinueResponse>(
@@ -834,8 +834,8 @@ describe("VamigaDebugAdapter - Simplified Tests", () => {
       ...overrides,
     };
 
-    mockVAmiga.getCpuInfo.resolves(defaultCpuInfo);
-    mockVAmiga.getAllCustomRegisters.resolves({
+    mockEmulator.getCpuInfo.resolves(defaultCpuInfo);
+    mockEmulator.getAllCustomRegisters.resolves({
       DMACON: { value: "0x00008200" },
       INTENA: { value: "0x00004000" },
     });

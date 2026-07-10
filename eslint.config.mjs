@@ -8,7 +8,7 @@ import reactHooks from "eslint-plugin-react-hooks";
 
 export default defineConfig([
   {
-    ignores: ["vamiga/**", "*.js"],
+    ignores: ["*.js"],
   },
   eslint.configs.recommended,
   tseslint.configs.recommended,

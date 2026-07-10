@@ -201,7 +201,7 @@ puae_debug_write_memory_buf(uint32_t addr, const uint8_t *data, size_t len);
 
 // Classifies each of the 256 64KB banks of the 24-bit address space
 // (mem_banks[0..255]) into a byte using the same numeric values as
-// src/vAmiga.ts's MemSrc enum (0=NONE, 1=CHIP, 2=CHIP_MIRROR, 3=SLOW,
+// src/emulatorProtocol.ts's MemSrc enum (0=NONE, 1=CHIP, 2=CHIP_MIRROR, 3=SLOW,
 // 4=SLOW_MIRROR, 5=FAST, 6=CIA, 7=CIA_MIRROR, 9=CUSTOM, 10=CUSTOM_MIRROR,
 // 13=ROM, 14=ROM_MIRROR, 16=EXT). RTC/AUTOCONF/ZOR/WOM (8/11/12/15) are
 // not currently detected and report as NONE. Returns the number of bytes

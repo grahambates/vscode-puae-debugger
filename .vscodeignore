@@ -9,4 +9,3 @@ node_modules
 !node_modules/@vscode/codicons/dist/**
 esbuild.js
 **/tsconfig.tsbuildinfo
-vamigaweb_fork

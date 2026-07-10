@@ -2,8 +2,8 @@
 // (Reconstruction lives webview-side in src/webview/profilerViewer/reconstruct.ts.)
 //
 // The grid is the emulator's DmaProfiler::Cell[] — one 8-byte record per dma-cycle,
-// little-endian: { u8 owner; u8 flags; u16 data; u32 addr }. See
-// vamigaweb_fork/Core/Profiler/DmaProfiler.h.
+// little-endian: { u8 owner; u8 flags; u16 data; u32 addr } — matching the layout of
+// the vAmiga emulator project's own DmaProfiler::Cell (Core/Profiler/DmaProfiler.h).
 
 import { IDmaModel, ICopperModel } from "./shared/profilerTypes";
 

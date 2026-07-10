@@ -233,7 +233,7 @@ export async function main(config: MainConfig = {}): Promise<void> {
   const ok = wasm_boot("");
   if (!ok) { log("wasm_boot FAILED — check console"); return; }
 
-  // [vscode-vamiga-debugger mem protect] fastLoad starts this in the
+  // [vscode-puae-debugger mem protect] fastLoad starts this in the
   // warm-up loop just below, before frame() ever runs; non-fastLoad starts
   // it from frame() instead, polling from frame 0 — see both below.
   let memProtectTrackingStarted = false;
@@ -250,7 +250,7 @@ export async function main(config: MainConfig = {}): Promise<void> {
     // loop runs from frame 0 so tryExec/getCurrentProcess polling (below) can
     // observe AmigaOS booting from DH0: and running the startup-sequence.
     log("Waiting for exec.library to initialise…");
-    // [vscode-vamiga-debugger mem protect] Poll every tick, not just once at
+    // [vscode-puae-debugger mem protect] Poll every tick, not just once at
     // the end — the C side validates execBase itself and no-ops until ready,
     // so this starts the AllocMem/FreeMem watch as soon as exec.library
     // initializes (well before isExecReady's GfxBase+signature heuristic),
@@ -264,7 +264,7 @@ export async function main(config: MainConfig = {}): Promise<void> {
     if (!memProtectTrackingStarted) {
       memProtectTrackingStarted = !!M._wasm_memprotect_start_tracking();
     }
-    // [vscode-vamiga-debugger mem protect] GfxBase is confirmed set here
+    // [vscode-puae-debugger mem protect] GfxBase is confirmed set here
     // (isExecReady checked it), so its own library list is guaranteed to be
     // populated — safe to walk now, unlike at the earlier raw-execBase
     // tracking-start point above (see ami_debug.c's
@@ -415,7 +415,7 @@ export async function main(config: MainConfig = {}): Promise<void> {
     // messages, just ignored by rpc.handleMessage.
     window.addEventListener("message", (event) => handleDmaHoverMessage(event.data));
     // Tells PuaeEmulator the wasm module is ready, so it can fetch and cache
-    // getMemoryInfo() — mirrors VAmiga's webview-ready handshake.
+    // getMemoryInfo() — mirrors the vAmiga emulator project's own webview-ready handshake.
     vscode.postMessage({ type: "exec-ready" });
   }
 
@@ -980,7 +980,7 @@ export async function main(config: MainConfig = {}): Promise<void> {
       setTimeout(() => rpc!.pushSnapshot(), 0);
     }
 
-    // [vscode-vamiga-debugger mem protect] Starts the AllocMem/FreeMem watch
+    // [vscode-puae-debugger mem protect] Starts the AllocMem/FreeMem watch
     // as early as possible — well before tryExec's "user task started"
     // heuristic below, so Kickstart's own boot-time allocations (graphics.
     // library's default View/copper lists, etc.) get tracked too. The C side
@@ -999,7 +999,7 @@ export async function main(config: MainConfig = {}): Promise<void> {
       if (r.ready) {
         execReady = true;
         allocMemAddr = r.allocMemAddr!;
-        // [vscode-vamiga-debugger mem protect] GfxBase is confirmed set here
+        // [vscode-puae-debugger mem protect] GfxBase is confirmed set here
         // (tryExec/isExecReady checked it) — safe to walk the library list
         // now, unlike at the earlier raw-execBase tracking-start point above.
         M._wasm_memprotect_seed_libraries();
@@ -1035,7 +1035,7 @@ export async function main(config: MainConfig = {}): Promise<void> {
 
         // Tells the DAP adapter a breakpoint/watchpoint was hit during
         // continue, so it can send a StoppedEvent (handleStop,
-        // vAmigaDebugAdapter.ts) — mirrors vAmiga_ui.js's handleStop.
+        // debugAdapter.ts) — mirrors vAmiga_ui.js's handleStop.
         if (vscode) {
           vscode.postMessage({ type: "emulator-state", state: "stopped", message: getCurrentStopMessage(M) });
         }

@@ -1,5 +1,5 @@
 import { Source, StackFrame } from "@vscode/debugadapter";
-import { CpuInfo } from "./vAmiga";
+import { CpuInfo } from "./emulatorProtocol";
 import { Emulator } from "./emulator";
 import { formatAddress, formatHex } from "./numbers";
 import { basename } from "path";
@@ -20,7 +20,7 @@ export class StackManager {
  /**
    * Creates a new StackManager instance.
    *
-   * @param vAmiga VAmiga instance for reading CPU state and memory
+   * @param emulator Emulator instance for reading CPU state and memory
    * @param sourceMap Source map for resolving addresses to source locations
    */
   constructor(
@@ -225,8 +225,8 @@ export class StackManager {
   /**
    * Analyzes stack memory to guess call frames.
    *
-   * Since VAmiga doesn't track stack frames, this method examines stack memory
-   * looking for patterns that indicate return addresses from JSR/BSR instructions.
+   * The emulator doesn't track stack frames natively, so this method examines stack
+   * memory looking for patterns that indicate return addresses from JSR/BSR instructions.
    *
    * Made protected to allow testing of the stack analysis algorithm.
    *
@@ -240,7 +240,7 @@ export class StackManager {
    * @returns Array of [call instruction address, return address] pairs
    */
   public async guessStack(pc: number, stackAddress: number, maxLength = 16): Promise<[number, number][]> {
-    // vAmiga doesn't currently track stack frames, so we'll need to look at the stack data and guess...
+    // emulator doesn't currently track stack frames, so we'll need to look at the stack data and guess...
     // Fetch data from sp, up to a reasonable length
     const maxSize = 128;
     const stackData = await this.emulator.readMemory(stackAddress, 128);

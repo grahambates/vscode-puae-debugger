@@ -1,7 +1,7 @@
 import * as assert from "assert";
 import * as sinon from "sinon";
 import { VariablesManager } from "../variablesManager";
-import { CpuInfo } from "../vAmiga";
+import { CpuInfo } from "../emulatorProtocol";
 import { PuaeEmulator } from "../puaeEmulator";
 import { SourceMap, TypeDescriptor } from "../sourceMap";
 import { MemoryType } from "../amigaHunkParser";
@@ -12,14 +12,14 @@ import { MemoryType } from "../amigaHunkParser";
  */
 describe("VariablesManager - Comprehensive Tests", () => {
   let variablesManager: VariablesManager;
-  let mockVAmiga: sinon.SinonStubbedInstance<PuaeEmulator>;
+  let mockEmulator: sinon.SinonStubbedInstance<PuaeEmulator>;
   let mockSourceMap: sinon.SinonStubbedInstance<SourceMap>;
 
   beforeEach(() => {
-    mockVAmiga = sinon.createStubInstance(PuaeEmulator);
+    mockEmulator = sinon.createStubInstance(PuaeEmulator);
     mockSourceMap = sinon.createStubInstance(SourceMap);
     mockSourceMap.getGlobalVariables.returns([]);
-    variablesManager = new VariablesManager(mockVAmiga, mockSourceMap);
+    variablesManager = new VariablesManager(mockEmulator, mockSourceMap);
   });
 
   afterEach(() => {
@@ -56,8 +56,8 @@ describe("VariablesManager - Comprehensive Tests", () => {
         { name: 'global_int',   typeName: 'int',   byteSize: 4, location: { kind: 'addr', address: 0x2040 }, typeDescriptor: { kind: 'primitive', typeName: 'int',   byteSize: 4 } },
         { name: 'global_short', typeName: 'short', byteSize: 2, location: { kind: 'addr', address: 0x2044 }, typeDescriptor: { kind: 'primitive', typeName: 'short', byteSize: 2 } },
       ]);
-      mockVAmiga.peek32.withArgs(0x2040).resolves(0x11111111);
-      mockVAmiga.peek16.withArgs(0x2044).resolves(0x2222);
+      mockEmulator.peek32.withArgs(0x2040).resolves(0x11111111);
+      mockEmulator.peek16.withArgs(0x2044).resolves(0x2222);
       mockSourceMap.findSymbolOffset.returns(undefined);
 
       const scopes = variablesManager.getScopes();
@@ -90,9 +90,9 @@ describe("VariablesManager - Comprehensive Tests", () => {
         },
       }]);
       mockSourceMap.findSymbolOffset.returns(undefined);
-      mockVAmiga.peek32.withArgs(STRUCT_ADDR + 0).resolves(0x99999999);
-      mockVAmiga.peek16.withArgs(STRUCT_ADDR + 4).resolves(0x8888);
-      mockVAmiga.peek8.withArgs(STRUCT_ADDR + 6).resolves(0x77);
+      mockEmulator.peek32.withArgs(STRUCT_ADDR + 0).resolves(0x99999999);
+      mockEmulator.peek16.withArgs(STRUCT_ADDR + 4).resolves(0x8888);
+      mockEmulator.peek8.withArgs(STRUCT_ADDR + 6).resolves(0x77);
 
       const scopes = variablesManager.getScopes();
       const globalsScope = scopes.find(s => s.name === 'Globals');
@@ -146,16 +146,16 @@ describe("VariablesManager - Comprehensive Tests", () => {
     };
 
     it("should show dereferenced value inline and create child handle for int*", async () => {
-      mockVAmiga.getCpuInfo.resolves(mockCpuBase);
-      mockVAmiga.isValidAddress.returns(true);
+      mockEmulator.getCpuInfo.resolves(mockCpuBase);
+      mockEmulator.isValidAddress.returns(true);
       mockSourceMap.getLocalsForPc.returns([{
         name: 'ptr', typeName: 'int *', byteSize: 4,
         location: { kind: 'addr', address: 0x3000 },
         typeDescriptor: { kind: 'pointer', typeName: 'int *', byteSize: 4,
                           pointee: { kind: 'primitive', typeName: 'int', byteSize: 4 } },
       }]);
-      mockVAmiga.peek32.withArgs(0x3000).resolves(0x00001234);  // pointer value
-      mockVAmiga.peek32.withArgs(0x00001234).resolves(0x22222222); // dereferenced value
+      mockEmulator.peek32.withArgs(0x3000).resolves(0x00001234);  // pointer value
+      mockEmulator.peek32.withArgs(0x00001234).resolves(0x22222222); // dereferenced value
       mockSourceMap.findSymbolOffset.returns(undefined);
       mockSourceMap.getCfaForPc.returns(undefined);
 
@@ -176,15 +176,15 @@ describe("VariablesManager - Comprehensive Tests", () => {
     });
 
     it("should show plain pointer address for void*", async () => {
-      mockVAmiga.getCpuInfo.resolves(mockCpuBase);
-      mockVAmiga.isValidAddress.returns(true);
+      mockEmulator.getCpuInfo.resolves(mockCpuBase);
+      mockEmulator.isValidAddress.returns(true);
       mockSourceMap.getLocalsForPc.returns([{
         name: 'vp', typeName: 'void *', byteSize: 4,
         location: { kind: 'addr', address: 0x4000 },
         typeDescriptor: { kind: 'pointer', typeName: 'void *', byteSize: 4,
                           pointee: { kind: 'unknown', typeName: 'void', byteSize: 0 } },
       }]);
-      mockVAmiga.peek32.withArgs(0x4000).resolves(0x00005678);
+      mockEmulator.peek32.withArgs(0x4000).resolves(0x00005678);
       mockSourceMap.findSymbolOffset.returns(undefined);
 
       const scopes = variablesManager.getScopes(0x1000);
@@ -196,15 +196,15 @@ describe("VariablesManager - Comprehensive Tests", () => {
     });
 
     it("should not dereference when pointer value is not a valid address", async () => {
-      mockVAmiga.getCpuInfo.resolves(mockCpuBase);
-      mockVAmiga.isValidAddress.returns(false);
+      mockEmulator.getCpuInfo.resolves(mockCpuBase);
+      mockEmulator.isValidAddress.returns(false);
       mockSourceMap.getLocalsForPc.returns([{
         name: 'ptr', typeName: 'int *', byteSize: 4,
         location: { kind: 'addr', address: 0x5000 },
         typeDescriptor: { kind: 'pointer', typeName: 'int *', byteSize: 4,
                           pointee: { kind: 'primitive', typeName: 'int', byteSize: 4 } },
       }]);
-      mockVAmiga.peek32.withArgs(0x5000).resolves(0xDEADBEEF);
+      mockEmulator.peek32.withArgs(0x5000).resolves(0xDEADBEEF);
 
       const scopes = variablesManager.getScopes(0x1000);
       const localsRef = scopes[0].variablesReference;
@@ -217,8 +217,8 @@ describe("VariablesManager - Comprehensive Tests", () => {
     it("should show address and expand to fields for a pointer-to-struct", async () => {
       const PTR_ADDR = 0x6000;
       const STRUCT_ADDR = 0x2024;
-      mockVAmiga.getCpuInfo.resolves(mockCpuBase);
-      mockVAmiga.isValidAddress.returns(true);
+      mockEmulator.getCpuInfo.resolves(mockCpuBase);
+      mockEmulator.isValidAddress.returns(true);
       mockSourceMap.getLocalsForPc.returns([{
         name: 'ptr_struct',
         typeName: 'struct Struct *',
@@ -237,10 +237,10 @@ describe("VariablesManager - Comprehensive Tests", () => {
         },
       }]);
       mockSourceMap.findSymbolOffset.returns(undefined);
-      mockVAmiga.peek32.withArgs(PTR_ADDR).resolves(STRUCT_ADDR);
-      mockVAmiga.peek32.withArgs(STRUCT_ADDR + 0).resolves(0x99999999);
-      mockVAmiga.peek16.withArgs(STRUCT_ADDR + 4).resolves(0x8888);
-      mockVAmiga.peek8.withArgs(STRUCT_ADDR + 6).resolves(0x77);
+      mockEmulator.peek32.withArgs(PTR_ADDR).resolves(STRUCT_ADDR);
+      mockEmulator.peek32.withArgs(STRUCT_ADDR + 0).resolves(0x99999999);
+      mockEmulator.peek16.withArgs(STRUCT_ADDR + 4).resolves(0x8888);
+      mockEmulator.peek8.withArgs(STRUCT_ADDR + 6).resolves(0x77);
 
       const scopes = variablesManager.getScopes(0x1000);
       const localsRef = scopes[0].variablesReference;
@@ -267,8 +267,8 @@ describe("VariablesManager - Comprehensive Tests", () => {
       const PTR_VAR_ADDR = 0x6000;
       const STRUCT_ADDR  = 0x2028;
       const INT_ADDR     = 0x2024;
-      mockVAmiga.getCpuInfo.resolves(mockCpuBase);
-      mockVAmiga.isValidAddress.returns(true);
+      mockEmulator.getCpuInfo.resolves(mockCpuBase);
+      mockEmulator.isValidAddress.returns(true);
       mockSourceMap.getLocalsForPc.returns([{
         name: 'ptr_struct',
         typeName: 'struct Struct *',
@@ -288,11 +288,11 @@ describe("VariablesManager - Comprehensive Tests", () => {
         },
       }]);
       mockSourceMap.findSymbolOffset.returns(undefined);
-      mockVAmiga.peek32.withArgs(PTR_VAR_ADDR).resolves(STRUCT_ADDR);
-      mockVAmiga.peek32.withArgs(STRUCT_ADDR + 0).resolves(INT_ADDR);
-      mockVAmiga.peek32.withArgs(INT_ADDR).resolves(0x99999999);
-      mockVAmiga.peek16.withArgs(STRUCT_ADDR + 4).resolves(0x8888);
-      mockVAmiga.peek8.withArgs(STRUCT_ADDR + 6).resolves(0x77);
+      mockEmulator.peek32.withArgs(PTR_VAR_ADDR).resolves(STRUCT_ADDR);
+      mockEmulator.peek32.withArgs(STRUCT_ADDR + 0).resolves(INT_ADDR);
+      mockEmulator.peek32.withArgs(INT_ADDR).resolves(0x99999999);
+      mockEmulator.peek16.withArgs(STRUCT_ADDR + 4).resolves(0x8888);
+      mockEmulator.peek8.withArgs(STRUCT_ADDR + 6).resolves(0x77);
 
       const scopes = variablesManager.getScopes(0x1000);
       const localsRef = scopes[0].variablesReference;
@@ -320,21 +320,21 @@ describe("VariablesManager - Comprehensive Tests", () => {
     it("should display char* as a quoted string inline", async () => {
       const PTR_ADDR = 0x7000;
       const STR_ADDR = 0x0000A1B0;
-      mockVAmiga.getCpuInfo.resolves(mockCpuBase);
-      mockVAmiga.isValidAddress.returns(true);
+      mockEmulator.getCpuInfo.resolves(mockCpuBase);
+      mockEmulator.isValidAddress.returns(true);
       mockSourceMap.getLocalsForPc.returns([{
         name: 'hello', typeName: 'const char *', byteSize: 4,
         location: { kind: 'addr', address: PTR_ADDR },
         typeDescriptor: { kind: 'pointer', typeName: 'const char *', byteSize: 4,
                           pointee: { kind: 'primitive', typeName: 'char', byteSize: 1 } },
       }]);
-      mockVAmiga.peek32.withArgs(PTR_ADDR).resolves(STR_ADDR);
+      mockEmulator.peek32.withArgs(PTR_ADDR).resolves(STR_ADDR);
       mockSourceMap.findSymbolOffset.returns(undefined);
       // Spell out "hello!" then null terminator
       const str = 'hello!';
       for (let i = 0; i < str.length; i++)
-        mockVAmiga.peek8.withArgs(STR_ADDR + i).resolves(str.charCodeAt(i));
-      mockVAmiga.peek8.withArgs(STR_ADDR + str.length).resolves(0);
+        mockEmulator.peek8.withArgs(STR_ADDR + i).resolves(str.charCodeAt(i));
+      mockEmulator.peek8.withArgs(STR_ADDR + str.length).resolves(0);
 
       const scopes = variablesManager.getScopes(0x1000);
       const localsRef = scopes[0].variablesReference;
@@ -348,19 +348,19 @@ describe("VariablesManager - Comprehensive Tests", () => {
     it("should truncate char* display at 256 bytes", async () => {
       const PTR_ADDR = 0x7100;
       const STR_ADDR = 0x0000B000;
-      mockVAmiga.getCpuInfo.resolves(mockCpuBase);
-      mockVAmiga.isValidAddress.returns(true);
+      mockEmulator.getCpuInfo.resolves(mockCpuBase);
+      mockEmulator.isValidAddress.returns(true);
       mockSourceMap.getLocalsForPc.returns([{
         name: 'longstr', typeName: 'char *', byteSize: 4,
         location: { kind: 'addr', address: PTR_ADDR },
         typeDescriptor: { kind: 'pointer', typeName: 'char *', byteSize: 4,
                           pointee: { kind: 'primitive', typeName: 'char', byteSize: 1 } },
       }]);
-      mockVAmiga.peek32.withArgs(PTR_ADDR).resolves(STR_ADDR);
+      mockEmulator.peek32.withArgs(PTR_ADDR).resolves(STR_ADDR);
       mockSourceMap.findSymbolOffset.returns(undefined);
       // All 256 bytes are 'A' — no null terminator within the limit
       for (let i = 0; i < 256; i++)
-        mockVAmiga.peek8.withArgs(STR_ADDR + i).resolves(0x41); // 'A'
+        mockEmulator.peek8.withArgs(STR_ADDR + i).resolves(0x41); // 'A'
 
       const scopes = variablesManager.getScopes(0x1000);
       const localsRef = scopes[0].variablesReference;
@@ -379,7 +379,7 @@ describe("VariablesManager - Comprehensive Tests", () => {
 
     it("should show element count and expand to indexed elements for int array", async () => {
       const ARRAY_ADDR = 0x7FD4;
-      mockVAmiga.getCpuInfo.resolves(mockCpuBase);
+      mockEmulator.getCpuInfo.resolves(mockCpuBase);
       mockSourceMap.getLocalsForPc.returns([{
         name: 'array', typeName: 'int[]', byteSize: 40,
         location: { kind: 'addr', address: ARRAY_ADDR },
@@ -389,7 +389,7 @@ describe("VariablesManager - Comprehensive Tests", () => {
         },
       }]);
       for (let i = 0; i < 10; i++) {
-        mockVAmiga.peek32.withArgs(ARRAY_ADDR + i * 4).resolves(i + 1);
+        mockEmulator.peek32.withArgs(ARRAY_ADDR + i * 4).resolves(i + 1);
       }
       mockSourceMap.findSymbolOffset.returns(undefined);
 
@@ -410,7 +410,7 @@ describe("VariablesManager - Comprehensive Tests", () => {
 
     it("should paginate arrays larger than 100 elements into page groups", async () => {
       const ARRAY_ADDR = 0x5000;
-      mockVAmiga.getCpuInfo.resolves(mockCpuBase);
+      mockEmulator.getCpuInfo.resolves(mockCpuBase);
       mockSourceMap.getLocalsForPc.returns([{
         name: 'big', typeName: 'int[]', byteSize: 600,
         location: { kind: 'addr', address: ARRAY_ADDR },
@@ -420,7 +420,7 @@ describe("VariablesManager - Comprehensive Tests", () => {
         },
       }]);
       mockSourceMap.findSymbolOffset.returns(undefined);
-      mockVAmiga.peek32.resolves(0x42);
+      mockEmulator.peek32.resolves(0x42);
 
       const scopes = variablesManager.getScopes(0x1000);
       const vars = await variablesManager.getVariables(scopes[0].variablesReference);
@@ -446,7 +446,7 @@ describe("VariablesManager - Comprehensive Tests", () => {
 
     it("should paginate recursively for very large arrays", async () => {
       const ARRAY_ADDR = 0x5000;
-      mockVAmiga.getCpuInfo.resolves(mockCpuBase);
+      mockEmulator.getCpuInfo.resolves(mockCpuBase);
       // 10001 elements: top-level pageSize=10000 → 2 pages; second level pageSize=100 → 100 sub-pages
       mockSourceMap.getLocalsForPc.returns([{
         name: 'huge', typeName: 'int[]', byteSize: 40004,
@@ -457,7 +457,7 @@ describe("VariablesManager - Comprehensive Tests", () => {
         },
       }]);
       mockSourceMap.findSymbolOffset.returns(undefined);
-      mockVAmiga.peek32.resolves(0x1);
+      mockEmulator.peek32.resolves(0x1);
 
       const scopes = variablesManager.getScopes(0x1000);
       const vars = await variablesManager.getVariables(scopes[0].variablesReference);
@@ -494,7 +494,7 @@ describe("VariablesManager - Comprehensive Tests", () => {
     };
 
     beforeEach(() => {
-      mockVAmiga.getCpuInfo.resolves(mockCpuBase);
+      mockEmulator.getCpuInfo.resolves(mockCpuBase);
       mockSourceMap.findSymbolOffset.returns(undefined);
       mockSourceMap.getCfaForPc.returns(undefined);
       mockSourceMap.getLocalsForPc.returns([]);
@@ -634,8 +634,8 @@ describe("VariablesManager - Comprehensive Tests", () => {
     const arrType: TypeDescriptor = { kind: "array", typeName: "int[10]", byteSize: 40, elementCount: 10, elementType: intType };
 
     beforeEach(() => {
-      mockVAmiga.getCpuInfo.resolves(cpuBase);
-      mockVAmiga.isValidAddress.returns(true);
+      mockEmulator.getCpuInfo.resolves(cpuBase);
+      mockEmulator.isValidAddress.returns(true);
       mockSourceMap.getLocalsForPc.returns([]);
       mockSourceMap.getGlobalVariables.returns([]);
       mockSourceMap.findSymbolOffset.returns(undefined);
@@ -645,16 +645,16 @@ describe("VariablesManager - Comprehensive Tests", () => {
     const localsRef = () => variablesManager.getScopes(0x1000).find((s) => s.name === "Locals")!.variablesReference;
 
     it("writeScalar pokes by byte size and returns the re-rendered value", async () => {
-      mockVAmiga.peek32.withArgs(0x100).resolves(0x1234);
-      mockVAmiga.peek16.withArgs(0x200).resolves(0x56);
-      mockVAmiga.peek8.withArgs(0x300).resolves(0x7);
+      mockEmulator.peek32.withArgs(0x100).resolves(0x1234);
+      mockEmulator.peek16.withArgs(0x200).resolves(0x56);
+      mockEmulator.peek8.withArgs(0x300).resolves(0x7);
 
       await variablesManager.writeScalar(0x100, intType, 0x1234);
-      assert.ok(mockVAmiga.poke32.calledWith(0x100, 0x1234));
+      assert.ok(mockEmulator.poke32.calledWith(0x100, 0x1234));
       await variablesManager.writeScalar(0x200, shortType, 0x56);
-      assert.ok(mockVAmiga.poke16.calledWith(0x200, 0x56));
+      assert.ok(mockEmulator.poke16.calledWith(0x200, 0x56));
       await variablesManager.writeScalar(0x300, charType, 0x7);
-      assert.ok(mockVAmiga.poke8.calledWith(0x300, 0x7));
+      assert.ok(mockEmulator.poke8.calledWith(0x300, 0x7));
     });
 
     it("writeScalar rejects non-scalar types", async () => {
@@ -664,47 +664,47 @@ describe("VariablesManager - Comprehensive Tests", () => {
 
     it("setVariable writes a local to memory", async () => {
       mockSourceMap.getLocalsForPc.returns([{ name: "count", typeName: "int", byteSize: 4, location: { kind: "addr", address: 0x3000 }, typeDescriptor: intType }]);
-      mockVAmiga.peek32.withArgs(0x3000).resolves(0x42);
+      mockEmulator.peek32.withArgs(0x3000).resolves(0x42);
 
       await variablesManager.setVariable(localsRef(), "count", 0x42);
-      assert.ok(mockVAmiga.poke32.calledWith(0x3000, 0x42));
+      assert.ok(mockEmulator.poke32.calledWith(0x3000, 0x42));
     });
 
     it("setVariable writes a global to memory", async () => {
       mockSourceMap.getGlobalVariables.returns([{ name: "g", typeName: "int", byteSize: 4, location: { kind: "addr", address: 0x2040 }, typeDescriptor: intType }]);
-      mockVAmiga.peek32.withArgs(0x2040).resolves(0x99);
+      mockEmulator.peek32.withArgs(0x2040).resolves(0x99);
       const ref = variablesManager.getScopes(0x1000).find((s) => s.name === "Globals")!.variablesReference;
 
       await variablesManager.setVariable(ref, "g", 0x99);
-      assert.ok(mockVAmiga.poke32.calledWith(0x2040, 0x99));
+      assert.ok(mockEmulator.poke32.calledWith(0x2040, 0x99));
     });
 
     it("setVariable writes a struct field to memory", async () => {
       mockSourceMap.getLocalsForPc.returns([{ name: "s", typeName: "struct S", byteSize: 7, location: { kind: "addr", address: 0x2050 }, typeDescriptor: structDesc() }]);
-      mockVAmiga.peek16.withArgs(0x2054).resolves(0x12);
+      mockEmulator.peek16.withArgs(0x2054).resolves(0x12);
       const vars = await variablesManager.getVariables(localsRef());
       const structRef = vars[0].variablesReference;
 
       await variablesManager.setVariable(structRef, "_short", 0x12);
-      assert.ok(mockVAmiga.poke16.calledWith(0x2054, 0x12));
+      assert.ok(mockEmulator.poke16.calledWith(0x2054, 0x12));
     });
 
     it("setVariable writes an array element to memory", async () => {
       mockSourceMap.getLocalsForPc.returns([{ name: "arr", typeName: "int[10]", byteSize: 40, location: { kind: "addr", address: 0x4000 }, typeDescriptor: arrType }]);
-      mockVAmiga.peek32.resolves(0);
+      mockEmulator.peek32.resolves(0);
       const vars = await variablesManager.getVariables(localsRef());
       const arrRef = vars[0].variablesReference;
 
       await variablesManager.setVariable(arrRef, "[2]", 0x7);
-      assert.ok(mockVAmiga.poke32.calledWith(0x4008, 0x7));
+      assert.ok(mockEmulator.poke32.calledWith(0x4008, 0x7));
     });
 
     it("setVariable still writes CPU registers", async () => {
-      mockVAmiga.setRegister.resolves({ name: "d0", value: "0x00000005" } as never);
+      mockEmulator.setRegister.resolves({ name: "d0", value: "0x00000005" } as never);
       const ref = variablesManager.getScopes(0x1000).find((s) => s.name === "CPU Registers")!.variablesReference;
 
       const res = await variablesManager.setVariable(ref, "d0", 5);
-      assert.ok(mockVAmiga.setRegister.calledWith("d0", 5));
+      assert.ok(mockEmulator.setRegister.calledWith("d0", 5));
       assert.strictEqual(res, "0x00000005");
     });
 
@@ -713,7 +713,7 @@ describe("VariablesManager - Comprehensive Tests", () => {
         { name: "count", typeName: "int", byteSize: 4, location: { kind: "addr", address: 0x3000 }, typeDescriptor: intType },
         { name: "s", typeName: "struct S", byteSize: 7, location: { kind: "addr", address: 0x2050 }, typeDescriptor: structDesc() },
       ]);
-      mockVAmiga.peek32.withArgs(0x3000).resolves(0x42);
+      mockEmulator.peek32.withArgs(0x3000).resolves(0x42);
       const vars = await variablesManager.getVariables(localsRef());
 
       assert.deepStrictEqual(vars.find((v) => v.name === "count")!.presentationHint, {});
@@ -752,8 +752,8 @@ describe("VariablesManager - Comprehensive Tests", () => {
         cacr: "0x0",
         caar: "0x0",
       };
-      mockVAmiga.getCpuInfo.resolves(mockCpuInfo);
-      mockVAmiga.isValidAddress.returns(true);
+      mockEmulator.getCpuInfo.resolves(mockCpuInfo);
+      mockEmulator.isValidAddress.returns(true);
 
       const variables = await variablesManager.registerVariables();
 
@@ -807,8 +807,8 @@ describe("VariablesManager - Comprehensive Tests", () => {
         cacr: "0x0",
         caar: "0x0",
       };
-      mockVAmiga.getCpuInfo.resolves(mockCpuInfo);
-      mockVAmiga.isValidAddress.returns(true);
+      mockEmulator.getCpuInfo.resolves(mockCpuInfo);
+      mockEmulator.isValidAddress.returns(true);
       mockSourceMap.findSymbolOffset
         .withArgs(0x2000)
         .returns({ symbol: "main", offset: 16 });
@@ -850,8 +850,8 @@ describe("VariablesManager - Comprehensive Tests", () => {
         cacr: "0x0",
         caar: "0x0",
       };
-      mockVAmiga.getCpuInfo.resolves(mockCpuInfo);
-      mockVAmiga.isValidAddress.returns(false);
+      mockEmulator.getCpuInfo.resolves(mockCpuInfo);
+      mockEmulator.isValidAddress.returns(false);
 
       const variables = await variablesManager.registerVariables();
       const a0Var = variables.find((v) => v.name === "a0");
@@ -892,7 +892,7 @@ describe("VariablesManager - Comprehensive Tests", () => {
         cacr: "0x0",
         caar: "0x0",
       };
-      mockVAmiga.getCpuInfo.resolves(mockCpuInfo);
+      mockEmulator.getCpuInfo.resolves(mockCpuInfo);
 
       const variables = await variablesManager.dataRegVariables("data_reg_d0");
 
@@ -948,7 +948,7 @@ describe("VariablesManager - Comprehensive Tests", () => {
         cacr: "0x0",
         caar: "0x0",
       };
-      mockVAmiga.getCpuInfo.resolves(mockCpuInfo);
+      mockEmulator.getCpuInfo.resolves(mockCpuInfo);
 
       const variables = await variablesManager.srFlagVariables();
 
@@ -1013,7 +1013,7 @@ describe("VariablesManager - Comprehensive Tests", () => {
         cacr: "0x0",
         caar: "0x0",
       };
-      mockVAmiga.getCpuInfo.resolves(mockCpuInfo);
+      mockEmulator.getCpuInfo.resolves(mockCpuInfo);
 
       const variables = await variablesManager.srFlagVariables();
 
@@ -1058,7 +1058,7 @@ describe("VariablesManager - Comprehensive Tests", () => {
         cacr: "0x0",
         caar: "0x0",
       };
-      mockVAmiga.getCpuInfo.resolves(mockCpuInfo);
+      mockEmulator.getCpuInfo.resolves(mockCpuInfo);
       mockSourceMap.findSymbolOffset
         .withArgs(0x2010)
         .returns({ symbol: "buffer", offset: 16 });
@@ -1108,7 +1108,7 @@ describe("VariablesManager - Comprehensive Tests", () => {
         cacr: "0x0",
         caar: "0x0",
       };
-      mockVAmiga.getCpuInfo.resolves(mockCpuInfo);
+      mockEmulator.getCpuInfo.resolves(mockCpuInfo);
       mockSourceMap.findSymbolOffset.withArgs(0x2010).returns(undefined);
 
       const variables =
@@ -1127,7 +1127,7 @@ describe("VariablesManager - Comprehensive Tests", () => {
         INTENA: { value: "0x4000" },
         UNKNOWN: { value: "0x1234" },
       };
-      mockVAmiga.getAllCustomRegisters.resolves(mockCustomRegs);
+      mockEmulator.getAllCustomRegisters.resolves(mockCustomRegs);
 
       const variables = await variablesManager.customVariables();
 
@@ -1154,7 +1154,7 @@ describe("VariablesManager - Comprehensive Tests", () => {
         BPL1PTH: { value: "0x00020000" }, // Longword value
         DMACON: { value: "0x8200" }, // Word value
       };
-      mockVAmiga.getAllCustomRegisters.resolves(mockCustomRegs);
+      mockEmulator.getAllCustomRegisters.resolves(mockCustomRegs);
       mockSourceMap.findSymbolOffset
         .withArgs(0x20000)
         .returns({ symbol: "chipram", offset: 0 });
@@ -1176,7 +1176,7 @@ describe("VariablesManager - Comprehensive Tests", () => {
       const mockCustomRegs = {
         DMACON: { value: "0x8200" },
       };
-      mockVAmiga.getAllCustomRegisters.resolves(mockCustomRegs);
+      mockEmulator.getAllCustomRegisters.resolves(mockCustomRegs);
 
       const variables =
         await variablesManager.customDetailVariables("custom_reg_DMACON");
@@ -1239,8 +1239,8 @@ describe("VariablesManager - Comprehensive Tests", () => {
       vectorData.writeInt32BE(0x00002000, 8); // Bus Error at vector 2
       vectorData.writeInt32BE(0x00003000, 12); // Address Error at vector 3
 
-      mockVAmiga.getCpuInfo.resolves(mockCpuInfo);
-      mockVAmiga.readMemory.resolves(vectorData);
+      mockEmulator.getCpuInfo.resolves(mockCpuInfo);
+      mockEmulator.readMemory.resolves(vectorData);
       mockSourceMap.findSymbolOffset
         .withArgs(0x1004)
         .returns({ symbol: "start", offset: 0 });
@@ -1287,9 +1287,9 @@ describe("VariablesManager - Comprehensive Tests", () => {
         segmentOffset: 0,
       });
 
-      mockVAmiga.peek8.withArgs(0x2000).resolves(0x42);
-      mockVAmiga.peek16.withArgs(0x3000).resolves(0x1234);
-      mockVAmiga.peek32.withArgs(0x4000).resolves(0x12345678);
+      mockEmulator.peek8.withArgs(0x2000).resolves(0x42);
+      mockEmulator.peek16.withArgs(0x3000).resolves(0x1234);
+      mockEmulator.peek32.withArgs(0x4000).resolves(0x12345678);
 
       mockSourceMap.findSymbolOffset
         .withArgs(0x12345678)
@@ -1414,7 +1414,7 @@ describe("VariablesManager - Comprehensive Tests", () => {
       const registersScope = scopes.find((s) => s.name === "CPU Registers");
       assert.ok(registersScope);
 
-      mockVAmiga.setRegister
+      mockEmulator.setRegister
         .withArgs("d0", 0x1234)
         .resolves({ value: "0x1234" });
 
@@ -1425,7 +1425,7 @@ describe("VariablesManager - Comprehensive Tests", () => {
       );
 
       assert.strictEqual(result, "0x1234");
-      assert.ok(mockVAmiga.setRegister.calledWith("d0", 0x1234));
+      assert.ok(mockEmulator.setRegister.calledWith("d0", 0x1234));
     });
 
     it("should set custom register values", async () => {
@@ -1434,7 +1434,7 @@ describe("VariablesManager - Comprehensive Tests", () => {
       const customScope = scopes.find((s) => s.name === "Custom Registers");
       assert.ok(customScope);
 
-      mockVAmiga.pokeCustom16.withArgs(0xdff09a, 0x8200).resolves();
+      mockEmulator.pokeCustom16.withArgs(0xdff09a, 0x8200).resolves();
 
       const result = await variablesManager.setVariable(
         customScope.variablesReference,
@@ -1443,7 +1443,7 @@ describe("VariablesManager - Comprehensive Tests", () => {
       );
 
       assert.strictEqual(result, "0x8200");
-      assert.ok(mockVAmiga.pokeCustom16.calledWith(0xdff09a, 0x8200));
+      assert.ok(mockEmulator.pokeCustom16.calledWith(0xdff09a, 0x8200));
     });
 
     it("should throw error for non-writable variables", async () => {
@@ -1503,7 +1503,7 @@ describe("VariablesManager - Comprehensive Tests", () => {
 
   describe("Edge Cases and Error Handling", () => {
     it("should handle empty custom registers", async () => {
-      mockVAmiga.getAllCustomRegisters.resolves({});
+      mockEmulator.getAllCustomRegisters.resolves({});
 
       const variables = await variablesManager.customVariables();
       assert.strictEqual(variables.length, 0);
@@ -1539,8 +1539,8 @@ describe("VariablesManager - Comprehensive Tests", () => {
         cacr: "0x0",
         caar: "0x0",
       };
-      mockVAmiga.getCpuInfo.resolves(mockCpuInfo);
-      mockVAmiga.readMemory.rejects(new Error("Memory read failed"));
+      mockEmulator.getCpuInfo.resolves(mockCpuInfo);
+      mockEmulator.readMemory.rejects(new Error("Memory read failed"));
 
       try {
         await variablesManager.vectorVariables();

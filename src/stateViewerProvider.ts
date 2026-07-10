@@ -1,7 +1,7 @@
 import * as vscode from "vscode";
-import { CustomRegisters, EmulatorMessage, isEmulatorStateMessage } from "./vAmiga";
+import { CustomRegisters, EmulatorMessage, isEmulatorStateMessage } from "./emulatorProtocol";
 import { Emulator } from "./emulator";
-import { VamigaDebugAdapter } from "./vAmigaDebugAdapter";
+import { DebugAdapter } from "./debugAdapter";
 import {
   DisplayState,
   AmigaColor,
@@ -23,7 +23,7 @@ import { AmigaMemoryMapper } from "./amigaMemoryMapper";
  * color palette, display configuration, and other chipset information.
  */
 export class StateViewerProvider {
-  public static readonly viewType = "vamiga-debugger.stateViewer";
+  public static readonly viewType = "puae-debugger.stateViewer";
 
   private panel?: vscode.WebviewPanel;
   private emulatorMessageListeners: vscode.Disposable[] = [];
@@ -53,7 +53,7 @@ export class StateViewerProvider {
   }
 
   private get emulator(): Emulator {
-    return VamigaDebugAdapter.getActiveAdapter()?.getEmulator() ?? this.puaeEmulator;
+    return DebugAdapter.getActiveAdapter()?.getEmulator() ?? this.puaeEmulator;
   }
 
   /**
@@ -111,7 +111,7 @@ export class StateViewerProvider {
               // Convert address to hex string format for memory viewer
               const addressHex = `0x${message.address.toString(16)}`;
               await vscode.commands.executeCommand(
-                "vamiga-debugger.openMemoryViewer",
+                "puae-debugger.openMemoryViewer",
                 undefined,
                 addressHex,
               );
@@ -232,7 +232,7 @@ export class StateViewerProvider {
       return;
     }
 
-    const adapter = VamigaDebugAdapter.getActiveAdapter();
+    const adapter = DebugAdapter.getActiveAdapter();
     if (!adapter) {
       throw new Error("Debugger is not running");
     }
@@ -256,7 +256,7 @@ export class StateViewerProvider {
       return;
     }
 
-    const adapter = VamigaDebugAdapter.getActiveAdapter();
+    const adapter = DebugAdapter.getActiveAdapter();
     if (!adapter) {
       throw new Error("Debugger is not running");
     }

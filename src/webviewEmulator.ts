@@ -11,7 +11,7 @@ import {
   RegisterSetStatus,
   isValidMemoryAddress,
   getMemoryRegionForAddress,
-} from "./vAmiga";
+} from "./emulatorProtocol";
 import { SourceMap } from "./sourceMap";
 import { openSourceLocation } from "./sourceNav";
 
@@ -25,18 +25,18 @@ export interface PendingRpc {
 }
 
 /**
- * Shared base class for webview-backed Amiga emulator backends.
+ * Base class for a webview-backed Amiga emulator backend.
  *
- * Holds everything that is identical across the concrete backends: the
- * postMessage RPC layer (request/response correlation, timeouts, disposal),
- * message-listener fan-out, the register/memory-info caches, and all of the
- * `Emulator` command/query wrappers that simply forward to the webview.
+ * Holds the generic plumbing: the postMessage RPC layer (request/response
+ * correlation, timeouts, disposal), message-listener fan-out, the
+ * register/memory-info caches, and all of the `Emulator` command/query
+ * wrappers that simply forward to the webview.
  *
- * Subclasses (`VAmiga`, `PuaeEmulator`) supply only the backend-specific
- * pieces: `open()` (panel creation/reuse policy) and the panel/HTML wiring,
- * which differ between the vAmiga and PUAE webviews. Subclass `initPanel`
- * implementations should call `handlePanelMessage` for each received message
- * to get the shared RPC-response / exec-ready / listener handling.
+ * A subclass (`PuaeEmulator`) supplies only the backend-specific pieces:
+ * `open()` (panel creation/reuse policy) and the panel/HTML wiring. A
+ * subclass's `initPanel` implementation should call `handlePanelMessage` for
+ * each received message to get the shared RPC-response / exec-ready /
+ * listener handling.
  */
 export abstract class WebviewEmulator implements Emulator {
   protected panel?: vscode.WebviewPanel;
@@ -47,11 +47,12 @@ export abstract class WebviewEmulator implements Emulator {
   cpuInfo?: CpuInfo;
   customRegisters?: CustomRegisters;
 
-  // Native ignores support is the common case (vAmiga); PuaeEmulator
-  // overrides this to false.
+  // Overridden to false by PuaeEmulator — the wasm engine doesn't honor
+  // breakpoint ignore counts natively; BreakpointManager emulates hit
+  // counting in TS instead.
   public readonly supportsHitCounts: boolean = true;
 
-  // Set by VamigaDebugAdapter once the session's SourceMap is built, so
+  // Set by DebugAdapter once the session's SourceMap is built, so
   // handlePanelMessage's `symbolizeAddress` handling below can answer
   // address->source-line queries from the webview (e.g. the PUAE copper
   // hover tooltip) without round-tripping through the adapter.
@@ -246,7 +247,7 @@ export abstract class WebviewEmulator implements Emulator {
    * newly created panels.
    */
   protected getConfiguredViewColumn(): vscode.ViewColumn {
-    const config = vscode.workspace.getConfiguration("vamiga-debugger");
+    const config = vscode.workspace.getConfiguration("puae-debugger");
     const setting = config.get<string>("defaultViewColumn", "beside");
 
     switch (setting) {

@@ -1,6 +1,6 @@
 // 68k status-register flag formatting, shared across webviews (the live PUAE app's CPU
 // trace/disassembly RPC handlers, and the profiler's CPU Registers panel). 16-char string
-// matching vAmiga/Moira's disassembleSR() format — vAmigaDebugAdapter.ts checks
+// matching vAmiga/Moira's disassembleSR() format — debugAdapter.ts checks
 // flags.includes("S") to detect supervisor mode for exception stack-frame handling, so this
 // exact format is load-bearing, not just a display convenience.
 export function srFlags(sr: number): string {

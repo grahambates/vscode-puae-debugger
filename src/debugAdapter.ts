@@ -1,6 +1,5 @@
 // TODO: bugs
 // - exception breakpoints need useful stack trace
-// - bp ignores not working - implemented in vamiga?
 // - step on first instruction in non-fast mode
 // TODO: features
 // - trace
@@ -38,7 +37,7 @@ import {
   EmulatorStateMessage,
   StopMessage,
   isExecReadyMessage,
-} from "./vAmiga";
+} from "./emulatorProtocol";
 import { Emulator } from "./emulator";
 import { Hunk, parseHunks, StabData } from "./amigaHunkParser";
 import { DWARFData, parseDwarf } from "./dwarfParser";
@@ -74,7 +73,7 @@ import { decodeInstruction as m68kDecode, instructionToString } from "m68kdecode
 
 /**
  * Launch configuration arguments for starting a debug session.
- * Extends the standard DAP launch arguments with Vamiga-specific options.
+ * Extends the standard DAP launch arguments with PUAE-specific options.
  */
 interface LaunchRequestArguments extends DebugProtocol.LaunchRequestArguments {
   /** Path to the Amiga program executable to debug */
@@ -157,8 +156,9 @@ export enum ErrorCode {
 }
 
 /**
- * Debug adapter for Vamiga emulator that implements the Debug Adapter Protocol (DAP).
- * Provides debugging capabilities for Amiga programs running in the Vamiga emulator.
+ * Debug adapter for the PUAE emulator backend, implementing the Debug Adapter
+ * Protocol (DAP). Provides debugging capabilities for Amiga programs running
+ * in the emulator.
  *
  * Features:
  * - Source-level debugging with DWARF or Amiga hunk debug symbols
@@ -168,9 +168,9 @@ export enum ErrorCode {
  * - Disassembly view
  * - Expression evaluation with custom functions
  */
-export class VamigaDebugAdapter extends LoggingDebugSession {
+export class DebugAdapter extends LoggingDebugSession {
   private static THREAD_ID = 1;
-  private static activeAdapter?: VamigaDebugAdapter;
+  private static activeAdapter?: DebugAdapter;
 
   private trace = false;
   private fastLoad = false;
@@ -228,8 +228,8 @@ export class VamigaDebugAdapter extends LoggingDebugSession {
    * Gets the currently active debug adapter instance.
    * Returns undefined if no debug session is active.
    */
-  public static getActiveAdapter(): VamigaDebugAdapter | undefined {
-    return VamigaDebugAdapter.activeAdapter;
+  public static getActiveAdapter(): DebugAdapter | undefined {
+    return DebugAdapter.activeAdapter;
   }
 
   public getEmulator(): Emulator {
@@ -241,18 +241,18 @@ export class VamigaDebugAdapter extends LoggingDebugSession {
   }
 
   public notifySteppedBack(): void {
-    this.sendEvent(new StoppedEvent("step", VamigaDebugAdapter.THREAD_ID));
+    this.sendEvent(new StoppedEvent("step", DebugAdapter.THREAD_ID));
   }
 
   /**
-   * Creates a new VamigaDebugAdapter instance.
+   * Creates a new DebugAdapter instance.
    *
    * Initializes the debug adapter with:
    * - Zero-based line and column numbering
-   * - VAmiga emulator interface for program execution and debugging
+   * - Emulator interface for program execution and debugging
    * - Manager classes for evaluation, variables, breakpoints, etc.
    *
-   * @param vAmiga VAmiga instance for dependency injection (primarily for testing)
+   * @param emulator Emulator instance for dependency injection (primarily for testing)
    */
   public constructor(private emulator: Emulator) {
     super();
@@ -272,8 +272,8 @@ export class VamigaDebugAdapter extends LoggingDebugSession {
    */
   public dispose(): void {
     // Clear active adapter if this was the active one
-    if (VamigaDebugAdapter.activeAdapter === this) {
-      VamigaDebugAdapter.activeAdapter = undefined;
+    if (DebugAdapter.activeAdapter === this) {
+      DebugAdapter.activeAdapter = undefined;
     }
     this.emulator.run(); // unpause emulator if we're leaving it open
     this.breakpointManager?.clearAll();
@@ -314,7 +314,7 @@ export class VamigaDebugAdapter extends LoggingDebugSession {
     args: LaunchRequestArguments,
   ) {
     // Register this as the active adapter
-    VamigaDebugAdapter.activeAdapter = this;
+    DebugAdapter.activeAdapter = this;
 
     // Validate the program path
     this.programPath = args.program;
@@ -481,7 +481,7 @@ export class VamigaDebugAdapter extends LoggingDebugSession {
       // Fast load: send stop on entry event - we're already at this address
       const evt: DebugProtocol.StoppedEvent = new StoppedEvent(
         "entry",
-        VamigaDebugAdapter.THREAD_ID,
+        DebugAdapter.THREAD_ID,
       );
       evt.body.allThreadsStopped = true;
       this.sendEvent(evt);
@@ -517,7 +517,7 @@ export class VamigaDebugAdapter extends LoggingDebugSession {
     response: DebugProtocol.ThreadsResponse,
   ): Promise<void> {
     response.body = {
-      threads: [new Thread(VamigaDebugAdapter.THREAD_ID, "Main")],
+      threads: [new Thread(DebugAdapter.THREAD_ID, "Main")],
     };
     this.sendResponse(response);
   }
@@ -666,9 +666,10 @@ export class VamigaDebugAdapter extends LoggingDebugSession {
     }
   }
 
-  // Performs one instruction-level step-over.
-  // vAmiga's built-in stepOver doesn't work correctly. It seems to only work with short branches.
-  // Need to implement this ourselves.
+  // Performs one instruction-level step-over. The Emulator interface has no native
+  // stepOver — implemented here by decoding the instruction at PC and, for a
+  // call/branch-type instruction, setting a temporary breakpoint just past it instead
+  // of single-stepping into it.
   private async doInstructionStepOver(): Promise<void> {
     const cpuInfo = await this.emulator.getCpuInfo();
     const pc = Number(cpuInfo.pc);
@@ -742,7 +743,8 @@ export class VamigaDebugAdapter extends LoggingDebugSession {
     response: DebugProtocol.StepOutResponse,
   ): Promise<void> {
     try {
-      // vAmiga has no stepOut function, as it doesn't track stack frames. We need to use our guessed stack list to set a tmp breakpoint.
+      // The Emulator interface has no native stepOut (the emulator doesn't track stack
+      // frames), so use our guessed stack list (StackManager) to set a tmp breakpoint instead.
       const cpuInfo = await this.emulator.getCpuInfo();
       const pc = Number(cpuInfo.pc);
       const stackAddress = Number(cpuInfo.a7);
@@ -780,7 +782,7 @@ export class VamigaDebugAdapter extends LoggingDebugSession {
           3000,
         );
       }
-      this.sendEvent(new StoppedEvent("step", VamigaDebugAdapter.THREAD_ID));
+      this.sendEvent(new StoppedEvent("step", DebugAdapter.THREAD_ID));
       this.sendResponse(response);
     } catch (err) {
       this.sendError(
@@ -803,7 +805,7 @@ export class VamigaDebugAdapter extends LoggingDebugSession {
           3000,
         );
       }
-      this.sendEvent(new StoppedEvent("step", VamigaDebugAdapter.THREAD_ID));
+      this.sendEvent(new StoppedEvent("step", DebugAdapter.THREAD_ID));
       this.sendResponse(response);
     } catch (err) {
       this.sendError(
@@ -1243,7 +1245,7 @@ export class VamigaDebugAdapter extends LoggingDebugSession {
   // Helpers:
 
   /**
-   * Handles messages received from the VAmiga emulator.
+   * Handles messages received from the emulator.
    *
    * Processes different message types:
    * - Attached messages: Sets up source mapping when emulator attaches to program
@@ -1279,10 +1281,8 @@ export class VamigaDebugAdapter extends LoggingDebugSession {
   private async injectProgram() {
     logger.log("Injecting program into memory");
     try {
-      // Ensure the CPU is halted before poking memory/registers — required
-      // for the PUAE backend (still running freely after exec-ready), and a
-      // harmless no-op for VAmiga (already halted by its fastLoad snapshot
-      // load).
+      // Ensure the CPU is halted before poking memory/registers — the emulator is
+      // still running freely at this point (right after exec-ready).
       this.emulator.pause();
       // Clear any watchpoints/register watches left armed from a previous
       // debug session — the webview (and its emulator state) can be reused
@@ -1437,14 +1437,14 @@ export class VamigaDebugAdapter extends LoggingDebugSession {
     if (state === "paused") {
       if (this.isRunning) {
         this.isRunning = false;
-        const evt = new StoppedEvent("pause", VamigaDebugAdapter.THREAD_ID);
+        const evt = new StoppedEvent("pause", DebugAdapter.THREAD_ID);
         await this.applyNoSourceReasonHint(evt);
         this.sendEvent(evt);
       }
     } else if (state === "running") {
       if (!this.isRunning) {
         this.isRunning = true;
-        this.sendEvent(new ContinuedEvent(VamigaDebugAdapter.THREAD_ID));
+        this.sendEvent(new ContinuedEvent(DebugAdapter.THREAD_ID));
       }
     } else if (state === "stopped") {
       if (this.stepping) {
@@ -1529,7 +1529,7 @@ export class VamigaDebugAdapter extends LoggingDebugSession {
       this.lineStepStart = null;
     }
 
-    const evt = new StoppedEvent("step", VamigaDebugAdapter.THREAD_ID);
+    const evt = new StoppedEvent("step", DebugAdapter.THREAD_ID);
 
     // Don't need this for step with instruction granularity — VS Code already
     // selects a sourceless top frame fine for a plain "step" reason there.
@@ -1551,7 +1551,7 @@ export class VamigaDebugAdapter extends LoggingDebugSession {
   private async handleStop(message: StopMessage) {
     const evt: DebugProtocol.StoppedEvent = new StoppedEvent(
       "breakpoint",
-      VamigaDebugAdapter.THREAD_ID,
+      DebugAdapter.THREAD_ID,
     );
     evt.body.allThreadsStopped = true;
 
@@ -1582,7 +1582,7 @@ export class VamigaDebugAdapter extends LoggingDebugSession {
       }
       // Line changed (or no source) — done with the step-over.
       this.lineStepStart = null;
-      this.sendEvent(new StoppedEvent("step", VamigaDebugAdapter.THREAD_ID));
+      this.sendEvent(new StoppedEvent("step", DebugAdapter.THREAD_ID));
       return;
     }
 

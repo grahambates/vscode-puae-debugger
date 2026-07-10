@@ -1,5 +1,5 @@
 import { packBulk, unpackBulk } from "../profilerBulk";
-import { encodeCapture, decodeCapture } from "../vamigaProfile";
+import { encodeCapture, decodeCapture } from "../profileFormat";
 import type { RawCapture } from "../profilerManager";
 
 // Pack a u32[] into the little-endian 4-byte-per-slot stream puae_dma_serialize_events emits.
@@ -43,7 +43,7 @@ describe("packBulk/unpackBulk with DMA events", () => {
   });
 });
 
-describe("vamigaProfile codec with DMA events", () => {
+describe("profileFormat codec with DMA events", () => {
   it("round-trips raw.dmaEvents through encode/decode", () => {
     const raw: RawCapture = {
       profile: { data: new Uint8Array([1, 0, 0, 0]), start: 0, end: 0, total: 0, inRange: 0, frameCycles: 0, isPAL: true },

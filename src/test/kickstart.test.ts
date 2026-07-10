@@ -8,7 +8,7 @@ import { SourceMap, Segment } from "../sourceMap";
 import { MemoryType } from "../amigaHunkParser";
 import { parseDwarf } from "../dwarfParser";
 import { buildSourceMapFromBundle } from "../profileLoader";
-import type { ProfileManifest } from "../vamigaProfile";
+import type { ProfileManifest } from "../profileFormat";
 
 describe("Kickstart symbols", () => {
   describe("generated data module", () => {
@@ -107,7 +107,7 @@ describe("Kickstart symbols", () => {
 
   describe("kickstartSymbolModuleBySha1", () => {
     // Same synthetic-ROM injection as above, but the reconstruction takes the sha1 alone (no ROM
-    // bytes) — the size/base come from the table entry. This is the saved-.vamigaprofile path.
+    // bytes) — the size/base come from the table entry. This is the saved-.puaeprofile path.
     const injected: string[] = [];
     function registerSyntheticRom(size: number, symbols: [string, number][]): string {
       const buffer = Buffer.alloc(size);

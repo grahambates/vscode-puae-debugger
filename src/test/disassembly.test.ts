@@ -1,5 +1,5 @@
 import { attachDisassembly, fetchDisassembly, RawDisassembledFunction, InstructionSample, RawCapture } from "../profilerManager";
-import { encodeCapture, decodeCapture } from "../vamigaProfile";
+import { encodeCapture, decodeCapture } from "../profileFormat";
 import { SourceMap } from "../sourceMap";
 import { IProfileModel } from "../shared/profilerTypes";
 
@@ -97,7 +97,7 @@ describe("fetchDisassembly", () => {
   });
 });
 
-describe("vamigaProfile codec with disassembly", () => {
+describe("profileFormat codec with disassembly", () => {
   const sampleRaw = (): RawCapture => ({
     profile: { data: new Uint8Array([1, 0, 0, 0]), start: 0, end: 0, total: 0, inRange: 0, frameCycles: 0, isPAL: true },
     disassembly: [

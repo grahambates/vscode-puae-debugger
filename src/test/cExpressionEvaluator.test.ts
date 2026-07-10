@@ -1,7 +1,7 @@
 import * as assert from "assert";
 import * as sinon from "sinon";
 import { CExpressionEvaluator, expressionRangeAt } from "../cExpressionEvaluator";
-import { CpuInfo } from "../vAmiga";
+import { CpuInfo } from "../emulatorProtocol";
 import { PuaeEmulator } from "../puaeEmulator";
 import { VariablesManager } from "../variablesManager";
 import { SourceMap, Variable } from "../sourceMap";
@@ -9,11 +9,11 @@ import { SourceMap, Variable } from "../sourceMap";
 /**
  * Tests for the C/C++ compound expression evaluator: parser + typed-lvalue navigator.
  * Uses a real VariablesManager (so renderLValue / resolveNameToLValue behave realistically) over a
- * stubbed VAmiga + SourceMap, mirroring the variablesManager.test.ts mocking patterns.
+ * stubbed Emulator + SourceMap, mirroring the variablesManager.test.ts mocking patterns.
  */
 describe("CExpressionEvaluator", () => {
   let evaluator: CExpressionEvaluator;
-  let mockVAmiga: sinon.SinonStubbedInstance<PuaeEmulator>;
+  let mockEmulator: sinon.SinonStubbedInstance<PuaeEmulator>;
   let mockSourceMap: sinon.SinonStubbedInstance<SourceMap>;
   let variablesManager: VariablesManager;
 
@@ -38,15 +38,15 @@ describe("CExpressionEvaluator", () => {
   }
 
   beforeEach(() => {
-    mockVAmiga = sinon.createStubInstance(PuaeEmulator);
+    mockEmulator = sinon.createStubInstance(PuaeEmulator);
     mockSourceMap = sinon.createStubInstance(SourceMap);
     mockSourceMap.getLocalsForPc.returns([]);
     mockSourceMap.getGlobalVariables.returns([]);
     mockSourceMap.findSymbolOffset.returns(undefined);
-    variablesManager = new VariablesManager(mockVAmiga, mockSourceMap);
-    evaluator = new CExpressionEvaluator(mockVAmiga, mockSourceMap, variablesManager);
-    mockVAmiga.getCpuInfo.resolves(cpu);
-    mockVAmiga.isValidAddress.returns(true);
+    variablesManager = new VariablesManager(mockEmulator, mockSourceMap);
+    evaluator = new CExpressionEvaluator(mockEmulator, mockSourceMap, variablesManager);
+    mockEmulator.getCpuInfo.resolves(cpu);
+    mockEmulator.isValidAddress.returns(true);
   });
 
   afterEach(() => sinon.restore());
@@ -111,7 +111,7 @@ describe("CExpressionEvaluator", () => {
   describe("member access '.'", () => {
     it("resolves a struct field by offset", async () => {
       setLocals({ name: "s", typeName: "struct S", byteSize: 7, location: { kind: "addr", address: 0x3000 }, typeDescriptor: structType() });
-      mockVAmiga.peek16.withArgs(0x3004).resolves(0x1234);
+      mockEmulator.peek16.withArgs(0x3004).resolves(0x1234);
 
       const res = await evaluator.evaluateToBody("s._short", 0x1000, null);
       assert.ok(res);
@@ -135,8 +135,8 @@ describe("CExpressionEvaluator", () => {
     it("dereferences a pointer-to-struct and resolves a field", async () => {
       setLocals({ name: "p", typeName: "struct S *", byteSize: 4, location: { kind: "addr", address: 0x3000 },
         typeDescriptor: { kind: "pointer", typeName: "struct S *", byteSize: 4, pointee: structType() } });
-      mockVAmiga.peek32.withArgs(0x3000).resolves(0x5000); // struct base
-      mockVAmiga.peek32.withArgs(0x5000).resolves(0xabcd); // _int @ +0
+      mockEmulator.peek32.withArgs(0x3000).resolves(0x5000); // struct base
+      mockEmulator.peek32.withArgs(0x5000).resolves(0xabcd); // _int @ +0
 
       const res = await evaluator.evaluateToBody("p->_int", 0x1000, null);
       assert.ok(res);
@@ -155,7 +155,7 @@ describe("CExpressionEvaluator", () => {
     it("indexes an array with a literal", async () => {
       setLocals({ name: "arr", typeName: "int[10]", byteSize: 40, location: { kind: "addr", address: 0x4000 },
         typeDescriptor: { kind: "array", typeName: "int[10]", byteSize: 40, elementCount: 10, elementType: { kind: "primitive", typeName: "int", byteSize: 4 } } });
-      mockVAmiga.peek32.withArgs(0x4008).resolves(0x99); // arr[2]
+      mockEmulator.peek32.withArgs(0x4008).resolves(0x99); // arr[2]
 
       const res = await evaluator.evaluateToBody("arr[2]", 0x1000, null);
       assert.ok(res);
@@ -169,8 +169,8 @@ describe("CExpressionEvaluator", () => {
           typeDescriptor: { kind: "array", typeName: "int[10]", byteSize: 40, elementCount: 10, elementType: { kind: "primitive", typeName: "int", byteSize: 4 } } },
         { name: "i", typeName: "int", byteSize: 4, location: { kind: "addr", address: 0x9000 }, typeDescriptor: { kind: "primitive", typeName: "int", byteSize: 4 } },
       );
-      mockVAmiga.peek32.withArgs(0x9000).resolves(3); // i == 3
-      mockVAmiga.peek32.withArgs(0x400c).resolves(0x77); // arr[3]
+      mockEmulator.peek32.withArgs(0x9000).resolves(3); // i == 3
+      mockEmulator.peek32.withArgs(0x400c).resolves(0x77); // arr[3]
 
       const res = await evaluator.evaluateToBody("arr[i]", 0x1000, null);
       assert.ok(res);
@@ -181,8 +181,8 @@ describe("CExpressionEvaluator", () => {
     it("indexes through a pointer (base + i*size)", async () => {
       setLocals({ name: "p", typeName: "int *", byteSize: 4, location: { kind: "addr", address: 0x3000 },
         typeDescriptor: { kind: "pointer", typeName: "int *", byteSize: 4, pointee: { kind: "primitive", typeName: "int", byteSize: 4 } } });
-      mockVAmiga.peek32.withArgs(0x3000).resolves(0x6000); // pointer value
-      mockVAmiga.peek32.withArgs(0x600c).resolves(0x55); // p[3]
+      mockEmulator.peek32.withArgs(0x3000).resolves(0x6000); // pointer value
+      mockEmulator.peek32.withArgs(0x600c).resolves(0x55); // p[3]
 
       const res = await evaluator.evaluateToBody("p[3]", 0x1000, null);
       assert.ok(res);
@@ -195,8 +195,8 @@ describe("CExpressionEvaluator", () => {
     it("dereferences a pointer-to-primitive", async () => {
       setLocals({ name: "p", typeName: "int *", byteSize: 4, location: { kind: "addr", address: 0x3000 },
         typeDescriptor: { kind: "pointer", typeName: "int *", byteSize: 4, pointee: { kind: "primitive", typeName: "int", byteSize: 4 } } });
-      mockVAmiga.peek32.withArgs(0x3000).resolves(0x7000); // pointer value
-      mockVAmiga.peek32.withArgs(0x7000).resolves(0x42); // *p
+      mockEmulator.peek32.withArgs(0x3000).resolves(0x7000); // pointer value
+      mockEmulator.peek32.withArgs(0x7000).resolves(0x42); // *p
 
       const res = await evaluator.evaluateToBody("*p", 0x1000, null);
       assert.ok(res);
@@ -228,8 +228,8 @@ describe("CExpressionEvaluator", () => {
     it("evaluates (*p)._int the same as p->_int", async () => {
       setLocals({ name: "p", typeName: "struct S *", byteSize: 4, location: { kind: "addr", address: 0x3000 },
         typeDescriptor: { kind: "pointer", typeName: "struct S *", byteSize: 4, pointee: structType() } });
-      mockVAmiga.peek32.withArgs(0x3000).resolves(0x5000);
-      mockVAmiga.peek32.withArgs(0x5000).resolves(0xc0de); // _int @ +0
+      mockEmulator.peek32.withArgs(0x3000).resolves(0x5000);
+      mockEmulator.peek32.withArgs(0x5000).resolves(0xc0de); // _int @ +0
 
       const res = await evaluator.evaluateToBody("(*p)._int", 0x1000, null);
       assert.ok(res);
@@ -243,7 +243,7 @@ describe("CExpressionEvaluator", () => {
       mockSourceMap.getGlobalVariables.returns([
         { name: "g", typeName: "struct S", byteSize: 7, location: { kind: "addr", address: 0x2000 }, typeDescriptor: structType() },
       ]);
-      mockVAmiga.peek32.withArgs(0x2000).resolves(0x11);
+      mockEmulator.peek32.withArgs(0x2000).resolves(0x11);
 
       const res = await evaluator.evaluateToBody("g._int", null, null);
       assert.ok(res);
@@ -265,7 +265,7 @@ describe("CExpressionEvaluator", () => {
     it("resolves through a pointer (arrow)", async () => {
       setLocals({ name: "p", typeName: "struct S *", byteSize: 4, location: { kind: "addr", address: 0x3000 },
         typeDescriptor: { kind: "pointer", typeName: "struct S *", byteSize: 4, pointee: structType() } });
-      mockVAmiga.peek32.withArgs(0x3000).resolves(0x5000);
+      mockEmulator.peek32.withArgs(0x3000).resolves(0x5000);
 
       const lv = await evaluator.evaluateToLValue("p->_int", 0x1000, null);
       assert.ok(lv);

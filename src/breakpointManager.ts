@@ -2,7 +2,7 @@ import { basename } from "path";
 import * as vscode from "vscode";
 import { DebugProtocol } from "@vscode/debugprotocol";
 import { logger } from "@vscode/debugadapter";
-import { StopMessage } from "./vAmiga";
+import { StopMessage } from "./emulatorProtocol";
 import { Emulator } from "./emulator";
 import { SourceMap } from "./sourceMap";
 import { formatHex } from "./numbers";
@@ -137,7 +137,7 @@ export class BreakpointManager {
   /**
    * Creates a new BreakpointManager instance.
    *
-   * @param vAmiga VAmiga instance for setting hardware breakpoints
+   * @param emulator Emulator instance for setting hardware breakpoints
    * @param sourceMap Source map for resolving source locations to addresses
    */
   constructor(
@@ -767,7 +767,7 @@ export class BreakpointManager {
     let bpMatch: { id: number } | undefined;
 
     if (message.name === "WATCHPOINT_REACHED") {
-      // source is PUAE-only (vAmiga doesn't track it for watchpoints) — when
+      // source is PUAE-only (emulator doesn't track it for watchpoints) — when
       // absent, omit the qualifier rather than print a misleading
       // "(source=CPU)" for a backend that can't tell the difference.
       // Custom chipset registers and chip RAM each have a distinct, fixed
@@ -834,7 +834,7 @@ export class BreakpointManager {
     }
 
     if (message.name === "MEMORY_PROTECTION_VIOLATION") {
-      // source is PUAE-only (vAmiga's hooks only cover CPU writes) — when
+      // source is PUAE-only (emulator's hooks only cover CPU writes) — when
       // absent, the write is necessarily from the CPU, so omit the
       // qualifier rather than print a misleading "(source=CPU)" for a
       // backend that can't tell the difference yet. For a DMA write, "pc"

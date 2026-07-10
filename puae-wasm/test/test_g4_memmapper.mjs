@@ -26,14 +26,14 @@ function classifyMemory(attributes, lower) {
   return "FAST" /* FAST */;
 }
 var AmigaMemoryMapper = class {
-  constructor(vAmiga) {
-    this.vAmiga = vAmiga;
+  constructor(emulator) {
+    this.emulator = emulator;
   }
   /**
    * Get exec.library base pointer from absolute address 0x4
    */
   async getExecBase() {
-    return await this.vAmiga.peek32(4);
+    return await this.emulator.peek32(4);
   }
   /**
    * Get comprehensive memory information from exec structures
@@ -50,19 +50,19 @@ var AmigaMemoryMapper = class {
     let freeFast = 0;
     const blocks = [];
     const regions = [];
-    let memHeader = await this.vAmiga.peek32(memListAddr);
+    let memHeader = await this.emulator.peek32(memListAddr);
     let safetyCounter = 0;
     while (memHeader !== 0 && safetyCounter < 10) {
       if (memHeader > 16777215) {
         break;
       }
-      const nodeType = await this.vAmiga.peek8(memHeader + 8);
+      const nodeType = await this.emulator.peek8(memHeader + 8);
       if (nodeType === NT_MEMORY) {
-        const attributes = await this.vAmiga.peek16(memHeader + 14);
-        const lower = await this.vAmiga.peek32(memHeader + 20);
-        const upper = await this.vAmiga.peek32(memHeader + 24);
-        const free = await this.vAmiga.peek32(memHeader + 28);
-        const firstChunk = await this.vAmiga.peek32(memHeader + 16);
+        const attributes = await this.emulator.peek16(memHeader + 14);
+        const lower = await this.emulator.peek32(memHeader + 20);
+        const upper = await this.emulator.peek32(memHeader + 24);
+        const free = await this.emulator.peek32(memHeader + 28);
+        const firstChunk = await this.emulator.peek32(memHeader + 16);
         if (lower < upper && lower < 16777216 && upper < 16777216) {
           const regionSize = upper - lower;
           const memClass = classifyMemory(attributes, lower);
@@ -85,7 +85,7 @@ var AmigaMemoryMapper = class {
           await this.walkFreeChunks(firstChunk, attributes, blocks);
         }
       }
-      memHeader = await this.vAmiga.peek32(memHeader);
+      memHeader = await this.emulator.peek32(memHeader);
       safetyCounter++;
     }
     this.calculateAllocatedBlocks(regions, blocks);
@@ -109,8 +109,8 @@ var AmigaMemoryMapper = class {
     let chunk = firstChunk;
     let chunkCount = 0;
     while (chunk !== 0 && chunkCount < 20) {
-      const size = await this.vAmiga.peek32(chunk + 4);
-      const nextChunk = await this.vAmiga.peek32(chunk);
+      const size = await this.emulator.peek32(chunk + 4);
+      const nextChunk = await this.emulator.peek32(chunk);
       blocks.push({
         address: chunk,
         size,
@@ -223,9 +223,9 @@ var AmigaMemoryMapper = class {
           `New chunk address 0x${newChunkAddr.toString(16)} is not a valid 24-bit address`
         );
       }
-      const nextChunk = await this.vAmiga.peek32(block.address);
-      await this.vAmiga.poke32(newChunkAddr, nextChunk);
-      await this.vAmiga.poke32(newChunkAddr + 4, newChunkSize);
+      const nextChunk = await this.emulator.peek32(block.address);
+      await this.emulator.poke32(newChunkAddr, nextChunk);
+      await this.emulator.poke32(newChunkAddr + 4, newChunkSize);
       await this.updatePreviousChunkPointer(block.address, newChunkAddr);
       await this.updateMemHeaderFreeCount(block.address, -alignedSize);
     }
@@ -235,7 +235,7 @@ var AmigaMemoryMapper = class {
    * Remove a free chunk from the free list
    */
   async removeFreeChunk(chunkAddr) {
-    const nextChunk = await this.vAmiga.peek32(chunkAddr);
+    const nextChunk = await this.emulator.peek32(chunkAddr);
     await this.updatePreviousChunkPointer(chunkAddr, nextChunk);
   }
   /**
@@ -244,23 +244,23 @@ var AmigaMemoryMapper = class {
   async updateMemHeaderFreeCount(address, delta) {
     const execBase = await this.getExecBase();
     const memListAddr = execBase + 322;
-    let memHeader = await this.vAmiga.peek32(memListAddr);
+    let memHeader = await this.emulator.peek32(memListAddr);
     let safetyCounter = 0;
     while (memHeader !== 0 && safetyCounter < 10) {
       if (memHeader > 16777215) break;
-      const nodeType = await this.vAmiga.peek8(memHeader + 8);
+      const nodeType = await this.emulator.peek8(memHeader + 8);
       if (nodeType === NT_MEMORY) {
-        const lower = await this.vAmiga.peek32(memHeader + 20);
-        const upper = await this.vAmiga.peek32(memHeader + 24);
+        const lower = await this.emulator.peek32(memHeader + 20);
+        const upper = await this.emulator.peek32(memHeader + 24);
         if (address >= lower && address < upper) {
           const freeAddr = memHeader + 28;
-          const currentFree = await this.vAmiga.peek32(freeAddr);
+          const currentFree = await this.emulator.peek32(freeAddr);
           const newFree = currentFree + delta;
-          await this.vAmiga.poke32(freeAddr, newFree);
+          await this.emulator.poke32(freeAddr, newFree);
           return;
         }
       }
-      memHeader = await this.vAmiga.peek32(memHeader);
+      memHeader = await this.emulator.peek32(memHeader);
       safetyCounter++;
     }
     throw new Error(
@@ -273,29 +273,29 @@ var AmigaMemoryMapper = class {
   async updatePreviousChunkPointer(oldChunk, newChunk) {
     const execBase = await this.getExecBase();
     const memListAddr = execBase + 322;
-    let memHeader = await this.vAmiga.peek32(memListAddr);
+    let memHeader = await this.emulator.peek32(memListAddr);
     let safetyCounter = 0;
     while (memHeader !== 0 && safetyCounter < 10) {
       if (memHeader > 16777215) break;
-      const nodeType = await this.vAmiga.peek8(memHeader + 8);
+      const nodeType = await this.emulator.peek8(memHeader + 8);
       if (nodeType === NT_MEMORY) {
         const firstChunkAddr = memHeader + 16;
-        const firstChunk = await this.vAmiga.peek32(firstChunkAddr);
+        const firstChunk = await this.emulator.peek32(firstChunkAddr);
         if (firstChunk === oldChunk) {
-          await this.vAmiga.poke32(firstChunkAddr, newChunk);
+          await this.emulator.poke32(firstChunkAddr, newChunk);
           return;
         }
         let chunk = firstChunk;
         while (chunk !== 0) {
-          const nextChunk = await this.vAmiga.peek32(chunk);
+          const nextChunk = await this.emulator.peek32(chunk);
           if (nextChunk === oldChunk) {
-            await this.vAmiga.poke32(chunk, newChunk);
+            await this.emulator.poke32(chunk, newChunk);
             return;
           }
           chunk = nextChunk;
         }
       }
-      memHeader = await this.vAmiga.peek32(memHeader);
+      memHeader = await this.emulator.peek32(memHeader);
       safetyCounter++;
     }
   }
@@ -306,27 +306,27 @@ var AmigaMemoryMapper = class {
     const alignedSize = size + 3 & ~3;
     const execBase = await this.getExecBase();
     const memListAddr = execBase + 322;
-    let memHeader = await this.vAmiga.peek32(memListAddr);
+    let memHeader = await this.emulator.peek32(memListAddr);
     let safetyCounter = 0;
     while (memHeader !== 0 && safetyCounter < 10) {
       if (memHeader > 16777215) break;
-      const nodeType = await this.vAmiga.peek8(memHeader + 8);
+      const nodeType = await this.emulator.peek8(memHeader + 8);
       if (nodeType === NT_MEMORY) {
-        const lower = await this.vAmiga.peek32(memHeader + 20);
-        const upper = await this.vAmiga.peek32(memHeader + 24);
+        const lower = await this.emulator.peek32(memHeader + 20);
+        const upper = await this.emulator.peek32(memHeader + 24);
         if (address >= lower && address < upper) {
           const firstChunkAddr = memHeader + 16;
-          const oldFirstChunk = await this.vAmiga.peek32(firstChunkAddr);
-          await this.vAmiga.poke32(address, oldFirstChunk);
-          await this.vAmiga.poke32(address + 4, alignedSize);
-          await this.vAmiga.poke32(firstChunkAddr, address);
+          const oldFirstChunk = await this.emulator.peek32(firstChunkAddr);
+          await this.emulator.poke32(address, oldFirstChunk);
+          await this.emulator.poke32(address + 4, alignedSize);
+          await this.emulator.poke32(firstChunkAddr, address);
           const freeAddr = memHeader + 28;
-          const currentFree = await this.vAmiga.peek32(freeAddr);
-          await this.vAmiga.poke32(freeAddr, currentFree + alignedSize);
+          const currentFree = await this.emulator.peek32(freeAddr);
+          await this.emulator.poke32(freeAddr, currentFree + alignedSize);
           return;
         }
       }
-      memHeader = await this.vAmiga.peek32(memHeader);
+      memHeader = await this.emulator.peek32(memHeader);
       safetyCounter++;
     }
     throw new Error(

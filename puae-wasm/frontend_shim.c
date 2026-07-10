@@ -2,8 +2,8 @@
 // Registers the libretro callbacks, calls retro_init(), queries
 // retro_get_system_av_info(), and drives retro_run() from JS.
 // Stashes the most recent framebuffer pointer/geometry and audio sample
-// count in globals exported to JS, mirroring vamigaweb_fork's
-// wasm_pixel_buffer()/wasm_get_sound_buffer_address() shape.
+// count in globals exported to JS, mirroring the shape of the vAmiga emulator
+// project's own wasm_pixel_buffer()/wasm_get_sound_buffer_address().
 // Stage B: converts XRGB8888 → RGBA8888 in shim_video_refresh so JS
 // can create an ImageData directly from wasm_get_fb_rgba()'s pointer.
 

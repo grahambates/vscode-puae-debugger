@@ -2,7 +2,7 @@
 import * as assert from "assert";
 import * as sinon from "sinon";
 import { EvaluateManager, EvaluateResultType } from "../evaluateManager";
-import { CpuInfo } from "../vAmiga";
+import { CpuInfo } from "../emulatorProtocol";
 import { PuaeEmulator } from "../puaeEmulator";
 import { VariablesManager } from "../variablesManager";
 import { DisassemblyManager } from "../disassemblyManager";
@@ -13,27 +13,27 @@ import { DisassemblyManager } from "../disassemblyManager";
  */
 describe("EvaluateManager - Comprehensive Tests", () => {
   let evaluateManager: EvaluateManager;
-  let mockVAmiga: sinon.SinonStubbedInstance<PuaeEmulator>;
+  let mockEmulator: sinon.SinonStubbedInstance<PuaeEmulator>;
   let mockVariablesManager: sinon.SinonStubbedInstance<VariablesManager>;
   let mockDisassemblyManager: sinon.SinonStubbedInstance<DisassemblyManager>;
   let mockSourceMap: any;
 
   beforeEach(() => {
-    mockVAmiga = sinon.createStubInstance(PuaeEmulator);
+    mockEmulator = sinon.createStubInstance(PuaeEmulator);
     mockVariablesManager = sinon.createStubInstance(VariablesManager);
     mockDisassemblyManager = sinon.createStubInstance(DisassemblyManager);
     mockSourceMap = createMockSourceMap();
 
     evaluateManager = new EvaluateManager(
-      mockVAmiga,
+      mockEmulator,
       mockSourceMap,
       mockVariablesManager,
       mockDisassemblyManager,
     );
 
     // Setup default CPU state
-    mockVAmiga.getCpuInfo.resolves(createMockCpuInfo());
-    mockVAmiga.getAllCustomRegisters.resolves({
+    mockEmulator.getCpuInfo.resolves(createMockCpuInfo());
+    mockEmulator.getAllCustomRegisters.resolves({
       DMACON: { value: "0x00008200" },
       INTENA: { value: "0x00004000" },
     });
@@ -80,12 +80,12 @@ describe("EvaluateManager - Comprehensive Tests", () => {
       // Setup: Mock memory read
       const mockBuffer = Buffer.alloc(4);
       mockBuffer.writeUInt32BE(0x12345678, 0);
-      mockVAmiga.readMemory.resolves(mockBuffer);
+      mockEmulator.readMemory.resolves(mockBuffer);
 
       const result = await evaluateManager.evaluate("0x1000");
 
       // Verify: Memory read and correct result
-      assert.ok(mockVAmiga.readMemory.calledWith(0x1000, 4));
+      assert.ok(mockEmulator.readMemory.calledWith(0x1000, 4));
       assert.strictEqual(result.value, 0x12345678);
       assert.strictEqual(result.memoryReference, "0x00001000");
       assert.strictEqual(result.type, EvaluateResultType.UNKNOWN);
@@ -94,11 +94,11 @@ describe("EvaluateManager - Comprehensive Tests", () => {
     it("should handle uppercase hex addresses", async () => {
       const mockBuffer = Buffer.alloc(4);
       mockBuffer.writeUInt32BE(0xabcdef01, 0);
-      mockVAmiga.readMemory.resolves(mockBuffer);
+      mockEmulator.readMemory.resolves(mockBuffer);
 
       const result = await evaluateManager.evaluate("0xABCD");
 
-      assert.ok(mockVAmiga.readMemory.calledWith(0xabcd, 4));
+      assert.ok(mockEmulator.readMemory.calledWith(0xabcd, 4));
       assert.strictEqual(result.value, 0xabcdef01);
       assert.strictEqual(result.memoryReference, "0x0000abcd");
     });
@@ -106,11 +106,11 @@ describe("EvaluateManager - Comprehensive Tests", () => {
     it("should handle mixed case hex addresses", async () => {
       const mockBuffer = Buffer.alloc(4);
       mockBuffer.writeUInt32BE(0x00000042, 0);
-      mockVAmiga.readMemory.resolves(mockBuffer);
+      mockEmulator.readMemory.resolves(mockBuffer);
 
       const result = await evaluateManager.evaluate("0xaBc1");
 
-      assert.ok(mockVAmiga.readMemory.calledWith(0xabc1, 4));
+      assert.ok(mockEmulator.readMemory.calledWith(0xabc1, 4));
       assert.strictEqual(result.value, 0x00000042);
     });
   });
@@ -118,7 +118,7 @@ describe("EvaluateManager - Comprehensive Tests", () => {
   describe("CPU Register Evaluation", () => {
     it("should evaluate data registers", async () => {
       mockVariablesManager.getFlatVariables.resolves({ d0: 0x123, d7: 0x456 });
-      mockVAmiga.getCpuInfo.resolves(
+      mockEmulator.getCpuInfo.resolves(
         createMockCpuInfo({ d0: "0x123", d7: "0x456" }),
       );
 
@@ -137,7 +137,7 @@ describe("EvaluateManager - Comprehensive Tests", () => {
         a7: 0x7000,
         pc: 0x1000,
       });
-      mockVAmiga.getCpuInfo.resolves(
+      mockEmulator.getCpuInfo.resolves(
         createMockCpuInfo({ a0: "0x2000", a7: "0x7000", pc: "0x1000" }),
       );
 
@@ -155,7 +155,7 @@ describe("EvaluateManager - Comprehensive Tests", () => {
         usp: 0x8000,
         vbr: 0x9000,
       });
-      mockVAmiga.getCpuInfo.resolves(
+      mockEmulator.getCpuInfo.resolves(
         createMockCpuInfo({ usp: "0x8000", vbr: "0x9000" }),
       );
 
@@ -265,43 +265,43 @@ describe("EvaluateManager - Comprehensive Tests", () => {
 
   describe("Memory Access Functions", () => {
     it("should support peekU32 function", async () => {
-      mockVAmiga.peek32.resolves(0x12345678);
+      mockEmulator.peek32.resolves(0x12345678);
       mockVariablesManager.getFlatVariables.resolves({ addr: 0x1000 });
 
       const result = await evaluateManager.evaluate("peekU32(addr)");
 
-      assert.ok(mockVAmiga.peek32.calledWith(0x1000));
+      assert.ok(mockEmulator.peek32.calledWith(0x1000));
       assert.strictEqual(result.value, 0x12345678);
       assert.strictEqual(result.type, EvaluateResultType.PARSED);
     });
 
     it("should support peekU16 function", async () => {
-      mockVAmiga.peek16.resolves(0x1234);
+      mockEmulator.peek16.resolves(0x1234);
       mockVariablesManager.getFlatVariables.resolves({ addr: 0x1000 });
 
       const result = await evaluateManager.evaluate("peekU16(addr)");
 
-      assert.ok(mockVAmiga.peek16.calledWith(0x1000));
+      assert.ok(mockEmulator.peek16.calledWith(0x1000));
       assert.strictEqual(result.value, 0x1234);
     });
 
     it("should support peekU8 function", async () => {
-      mockVAmiga.peek8.resolves(0x42);
+      mockEmulator.peek8.resolves(0x42);
       mockVariablesManager.getFlatVariables.resolves({});
 
       const result = await evaluateManager.evaluate("peekU8(0x1000)");
 
-      assert.ok(mockVAmiga.peek8.calledWith(0x1000));
+      assert.ok(mockEmulator.peek8.calledWith(0x1000));
       assert.strictEqual(result.value, 0x42);
     });
 
     it("should support peekI32 function with signed conversion", async () => {
-      mockVAmiga.peek32.resolves(0xffffffff); // -1 when signed
+      mockEmulator.peek32.resolves(0xffffffff); // -1 when signed
       mockVariablesManager.getFlatVariables.resolves({});
 
       const result = await evaluateManager.evaluate("peekI32(0x1000)");
 
-      assert.ok(mockVAmiga.peek32.calledWith(0x1000));
+      assert.ok(mockEmulator.peek32.calledWith(0x1000));
       // peekI32 should return the signed 32-bit value (-1 in this case)
       // The expression parser should handle the promise resolution
       assert.strictEqual(result.value, -1);
@@ -316,27 +316,27 @@ describe("EvaluateManager - Comprehensive Tests", () => {
     ];
 
     it("should default to 256 entries when called with no arguments", async () => {
-      mockVAmiga.getCpuTrace.resolves(mockTrace);
+      mockEmulator.getCpuTrace.resolves(mockTrace);
       mockVariablesManager.getFlatVariables.resolves({});
 
       const result = await evaluateManager.evaluate("trace()");
 
-      assert.ok(mockVAmiga.getCpuTrace.calledWith(256));
+      assert.ok(mockEmulator.getCpuTrace.calledWith(256));
       assert.strictEqual(result.type, EvaluateResultType.PARSED);
       assert.deepStrictEqual((result.value as { items: unknown }).items, mockTrace);
     });
 
     it("should pass an explicit count through to getCpuTrace", async () => {
-      mockVAmiga.getCpuTrace.resolves(mockTrace);
+      mockEmulator.getCpuTrace.resolves(mockTrace);
       mockVariablesManager.getFlatVariables.resolves({});
 
       await evaluateManager.evaluate("trace(8)");
 
-      assert.ok(mockVAmiga.getCpuTrace.calledWith(8));
+      assert.ok(mockEmulator.getCpuTrace.calledWith(8));
     });
 
     it("should format trace results and register a variables handle", async () => {
-      mockVAmiga.getCpuTrace.resolves(mockTrace);
+      mockEmulator.getCpuTrace.resolves(mockTrace);
       mockVariablesManager.getFlatVariables.resolves({});
       mockVariablesManager.createArrayHandle.returns(42);
 
@@ -355,7 +355,7 @@ describe("EvaluateManager - Comprehensive Tests", () => {
     });
 
     it("should not allow trace() inside a larger expression", async () => {
-      mockVAmiga.getCpuTrace.resolves(mockTrace);
+      mockEmulator.getCpuTrace.resolves(mockTrace);
       mockVariablesManager.getFlatVariables.resolves({});
 
       await assert.rejects(evaluateManager.evaluate("trace() + 1"));
@@ -392,7 +392,7 @@ describe("EvaluateManager - Comprehensive Tests", () => {
   describe("Formatted Evaluation", () => {
     it("should format data register results", async () => {
       mockVariablesManager.getFlatVariables.resolves({ d0: 0x42 });
-      mockVAmiga.getCpuInfo.resolves(createMockCpuInfo({ d0: "0x42" }));
+      mockEmulator.getCpuInfo.resolves(createMockCpuInfo({ d0: "0x42" }));
 
       const result = await evaluateManager.evaluateFormatted({
         expression: "d0",
@@ -404,7 +404,7 @@ describe("EvaluateManager - Comprehensive Tests", () => {
 
     it("should format address register results", async () => {
       mockVariablesManager.getFlatVariables.resolves({ a0: 0x1000 });
-      mockVAmiga.getCpuInfo.resolves(createMockCpuInfo({ a0: "0x1000" }));
+      mockEmulator.getCpuInfo.resolves(createMockCpuInfo({ a0: "0x1000" }));
 
       const result = await evaluateManager.evaluateFormatted({
         expression: "a0",
@@ -419,7 +419,7 @@ describe("EvaluateManager - Comprehensive Tests", () => {
       mockSourceMap.getSymbolLengths.returns({ main: 4 }); // Set symbol length for pointer dereferencing
       mockSourceMap.findSymbolOffset.returns(null); // No symbol found for the dereferenced value
       mockVariablesManager.getFlatVariables.resolves({ main: 0x1000 });
-      mockVAmiga.peek32.resolves(0x12345678);
+      mockEmulator.peek32.resolves(0x12345678);
 
       const result = await evaluateManager.evaluateFormatted({
         expression: "main",
@@ -548,7 +548,7 @@ describe("EvaluateManager - Comprehensive Tests", () => {
     it("falls back to the assembly evaluate path when the expression is not a resolvable C name", async () => {
       mockVariablesManager.resolveNameToLValue.resolves(undefined);
       mockVariablesManager.getFlatVariables.resolves({ d0: 0x42 });
-      mockVAmiga.getCpuInfo.resolves(createMockCpuInfo({ d0: "0x42" }));
+      mockEmulator.getCpuInfo.resolves(createMockCpuInfo({ d0: "0x42" }));
 
       const result = await evaluateManager.evaluateFormatted({ expression: "d0" });
 
@@ -585,7 +585,7 @@ describe("EvaluateManager - Comprehensive Tests", () => {
 
     it("falls back to writing a CPU register via VariablesManager", async () => {
       mockVariablesManager.resolveNameToLValue.resolves(undefined);
-      mockVAmiga.getCpuInfo.resolves(createMockCpuInfo({ d0: "0x0" }));
+      mockEmulator.getCpuInfo.resolves(createMockCpuInfo({ d0: "0x0" }));
       mockVariablesManager.writeRegister.resolves("0x0000002a | 42");
 
       const body = await evaluateManager.setExpression("d0", "42");
@@ -600,8 +600,8 @@ describe("EvaluateManager - Comprehensive Tests", () => {
 
     it("throws when the expression is not assignable", async () => {
       mockVariablesManager.resolveNameToLValue.resolves(undefined);
-      mockVAmiga.getCpuInfo.resolves(createMockCpuInfo({}));
-      mockVAmiga.getAllCustomRegisters.resolves({});
+      mockEmulator.getCpuInfo.resolves(createMockCpuInfo({}));
+      mockEmulator.getAllCustomRegisters.resolves({});
 
       await assert.rejects(() => evaluateManager.setExpression("nope", "1", 0x1000, null));
     });
@@ -621,7 +621,7 @@ describe("EvaluateManager - Comprehensive Tests", () => {
     });
 
     it("should handle memory read errors", async () => {
-      mockVAmiga.readMemory.rejects(new Error("Memory access error"));
+      mockEmulator.readMemory.rejects(new Error("Memory access error"));
 
       try {
         await evaluateManager.evaluate("0x1000");

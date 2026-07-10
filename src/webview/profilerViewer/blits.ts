@@ -14,7 +14,7 @@
 //
 // CRITICAL: register detection MUST gate on the DMA_WRITE flag. vAmiga leaves a stale busAddr on
 // idle cells (WinUAE leaves it undefined), so matching on the 0xDFFxxx address range alone
-// invents phantom BLTSIZE writes (and an extra blit). Validated against template.vamigaprofile:
+// invents phantom BLTSIZE writes (and an extra blit). Validated against template.puaeprofile:
 // WRITE-gated reconstruction yields exactly the old ext's 17 blits; address-only yields 18.
 //
 // LIMITATION: there is no pre-capture register baseline (write-only blitter regs aren't

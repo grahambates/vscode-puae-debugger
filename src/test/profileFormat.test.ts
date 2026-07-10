@@ -1,11 +1,11 @@
 import { gzipSync, gunzipSync } from "zlib";
-import { encodeCapture, decodeCapture } from "../vamigaProfile";
+import { encodeCapture, decodeCapture } from "../profileFormat";
 import type { RawCapture } from "../profilerManager";
 
 // Rebuild a container with the `kickstart` manifest field removed, simulating a legacy
-// (pre-kickstart-field) .vamigaprofile so we can assert decode normalizes it to the sentinel.
+// (pre-kickstart-field) .puaeprofile so we can assert decode normalizes it to the sentinel.
 function stripKickstart(file: Buffer): Buffer {
-  const MAGIC = "VAMIGAPROF1";
+  const MAGIC = "PUAEPROF1";
   const c = gunzipSync(file);
   const manifestLen = c.readUInt32LE(MAGIC.length);
   const start = MAGIC.length + 4;
@@ -46,7 +46,7 @@ function sampleRaw(withDma: boolean): RawCapture {
 const eq = (a: Uint8Array | undefined, b: Uint8Array | undefined) =>
   expect(a ? Array.from(a) : a).toEqual(b ? Array.from(b) : b);
 
-describe("vamigaProfile codec", () => {
+describe("profileFormat codec", () => {
   it("round-trips a full capture (DMA + snapshot + embedded ELF)", () => {
     const raw = sampleRaw(true);
     const elf = new Uint8Array([0x7f, 0x45, 0x4c, 0x46, 1, 2, 3, 4]);
@@ -105,7 +105,7 @@ describe("vamigaProfile codec", () => {
     expect(() => new Uint32Array(raw.profile.data.buffer, 0, raw.profile.data.byteLength >>> 2)).not.toThrow();
   });
 
-  it("throws on a non-vamigaprofile payload", () => {
+  it("throws on a non-puaeprofile payload", () => {
     expect(() => decodeCapture(gzipSync(Buffer.from("not a profile")))).toThrow(/bad magic/);
   });
 });

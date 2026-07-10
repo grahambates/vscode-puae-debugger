@@ -10,7 +10,7 @@ import { IProfileModel } from "./shared/profilerTypes";
 // round-trip needed — callers just pass the model straight to `update()`.
 //
 // Global and last-write-wins by design: lenses reflect whichever profile (live capture or a
-// loaded .vamigaprofile) was most recently shown, across all panels/editors, and persist after
+// loaded .puaeprofile) was most recently shown, across all panels/editors, and persist after
 // that panel closes — consistent with ProfilerViewerProvider's own "reload survives capture"
 // caching, since the underlying symbol data stays valid after a session ends.
 export class ProfilerCodeLensProvider implements vscode.CodeLensProvider {

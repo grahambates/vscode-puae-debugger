@@ -38,8 +38,8 @@ export function walkHardDrive(rootDir: string): HardDriveEntry[] {
 }
 
 /**
- * PUAE/ami9000 wasm backend, implementing the same `Emulator` interface as
- * `VAmiga`. Backed by `puae/`'s `index.html` (boot/render loop logic shared
+ * PUAE/ami9000 wasm backend, implementing the `Emulator` interface. Backed by
+ * `puae/`'s `index.html` (boot/render loop logic shared
  * via `src/webview/puaeApp/app.ts`, bundled by esbuild.js to
  * `out/puaeApp.js`) + `src/webview/puaeApp/rpc.ts`, which expose the
  * `e9k_debug` debugging layer grafted onto libretro-uae. `puae/debug.html` is
@@ -86,7 +86,7 @@ export function walkHardDrive(rootDir: string): HardDriveEntry[] {
  * `cpu_memory_cycle_exact`, `blitter_cycle_exact` (all `true`) — override
  * by specifying the same key in `emulatorOptions`.
  *
- * Documented gaps vs. `VAmiga` (see `src/webview/puaeApp/rpc.ts` for the implementation):
+ * Known limitations (see `src/webview/puaeApp/rpc.ts` for the implementation):
  *  - `getCpuInfo()`'s isp/msp/vbr/irc/sfc/dfc/cacr/caar fields are always
  *    "0x00000000".
  *  - `setRegister()`/`jump()` only support d0-d7/a0-a7/sr/pc/usp.
@@ -103,7 +103,7 @@ export function walkHardDrive(rootDir: string): HardDriveEntry[] {
  * reused panels — changing them requires closing the panel first.
  */
 export class PuaeEmulator extends WebviewEmulator {
-  public static readonly viewType = "vamiga-debugger.puaeWebview";
+  public static readonly viewType = "puae-debugger.puaeWebview";
   public readonly supportsHitCounts = false;
   private openOptions?: Record<string, unknown>;
   // Options that were used to generate the current panel's HTML — used to

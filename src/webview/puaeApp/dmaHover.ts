@@ -136,7 +136,7 @@ export type DmaHoverInfo = CopperHoverInfo | BlitterHoverInfo | ChannelHoverInfo
 // --- Symbol/source-location lookup ---------------------------------------
 //
 // The extension host holds the session's SourceMap (WebviewEmulator.
-// setSourceMap, wired from VamigaDebugAdapter); the webview asks it to
+// setSourceMap, wired from DebugAdapter); the webview asks it to
 // symbolize an address via postMessage and gets an async reply — mirrors
 // how breakpointManager.ts already resolves copper watchpoint hits to
 // source via sourceMap.lookupAddress, just round-tripped through the

@@ -63,7 +63,7 @@ function RowRenderer({ index, style, rows, currentIndex, onJump, onOpenSource }:
 // Each instruction's source location, if known, is resolved via model.lineTable (the program's
 // full address->line table — see sourceLookup.ts; this is how the live PUAE webview's copper DMA
 // overlay does click-to-source too, just resolved here from the embedded model instead of a live
-// round trip, so it also works for a saved .vamigaprofile) and shown as a clickable "file:line".
+// round trip, so it also works for a saved .puaeprofile) and shown as a clickable "file:line".
 export function CopperView({
   selectedSlot,
   onSelectSlot,

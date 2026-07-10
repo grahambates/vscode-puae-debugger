@@ -116,8 +116,8 @@ export interface IDmaModel {
   value: Uint16Array; // bus data (tooltips + reconstruction)
   // Per-cycle hardware-event bitfield (DMA_EVENT_* — BLITIRQ/COPPERWAKE/VB/etc., see
   // webview/profilerViewer/dma.ts's DMA_EVENT_NAMES), parallel to the arrays above. Absent for
-  // captures predating this field (older .vamigaprofile files) or a backend that doesn't supply
-  // it (vAmiga) — tooltip Events row just doesn't render.
+  // captures predating this field (older .puaeprofile files) — tooltip Events row just
+  // doesn't render.
   events?: Uint32Array;
 }
 
@@ -339,7 +339,7 @@ export interface OpenDocumentMessage {
   line: number;
   toSide?: boolean;
 }
-// Save the current capture to a .vamigaprofile (the extension owns the dialog + write).
+// Save the current capture to a .puaeprofile (the extension owns the dialog + write).
 export interface SaveProfileMessage {
   command: "saveProfile";
 }

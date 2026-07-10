@@ -34,8 +34,8 @@ function buildSymbolList(sourceMap: SourceMap): ISymbol[] {
   return out;
 }
 
-// Minimal RPC surface (VAmiga.sendRpcCommand) — kept as an interface so the manager
-// is unit-testable with a mock and doesn't pull in the whole VAmiga/webview module.
+// Minimal RPC surface (WebviewEmulator.sendRpcCommand) — kept as an interface so the manager
+// is unit-testable with a mock and doesn't pull in the whole emulator/webview module.
 export interface ProfilerRpcClient {
   sendRpcCommand<T = unknown, A = unknown>(command: string, args?: A, timeoutMs?: number): Promise<T>;
 }
@@ -50,9 +50,9 @@ export interface InstructionSample {
 // Hard cap mirroring the emulator's kMaxDepth; guards against a corrupt stream.
 const MAX_DEPTH = 64;
 
-// Synthetic leaf-PC marker the emulator emits for an [IRQ] sample (the interrupt/
-// exception dispatch "gap"). MUST match IRQ_MARKER in
-// vamigaweb_fork/Core/Profiler/CpuProfiler.h.
+// Synthetic leaf-PC marker for an [IRQ] sample (the interrupt/exception dispatch
+// "gap") — value inherited from the vAmiga emulator project's own CpuProfiler.h,
+// which used this sentinel for the same purpose.
 const IRQ_MARKER = 0xfffffffe;
 
 // Kickstart ROM address range (covers 256K and 512K ROMs), as in WinUAE.
@@ -349,7 +349,7 @@ export function buildProfileModel(samples: InstructionSample[], sourceMap: Sourc
 // (the instruction text/bytes from _wasm_disassemble, and the hit/cycle counts aggregated from
 // the exact per-instruction sample trace) — NOT yet annotated with source file/line, which is
 // re-derived in attachDisassembly() from whichever SourceMap is active (live session or a
-// reconstructed one for a loaded .vamigaprofile), mirroring how the rest of IProfileModel is
+// reconstructed one for a loaded .puaeprofile), mirroring how the rest of IProfileModel is
 // rebuilt from RawCapture rather than baked in once.
 export interface RawDisassembledInstruction {
   address: number;
@@ -368,7 +368,7 @@ export interface RawDisassembledFunction {
 
 // The raw, serializable result of one capture — everything the post-emulator pipeline
 // consumes, before any decoding or symbolication. This is the seam shared by live capture
-// and a loaded .vamigaprofile: both produce a RawCapture, then buildModelFromCapture turns
+// and a loaded .puaeprofile: both produce a RawCapture, then buildModelFromCapture turns
 // it into the IProfileModel. Kept to plain typed arrays + scalars so it serializes directly.
 export interface RawCapture {
   profile: {
@@ -407,7 +407,7 @@ export interface FrameCapture {
 
 // Pure transform: RawCapture + SourceMap → IProfileModel (+ the decoded samples, retained
 // as a first-class artifact). No I/O, no emulator — the single model-building path for both
-// live captures and loaded .vamigaprofile files, and the unit-test entry point. An empty
+// live captures and loaded .puaeprofile files, and the unit-test entry point. An empty
 // capture yields an empty model here; the live "nothing captured" diagnostic lives in
 // ProfilerManager.capture() where the emulator-state hint makes sense.
 export function buildModelFromCapture(
@@ -655,7 +655,7 @@ export class ProfilerManager {
   ) {}
 
   // All frames from the last capture, retained so the webview "Save" button can
-  // serialize frame 0 to a .vamigaprofile without re-running the emulator.
+  // serialize frame 0 to a .puaeprofile without re-running the emulator.
   private lastFrames: FrameCapture[] = [];
   // Per-frame raw InstructionSample arrays, parallel to lastFrames. Kept separate from
   // lastFrames because buildRangeModel needs them for arbitrary sub-range combinations
@@ -1006,7 +1006,7 @@ export class ProfilerManager {
           const isLastFrame = fi === lastFrameIdx;
 
           // Slice of the combined stream bytes that belongs to this frame, so raw.profile.data
-          // encodes correctly when saved to a .vamigaprofile (frame 0 only is ever saved, but
+          // encodes correctly when saved to a .puaeprofile (frame 0 only is ever saved, but
           // keep it correct for all frames).
           const frameProfileBytes = profileBytes.slice(startWords[fi] * 4, endWords[fi] * 4);
 

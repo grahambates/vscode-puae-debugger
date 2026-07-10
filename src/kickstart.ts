@@ -36,7 +36,7 @@ export function kickstartSymbolModule(
 /**
  * Reconstruct a {@link KickstartSymbolModule} from a ROM sha1 alone — no ROM bytes needed. The ROM
  * size (hence the mapped base) comes from the {@link kickstartRoms} table entry, so a saved
- * `.vamigaprofile` only needs to persist the sha1 to re-symbolicate ROM/OS addresses on load.
+ * `.puaeprofile` only needs to persist the sha1 to re-symbolicate ROM/OS addresses on load.
  * Returns `undefined` for an unknown/empty sha1 (the caller carries on without ROM symbols).
  */
 export function kickstartSymbolModuleBySha1(

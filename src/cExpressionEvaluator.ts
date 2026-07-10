@@ -227,7 +227,7 @@ class EvalError extends Error {}
 
 export class CExpressionEvaluator {
   constructor(
-    private vAmiga: Emulator,
+    private emulator: Emulator,
     private sourceMap: SourceMap,
     private variablesManager: VariablesManager,
   ) {}
@@ -392,8 +392,8 @@ export class CExpressionEvaluator {
   }
 
   private async deref32(address: number): Promise<number> {
-    if (!this.vAmiga.isValidAddress(address))
+    if (!this.emulator.isValidAddress(address))
       throw new EvalError(`dereference of invalid address ${formatHex(address)}`);
-    return this.vAmiga.peek32(address);
+    return this.emulator.peek32(address);
   }
 }

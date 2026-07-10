@@ -14,8 +14,8 @@ import {
 export class AmigaHunkLoader {
   private memoryMapper: AmigaMemoryMapper;
 
-  constructor(private vAmiga: Emulator) {
-    this.memoryMapper = new AmigaMemoryMapper(vAmiga);
+  constructor(private emulator: Emulator) {
+    this.memoryMapper = new AmigaMemoryMapper(emulator);
   }
 
   /**
@@ -127,13 +127,13 @@ export class AmigaHunkLoader {
       const relocAddress = alloc.address + offset;
 
       // Read current value at relocation site
-      const currentValue = await this.vAmiga.peek32(relocAddress);
+      const currentValue = await this.emulator.peek32(relocAddress);
 
       // Add target hunk base address to current value
       const relocatedValue = currentValue + targetAddress;
 
       // Write back the relocated value
-      await this.vAmiga.poke32(relocAddress, relocatedValue);
+      await this.emulator.poke32(relocAddress, relocatedValue);
 
       console.log(
         `Relocation at $${relocAddress.toString(16)}: ` +
@@ -163,7 +163,7 @@ export class AmigaHunkLoader {
             `at $${alloc.address.toString(16)}`,
         );
 
-        await this.vAmiga.writeMemory(alloc.address, hunk.data);
+        await this.emulator.writeMemory(alloc.address, hunk.data);
       }
     }
   }
@@ -174,7 +174,7 @@ export class AmigaHunkLoader {
   private async zeroMemory(address: number, size: number): Promise<void> {
     // Create a buffer of zeros and write
     const zeroBuffer = Buffer.alloc(size);
-    await this.vAmiga.writeMemory(address, zeroBuffer);
+    await this.emulator.writeMemory(address, zeroBuffer);
   }
 
   /**
@@ -202,10 +202,10 @@ export class AmigaHunkLoader {
    * Load and relocate hunks from binary data
    */
   static async loadFromHunks(
-    vAmiga: Emulator,
+    emulator: Emulator,
     hunks: Hunk[],
   ): Promise<LoadedProgram> {
-    const loader = new AmigaHunkLoader(vAmiga);
+    const loader = new AmigaHunkLoader(emulator);
     return await loader.loadProgram(hunks);
   }
 
@@ -217,7 +217,7 @@ export class AmigaHunkLoader {
     await this.setupReturnTrampoline(program);
     await this.clearInterruptMask();
     // Jump pc to entrypoint
-    await this.vAmiga.jump(program.entryPoint);
+    await this.emulator.jump(program.entryPoint);
     console.log(
       `Program entry point set to $${program.entryPoint.toString(16)}`,
     );
@@ -234,9 +234,9 @@ export class AmigaHunkLoader {
    * normal AmigaDOS program launch.
    */
   private async clearInterruptMask(): Promise<void> {
-    const cpuInfo = await this.vAmiga.getCpuInfo();
+    const cpuInfo = await this.emulator.getCpuInfo();
     const sr = Number(cpuInfo.sr) & ~0x0700;
-    await this.vAmiga.setRegister("sr", sr);
+    await this.emulator.setRegister("sr", sr);
   }
 
   /**
@@ -275,15 +275,15 @@ export class AmigaHunkLoader {
     // stack-overflow boundary.
     const STACK_RESERVE_SIZE = 32 * 1024;
 
-    const cpuInfo = await this.vAmiga.getCpuInfo();
+    const cpuInfo = await this.emulator.getCpuInfo();
     const sp = Number(cpuInfo.usp);
 
     const trampolineAddress = sp - TRAMPOLINE_CODE.length; // landing pad, ending at the original usp
     const returnAddress = trampolineAddress - 4; // synthetic return address, popped by rts
 
-    await this.vAmiga.writeMemory(trampolineAddress, TRAMPOLINE_CODE);
-    await this.vAmiga.poke32(returnAddress, trampolineAddress);
-    await this.vAmiga.setRegister("usp", returnAddress);
+    await this.emulator.writeMemory(trampolineAddress, TRAMPOLINE_CODE);
+    await this.emulator.poke32(returnAddress, trampolineAddress);
+    await this.emulator.setRegister("usp", returnAddress);
 
     program.stackRange = {
       address: trampolineAddress - STACK_RESERVE_SIZE,
@@ -300,12 +300,12 @@ export class AmigaHunkLoader {
  * Utility function to load a program with full setup
  */
 export async function loadAmigaProgram(
-  vAmiga: Emulator,
+  emulator: Emulator,
   hunks: Hunk[],
 ): Promise<LoadedProgram> {
   console.log(`Loading Amiga program with ${hunks.length} hunks`);
 
-  const loader = new AmigaHunkLoader(vAmiga);
+  const loader = new AmigaHunkLoader(emulator);
   const program = await loader.loadProgram(hunks);
 
   // Set up program entry point

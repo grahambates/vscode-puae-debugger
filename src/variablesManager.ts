@@ -1,5 +1,5 @@
 import { DebugProtocol } from "@vscode/debugprotocol";
-import { CpuInfo, CpuTraceItem } from "./vAmiga";
+import { CpuInfo, CpuTraceItem } from "./emulatorProtocol";
 import { Emulator } from "./emulator";
 import { SourceMap, Location, LocalLocation, TypeDescriptor, FieldDescriptor } from "./sourceMap";
 import { Handles, Scope } from "@vscode/debugadapter";
@@ -48,11 +48,11 @@ export class VariablesManager {
   /**
    * Creates a new VariablesManager instance.
    *
-   * @param vAmiga VAmiga instance for reading registers and memory
+   * @param emulator Emulator instance for reading registers and memory
    * @param sourceMap Source map for symbol resolution and address formatting
    */
   constructor(
-    private vAmiga: Emulator,
+    private emulator: Emulator,
     private sourceMap: SourceMap,
   ) {}
 
@@ -172,13 +172,13 @@ export class VariablesManager {
         throw new Error(`${name} is a read-only register`);
       }
       if (custom.long) {
-        await this.vAmiga.pokeCustom32(custom.writeAddress, value);
+        await this.emulator.pokeCustom32(custom.writeAddress, value);
         return formatHex(value);
       }
-      await this.vAmiga.pokeCustom16(custom.writeAddress, value);
+      await this.emulator.pokeCustom16(custom.writeAddress, value);
       return formatHex(value, 4);
     }
-    const res = await this.vAmiga.setRegister(name, value);
+    const res = await this.emulator.setRegister(name, value);
     return res.value;
   }
 
@@ -191,9 +191,9 @@ export class VariablesManager {
   public async writeScalar(address: number, type: TypeDescriptor, value: number): Promise<string> {
     if (type.kind !== "primitive" && type.kind !== "pointer")
       throw new Error("Variable access error: value is not a writable scalar");
-    if (type.byteSize === 4) await this.vAmiga.poke32(address, u32(value));
-    else if (type.byteSize === 2) await this.vAmiga.poke16(address, u16(value));
-    else if (type.byteSize === 1) await this.vAmiga.poke8(address, u8(value));
+    if (type.byteSize === 4) await this.emulator.poke32(address, u32(value));
+    else if (type.byteSize === 2) await this.emulator.poke16(address, u16(value));
+    else if (type.byteSize === 1) await this.emulator.poke8(address, u8(value));
     else throw new Error("Variable access error: value is not a writable scalar");
     return (await this.renderLValue(address, type)).value;
   }
@@ -211,7 +211,7 @@ export class VariablesManager {
   }
 
   public async registerVariables(): Promise<DebugProtocol.Variable[]> {
-    const info = await this.vAmiga.getCpuInfo();
+    const info = await this.emulator.getCpuInfo();
     return Object.keys(info).map((name) => {
       let value = String(info[name as keyof CpuInfo]);
       let variablesReference = 0;
@@ -224,7 +224,7 @@ export class VariablesManager {
       } else if (name.match(/(a[0-9]|pc|usp|msp|isp|vbr)/)) {
         variablesReference = this.variableHandles.create(`addr_reg_${name}`);
         const numVal = Number(value);
-        if (this.vAmiga.isValidAddress(numVal)) {
+        if (this.emulator.isValidAddress(numVal)) {
           memoryReference = value;
           value = formatAddress(numVal, this.sourceMap);
         }
@@ -240,7 +240,7 @@ export class VariablesManager {
   }
 
   public async dataRegVariables(id: string): Promise<DebugProtocol.Variable[]> {
-    const info = await this.vAmiga.getCpuInfo();
+    const info = await this.emulator.getCpuInfo();
     const name = id.replace("data_reg_", "");
     const value = Number(info[name as keyof CpuInfo]);
     return [
@@ -254,7 +254,7 @@ export class VariablesManager {
   }
 
   public async srFlagVariables(): Promise<DebugProtocol.Variable[]> {
-    const info = await this.vAmiga.getCpuInfo();
+    const info = await this.emulator.getCpuInfo();
     const sr = Number(info.sr);
 
     // Extract individual CPU flags from status register (68000 format)
@@ -289,7 +289,7 @@ export class VariablesManager {
   public async addressRegVariables(
     id: string,
   ): Promise<DebugProtocol.Variable[]> {
-    const info = await this.vAmiga.getCpuInfo();
+    const info = await this.emulator.getCpuInfo();
     const name = id.replace("addr_reg_", "");
     const value = Number(info[name as keyof CpuInfo]);
     const variables = [
@@ -315,7 +315,7 @@ export class VariablesManager {
   }
 
   public async customVariables(): Promise<DebugProtocol.Variable[]> {
-    const info = await this.vAmiga.getAllCustomRegisters();
+    const info = await this.emulator.getAllCustomRegisters();
     const variables = Object.keys(info).map((name): DebugProtocol.Variable => {
       let value = info[name].value;
       let memoryReference: string | undefined;
@@ -345,7 +345,7 @@ export class VariablesManager {
   }
 
   public async customDetailVariables(id: string) {
-    const info = await this.vAmiga.getAllCustomRegisters();
+    const info = await this.emulator.getAllCustomRegisters();
     const regName = id.replace("custom_reg_", "");
     const regValue = Number(info[regName].value);
     const bits = registerParsers.parseRegister(regName, regValue);
@@ -359,8 +359,8 @@ export class VariablesManager {
 
   public async vectorVariables() {
     const variables: DebugProtocol.Variable[] = [];
-    const cpuInfo = await this.vAmiga.getCpuInfo();
-    const mem = await this.vAmiga.readMemory(
+    const cpuInfo = await this.emulator.getCpuInfo();
+    const mem = await this.emulator.readMemory(
       Number(cpuInfo.vbr),
       vectors.length * 4,
     );
@@ -414,11 +414,11 @@ export class VariablesManager {
         if (length === 1 || length === 2 || length === 4) {
           let ptrVal: number;
           if (length === 4) {
-            ptrVal = await this.vAmiga.peek32(symbols[name]);
+            ptrVal = await this.emulator.peek32(symbols[name]);
           } else if (length === 2) {
-            ptrVal = await this.vAmiga.peek16(symbols[name]);
+            ptrVal = await this.emulator.peek16(symbols[name]);
           } else {
-            ptrVal = await this.vAmiga.peek8(symbols[name]);
+            ptrVal = await this.emulator.peek8(symbols[name]);
           }
           if (length === 4) {
             value += " -> " + formatAddress(ptrVal, this.sourceMap);
@@ -498,9 +498,9 @@ export class VariablesManager {
   }
 
   private async peekBySize(address: number, byteSize: number): Promise<number | undefined> {
-    if (byteSize === 4) return this.vAmiga.peek32(address);
-    if (byteSize === 2) return this.vAmiga.peek16(address);
-    if (byteSize === 1) return this.vAmiga.peek8(address);
+    if (byteSize === 4) return this.emulator.peek32(address);
+    if (byteSize === 2) return this.emulator.peek16(address);
+    if (byteSize === 1) return this.emulator.peek8(address);
     return undefined;
   }
 
@@ -512,7 +512,7 @@ export class VariablesManager {
   private async peekString(address: number): Promise<{ content: string; truncated: boolean }> {
     const chars: string[] = [];
     for (let i = 0; i < VariablesManager.MAX_STRING_PEEK; i++) {
-      const byte = await this.vAmiga.peek8(address + i);
+      const byte = await this.emulator.peek8(address + i);
       if (byte === undefined || byte === 0) break;
       if (byte === 0x5c)                           chars.push('\\\\');
       else if (byte === 0x22)                      chars.push('\\"');
@@ -526,7 +526,7 @@ export class VariablesManager {
   }
 
   public async localVariables(pc: number | null = null, regs: Map<number, number> | null = null): Promise<DebugProtocol.Variable[]> {
-    const cpuInfo = await this.vAmiga.getCpuInfo();
+    const cpuInfo = await this.emulator.getCpuInfo();
     const effectivePc = pc ?? Number(cpuInfo.pc);
     const rawLocals = this.sourceMap.getLocalsForPc(effectivePc);
     const locals = await Promise.all(rawLocals.map(async (v) => {
@@ -591,7 +591,7 @@ export class VariablesManager {
     if (pc !== null) {
       const local = this.sourceMap.getLocalsForPc(pc).find((v) => v.name === name);
       if (local) {
-        const cpuInfo = await this.vAmiga.getCpuInfo();
+        const cpuInfo = await this.emulator.getCpuInfo();
         const address = this.locationToAddress(local.location, cpuInfo, pc, regs);
         return address !== undefined
           ? { address, type: local.typeDescriptor, typeName: local.typeName }
@@ -644,7 +644,7 @@ export class VariablesManager {
         return { value: `[${type.elementCount} elements]`, variablesReference: ref };
       }
       case 'pointer': {
-        const ptrVal = await this.vAmiga.peek32(address);
+        const ptrVal = await this.emulator.peek32(address);
         return this.renderPointerValue(ptrVal, type);
       }
     }
@@ -656,7 +656,7 @@ export class VariablesManager {
     type: Extract<TypeDescriptor, { kind: 'pointer' }>,
   ): Promise<{ value: string; variablesReference: number }> {
     const ptrStr = formatAddress(ptrVal, this.sourceMap);
-    if (!this.vAmiga.isValidAddress(ptrVal))
+    if (!this.emulator.isValidAddress(ptrVal))
       return { value: ptrStr, variablesReference: 0 };
     const pointee = type.pointee;
     if (pointee.kind === 'struct') {
@@ -796,8 +796,8 @@ export class VariablesManager {
    */
   public async getFlatVariables(): Promise<Record<string, number>> {
     const variables: Record<string, number> = {};
-    const cpuInfo = await this.vAmiga.getCpuInfo();
-    const customRegs = await this.vAmiga.getAllCustomRegisters();
+    const cpuInfo = await this.emulator.getCpuInfo();
+    const customRegs = await this.emulator.getAllCustomRegisters();
     const symbols = this.sourceMap?.getSymbols() ?? {};
     for (const k in cpuInfo) {
       variables[k] = Number(cpuInfo[k as keyof CpuInfo]);
@@ -917,7 +917,7 @@ export class VariablesManager {
         const value = groupElements[0];
 
         let displayValue: string;
-        if (elementSize === 4 && this.vAmiga.isValidAddress(value)) {
+        if (elementSize === 4 && this.emulator.isValidAddress(value)) {
           displayValue = formatAddress(value, this.sourceMap);
         } else {
           displayValue = formatNumber(value, elementSize * 2);
@@ -933,7 +933,7 @@ export class VariablesManager {
       } else {
         // Multiple elements per line - traditional hex listing style
         const groupValues = groupElements.map((value) => {
-          if (elementSize === 4 && this.vAmiga.isValidAddress(value)) {
+          if (elementSize === 4 && this.emulator.isValidAddress(value)) {
             return formatAddress(value, this.sourceMap);
           } else {
             // Remove 0x prefix for cleaner table view

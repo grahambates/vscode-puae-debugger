@@ -11,7 +11,7 @@ describe("Extension Test Suite", () => {
     // Note: Extension ID should match package.json publisher.name format
     // For now, test that the extension can be found (even with undefined publisher)
     const extension = vscode.extensions.getExtension(
-      "undefined_publisher.vscode-vamiga-debugger",
+      "undefined_publisher.vscode-puae-debugger",
     );
     assert.ok(extension, "Extension should be installed");
 
@@ -29,7 +29,7 @@ describe("Extension Test Suite", () => {
   });
 
   it("Configuration properties should be available", () => {
-    const config = vscode.workspace.getConfiguration("vamiga-debugger");
+    const config = vscode.workspace.getConfiguration("puae-debugger");
     assert.ok(config, "Configuration section should exist");
 
     // Test getting default view column setting

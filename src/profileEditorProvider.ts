@@ -7,17 +7,17 @@ import { ProfilerLineDecorationProvider } from "./profilerLineDecorationProvider
 import { ProfilerInboundMessage, IProfileModel } from "./shared/profilerTypes";
 
 /**
- * Read-only custom editor for .vamigaprofile files: decodes the bundle, rebuilds the model
+ * Read-only custom editor for .puaeprofile files: decodes the bundle, rebuilds the model
  * via loadProfile (same buildModelFromCapture path as a live capture), and hosts the
  * profiler webview in "file" mode (no Capture/Save). Registered as the default editor for
- * *.vamigaprofile, so opening the file in the Explorer shows the profiler directly.
+ * *.puaeprofile, so opening the file in the Explorer shows the profiler directly.
  *
  * Like the live panel, the bulk binary (DMA grid + snapshot) is shipped via a fetched temp
  * blob rather than postMessage (which is slow for large binary); only the small symbolicated
  * model crosses via postMessage.
  */
 export class ProfileEditorProvider implements vscode.CustomReadonlyEditorProvider {
-  public static readonly viewType = "vamiga-debugger.profileEditor";
+  public static readonly viewType = "puae-debugger.profileEditor";
   private seq = 0; // unique temp-blob name per opened editor
 
   constructor(

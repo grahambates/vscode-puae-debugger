@@ -131,7 +131,7 @@ describe("ELF + GNU stabs", function () {
     const dwarfData = parseDwarf(elf);
     expect(hasDwarfSections(dwarfData)).toBe(false);
     expect(hasElfStabsSections(dwarfData)).toBe(false);
-    // (The actual throw-on-neither lives in vAmigaDebugAdapter's launch dispatch;
+    // (The actual throw-on-neither lives in debugAdapter's launch dispatch;
     // this asserts the two predicates it relies on both correctly report "no".)
   });
 });

@@ -102,7 +102,7 @@ export function App() {
   // Time View's tree direction: top-down (call-tree, "what does main() spend time in") or
   // bottom-up (leaf→callers, "what does Foo's time actually come from").
   const [treeMode, setTreeMode] = useState<"top" | "bottom">("top");
-  // "file" = a loaded .vamigaprofile (read-only): no live Capture/Save. The host bakes the
+  // "file" = a loaded .puaeprofile (read-only): no live Capture/Save. The host bakes the
   // mode into #root so it's known at init and holds even if no model ever arrives.
   const [mode] = useState<"live" | "file">(() =>
     document.getElementById("root")?.dataset.mode === "file" ? "file" : "live",
@@ -522,7 +522,7 @@ export function App() {
             <button className="capture-btn" onClick={capture} disabled={busy}>
               {captureLabel}
             </button>
-            <button onClick={save} disabled={busy || !model} title="Save this capture to a .vamigaprofile file">
+            <button onClick={save} disabled={busy || !model} title="Save this capture to a .puaeprofile file">
               Save
             </button>
             <label className="frames-label" title="Number of frames to capture per click">Frames</label>

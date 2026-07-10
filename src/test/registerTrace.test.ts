@@ -1,5 +1,5 @@
 import { packBulk, unpackBulk } from "../profilerBulk";
-import { encodeCapture, decodeCapture } from "../vamigaProfile";
+import { encodeCapture, decodeCapture } from "../profileFormat";
 import { buildModelFromCapture } from "../profilerManager";
 import { REG_COUNT, REG_D0 } from "../shared/profilerTypes";
 import { SourceMap } from "../sourceMap";
@@ -37,7 +37,7 @@ describe("packBulk/unpackBulk with a register trace", () => {
   });
 });
 
-describe("vamigaProfile codec with a register trace", () => {
+describe("profileFormat codec with a register trace", () => {
   it("round-trips raw.registers through encode/decode", () => {
     const raw: RawCapture = {
       profile: { data: new Uint8Array([1, 0, 0, 0]), start: 0, end: 0, total: 0, inRange: 0, frameCycles: 0, isPAL: true },

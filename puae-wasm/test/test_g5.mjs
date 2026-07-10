@@ -11,7 +11,7 @@ function check(label, cond, detail) {
   }
 }
 
-// MemSrc enum values (src/vAmiga.ts).
+// MemSrc enum values (src/emulatorProtocol.ts).
 const MEM_SRC_FAST = 5;
 
 const kickRom = readFixture("kick34005.A500");
