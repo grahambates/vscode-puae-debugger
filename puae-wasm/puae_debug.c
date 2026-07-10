@@ -192,21 +192,39 @@ static int puae_debug_regwatchCheck(uint32_t pc24);
 // When a table is present (C/C++ programs): call stack reconstructed by walking
 // DWARF CFA chains.  When absent (assembly): JSR/BSR/RTS shadow call stack.
 
-#define WASM_PROFILE_BUF_WORDS (1 << 20)   /* 4 MB ≈ 174k samples at avg depth 5 */
+// Bounds the worst-case size of the buffer getProfileData ships back over the
+// webview<->extension-host postMessage bridge (~800ms/MB even base64-encoded —
+// see rpc.ts's uint8ToBase64 comment). A single profiled frame's instruction
+// count isn't bounded by real elapsed time the way it would be on real hardware:
+// unthrottled fast-RAM code retires far more instructions per frame than
+// chip-RAM code (no DMA bus-contention wait states), and 68020/030's cycle-exact
+// accounting (m68k_run_2ce, wait_memory_cycles' 16-instruction grace period) lets
+// register/cache-heavy code go even further per frame than 68040/060's coarser
+// per-instruction accounting (m68k_run_3ce) — confirmed by direct measurement,
+// same real program, same warmup: 68020 retired ~5x more in-range instructions
+// than 68040. Once a profiled frame's sample count would blow this cap, later
+// samples are silently dropped (see the bounds check in wasm_profile_instrHook)
+// rather than growing the buffer further — a truncated-but-fast profile beats a
+// complete-but-unusable one that times out or freezes the webview in transit.
+#define WASM_PROFILE_BUF_WORDS (1 << 18)   /* 1 MB ≈ 43k samples at avg depth 5 */
 static uint32_t g_wprofBuf[WASM_PROFILE_BUF_WORDS];
 static uint32_t g_wprofBufLen;
 
 /* Per-sample CPU register snapshot, parallel to (lockstep with) g_wprofBuf — a fixed 19-word
  * block per recorded sample (D0-D7, A0-A7, SR, PC, USP; see WASM_REG_COUNT/wasm_read_regs below),
- * rather than interleaved into g_wprofBuf's variable-length records. Capped independently and
- * more tightly than g_wprofBuf's worst case (174k samples) — a single profiled frame realistically
- * never approaches that, and 64k samples already costs ~5MB of static wasm memory. Recording
- * gates on BOTH caps (see wasm_profile_instrHook), so this never desyncs from the sample actually
- * pushed to g_wprofBuf: the JS-side decode order for both is strictly sequential (one entry per
- * successful wasm_profile_instrHook call), so registers[k] always belongs to the k-th decoded
- * InstructionSample. */
+ * rather than interleaved into g_wprofBuf's variable-length records. At 19 words/sample flat
+ * (vs g_wprofBuf's ~5 words/sample average at typical call-stack depth), this is the larger of
+ * the two getProfileData/getProfileRegs transfers, so it's capped more tightly — see
+ * WASM_PROFILE_BUF_WORDS' comment on why a hard, deliberately-conservative cap matters here
+ * regardless of how many instructions a frame legitimately retires. Recording gates on BOTH
+ * caps (see wasm_profile_instrHook), so this never desyncs from the sample actually pushed to
+ * g_wprofBuf: the JS-side decode order for both is strictly sequential (one entry per successful
+ * wasm_profile_instrHook call), so registers[k] always belongs to the k-th decoded
+ * InstructionSample. Being the smaller of the two caps, this is also what actually bounds
+ * g_wprofBuf's growth in practice for frame 0 (where register recording is enabled) — both
+ * checks happen before either buffer is written. */
 #define WASM_PROFILE_REG_COUNT 19          /* = WASM_REG_COUNT (wasm_read_regs, below) */
-#define WASM_PROFILE_MAX_REG_SAMPLES (1 << 16)   /* 64k samples ≈ 4.98 MB */
+#define WASM_PROFILE_MAX_REG_SAMPLES (1 << 14)   /* 16k samples ≈ 1.25 MB */
 static uint32_t g_wprofRegBuf[WASM_PROFILE_MAX_REG_SAMPLES * WASM_PROFILE_REG_COUNT];
 static uint32_t g_wprofRegSampleCount;
 
@@ -224,7 +242,8 @@ static uint64_t g_wprofFrameCycles;
 /* When 0, wasm_profile_instrHook still records profile samples but skips the
  * register snapshot.  Set to 0 by wasm_profile_emit_frame_marker() so that
  * only frame 0 carries register data in multi-frame captures — avoiding the
- * 65k-sample register cap from blocking profile recording for later frames. */
+ * register cap (WASM_PROFILE_MAX_REG_SAMPLES) from blocking profile recording
+ * for later frames. */
 static int      g_wprofRegEnabled;
 
 /* Index into g_wprofBuf of the cycleDelta word belonging to the MOST RECENTLY pushed sample,
@@ -439,8 +458,8 @@ wasm_profile_instrHook(uint32_t pc24)
  * the last frame.  Sentinel layout: [WASM_PROFILE_FRAME_MARKER, frameIdx] (2 words).
  * 0xFFFFFF01 is safe: real depth values are 1-64; it is far outside that range and the JS
  * splitProfileStream() stops at the first word that looks like a depth > MAX_DEPTH.
- * Also disables register recording for subsequent frames so the 65k-sample cap can't block
- * the profile buffer from accumulating samples for frames 1..N-1. */
+ * Also disables register recording for subsequent frames so the register cap can't block the
+ * profile buffer from accumulating samples for frames 1..N-1. */
 #define WASM_PROFILE_FRAME_MARKER 0xFFFFFF01u
 PUAE_DEBUG_EXPORT void
 wasm_profile_emit_frame_marker(int frameIdx)

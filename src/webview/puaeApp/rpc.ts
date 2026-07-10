@@ -18,6 +18,26 @@ import { srFlags } from "../shared/cpuFlags";
 // clamps to this per call, so larger reads are chunked below.
 const MEM_BUF_CAP = 4096;
 
+// VS Code's webview<->extension-host postMessage bridge does not structured-clone
+// TypedArrays — it flattens them into plain per-element array-likes (confirmed by
+// profilerManager.ts's `u8()` helper needing to reconstruct a Uint8Array from
+// whatever arrives), which costs roughly 800ms/MB and dominates the profiler's
+// getProfileData/getProfileRegs round-trip once a capture has many in-range
+// instructions (unthrottled fast-RAM code can retire far more instructions per
+// profiled frame than chip-RAM code, ballooning these buffers towards their
+// multi-MB caps) — see the CPU profiler "purely fast RAM" hang investigation.
+// A base64 string crosses that same bridge as a single primitive value instead of
+// per-element, which is dramatically cheaper. Chunked to avoid blowing the call
+// stack on String.fromCharCode(...bytes) for large buffers.
+function uint8ToBase64(bytes: Uint8Array): string {
+  let binary = "";
+  const chunkSize = 0x8000;
+  for (let i = 0; i < bytes.length; i += chunkSize) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + chunkSize));
+  }
+  return btoa(binary);
+}
+
 // Max number of full-state snapshots retained for stepBack/continueReverse
 // (see captureSnapshot/restoreSnapshot below). Snapshot size is roughly
 // chipmem + bogomem + fastmem + z3fastmem + ~128KB overhead, e.g. ~1.6MB for
@@ -814,6 +834,10 @@ export function setupRpcDispatcher(
         // Mirrors vAmiga_ui.js's wasm_halt(true): tells the DAP adapter the
         // emulator is now paused so it can send a StoppedEvent("pause").
         postMessage({ type: "emulator-state", state: "paused" });
+        // Also ack via rpcRequest when called with _rpcId (e.g. profilerManager.ts pausing
+        // around a capture) — harmless no-op for plain one-way send() callers, since
+        // rpcRequest posts id: undefined then, which no pending sendRpcCommand matches.
+        rpcRequest(() => ({ ok: true }));
         break;
       case "run":
         pushSnapshot();
@@ -821,6 +845,12 @@ export function setupRpcDispatcher(
         // Mirrors vAmiga_ui.js's continue path: tells the DAP adapter the
         // emulator is running again so it can send a ContinuedEvent.
         postMessage({ type: "emulator-state", state: "running" });
+        rpcRequest(() => ({ ok: true })); // see "pause"'s comment
+        break;
+      // Lets a caller (e.g. profilerManager.ts, bracketing a capture) check whether the
+      // emulator was already paused before deciding whether to resume it afterwards.
+      case "isPaused":
+        rpcRequest(() => ({ paused: !!M._wasm_is_paused() }));
         break;
       case "stepInto": {
         // Mirrors index.html's Stage G1 "Step Instr" button: single-step
@@ -1111,13 +1141,14 @@ export function setupRpcDispatcher(
       case "startProfiling":
         rpcRequest(() => ({ ok: !!M._wasm_profile_start(args.numFrames ?? 1) }));
         break;
+      // `dataBase64` (not `data`) deliberately — see uint8ToBase64's comment above.
       case "getProfileData":
         rpcRequest(() => {
           const stats = JSON.parse(M.UTF8ToString(M._wasm_profile_get_stats()));
           const ptr = M._wasm_profile_get_buf_ptr();
           const words = M._wasm_profile_get_buf_words();
           return {
-            data: new Uint8Array(M.HEAPU8.buffer, ptr, words * 4).slice(),
+            dataBase64: uint8ToBase64(new Uint8Array(M.HEAPU8.buffer, ptr, words * 4)),
             start: stats.start,
             end: stats.end,
             total: stats.total,
@@ -1128,14 +1159,15 @@ export function setupRpcDispatcher(
         });
         break;
       // Per-sample CPU register trace, parallel to (lockstep with) getProfileData's stream — one
-      // 19-word block (D0-D7, A0-A7, SR, PC, USP) per recorded instruction.
+      // 19-word block (D0-D7, A0-A7, SR, PC, USP) per recorded instruction. `dataBase64` — see
+      // uint8ToBase64's comment above.
       case "getProfileRegs": {
         const ptr = M._wasm_profile_get_regs_buf_ptr();
         const words = M._wasm_profile_get_regs_buf_words();
         rpcRequest(() => ({
-          data: words > 0
-            ? new Uint8Array(M.HEAPU8.buffer, ptr, words * 4).slice()
-            : new Uint8Array(0),
+          dataBase64: words > 0
+            ? uint8ToBase64(new Uint8Array(M.HEAPU8.buffer, ptr, words * 4))
+            : "",
         }));
         break;
       }

@@ -27,6 +27,26 @@ const PAL_FPS = 49.92041015625;
 // each callback for rendering/audio/RPC handling.
 const WARP_TICK_BUDGET_MS = 15;
 
+// Caps how many emulated frames of "due" backlog frame()'s catch-up loop will
+// ever try to replay after a long main-thread stall (e.g. a profiler capture's
+// synchronous wasm_profile_start(), which can legitimately take tens of
+// seconds for CPU/workload combinations where a lot of instructions retire
+// per profiled frame — see the CPU profiler "purely fast RAM"/68020 hang
+// investigation). emuClockMs keeps accumulating real elapsed time during such
+// a stall with no ticks actually running, so the very next frame() call can
+// see a backlog of 1000+ "due" frames. Without a cap, the catch-up loop's
+// per-callback time budget (WARP_TICK_BUDGET_MS) means repaying that backlog
+// takes as long in real time as it took to accrue — and if a single tick ever
+// costs as much or more than one callback interval (1000/PAL_FPS, ~20ms; true
+// for the same slow combinations that created the backlog), the backlog can
+// never be repaid at all, permanently monopolizing the main thread and
+// starving the RPC message queue that a profiler capture's own follow-up
+// calls (getFramebuffer, getProfileData, ...) are waiting in. Beyond this
+// many frames, excess backlog is simply dropped (same "snap forward, don't
+// replay" behavior frame() already uses while paused) rather than replayed —
+// a handful of skipped video frames after a long stall is imperceptible.
+const MAX_CATCHUP_FRAMES = 10;
+
 // How often to take a periodic full-state checkpoint (rpc.pushSnapshot())
 // during a free-run, for stepBack/continueReverse — one per second of
 // emulated time. Rounded; doesn't need PAL_FPS's precision.
@@ -802,7 +822,14 @@ export async function main(config: MainConfig = {}): Promise<void> {
     lastTs = ts;
 
     // How many PAL frames should have elapsed (in emulated time) so far?
-    const dueFrames = Math.floor(emuClockMs * PAL_FPS / 1000);
+    let dueFrames = Math.floor(emuClockMs * PAL_FPS / 1000);
+    // Drop backlog beyond MAX_CATCHUP_FRAMES instead of letting the catch-up loop below try to
+    // replay it — see MAX_CATCHUP_FRAMES' comment. Pulls emuClockMs forward to match so this
+    // dropped time doesn't resurface as backlog again on the next call.
+    if (dueFrames - emuFrames > MAX_CATCHUP_FRAMES) {
+      dueFrames = emuFrames + MAX_CATCHUP_FRAMES;
+      emuClockMs = dueFrames * 1000 / PAL_FPS;
+    }
     const wasPaused = M._wasm_is_paused();
     const fbFrameCount = M._wasm_get_frame_count();
     const fbDirty = fbFrameCount !== lastFbFrameCount;
