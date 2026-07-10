@@ -89,6 +89,9 @@ interface LaunchRequestArguments extends DebugProtocol.LaunchRequestArguments {
   fastLoad?: boolean;
   /** Path to the Kickstart ROM file */
   kickstartRom?: string;
+  /** Non-fastLoad only: host directory to mount as DH0: instead of the auto-generated
+   * single-exe disk — must be self-contained (program + its own s/startup-sequence). */
+  hardDrivePath?: string;
   /** Path to a .uae config file loaded as the base configuration */
   emulatorConfigFile?: string;
   /** Options to pass when opening the emulator */
@@ -425,6 +428,7 @@ export class VamigaDebugAdapter extends LoggingDebugSession {
       } else {
         this.emulator.open({
           programPath: this.programPath,
+          hardDrivePath: args.hardDrivePath,
           kickstartRom,
           emulatorConfigFile: args.emulatorConfigFile,
           ...args.emulatorOptions,

@@ -221,11 +221,12 @@ export interface CurrentProcess {
 }
 
 // Port of vAmiga's wasm_get_current_process() (main.cpp ~4106-4203). Walks
-// ExecBase -> ThisTask -> CLI -> command name + seglist, returning null
-// unless the active task is a CLI process running "file" (the program
-// app.ts wrote to /uae_system/dh0/file, run via s/startup-sequence) —
-// else {command: 'file', segments: [{start, size}, ...]}.
-export function getCurrentProcess(M: PuaeModule): CurrentProcess | null {
+// ExecBase -> ThisTask -> CLI -> command name + seglist, returning null unless
+// the active task is a CLI process running `expectedCommand` (the program's
+// basename — app.ts's MainConfig.expectedProcessName, run via DH0:'s
+// s/startup-sequence, whether DH0: came from the auto-generated single-exe
+// disk or a mounted hardDrivePath directory) — else {command, segments: [...]}.
+export function getCurrentProcess(M: PuaeModule, expectedCommand: string = "file"): CurrentProcess | null {
   const execbase = peekMem(M, 4, 4);
   const activetask = peekMem(M, execbase + 276, 4);
   if (!activetask) return null;
@@ -241,7 +242,7 @@ export function getCurrentProcess(M: PuaeModule): CurrentProcess | null {
   for (let i = 0; i < cmdLen; i++) {
     command += String.fromCharCode(peekMem(M, cmdAddr + 1 + i, 1));
   }
-  if (command !== "file") return null;
+  if (command !== expectedCommand) return null;
   const seglistPtr = peekMem(M, cli + 60, 4);
   if (!seglistPtr) return null;
   const segments: { start: number; size: number }[] = [];

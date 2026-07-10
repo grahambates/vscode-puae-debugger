@@ -244,6 +244,10 @@
                 "description": "Inject program directly into memory",
                 "default": false
               },
+              "hardDrivePath": {
+                "type": "string",
+                "description": "Non-fastLoad only: path to a directory to mount as DH0: instead of the default auto-generated single-program disk. Lets the running program access other files (libraries, data) and use a custom s/startup-sequence (e.g. to raise the stack size). The directory is mounted as-is and must be self-contained — it must already contain the program (matching 'program') and its own startup-sequence."
+              },
               "kickstartRom": {
                 "type": "string",
                 "description": "Path to the Kickstart ROM file (required). Read from the host filesystem and embedded in the webview."
@@ -547,7 +551,7 @@
     "lint": "eslint src --ext ts,tsx",
     "test": "npm run test:unit && npm run test:wasm",
     "test:unit": "jest",
-    "test:wasm": "node puae-wasm/test/test_g1.mjs && node puae-wasm/test/test_g2.mjs && node puae-wasm/test/test_g3.mjs && node puae-wasm/test/test_g4.mjs && node puae-wasm/test/test_g5.mjs && node puae-wasm/test/test_g6.mjs && node puae-wasm/test/test_reset.mjs && node puae-wasm/test/test_reverse.mjs",
+    "test:wasm": "node puae-wasm/test/test_g1.mjs && node puae-wasm/test/test_g2.mjs && node puae-wasm/test/test_g3.mjs && node puae-wasm/test/test_g4.mjs && node puae-wasm/test/test_g5.mjs && node puae-wasm/test/test_g6.mjs && node puae-wasm/test/test_g7_harddrive.mjs && node puae-wasm/test/test_reset.mjs && node puae-wasm/test/test_reverse.mjs",
     "test:coverage": "jest --coverage",
     "build:wasm": "node scripts/build-wasm.mjs",
     "format": "prettier --write \"src/**/*.{ts,tsx}\"",

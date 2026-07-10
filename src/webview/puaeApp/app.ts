@@ -99,6 +99,15 @@ export interface MainConfig {
   romUrl?: string;
   extraConfigB64?: string;
   programB64?: string;
+  // Base64-encoded JSON array of HardDriveEntry (see puaeEmulator.ts's walkHardDrive) —
+  // a walked host directory to replay into DH0:'s MEMFS mount verbatim, taking over from
+  // programB64's auto-generated single-exe disk when set (PuaeEmulator never sets both).
+  hardDriveManifestB64?: string;
+  // Basename of the launch config's `program` — what getCurrentProcess() polling matches
+  // the eventual CLI process against, regardless of whether DH0: came from programB64 or
+  // hardDriveManifestB64. Falls back to "file" (the legacy hardcoded name) if unset, for
+  // debug.html and any other caller that doesn't pass it.
+  expectedProcessName?: string;
   audioWorkletUrl?: string;
   // Called once with the wasm module after boot+warm-up, before the RPC
   // bridge is wired up — debug.html uses this to install its debug UI.
@@ -120,10 +129,19 @@ export async function main(config: MainConfig = {}): Promise<void> {
     romUrl = "./kick34005.A500",
     extraConfigB64 = "",
     programB64 = "",
+    hardDriveManifestB64 = "",
+    expectedProcessName = "file",
     audioWorkletUrl = "./puae_audioprocessor.js",
     onModuleReady,
     onBreakpoint,
   } = config;
+
+  // True for any non-fastLoad boot that mounts DH0: — either the single-exe disk
+  // (programB64) or a mounted host directory (hardDriveManifestB64), whichever
+  // PuaeEmulator's getHtmlForWebview set (never both — hardDrivePath takes over
+  // entirely when set). Used below wherever the code previously gated purely on
+  // "is this a non-fastLoad/DH0: boot" via programB64 alone.
+  const usesDh0 = !!(programB64 || hardDriveManifestB64);
 
   // Hoisted so the render loop's frame() (defined later in this scope) can
   // post 'stopped' emulator-state messages on a breakpoint/watchpoint hit
@@ -167,18 +185,41 @@ export async function main(config: MainConfig = {}): Promise<void> {
     log(`Config: ${extraConfig.length} bytes → /uae_system/puae_libretro_global.uae`);
   }
 
-  // Non-fastLoad program (OpenOptions.programPath): write it + a minimal
-  // startup-sequence into a MEMFS directory that the "filesystem=rw,dh0:..."
-  // line above (buildExtraConfig) mounts as a bootable DH0: hard disk.
-  // AmigaOS's uaehf.device autoconfigures this — no ADF/bootblock/OFS image
-  // needed. The render loop below polls for the resulting CLI process.
-  if (programB64) {
+  // Non-fastLoad boot: populate a MEMFS directory that the "filesystem=rw,dh0:..."
+  // line above (buildExtraConfig) mounts as a bootable DH0: hard disk. AmigaOS's
+  // uaehf.device autoconfigures this — no ADF/bootblock/OFS image needed. The
+  // render loop below polls for the resulting CLI process (expectedProcessName).
+  if (hardDriveManifestB64) {
+    // OpenOptions.hardDrivePath: a walked host directory (puaeEmulator.ts's
+    // walkHardDrive), replayed verbatim — the directory is authoritative, so
+    // unlike the programB64 branch below, nothing is synthesized here (no
+    // auto-generated startup-sequence; the directory must already have one).
+    const manifest = JSON.parse(atob(hardDriveManifestB64)) as
+      { path: string; dir: boolean; dataB64?: string }[];
+    M.FS.mkdir("/uae_system/dh0");
+    let fileCount = 0, byteCount = 0;
+    for (const entry of manifest) {
+      const target = `/uae_system/dh0/${entry.path}`;
+      if (entry.dir) {
+        M.FS.mkdir(target);
+      } else {
+        const data = Uint8Array.from(atob(entry.dataB64 ?? ""), c => c.charCodeAt(0));
+        M.FS.writeFile(target, data);
+        fileCount++;
+        byteCount += data.length;
+      }
+    }
+    log(`Hard drive: ${fileCount} file(s), ${byteCount} bytes → /uae_system/dh0`);
+  } else if (programB64) {
+    // OpenOptions.programPath (auto-generated single-exe disk, the default when
+    // hardDrivePath isn't set): write the exe under its own basename
+    // (expectedProcessName) plus a minimal startup-sequence that runs it.
     const programData = Uint8Array.from(atob(programB64), c => c.charCodeAt(0));
     M.FS.mkdir("/uae_system/dh0");
-    M.FS.writeFile("/uae_system/dh0/file", programData);
+    M.FS.writeFile(`/uae_system/dh0/${expectedProcessName}`, programData);
     M.FS.mkdir("/uae_system/dh0/s");
-    M.FS.writeFile("/uae_system/dh0/s/startup-sequence", "file");
-    log(`Program: ${programData.length} bytes → /uae_system/dh0/file`);
+    M.FS.writeFile("/uae_system/dh0/s/startup-sequence", expectedProcessName);
+    log(`Program: ${programData.length} bytes → /uae_system/dh0/${expectedProcessName}`);
   }
 
   // Boot the core with no disk inserted. fastLoad injects a standalone
@@ -197,7 +238,7 @@ export async function main(config: MainConfig = {}): Promise<void> {
   // it from frame() instead, polling from frame 0 — see both below.
   let memProtectTrackingStarted = false;
 
-  if (!programB64) {
+  if (!usesDh0) {
     // Warm-up: tick until AmigaOS is ready for fastLoad memory injection —
     // mirrors vAmiga_ui.js's tryExec condition (AllocMem LVO is jmp, GfxBase
     // set, CPU out of supervisor mode). 1000 ticks is a generous safety
@@ -205,7 +246,7 @@ export async function main(config: MainConfig = {}): Promise<void> {
     // exec.library's allocator (see puae-wasm/test_g1.mjs). Stopping exactly
     // when ready is faster and more robust than a fixed count.
     //
-    // For non-fastLoad (programB64 set), this warm-up is skipped — the render
+    // For non-fastLoad (usesDh0), this warm-up is skipped — the render
     // loop runs from frame 0 so tryExec/getCurrentProcess polling (below) can
     // observe AmigaOS booting from DH0: and running the startup-sequence.
     log("Waiting for exec.library to initialise…");
@@ -424,13 +465,13 @@ export async function main(config: MainConfig = {}): Promise<void> {
     lastFbFrameCount = M._wasm_get_frame_count();
   };
 
-  // Non-fastLoad (programB64) process-attach state: tryExec() arms an
+  // Non-fastLoad (usesDh0) process-attach state: tryExec() arms an
   // AllocMem breakpoint once exec/graphics libraries are ready (execReady),
   // then getCurrentProcess() is checked on each hit until it identifies our
-  // "file" CLI process (attached) — see rpc.ts. fastLoad
-  // (programB64==='') has no separate attach step.
-  let execReady = !programB64;
-  let attached = !programB64;
+  // expectedProcessName CLI process (attached) — see rpc.ts. fastLoad
+  // (usesDh0===false) has no separate attach step.
+  let execReady = !usesDh0;
+  let attached = !usesDh0;
   let allocMemAddr = 0;
 
   // Playback speed control (#speed dropdown, optional — debug.html omits it).
@@ -906,10 +947,10 @@ export async function main(config: MainConfig = {}): Promise<void> {
       memProtectTrackingStarted = !!M._wasm_memprotect_start_tracking();
     }
 
-    // Non-fastLoad (programB64) boot: poll for exec/graphics libraries being
+    // Non-fastLoad (usesDh0) boot: poll for exec/graphics libraries being
     // ready, then arm the AllocMem breakpoint (tryExec) so the next hit can
     // be checked against getCurrentProcess() below.
-    if (programB64 && !execReady) {
+    if (usesDh0 && !execReady) {
       const r = tryExec(M);
       if (r.ready) {
         execReady = true;
@@ -922,10 +963,10 @@ export async function main(config: MainConfig = {}): Promise<void> {
     }
 
     if (hitBreakpoint) {
-      if (programB64 && execReady && !attached) {
-        // AllocMem breakpoint hit while waiting for our "file" CLI process
-        // (s/startup-sequence) to start — check whether this is it yet.
-        const proc = getCurrentProcess(M);
+      if (usesDh0 && execReady && !attached) {
+        // AllocMem breakpoint hit while waiting for our expectedProcessName CLI
+        // process (s/startup-sequence) to start — check whether this is it yet.
+        const proc = getCurrentProcess(M, expectedProcessName);
         if (proc) {
           M._wasm_remove_breakpoint(allocMemAddr);
           attached = true;
