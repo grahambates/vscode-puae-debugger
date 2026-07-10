@@ -317,6 +317,15 @@ puae_debug_memhook_afterWrite(uint32_t addr24, uint32_t value, uint32_t oldValue
 void
 puae_debug_memprotect_set_enabled(int enabled);
 
+// Live-toggles cpu_cycle_exact/cpu_memory_cycle_exact/blitter_cycle_exact/cpu_compatible
+// together — see the definition in puae_debug.c for why all four move together and why
+// this goes through changed_prefs + check_prefs_changed_cpu() rather than currprefs directly.
+void
+puae_debug_set_cycle_exact(int enabled);
+
+int
+puae_debug_get_cycle_exact(void);
+
 // Starts (or restarts) the live AllocMem/FreeMem watch that builds the
 // allow-list, independent of whether enforcement is enabled. Validates
 // execBase itself before committing (see puae_debug_execBaseValid), so it's

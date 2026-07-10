@@ -1139,6 +1139,16 @@ static puae_debug_memprotect_break_t g_memprotect_break_buf;
 EMSCRIPTEN_KEEPALIVE
 void wasm_memprotect_set_enabled(int enabled) { puae_debug_memprotect_set_enabled(enabled); }
 
+// Live-toggles cycle-exact CPU/memory/blitter emulation — see puae_debug_set_cycle_exact's
+// comment. Used by app.ts to speed up warp mode (manual or automatic boot-warp).
+EMSCRIPTEN_KEEPALIVE
+void wasm_set_cycle_exact(int enabled) { puae_debug_set_cycle_exact(enabled); }
+
+// Diagnostic readback of currprefs.cpu_cycle_exact (not changed_prefs — the applied
+// value, post SPCFLAG_MODE_CHANGE) — confirms wasm_set_cycle_exact actually took effect.
+EMSCRIPTEN_KEEPALIVE
+int wasm_get_cycle_exact(void) { return puae_debug_get_cycle_exact(); }
+
 EMSCRIPTEN_KEEPALIVE
 int wasm_memprotect_start_tracking(void) { return puae_debug_memprotect_start_tracking(); }
 

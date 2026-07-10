@@ -2136,6 +2136,66 @@ puae_debug_memprotect_set_enabled(int enabled)
 	puae_debug_updateDirectAccessSuppression();
 }
 
+// Live-toggles cpu_cycle_exact/cpu_memory_cycle_exact/blitter_cycle_exact AND
+// cpu_compatible together — used by app.ts to run faster while warp mode is active
+// (manual or the automatic boot-warp phase; see MainConfig's bootWarpActive), since
+// cycle-exact bus/DMA-contention modeling is the dominant per-instruction cost
+// (confirmed during the CPU profiler 68020/fast-RAM hang investigation).
+//
+// cpu_compatible is included deliberately, not just cycle_exact: this project's own
+// four defaults (buildExtraConfig in puaeEmulator.ts) always force both on, and
+// disabling *only* cycle_exact while leaving cpu_compatible on lands on m68k_run_2p
+// ("prefetch" 020/030 mode) — measured, on real hardware this trades cycle-accounting
+// detail for lower per-instruction overhead, but in this wasm build it is actually
+// SLOWER than m68k_run_2ce for typical workloads (~15ms/tick vs ~10ms/tick in direct
+// measurement), presumably because the prefetch-queue bookkeeping isn't as
+// well-optimized a path here as the heavily-exercised cycle-exact one. Disabling both
+// together instead selects m68k_run_2_020 (020+) / m68k_run_1 (000/010) — the genuinely
+// plain interpreter with no cycle *or* prefetch modeling — which measures faster, as
+// intended.
+//
+// Goes through changed_prefs + check_prefs_changed_cpu() rather than writing
+// currprefs directly — this is UAE's own established live-reconfigure path (the same
+// one a GUI CPU-settings panel uses to let a user switch CPU model/cycle-exactness
+// mid-session without a hard reset): it sets SPCFLAG_MODE_CHANGE, which m68k_go()'s
+// main loop picks up on its very next iteration to re-derive run_func from the new
+// prefs, rebuild the CPU function table, and refill the prefetch queue. Writing
+// currprefs directly would leave the stale run_func selected — cycle-exactness (and
+// compatible-ness) is a property of *which function pointer runs*, not a runtime
+// branch inside one shared loop.
+//
+// Safe regardless of which run loop is selected: puae_debug_instructionHook (the
+// single choke point breakpoints/watchpoints/the profiler all go through) is called
+// from every one of them — confirmed by direct inspection of m68k_run_1/_1_ce/_2ce/
+// _2p/_2_020/_3ce/_3p. Memory watchpoint/protection interception (ABFLAG_DIRECTACCESS
+// suppression) is likewise an independent mechanism, unaffected by either pref.
+// DMA-grid/profiler *timing* accuracy is NOT preserved while disabled — acceptable
+// since warp mode already discards frame-accurate audio/video pacing for speed;
+// callers should restore both before profiling.
+PUAE_DEBUG_EXPORT void
+puae_debug_set_cycle_exact(int enabled)
+{
+	bool wantExact = enabled ? true : false;
+	if (changed_prefs.cpu_cycle_exact == wantExact && changed_prefs.cpu_compatible == wantExact) {
+		return;
+	}
+	changed_prefs.cpu_cycle_exact = wantExact;
+	changed_prefs.cpu_memory_cycle_exact = wantExact;
+	changed_prefs.blitter_cycle_exact = wantExact;
+	changed_prefs.cpu_compatible = wantExact;
+	config_changed = 1;
+	check_prefs_changed_cpu();
+}
+
+// Diagnostic: currprefs (not changed_prefs) reflects the *applied* state, only updated
+// once m68k_go()'s SPCFLAG_MODE_CHANGE handling has actually run (see
+// puae_debug_set_cycle_exact's comment) — i.e. after at least one further tick.
+PUAE_DEBUG_EXPORT int
+puae_debug_get_cycle_exact(void)
+{
+	return currprefs.cpu_cycle_exact ? 1 : 0;
+}
+
 // Validates the ExecBase structure at the given address using the same
 // checksum AmigaOS itself relies on (ChkBase == ~addr, and the words in
 // [0x22, 0x52] sum to 0xFFFF), via raw get_long/get_word peeks only — no

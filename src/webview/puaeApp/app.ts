@@ -493,6 +493,15 @@ export async function main(config: MainConfig = {}): Promise<void> {
   // drive applyAudioMute() (which only re-runs on UI events, not every frame) exactly
   // when this phase starts/ends, not just when the user clicks the button.
   let bootWarpActive = false;
+  // Tracks whether cycle-exact mode is currently disabled for warp, so frame()'s
+  // effectiveWarp-transition block (below) only calls wasm_set_cycle_exact on an
+  // actual change, not every frame. Cycle-exact bus/DMA-contention modeling is the
+  // dominant per-instruction cost for compute-bound code (confirmed directly: a tight
+  // register-bound loop profiled ~2x faster with it disabled) — disabling it while
+  // warp is active (manual or bootWarpActive) is a big further speedup on top of
+  // warp's own tick-budget-per-callback mechanism. Not preserved for accuracy-critical
+  // work (profiling, DMA-precise debugging) — restored the instant warp ends.
+  let cycleExactDisabledForWarp = false;
 
   // Audio can't play correctly at non-1x speed or in warp mode (pitch/rate
   // would need to change too), so mute it whenever either is active.
@@ -875,6 +884,10 @@ export async function main(config: MainConfig = {}): Promise<void> {
       applyAudioMute();
     }
     const effectiveWarp = warpMode || bootWarpActive;
+    if (effectiveWarp !== cycleExactDisabledForWarp) {
+      cycleExactDisabledForWarp = effectiveWarp;
+      M._wasm_set_cycle_exact(effectiveWarp ? 0 : 1);
+    }
 
     // Accumulate emulated time scaled by speedFactor, so changing speed
     // mid-session doesn't cause a discontinuous jump in dueFrames. Use the
