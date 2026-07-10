@@ -484,11 +484,20 @@ export async function main(config: MainConfig = {}): Promise<void> {
   // WARP_TICK_BUDGET_MS per tick-worker callback, ignoring speedFactor.
   // Mutually exclusive with the speed dropdown (disabled while warp is on).
   let warpMode = false;
+  // Automatically forces warp mode for non-fastLoad (usesDh0) boots, for as long as
+  // AmigaOS is still booting/running its startup-sequence (execReady/attached false) —
+  // there's nothing meaningful to watch at normal speed until the program itself starts,
+  // and DH0:-booting can otherwise take many real seconds. Tracked separately from the
+  // user's own warpMode toggle (frame() ORs the two — see effectiveWarp) so the warp
+  // button's own on/off state isn't clobbered by this automatic phase, and so it can
+  // drive applyAudioMute() (which only re-runs on UI events, not every frame) exactly
+  // when this phase starts/ends, not just when the user clicks the button.
+  let bootWarpActive = false;
 
   // Audio can't play correctly at non-1x speed or in warp mode (pitch/rate
   // would need to change too), so mute it whenever either is active.
   function applyAudioMute(): void {
-    if (gain) gain.gain.value = (audioMuted || warpMode || speedFactor !== 1) ? 0 : 0.5;
+    if (gain) gain.gain.value = (audioMuted || warpMode || bootWarpActive || speedFactor !== 1) ? 0 : 0.5;
   }
 
   const speedSelect = document.getElementById("speed") as HTMLSelectElement | null;
@@ -501,11 +510,22 @@ export async function main(config: MainConfig = {}): Promise<void> {
   }
 
   const warpButton = document.getElementById("warp");
+  // Reflects effectiveWarp (warpMode || bootWarpActive), not just warpMode — so the
+  // button visibly lights up during the automatic boot-warp phase too, not only when
+  // the user has clicked it themselves. Called from both the click handler and
+  // frame()'s bootWarpActive transition (see below) so the two stay consistent; the
+  // speed dropdown is disabled under either source, since dueFrames-based pacing is
+  // bypassed either way.
+  function updateWarpButtonUI(): void {
+    if (!warpButton) return;
+    const active = warpMode || bootWarpActive;
+    warpButton.classList.toggle("active", active);
+    if (speedSelect) speedSelect.disabled = active;
+  }
   if (warpButton) {
     warpButton.addEventListener("click", () => {
       warpMode = !warpMode;
-      warpButton.classList.toggle("active", warpMode);
-      if (speedSelect) speedSelect.disabled = warpMode;
+      updateWarpButtonUI();
       applyAudioMute();
     });
   }
@@ -845,12 +865,23 @@ export async function main(config: MainConfig = {}): Promise<void> {
   function frame(ts: number): void {
     if (lastTs === null) { lastTs = ts; fpsTime = ts; }
 
+    // Force warp mode while a non-fastLoad boot is still waiting for the program to
+    // start (see bootWarpActive's declaration) — apply the mute/button-highlight side
+    // effects only on the false->true/true->false transition, not every frame.
+    const shouldBootWarp = usesDh0 && !attached;
+    if (shouldBootWarp !== bootWarpActive) {
+      bootWarpActive = shouldBootWarp;
+      updateWarpButtonUI();
+      applyAudioMute();
+    }
+    const effectiveWarp = warpMode || bootWarpActive;
+
     // Accumulate emulated time scaled by speedFactor, so changing speed
     // mid-session doesn't cause a discontinuous jump in dueFrames. Use the
     // AudioContext clock as the source while it's actually driving audio
     // (see lastAudioClockS above) so production can't drift from consumption;
     // otherwise fall back to the system clock.
-    const useAudioClock = !!audioCtx && audioCtx.state === "running" && speedFactor === 1 && !warpMode;
+    const useAudioClock = !!audioCtx && audioCtx.state === "running" && speedFactor === 1 && !effectiveWarp;
     if (useAudioClock) {
       const audioNowS = audioCtx!.currentTime;
       if (lastAudioClockS === null) lastAudioClockS = audioNowS; // avoid a jump when (re-)entering this mode
@@ -885,7 +916,7 @@ export async function main(config: MainConfig = {}): Promise<void> {
       // continueReverse/stepBackFrame) landed on a different point in time,
       // its replay re-renders the framebuffer (fbDirty) and we must redraw.
       if (imgData && !fbDirty) return;
-    } else if (!warpMode && dueFrames <= emuFrames) {
+    } else if (!effectiveWarp && dueFrames <= emuFrames) {
       return; // display is faster than 50 Hz — nothing to do yet
     }
 
@@ -894,7 +925,7 @@ export async function main(config: MainConfig = {}): Promise<void> {
     let ranCount = 0;
     if (wasPaused) {
       // no ticks to run
-    } else if (warpMode) {
+    } else if (effectiveWarp) {
       // Run flat-out for a time budget, ignoring speedFactor/dueFrames.
       while (performance.now() - tTickStart < WARP_TICK_BUDGET_MS) {
         M._wasm_tick();
