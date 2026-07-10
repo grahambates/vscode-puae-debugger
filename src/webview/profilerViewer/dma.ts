@@ -69,6 +69,8 @@ const OWNER_STYLE: Record<number, ChannelStyle> = {
   [BusOwner.BPL4]: mk("bpl4", "Bitplane 4", 0xffcc0000),
   [BusOwner.BPL5]: mk("bpl5", "Bitplane 5", 0xffbb0000),
   [BusOwner.BPL6]: mk("bpl6", "Bitplane 6", 0xffaa0000),
+  [BusOwner.BPL7]: mk("bpl7", "Bitplane 7", 0xff990000),
+  [BusOwner.BPL8]: mk("bpl8", "Bitplane 8", 0xff880000),
   [BusOwner.SPRITE0]: mk("spr0", "Sprite 0", 0xffff00ff),
   [BusOwner.SPRITE1]: mk("spr1", "Sprite 1", 0xffee00ee),
   [BusOwner.SPRITE2]: mk("spr2", "Sprite 2", 0xffdd00dd),
@@ -115,7 +117,7 @@ export function blitStyle(mode: BlitMode): ChannelStyle {
 export function ownerRegister(owner: number): number | undefined {
   const R = CUSTOM_REGISTER_OFFSETS;
   // Indexed channels: named base register + per-channel stride (2/8/0x10 bytes).
-  if (owner >= BusOwner.BPL1 && owner <= BusOwner.BPL6) return R.BPL1DAT + (owner - BusOwner.BPL1) * 2;
+  if (owner >= BusOwner.BPL1 && owner <= BusOwner.BPL8) return R.BPL1DAT + (owner - BusOwner.BPL1) * 2;
   if (owner >= BusOwner.SPRITE0 && owner <= BusOwner.SPRITE7) return R.SPR0DATA + (owner - BusOwner.SPRITE0) * 8;
   if (owner >= BusOwner.AUD0 && owner <= BusOwner.AUD3) return R.AUD0DAT + (owner - BusOwner.AUD0) * (R.AUD1DAT - R.AUD0DAT);
   if (owner === BusOwner.DISK) return R.DSKDAT;

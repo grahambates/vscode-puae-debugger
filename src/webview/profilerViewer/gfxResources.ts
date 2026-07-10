@@ -49,8 +49,8 @@ export function buildScreenFromModel(model: IProfileModel): IScreen | undefined 
 
   for (let i = 0; i < ownerLen; i++) {
     const o = dma.owner[i];
-    if (o < BusOwner.BPL1 || o > BusOwner.BPL6) continue;
-    const pIdx = o - BusOwner.BPL1; // 0-5
+    if (o < BusOwner.BPL1 || o > BusOwner.BPL8) continue;
+    const pIdx = o - BusOwner.BPL1; // 0-7 (AGA: up to 8 bitplanes)
     const vpos = (i / DMA_HPOS) | 0;
     if (firstLine < 0) firstLine = vpos;
     lastLine   = vpos;

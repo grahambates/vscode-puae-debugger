@@ -46,6 +46,8 @@ interface SpriteLine {
 }
 
 const expand4 = (v: number) => v * 0x11;
+// 6-bit component (HAM8's per-pixel R/G/B modify value) -> 8-bit, by bit replication.
+const expand6 = (v: number) => (v << 2) | (v >> 4);
 
 // ── Sprite register helpers ───────────────────────────────────────────────────
 
@@ -207,7 +209,21 @@ function buildSpriteOverlay(
 
 // ── Palette helpers ───────────────────────────────────────────────────────────
 
-function buildPalette(regs: Uint16Array): Uint32Array {
+// `agaColors`, when present, is AGA's full 256-entry, already-24-bit-per-channel palette
+// (see DmaSnapshot.agaColors's doc comment) — already fully reconstructed C-side (BPLCON3
+// LOCT/bank-select applied), so this just repacks each 0x00RRGGBB entry into the canvas-ready
+// 0xAABBGGRR (RGBA byte order) format the rest of this file uses. Falls back to the OCS/ECS
+// COLOR00-31 window (32 entries, 4-bit-per-channel) when absent (non-AGA capture).
+function buildPalette(regs: Uint16Array, agaColors?: Uint32Array): Uint32Array {
+  if (agaColors) {
+    const pal = new Uint32Array(256);
+    for (let i = 0; i < 256; i++) {
+      const v = agaColors[i];
+      const r = (v >> 16) & 0xff, g = (v >> 8) & 0xff, b = v & 0xff;
+      pal[i] = 0xff000000 | (b << 16) | (g << 8) | r;
+    }
+    return pal;
+  }
   const pal = new Uint32Array(32);
   for (let i = 0; i < 32; i++) {
     const raw = regs[(R.COLOR00 + i * 2) >> 1];
@@ -254,9 +270,59 @@ function buildLinePalettes(
   copper: NonNullable<IProfileModel["copper"]>,
   firstLine: number,
   height: number,
+  agaColors?: Uint32Array,
 ): Uint32Array[] {
-  const cur = buildPalette(baseRegs);
+  const cur = buildPalette(baseRegs, agaColors);
   const COLOR_BASE = R.COLOR00;
+
+  if (agaColors) {
+    // AGA: which of the 256 real palette entries a COLORxx write actually targets depends on
+    // BPLCON3's bank bits *at the moment of that write* (software cycles through banks between
+    // writes to the same 32-register CPU-visible window), and whether it replaces both nibbles
+    // or only refines the low one depends on BPLCON3's LOCT bit — so this walks the copper trace
+    // in strict execution order (not grouped by vpos like the OCS/ECS path below), tracking
+    // BPLCON3 alongside, mirroring custom.c's own AGA COLORxx write handler exactly.
+    // Per-entry R/G/B channel state (0-255 each), seeded from the baseline snapshot so a
+    // LOCT-only write correctly refines an already-loaded high nibble.
+    const chR = new Uint8Array(256), chG = new Uint8Array(256), chB = new Uint8Array(256);
+    for (let i = 0; i < 256; i++) {
+      chR[i] = (agaColors[i] >> 16) & 0xff;
+      chG[i] = (agaColors[i] >> 8) & 0xff;
+      chB[i] = agaColors[i] & 0xff;
+    }
+    let bplcon3 = baseRegs[R.BPLCON3 >> 1];
+    let i = 0;
+    return Array.from({ length: height }, (_, y) => {
+      const vpos = firstLine + y;
+      while (i < copper.addr.length && copper.vpos[i] <= vpos) {
+        const w1 = copper.w1[i];
+        if (!(w1 & 1)) {
+          const da = w1 & 0x1fe;
+          if (da === R.BPLCON3) {
+            bplcon3 = copper.w2[i];
+          } else if (da >= COLOR_BASE && da <= COLOR_BASE + 62) {
+            const ci = (da - COLOR_BASE) >> 1;
+            const colreg = ((bplcon3 >> 13) & 7) * 32 + ci;
+            const val = copper.w2[i];
+            const r4 = (val >> 8) & 0xf, g4 = (val >> 4) & 0xf, b4 = val & 0xf;
+            if (bplcon3 & 0x200) { // LOCT: refine the low nibble only
+              chR[colreg] = (chR[colreg] & 0xf0) | r4;
+              chG[colreg] = (chG[colreg] & 0xf0) | g4;
+              chB[colreg] = (chB[colreg] & 0xf0) | b4;
+            } else { // both nibbles at once
+              chR[colreg] = expand4(r4);
+              chG[colreg] = expand4(g4);
+              chB[colreg] = expand4(b4);
+            }
+            cur[colreg] = 0xff000000 | (chB[colreg] << 16) | (chG[colreg] << 8) | chR[colreg];
+          }
+        }
+        i++;
+      }
+      return new Uint32Array(cur);
+    });
+  }
+
   const writesByVpos = new Map<number, Array<[number, number]>>();
   for (let i = 0; i < copper.addr.length; i++) {
     const w1 = copper.w1[i];
@@ -324,7 +390,7 @@ function computeHoverExtra(
     const idx = lineBase + hpos;
     if (idx >= dma.owner.length) break;
     const o = dma.owner[idx];
-    if (o < BusOwner.BPL1 || o > BusOwner.BPL6) continue;
+    if (o < BusOwner.BPL1 || o > BusOwner.BPL8) continue;
     const pIdx = o - BusOwner.BPL1;
     if (pIdx >= numPlanes) continue;
     const wi = wordCounts[pIdx]++;
@@ -366,7 +432,7 @@ function computeHoverExtra(
 export function ResourcesView({ model, selectedSlot }: ResourcesViewProps) {
   const canvas   = useRef<HTMLCanvasElement>(null);
   const [scale, setScale]           = useState(2);
-  const [planeVis, setPlaneVis]     = useState<boolean[]>(Array(6).fill(true));
+  const [planeVis, setPlaneVis]     = useState<boolean[]>(Array(8).fill(true)); // up to 8 planes (AGA)
   const [spriteVis, setSpriteVis]   = useState<boolean[]>(Array(8).fill(true));
   const [activeSpritesMask, setActiveSpritesMask] = useState(0);
   const [hover, setHover]           = useState<HoverInfo | null>(null);
@@ -394,7 +460,7 @@ export function ResourcesView({ model, selectedSlot }: ResourcesViewProps) {
     prevNumPlanes.current = screen.numPlanes;
     setPlaneVis(prev => // eslint-disable-line react-hooks/set-state-in-effect
       prev.slice(0, screen.numPlanes).some((v, i) => !v && i < screen.numPlanes)
-        ? Array(6).fill(true)
+        ? Array(8).fill(true)
         : prev,
     );
   }, [screen]);
@@ -407,9 +473,10 @@ export function ResourcesView({ model, selectedSlot }: ResourcesViewProps) {
     const rowWords = width >> 4;
 
     const baseRegs     = model.dmaSnapshot?.custom ?? new Uint16Array(256);
+    const agaColors    = model.dmaSnapshot?.agaColors;
     const linePalettes: Uint32Array[] = model.copper
-      ? buildLinePalettes(baseRegs, model.copper, firstLine, height)
-      : Array.from({ length: height }, () => buildPalette(baseRegs));
+      ? buildLinePalettes(baseRegs, model.copper, firstLine, height, agaColors)
+      : Array.from({ length: height }, () => buildPalette(baseRegs, agaColors));
 
     const lineBplcon2: number[] = model.copper
       ? buildLineBplcon2(baseRegs, model.copper, firstLine, height)
@@ -449,7 +516,7 @@ export function ResourcesView({ model, selectedSlot }: ResourcesViewProps) {
         const idx = lineBase + hpos;
         if (idx >= dma.owner.length) break;
         const o = dma.owner[idx];
-        if (o < BusOwner.BPL1 || o > BusOwner.BPL6) continue;
+        if (o < BusOwner.BPL1 || o > BusOwner.BPL8) continue;
         const pIdx = o - BusOwner.BPL1;
         if (pIdx < numPlanes) fetchWords[pIdx].push(dma.value[idx]);
       }
@@ -485,9 +552,30 @@ export function ResourcesView({ model, selectedSlot }: ResourcesViewProps) {
               default: color = prevColor; effectiveIdx = pixel;
             }
             prevColor = color;
+          } else if (ham && numPlanes === 8) {
+            // AGA HAM8: top 2 of the 8 plane bits select the mode, the low 6 bits carry either
+            // a direct (low-bank) palette index (mode 0) or a 6-bit new component value (modes
+            // 1-3) — same structure as HAM6 above, just 6-bit fields instead of 4-bit ones.
+            const mode = pixel >> 6;
+            const val  = pixel & 0x3f;
+            const exp  = expand6(val);
+            switch (mode) {
+              case 0: color = palette[val]; effectiveIdx = val; break;
+              case 1: color = (prevColor & ~0x00ff0000) | (exp << 16); effectiveIdx = pixel; break;
+              case 2: color = (prevColor & ~0x000000ff) | exp;          effectiveIdx = pixel; break;
+              case 3: color = (prevColor & ~0x0000ff00) | (exp << 8);   effectiveIdx = pixel; break;
+              default: color = prevColor; effectiveIdx = pixel;
+            }
+            prevColor = color;
           } else if (dpf) {
             // Dual playfield: odd planes → PF1, even planes → PF2.
             // PF1 index uses bits 0,2,4 of pixel; PF2 uses bits 1,3,5.
+            // NOTE: only verified for OCS/ECS's up-to-6-plane DPF (3 planes/playfield, the
+            // hardware-fixed +8 palette offset below). AGA can in principle run DPF with more
+            // planes, but the wider-DPF palette-indexing convention isn't confirmed here, so
+            // planes 7/8 are simply not read by this branch (bits 6/7 of `pixel` are ignored) —
+            // graceful degradation (those planes' data is dropped) rather than a guessed-at,
+            // possibly-wrong decode.
             const pf1Idx = (pixel & 1) | (((pixel >> 2) & 1) << 1) | (((pixel >> 4) & 1) << 2);
             const pf2Idx = ((pixel >> 1) & 1) | (((pixel >> 3) & 1) << 1) | (((pixel >> 5) & 1) << 2);
             const pf2pri = (lineBplcon2[y] >> 6) & 1;

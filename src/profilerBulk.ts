@@ -19,14 +19,17 @@
 // thumbnailLen == 0 means no thumbnail was captured. Added in v2 of the format (7→10 header words).
 
 import type { RawCapture } from "./profilerManager";
-import { decodeDmaGrid, decodeCustomRegs, decodeCopperRecords, decodeDmaEvents, decodeRegisterTrace } from "./dma";
+import { decodeDmaGrid, decodeCustomRegs, decodeAgaColors, decodeCopperRecords, decodeDmaEvents, decodeRegisterTrace } from "./dma";
 import { IDmaModel, DmaSnapshot, ICopperModel } from "./shared/profilerTypes";
 
 // v1 header: 7 × u32 = 28 bytes. v2 header: 10 × u32 = 40 bytes (adds thumbnail).
 // v3 header: 13 × u32 = 52 bytes (adds fullFrame: len + width + height).
+// v4 header: 14 × u32 = 56 bytes (adds agaColors: raw bytes from wasm_get_aga_colors_buf,
+// 256 LE u32 entries — see decodeAgaColors; absent/all-zero outside AGA mode).
 const HEADER_V1 = 28;
 const HEADER_V2 = 40;
 const HEADER_V3 = 52;
+const HEADER_V4 = 56;
 const EMPTY = new Uint8Array(0);
 
 export function packBulk(raw: RawCapture): Uint8Array | undefined {
@@ -44,9 +47,10 @@ export function packBulk(raw: RawCapture): Uint8Array | undefined {
   const full      = raw.fullFrame?.data ?? EMPTY;
   const fullW     = raw.fullFrame?.width ?? 0;
   const fullH     = raw.fullFrame?.height ?? 0;
+  const agaColors = raw.snapshot?.agaColors ?? EMPTY;
   const out = new Uint8Array(
-    HEADER_V3 + grid.length + chip.length + slow.length + custom.length +
-    copper.length + events.length + registers.length + thumb.length + full.length,
+    HEADER_V4 + grid.length + chip.length + slow.length + custom.length +
+    copper.length + events.length + registers.length + thumb.length + full.length + agaColors.length,
   );
   const dv = new DataView(out.buffer);
   dv.setUint32(0,  grid.length,      true);
@@ -62,7 +66,8 @@ export function packBulk(raw: RawCapture): Uint8Array | undefined {
   dv.setUint32(40, full.length,      true);
   dv.setUint32(44, fullW,            true);
   dv.setUint32(48, fullH,            true);
-  let off = HEADER_V3;
+  dv.setUint32(52, agaColors.length, true);
+  let off = HEADER_V4;
   out.set(grid,      off); off += grid.length;
   out.set(chip,      off); off += chip.length;
   out.set(slow,      off); off += slow.length;
@@ -71,7 +76,8 @@ export function packBulk(raw: RawCapture): Uint8Array | undefined {
   out.set(events,    off); off += events.length;
   out.set(registers, off); off += registers.length;
   out.set(thumb,     off); off += thumb.length;
-  out.set(full,      off);
+  out.set(full,      off); off += full.length;
+  out.set(agaColors, off);
   return out;
 }
 
@@ -83,7 +89,7 @@ export function unpackBulk(buf: ArrayBuffer): {
   thumbnail?: { data: Uint8Array; width: number; height: number };
   fullFrame?: { data: Uint8Array; width: number; height: number };
 } {
-  // Accept v1 (28 B), v2 (40 B, adds thumbnail), v3 (52 B, adds fullFrame).
+  // Accept v1 (28 B), v2 (40 B, adds thumbnail), v3 (52 B, adds fullFrame), v4 (56 B, adds agaColors).
   if (buf.byteLength < HEADER_V1) throw new Error(`unpackBulk: buffer too small (${buf.byteLength} < ${HEADER_V1} byte header)`);
   const dv = new DataView(buf);
   const gridLen      = dv.getUint32(0,  true);
@@ -104,9 +110,12 @@ export function unpackBulk(buf: ArrayBuffer): {
   const fullW    = isV3 ? dv.getUint32(44, true) : 0;
   const fullH    = isV3 ? dv.getUint32(48, true) : 0;
 
-  const HEADER = isV3 ? HEADER_V3 : isV2 ? HEADER_V2 : HEADER_V1;
+  const isV4 = buf.byteLength >= HEADER_V4;
+  const agaColorsLen = isV4 ? dv.getUint32(52, true) : 0;
 
-  const need = HEADER + gridLen + chipLen + slowLen + customLen + copperLen + eventsLen + registersLen + thumbLen + fullLen;
+  const HEADER = isV4 ? HEADER_V4 : isV3 ? HEADER_V3 : isV2 ? HEADER_V2 : HEADER_V1;
+
+  const need = HEADER + gridLen + chipLen + slowLen + customLen + copperLen + eventsLen + registersLen + thumbLen + fullLen + agaColorsLen;
   if (need > buf.byteLength) throw new Error(`unpackBulk: section lengths (${need}) exceed buffer (${buf.byteLength})`);
   let off = HEADER;
   const grid      = new Uint8Array(buf, off, gridLen);      off += gridLen;
@@ -117,7 +126,8 @@ export function unpackBulk(buf: ArrayBuffer): {
   const events    = new Uint8Array(buf, off, eventsLen);    off += eventsLen;
   const registers = new Uint8Array(buf, off, registersLen); off += registersLen;
   const thumbData = thumbLen > 0 ? new Uint8Array(buf, off, thumbLen) : undefined; off += thumbLen;
-  const fullData  = fullLen  > 0 ? new Uint8Array(buf, off, fullLen)  : undefined;
+  const fullData  = fullLen  > 0 ? new Uint8Array(buf, off, fullLen)  : undefined;  off += fullLen;
+  const agaColorsData = agaColorsLen > 0 ? new Uint8Array(buf, off, agaColorsLen) : undefined;
 
   const dma = decodeDmaGrid(grid);
   if (dma) {
@@ -126,7 +136,9 @@ export function unpackBulk(buf: ArrayBuffer): {
   }
   return {
     dma,
-    dmaSnapshot: chipLen || slowLen ? { chip: new Uint8Array(chip), slow: new Uint8Array(slow), custom: decodeCustomRegs(custom) } : undefined,
+    dmaSnapshot: chipLen || slowLen
+      ? { chip: new Uint8Array(chip), slow: new Uint8Array(slow), custom: decodeCustomRegs(custom), agaColors: decodeAgaColors(agaColorsData) }
+      : undefined,
     copper: decodeCopperRecords(copper),
     registers: registersLen > 0 ? decodeRegisterTrace(registers) : undefined,
     thumbnail: thumbData && thumbW > 0 && thumbH > 0

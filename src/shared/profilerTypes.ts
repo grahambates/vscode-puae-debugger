@@ -60,15 +60,19 @@ export interface IComputedNode {
   locationId: number;
 }
 
-// vAmiga bus owners — mirrors the ordinals of `BusOwner` in
-// vamigaweb_fork/Core/Components/Agnus/BusTypes.h. Indexes IDmaModel.owner.
+// Bus owner ordinals for the profiler's Cell[] DMA grid. Originally mirrored vAmiga's
+// (OCS/ECS-only, 6-plane) `BusOwner` in vamigaweb_fork/Core/Components/Agnus/BusTypes.h,
+// but since this project moved to the PUAE backend — which supports AGA's 8 bitplanes —
+// BPL7/BPL8 were added here (shifting SPRITE0-7/COPPER/BLITTER/BLOCKED up by 2), diverging
+// from vAmiga's own enum. Indexes IDmaModel.owner. Keep in sync with the C-side encoder,
+// puae_dma_serialize() in puae-wasm/libretro-uae/sources/src/debug.c.
 export enum BusOwner {
   NONE = 0, CPU = 1, REFRESH = 2, DISK = 3,
   AUD0 = 4, AUD1 = 5, AUD2 = 6, AUD3 = 7,
-  BPL1 = 8, BPL2 = 9, BPL3 = 10, BPL4 = 11, BPL5 = 12, BPL6 = 13,
-  SPRITE0 = 14, SPRITE1 = 15, SPRITE2 = 16, SPRITE3 = 17,
-  SPRITE4 = 18, SPRITE5 = 19, SPRITE6 = 20, SPRITE7 = 21,
-  COPPER = 22, BLITTER = 23, BLOCKED = 24,
+  BPL1 = 8, BPL2 = 9, BPL3 = 10, BPL4 = 11, BPL5 = 12, BPL6 = 13, BPL7 = 14, BPL8 = 15,
+  SPRITE0 = 16, SPRITE1 = 17, SPRITE2 = 18, SPRITE3 = 19,
+  SPRITE4 = 20, SPRITE5 = 21, SPRITE6 = 22, SPRITE7 = 23,
+  COPPER = 24, BLITTER = 25, BLOCKED = 26,
 }
 
 // PUAE's own DMA-record type tag — mirrors `DMARECORD_*` in
@@ -153,6 +157,10 @@ export interface DmaSnapshot {
   chip: Uint8Array; // chip RAM at capture start
   slow: Uint8Array; // slow/bogo RAM at capture start (may be empty)
   custom: Uint16Array; // custom-register file at capture start (256 regs; for DMACON/reconstruction)
+  // AGA's full 256-entry, 24-bit-per-channel palette (0x00RRGGBB) at capture start — absent
+  // outside AGA mode. Already fully reconstructed C-side (BPLCON3 LOCT/bank-select applied),
+  // unlike `custom`'s COLOR00-31 window, which only ever reflects one bank at 4-bit precision.
+  agaColors?: Uint32Array;
 }
 
 // A program symbol shipped to the webview for on-demand address symbolization (the

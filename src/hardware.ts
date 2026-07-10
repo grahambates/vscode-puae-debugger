@@ -216,8 +216,8 @@ export const customAddresses: Record<string, CustomAddress> = {
   BPLCON3: { writeAddress: 0xdff106, long: false }, // Bitplane control (enhanced features)
   BPL1MOD: { writeAddress: 0xdff108, long: false }, // Bitplane modulo (odd planes)
   BPL2MOD: { writeAddress: 0xdff10a, long: false }, // Bitplane modulo (even planes)
-  // BPLCON4: { writeAddress: 0xdff10c, long: false }, // AGA only — genuinely #ifdef AGA-gated in PUAE, and this build doesn't define AGA
-  // CLXCON2: { writeAddress: 0xdff10e, long: false }, // Also #ifdef AGA-gated in PUAE, same as BPLCON4
+  BPLCON4: { writeAddress: 0xdff10c, long: false }, // AGA only — #ifdef AGA-gated in PUAE, but this build's sysconfig.h unconditionally #defines AGA, so the handler is always compiled in
+  CLXCON2: { writeAddress: 0xdff10e, long: false }, // AGA only — unconditional handler (not even #ifdef AGA-gated)
   BPL1DAT: { writeAddress: 0xdff110, long: false }, // Bitplane 1 data (parallel to serial convert)
   BPL2DAT: { writeAddress: 0xdff112, long: false }, // Bitplane 2 data (parallel to serial convert)
   BPL3DAT: { writeAddress: 0xdff114, long: false }, // Bitplane 3 data (parallel to serial convert)

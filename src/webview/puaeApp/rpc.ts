@@ -1294,7 +1294,14 @@ export function setupRpcDispatcher(
           customView.setUint16(i * 2, rawView.getUint16(4 + i * 2, false), true);
         }
 
-        rpcRequest(() => ({ chip, slow, custom }));
+        // AGA's full 256-entry, already-24-bit palette (0x00RRGGBB per entry, native
+        // little-endian — no byte-swap needed, unlike `custom` above). All zero outside AGA
+        // mode; the profiler treats "all zero" the same as "absent" (see decodeAgaColors).
+        M._wasm_read_aga_colors();
+        const agaPtr = M._wasm_get_aga_colors_buf();
+        const agaColors = new Uint8Array(M.HEAPU8.buffer, agaPtr, 256 * 4).slice();
+
+        rpcRequest(() => ({ chip, slow, custom, agaColors }));
         break;
       }
       default:

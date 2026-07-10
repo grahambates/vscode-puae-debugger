@@ -13,7 +13,7 @@ import {
   ILineTableEntry,
   ISegmentRange,
 } from "./shared/profilerTypes";
-import { decodeDmaGrid, decodeCustomRegs, decodeCopperRecords, decodeDmaEvents, decodeRegisterTrace } from "./dma";
+import { decodeDmaGrid, decodeCustomRegs, decodeAgaColors, decodeCopperRecords, decodeDmaEvents, decodeRegisterTrace } from "./dma";
 
 export type { ProfileFrame, IProfileModel };
 
@@ -383,7 +383,7 @@ export interface RawCapture {
   dma?: Uint8Array; // raw enriched DMA grid bytes (absent if DMA capture produced nothing)
   // Reconstruction baseline (raw bytes; `custom` is 256 little-endian u16 = the custom-register
   // file at capture start, used for DMACON / register reconstruction).
-  snapshot?: { chip: Uint8Array; slow: Uint8Array; custom: Uint8Array };
+  snapshot?: { chip: Uint8Array; slow: Uint8Array; custom: Uint8Array; agaColors?: Uint8Array };
   copper?: Uint8Array; // raw copper-instruction-trace bytes (absent if unsupported/empty)
   dmaEvents?: Uint8Array; // raw per-cycle event-bitfield bytes, parallel to `dma` (absent if unsupported/empty)
   disassembly?: RawDisassembledFunction[]; // every function that executed this frame (absent if unsupported/empty)
@@ -437,6 +437,7 @@ export function buildModelFromCapture(
           chip: raw.snapshot.chip,
           slow: raw.snapshot.slow,
           custom: decodeCustomRegs(raw.snapshot.custom),
+          agaColors: decodeAgaColors(raw.snapshot.agaColors),
         };
       }
       // Only attach if it lines up with the grid — a mismatched length (stale/corrupt capture)
@@ -808,8 +809,8 @@ export class ProfilerManager {
           const dmaBytes = u8(dmaRes.data);
           if (dmaBytes.length) {
             raw.dma = dmaBytes;
-            const snap = await rpc.sendRpcCommand<{ chip: Uint8Array; slow: Uint8Array; custom: Uint8Array }>("getDmaSnapshot");
-            raw.snapshot = { chip: u8(snap.chip), slow: u8(snap.slow), custom: u8(snap.custom) };
+            const snap = await rpc.sendRpcCommand<{ chip: Uint8Array; slow: Uint8Array; custom: Uint8Array; agaColors?: Uint8Array }>("getDmaSnapshot");
+            raw.snapshot = { chip: u8(snap.chip), slow: u8(snap.slow), custom: u8(snap.custom), agaColors: snap.agaColors && u8(snap.agaColors) };
             const eventsRes = await rpc.sendRpcCommand<{ data: Uint8Array }>("getDmaEvents");
             const eventsBytes = u8(eventsRes.data);
             if (eventsBytes.length) raw.dmaEvents = eventsBytes;
@@ -929,11 +930,11 @@ export class ProfilerManager {
 
         // Snapshot captured at end-of-capture state (last frame) — used for memory
         // reconstruction; only attached to the last frame to avoid duplicating 2.5MB per frame.
-        let snapshotRaw: { chip: Uint8Array; slow: Uint8Array; custom: Uint8Array } | undefined;
+        let snapshotRaw: { chip: Uint8Array; slow: Uint8Array; custom: Uint8Array; agaColors?: Uint8Array } | undefined;
         try {
           if (perFrameDmaBytes[numFrames - 1]) {
-            const snap = await rpc.sendRpcCommand<{ chip: Uint8Array; slow: Uint8Array; custom: Uint8Array }>("getDmaSnapshot");
-            snapshotRaw = { chip: u8(snap.chip), slow: u8(snap.slow), custom: u8(snap.custom) };
+            const snap = await rpc.sendRpcCommand<{ chip: Uint8Array; slow: Uint8Array; custom: Uint8Array; agaColors?: Uint8Array }>("getDmaSnapshot");
+            snapshotRaw = { chip: u8(snap.chip), slow: u8(snap.slow), custom: u8(snap.custom), agaColors: snap.agaColors && u8(snap.agaColors) };
           }
         } catch (e) {
           console.warn("[profiler] snapshot fetch failed:", e);
@@ -1023,6 +1024,7 @@ export class ProfilerManager {
                   chip: raw.snapshot.chip,
                   slow: raw.snapshot.slow,
                   custom: decodeCustomRegs(raw.snapshot.custom),
+                  agaColors: decodeAgaColors(raw.snapshot.agaColors),
                 };
               }
               if (raw.dmaEvents) {

@@ -1793,6 +1793,16 @@ puae_debug_read_custom_regs_raw(uint8_t *out, size_t cap)
 }
 
 PUAE_DEBUG_EXPORT size_t
+puae_debug_read_aga_colors(uint32_t *out, size_t cap)
+{
+	if (!out || cap < PUAE_AGA_COLOR_COUNT) {
+		return 0;
+	}
+	puae_get_aga_colors_raw(out);
+	return PUAE_AGA_COLOR_COUNT;
+}
+
+PUAE_DEBUG_EXPORT size_t
 puae_debug_read_audio_regs(uint8_t *out, size_t cap)
 {
 	if (!out || cap < PUAE_AUDIO_REGS_SIZE) {

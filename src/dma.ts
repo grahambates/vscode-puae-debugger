@@ -122,6 +122,24 @@ export function decodeCustomRegs(bytes: Uint8Array | undefined): Uint16Array {
   return regs;
 }
 
+// AGA's full 256-entry palette (0x00RRGGBB per entry, native little-endian — see
+// wasm_read_aga_colors's doc comment, no byte-swap needed unlike decodeCustomRegs above).
+// Returns undefined (rather than an all-zero array) when absent or all-zero — the emulator
+// zero-fills this buffer outside AGA mode, and "no AGA palette" should read as "fall back to
+// the OCS/ECS COLOR00-31 reconstruction", not "a real 256-entry black palette".
+export function decodeAgaColors(bytes: Uint8Array | undefined): Uint32Array | undefined {
+  if (!bytes || bytes.byteLength < 256 * 4) return undefined;
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const colors = new Uint32Array(256);
+  let anyNonZero = false;
+  for (let i = 0; i < 256; i++) {
+    const v = view.getUint32(i * 4, true);
+    if (v !== 0) anyNonZero = true;
+    colors[i] = v;
+  }
+  return anyNonZero ? colors : undefined;
+}
+
 // Decode the per-sample CPU register trace (getProfileRegs): REG_COUNT little-endian u32 per
 // sample (D0-D7, A0-A7, SR, PC, USP — see REG_* in shared/profilerTypes.ts), in the same
 // strictly sequential order decodeProfileStream (profilerManager.ts) parses its own buffer —

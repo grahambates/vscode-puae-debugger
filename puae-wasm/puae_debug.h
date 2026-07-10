@@ -247,6 +247,14 @@ puae_debug_read_display_regs(uint16_t *out, size_t cap);
 size_t
 puae_debug_read_custom_regs_raw(uint8_t *out, size_t cap);
 
+// AGA's full 256-entry, 24-bit-per-channel palette (see puae_get_aga_colors_raw's doc comment,
+// custom.c) — all zero when not currently in AGA mode. `out` must hold PUAE_AGA_COLOR_COUNT
+// uint32_t entries (each 0x00RRGGBB). Returns PUAE_AGA_COLOR_COUNT on success, 0 if cap is too
+// small.
+#define PUAE_AGA_COLOR_COUNT 256
+size_t
+puae_debug_read_aga_colors(uint32_t *out, size_t cap);
+
 // AUD0-3 LC/LEN/PER/VOL/DAT "live register" values (write-only on the 68k
 // bus, not part of save_custom()'s output - see caveat above). Packed
 // big-endian per channel as LC(4) LEN(2) PER(2) VOL(2) DAT(2) = 12 bytes,

@@ -708,6 +708,17 @@ int wasm_read_custom_regs_raw(void) {
 EMSCRIPTEN_KEEPALIVE
 uint8_t *wasm_get_custom_regs_raw_buf(void) { return g_custom_regs_raw_buf; }
 
+// --- AGA's full 256-entry, 24-bit-per-channel palette ---
+static uint32_t g_aga_colors_buf[PUAE_AGA_COLOR_COUNT];
+
+EMSCRIPTEN_KEEPALIVE
+int wasm_read_aga_colors(void) {
+    return (int)puae_debug_read_aga_colors(g_aga_colors_buf, PUAE_AGA_COLOR_COUNT);
+}
+
+EMSCRIPTEN_KEEPALIVE
+uint32_t *wasm_get_aga_colors_buf(void) { return g_aga_colors_buf; }
+
 static uint8_t g_audio_regs_buf[PUAE_AUDIO_REGS_SIZE];
 
 EMSCRIPTEN_KEEPALIVE
