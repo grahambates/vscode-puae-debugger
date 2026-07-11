@@ -541,15 +541,16 @@ export async function main(config: MainConfig = {}): Promise<void> {
 
   const audioToggle = document.getElementById("audio-toggle");
   const audioToggleIcon = audioToggle?.querySelector(".codicon");
+  function setAudioMuted(muted: boolean): void {
+    audioMuted = muted;
+    audioToggleIcon?.classList.toggle("codicon-mute", audioMuted);
+    audioToggleIcon?.classList.toggle("codicon-unmute", !audioMuted);
+    if (audioToggle) audioToggle.title = audioMuted ? "Unmute audio" : "Mute audio";
+    if (!audioMuted) audioCtx?.resume(); // satisfies autoplay policy on first user gesture
+    applyAudioMute();
+  }
   if (audioToggle) {
-    audioToggle.addEventListener("click", () => {
-      audioMuted = !audioMuted;
-      audioToggleIcon?.classList.toggle("codicon-mute", audioMuted);
-      audioToggleIcon?.classList.toggle("codicon-unmute", !audioMuted);
-      audioToggle.title = audioMuted ? "Unmute audio" : "Mute audio";
-      if (!audioMuted) audioCtx?.resume(); // satisfies autoplay policy on first click
-      applyAudioMute();
-    });
+    audioToggle.addEventListener("click", () => setAudioMuted(!audioMuted));
   }
 
   interface ToggleItem {
@@ -768,6 +769,17 @@ export async function main(config: MainConfig = {}): Promise<void> {
     opacityRow.appendChild(opacitySlider);
     dmaOverlayPanel.appendChild(opacityRow);
   }
+
+  // Browsers block audio autoplay until a user gesture; clicking the canvas
+  // (like the explicit unmute button) satisfies that, so unmute automatically
+  // rather than requiring a separate click on the toolbar button. Only
+  // unmutes (never re-mutes) — a click elsewhere already muted stays muted.
+  // Registered before installDmaHoverTooltip/installMouseCapture below so
+  // their stopImmediatePropagation (DMA-hover's click-to-open-source path)
+  // can't suppress this — it should fire on every canvas click regardless.
+  canvas.addEventListener("click", () => {
+    if (audioMuted) setAudioMuted(false);
+  });
 
   // DMA overlay hover tooltip: shows brief info (disassembly for copper,
   // channel/data for blitter) under the cursor while any DMA channel is
