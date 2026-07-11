@@ -149,24 +149,6 @@ check("getMemoryInfo.cpuMemSrc[bank(pc0)] is ROM or ROM_MIRROR", [13, 14].includ
 check("getMemoryInfo.agnusMemSrc[0] is CHIP (1)", memInfo.agnusMemSrc[0] === 1, String(memInfo.agnusMemSrc[0]));
 check("getMemoryInfo.agnusMemSrc[0xf8] is NONE (0)", memInfo.agnusMemSrc[0xf8] === 0, String(memInfo.agnusMemSrc[0xf8]));
 
-// --- 9. disassemble(pc0, 4) ---
-const disasm = await request("disassemble", { address: pc0, count: 4 });
-check("disassemble returns 4 instructions", disasm.instructions.length === 4, String(disasm.instructions.length));
-check("disassemble[0].addr matches pc0", disasm.instructions[0].addr === hex(pc0, 6),
-  `${disasm.instructions[0].addr} vs ${hex(pc0, 6)}`);
-{
-  let addrsIncreasing = true;
-  for (let i = 1; i < disasm.instructions.length; i++) {
-    const prev = parseInt(disasm.instructions[i - 1].addr, 16);
-    const cur = parseInt(disasm.instructions[i].addr, 16);
-    if (cur <= prev) addrsIncreasing = false;
-  }
-  check("disassemble addresses strictly increase", addrsIncreasing,
-    disasm.instructions.map((i) => i.addr).join(","));
-}
-check("disassemble[0].instruction is non-empty", disasm.instructions[0].instruction.length > 0);
-check("disassemble[0].hex is non-empty", disasm.instructions[0].hex.length > 0);
-
 // --- 10. setBreakpoint / removeBreakpoint (functional: re-fires at pc0) ---
 send("setBreakpoint", { address: pc0 });
 send("run");

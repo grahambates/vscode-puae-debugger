@@ -139,12 +139,6 @@ console.log("entryPoint:", hex(program.entryPoint));
 const cpuInfoAfter = await emu.getCpuInfo();
 console.log("After load: pc=", cpuInfoAfter.pc, "sr=", cpuInfoAfter.sr, "usp=", cpuInfoAfter.usp, "a7=", cpuInfoAfter.a7);
 
-// --- Disassemble first instructions at entry point ---
-const disasm = await request("disassemble", { address: program.entryPoint, count: 20 });
-for (const ins of disasm.instructions) {
-  console.log(`  ${ins.addr}: ${ins.hex.padEnd(20)} ${ins.instruction}`);
-}
-
 // --- Single-step from the entry point, dumping regs on PC jumps ---
 console.log("\n--- single-stepping from entry ---");
 let lastPc = (await emu.getCpuInfo()).pc;
