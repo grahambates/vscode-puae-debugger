@@ -847,18 +847,29 @@ export function setupRpcDispatcher(
         M._wasm_pause();
         // Mirrors vAmiga_ui.js's wasm_halt(true): tells the DAP adapter the
         // emulator is now paused so it can send a StoppedEvent("pause").
-        postMessage({ type: "emulator-state", state: "paused" });
+        // args.silent skips this — used by profilerManager.ts's capture
+        // pause/resume bracket, which is an internal implementation detail
+        // (stopping contention with the render/tick loop during a capture),
+        // not a real debugging pause; sending a StoppedEvent for it made VS
+        // Code reveal the paused source/disassembly location on every
+        // profiler capture, popping the editor in front of the profiler
+        // webview the user just opened.
+        if (!args.silent) postMessage({ type: "emulator-state", state: "paused" });
         // Also ack via rpcRequest when called with _rpcId (e.g. profilerManager.ts pausing
         // around a capture) — harmless no-op for plain one-way send() callers, since
         // rpcRequest posts id: undefined then, which no pending sendRpcCommand matches.
         rpcRequest(() => ({ ok: true }));
         break;
       case "run":
-        pushSnapshot();
+        // args.silent (see "pause" above) also skips pushSnapshot — the paused
+        // window it brackets did no execution of its own, so there's nothing
+        // meaningful to checkpoint, and doing so would inject an internal
+        // capture-bracket point into the user's rewind history.
+        if (!args.silent) pushSnapshot();
         M._wasm_resume();
         // Mirrors vAmiga_ui.js's continue path: tells the DAP adapter the
         // emulator is running again so it can send a ContinuedEvent.
-        postMessage({ type: "emulator-state", state: "running" });
+        if (!args.silent) postMessage({ type: "emulator-state", state: "running" });
         rpcRequest(() => ({ ok: true })); // see "pause"'s comment
         break;
       // Lets a caller (e.g. profilerManager.ts, bracketing a capture) check whether the

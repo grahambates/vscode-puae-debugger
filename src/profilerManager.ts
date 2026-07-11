@@ -751,7 +751,12 @@ export class ProfilerManager {
     try {
       const { paused } = await rpc.sendRpcCommand<{ paused: boolean }>("isPaused");
       if (!paused) {
-        await rpc.sendRpcCommand("pause");
+        // silent: true — this pause is an internal implementation detail (see
+        // the comment above), not a real debugging pause. Without it, the
+        // resulting StoppedEvent made VS Code reveal the paused source/
+        // disassembly location on every capture, popping the editor in front
+        // of the profiler webview the user just opened.
+        await rpc.sendRpcCommand("pause", { silent: true });
         resumeAfterCapture = true;
       }
     } catch {
@@ -1100,7 +1105,7 @@ export class ProfilerManager {
       }
       if (resumeAfterCapture) {
         try {
-          await rpc.sendRpcCommand("run");
+          await rpc.sendRpcCommand("run", { silent: true }); // matches the silent pause above
         } catch {
           // unsupported/disconnected — best-effort resume
         }
