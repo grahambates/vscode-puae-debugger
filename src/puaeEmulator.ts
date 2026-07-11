@@ -12,6 +12,11 @@ export interface HardDriveEntry {
   dataB64?: string;
 }
 
+/** Serializes a string for insertion as a complete JavaScript string literal. */
+export function toJavaScriptStringLiteral(value: string): string {
+  return JSON.stringify(value);
+}
+
 // Recursively walks a host directory into a flat list the webview can replay into
 // MEMFS (Emscripten's in-heap virtual filesystem — the only filesystem available in
 // a browser/webview context, there's no NODEFS-style real host mount). Directories
@@ -366,7 +371,7 @@ export class PuaeEmulator extends WebviewEmulator {
     // mounted hardDrivePath.
     html = html.replace(
       "expectedProcessName: '',",
-      `expectedProcessName: '${expectedProcessName}',`,
+      `expectedProcessName: ${toJavaScriptStringLiteral(expectedProcessName)},`,
     );
 
     // Patch AudioWorklet module path.

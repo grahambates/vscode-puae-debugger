@@ -1,7 +1,46 @@
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import { walkHardDrive } from "../puaeEmulator";
+import { toJavaScriptStringLiteral, walkHardDrive } from "../puaeEmulator";
+import { stableStringify } from "../webviewEmulator";
+
+describe("stableStringify", () => {
+  it("treats recursively reordered object keys as equal", () => {
+    const a = {
+      emulatorOptions: { cpu_model: 68000, chipset: "ocs" },
+      stopOnEntry: true,
+    };
+    const b = {
+      stopOnEntry: true,
+      emulatorOptions: { chipset: "ocs", cpu_model: 68000 },
+    };
+
+    expect(stableStringify(a)).toBe(stableStringify(b));
+  });
+
+  it("distinguishes changes to nested emulator options", () => {
+    const a = { emulatorOptions: { cpu_model: 68000 } };
+    const b = { emulatorOptions: { cpu_model: 68020 } };
+
+    expect(stableStringify(a)).not.toBe(stableStringify(b));
+  });
+
+  it("preserves array order", () => {
+    expect(stableStringify({ values: [1, 2] })).not.toBe(
+      stableStringify({ values: [2, 1] }),
+    );
+  });
+});
+
+describe("toJavaScriptStringLiteral", () => {
+  it("produces executable literals for special-character filenames", () => {
+    const filename = "Bob's\\demo\nrelease.exe";
+    const literal = toJavaScriptStringLiteral(filename);
+
+    const evaluate = new Function(`return ${literal}`) as () => string;
+    expect(evaluate()).toBe(filename);
+  });
+});
 
 describe("walkHardDrive", () => {
   let root: string;

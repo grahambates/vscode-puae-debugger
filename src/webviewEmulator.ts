@@ -25,6 +25,25 @@ export interface PendingRpc {
 }
 
 /**
+ * JSON serialization with object keys sorted at every nesting level.
+ * Arrays retain their original order.
+ */
+export function stableStringify(value: unknown): string | undefined {
+  return JSON.stringify(value, (_key, nestedValue) => {
+    if (
+      nestedValue !== null &&
+      typeof nestedValue === "object" &&
+      !Array.isArray(nestedValue)
+    ) {
+      return Object.fromEntries(
+        Object.entries(nestedValue).sort(([a], [b]) => a.localeCompare(b)),
+      );
+    }
+    return nestedValue;
+  });
+}
+
+/**
  * Base class for a webview-backed Amiga emulator backend.
  *
  * Holds the generic plumbing: the postMessage RPC layer (request/response
@@ -273,9 +292,7 @@ export abstract class WebviewEmulator implements Emulator {
    * decide whether an already-open panel can be reused for new open options.
    */
   protected optionsMatch(a?: object, b?: object): boolean {
-    const normalise = (o?: object) =>
-      JSON.stringify(o, Object.keys(o ?? {}).sort());
-    return normalise(a) === normalise(b);
+    return stableStringify(a) === stableStringify(b);
   }
 
   // --- Execution control ---
