@@ -170,12 +170,16 @@ export class PuaeEmulator extends WebviewEmulator {
     this.panel.webview.html = this.getHtmlForWebview(this.panel.webview, puaeDir);
     this.panelOptions = this.openOptions;
 
-    this.panel.onDidDispose(() => {
-      this.panel = undefined;
-      this.panelOptions = undefined;
+    const panel = this.panel;
+    panel.onDidDispose(() => {
+      this.rejectPendingRpcs(new Error("Emulator panel disposed"));
+      if (this.panel === panel) {
+        this.panel = undefined;
+        this.panelOptions = undefined;
+      }
     });
 
-    this.panel.webview.onDidReceiveMessage((message) =>
+    panel.webview.onDidReceiveMessage((message) =>
       this.handlePanelMessage(message),
     );
   }

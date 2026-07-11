@@ -30,6 +30,7 @@ interface MemoryViewerPanel {
   liveUpdate: boolean;
   dereferencePointer: boolean;
   liveUpdateInterval?: NodeJS.Timeout;
+  liveUpdateRefresh?: Promise<void>;
   fetchedChunks: Set<number>;
   watchedAddress?: number;
 }
@@ -574,9 +575,9 @@ export class MemoryViewerProvider {
       return; // Already running
     }
 
-    panel.liveUpdateInterval = setInterval(async () => {
+    panel.liveUpdateInterval = setInterval(() => {
       if (panel.liveUpdate && this.isEmulatorRunning) {
-        this.refreshChunks(panel);
+        this.refreshChunksSingleFlight(panel);
       }
     }, LIVE_UPDATE_RATE_MS);
   }
@@ -589,6 +590,25 @@ export class MemoryViewerProvider {
       clearInterval(panel.liveUpdateInterval);
       panel.liveUpdateInterval = undefined;
     }
+  }
+
+  /** Starts a refresh only when this panel does not already have one in flight. */
+  private refreshChunksSingleFlight(panel: MemoryViewerPanel): void {
+    if (panel.liveUpdateRefresh) {
+      return;
+    }
+
+    const refresh = this.refreshChunks(panel);
+    panel.liveUpdateRefresh = refresh;
+    const clearRefresh = () => {
+      if (panel.liveUpdateRefresh === refresh) {
+        panel.liveUpdateRefresh = undefined;
+      }
+    };
+    void refresh.then(clearRefresh, (error) => {
+      clearRefresh();
+      console.error("Failed to refresh memory viewer:", error);
+    });
   }
 
   // Re-send all previously fetched chunks

@@ -161,6 +161,15 @@ export abstract class WebviewEmulator implements Emulator {
     return pending;
   }
 
+  /** Rejects and removes every RPC associated with the current panel. */
+  protected rejectPendingRpcs(reason: Error): void {
+    for (const [, pending] of this.pendingRpcs) {
+      clearTimeout(pending.timeout);
+      pending.reject(reason);
+    }
+    this.pendingRpcs.clear();
+  }
+
   /**
    * Sends an RPC command to the emulator and waits for a response.
    * @param command RPC command name
@@ -199,13 +208,7 @@ export abstract class WebviewEmulator implements Emulator {
   }
 
   public dispose(): void {
-    // Clean up any pending RPCs
-    for (const [, pending] of this.pendingRpcs) {
-      clearTimeout(pending.timeout);
-      pending.reject(new Error("Webview disposed"));
-    }
-    this.pendingRpcs.clear();
-
+    this.rejectPendingRpcs(new Error("Webview disposed"));
     this.panel?.dispose();
   }
 

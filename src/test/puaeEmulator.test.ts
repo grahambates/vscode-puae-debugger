@@ -2,7 +2,77 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { toJavaScriptStringLiteral, walkHardDrive } from "../puaeEmulator";
-import { stableStringify } from "../webviewEmulator";
+import { stableStringify, WebviewEmulator } from "../webviewEmulator";
+import { MemoryViewerProvider } from "../memoryViewerProvider";
+
+class TestWebviewEmulator extends WebviewEmulator {
+  public open(): void {}
+
+  public addPendingRpcForTest(id: string, reject: (error: Error) => void): void {
+    this.pendingRpcs.set(id, {
+      resolve: () => undefined,
+      reject,
+      timeout: setTimeout(() => undefined, 60_000),
+    });
+  }
+
+  public rejectPendingRpcsForTest(error: Error): void {
+    this.rejectPendingRpcs(error);
+  }
+
+  public get pendingRpcCount(): number {
+    return this.pendingRpcs.size;
+  }
+}
+
+describe("WebviewEmulator RPC lifecycle", () => {
+  it("immediately rejects and removes all RPCs when the panel is disposed", () => {
+    const emulator = new TestWebviewEmulator({} as never);
+    const rejectA = jest.fn();
+    const rejectB = jest.fn();
+    const error = new Error("Emulator panel disposed");
+    emulator.addPendingRpcForTest("a", rejectA);
+    emulator.addPendingRpcForTest("b", rejectB);
+
+    emulator.rejectPendingRpcsForTest(error);
+
+    expect(rejectA).toHaveBeenCalledWith(error);
+    expect(rejectB).toHaveBeenCalledWith(error);
+    expect(emulator.pendingRpcCount).toBe(0);
+  });
+});
+
+describe("MemoryViewerProvider live refresh", () => {
+  it("keeps refreshes single-flight until the current batch settles", async () => {
+    let finishRefresh!: () => void;
+    const firstRefresh = new Promise<void>((resolve) => {
+      finishRefresh = resolve;
+    });
+    const provider = Object.create(
+      MemoryViewerProvider.prototype,
+    ) as MemoryViewerProvider;
+    const refreshChunks = jest
+      .fn<Promise<void>, []>()
+      .mockReturnValueOnce(firstRefresh)
+      .mockResolvedValue(undefined);
+    const panel = {};
+    const internals = provider as unknown as {
+      refreshChunks: typeof refreshChunks;
+      refreshChunksSingleFlight(panel: object): void;
+    };
+    internals.refreshChunks = refreshChunks;
+
+    internals.refreshChunksSingleFlight(panel);
+    internals.refreshChunksSingleFlight(panel);
+    expect(refreshChunks).toHaveBeenCalledTimes(1);
+
+    finishRefresh();
+    await firstRefresh;
+    await Promise.resolve();
+    internals.refreshChunksSingleFlight(panel);
+    expect(refreshChunks).toHaveBeenCalledTimes(2);
+  });
+});
 
 describe("stableStringify", () => {
   it("treats recursively reordered object keys as equal", () => {
