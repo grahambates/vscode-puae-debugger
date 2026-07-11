@@ -343,6 +343,11 @@ wasm_profile_prepare(void)
 	g_wprofActive          = 1;
 	g_wprofWasPaused       = puae_debug_paused;
 	puae_debug_paused       = 0;
+	// Ignore breakpoints for the duration of the capture — see
+	// puae_debug_suspend_breakpoints's comment. Without this, a breakpoint hit
+	// mid-capture halts the CPU (frame count/DMA/video keep advancing) and the
+	// rest of the capture silently loses its CPU samples.
+	puae_debug_suspend_breakpoints();
 	g_wprofStartCycles     = get_cycles();
 	/* Force CE blitter for the capture frame so every D-channel write (including fill
 	 * mode, which the fast blitter never records) appears in the DMA grid.  The
@@ -361,6 +366,7 @@ wasm_profile_finish(int numFrames)
 	}
 	g_wprofActive    = 0;
 	puae_debug_paused = g_wprofWasPaused;
+	puae_debug_resume_breakpoints();
 	currprefs.blitter_cycle_exact = g_wprofSavedBlitterCE;
 	/* The very last sample's cycleDelta slot (if any) is left at its placeholder value
 	 * (1 — see wasm_profile_instrHook) rather than finalized here: get_cycles() at this point
@@ -1902,14 +1908,26 @@ puae_debug_remove_breakpoint(uint32_t addr)
 
 static size_t puae_debug_breakpointCountSuspended = 0;
 
-// retro_unserialize's restore path is sensitive to puae_debug_breakpointCount:
-// restoring a checkpoint with a breakpoint registered measurably perturbs
-// chipset cycle timing, shifting a subsequent puae_debug_replay_instructions/
-// replay_scan landing by a variable number of instructions (root cause not
-// isolated further than this). Since breakpoints are meaningless mid-restore
-// anyway (replay mode bypasses puae_debug_hasBreakpoint entirely),
-// wasm_unserialize suspends them across retro_unserialize and restores them
-// immediately afterwards.
+// Two callers:
+//  - retro_unserialize's restore path is sensitive to puae_debug_breakpointCount:
+//    restoring a checkpoint with a breakpoint registered measurably perturbs
+//    chipset cycle timing, shifting a subsequent puae_debug_replay_instructions/
+//    replay_scan landing by a variable number of instructions (root cause not
+//    isolated further than this). Since breakpoints are meaningless mid-restore
+//    anyway (replay mode bypasses puae_debug_hasBreakpoint entirely),
+//    wasm_unserialize suspends them across retro_unserialize and restores them
+//    immediately afterwards.
+//  - wasm_profile_start's capture loop (wasm_profile_prepare/wasm_profile_finish)
+//    runs retro_run() directly, outside the normal step/pause machinery. A
+//    breakpoint hit mid-capture calls puae_debug_requestBreak() and halts the CPU
+//    for the rest of the capture (frame count/DMA/video keep advancing, since
+//    those don't depend on the CPU), so every sample after the hit — and every
+//    frame after the first in a multi-frame capture — silently goes missing
+//    instead of erroring, producing a truncated-looking profile. Suspended for
+//    the same reason as the restore case: breakpoints are meaningless during a
+//    capture the user didn't ask to stop at.
+// Not reentrant/nestable (single suspended slot) — safe only because this
+// single-threaded, synchronous model never has both callers active at once.
 void
 puae_debug_suspend_breakpoints(void)
 {
