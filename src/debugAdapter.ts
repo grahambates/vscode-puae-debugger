@@ -743,12 +743,12 @@ export class DebugAdapter extends LoggingDebugSession {
     response: DebugProtocol.StepOutResponse,
   ): Promise<void> {
     try {
-      // The Emulator interface has no native stepOut (the emulator doesn't track stack
-      // frames), so use our guessed stack list (StackManager) to set a tmp breakpoint instead.
+      // The Emulator interface has no native stepOut, so use the real shadow
+      // call-stack (StackManager.getRealCallstack) to set a tmp breakpoint
+      // at the immediate caller's return address instead.
       const cpuInfo = await this.emulator.getCpuInfo();
       const pc = Number(cpuInfo.pc);
-      const stackAddress = Number(cpuInfo.a7);
-      const stack = await this.getStackManager().guessStack(pc, stackAddress);
+      const stack = await this.getStackManager().getRealCallstack(pc);
 
       // stack 0 is pc
       if (stack[1]) {

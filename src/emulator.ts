@@ -234,6 +234,16 @@ export interface Emulator {
   getCpuTrace(count?: number): Promise<CpuTraceItem[]>;
 
   /**
+   * Gets the emulator's live shadow call-stack: the call-site PC of each
+   * currently active call frame, outermost-first (index 0 is the oldest
+   * active call, not the current PC). Maintained continuously from JSR/BSR/
+   * exception entry and RTS/RTD/RTE/RTR, self-correcting for non-standard
+   * returns, and correct across stepBack/continueReverse restores.
+   * @returns Promise resolving to call-site PCs, outermost-first
+   */
+  getCallstack(): Promise<number[]>;
+
+  /**
    * Gets the current CPU state including registers and flags
    * @returns Promise resolving to CPU information
    */

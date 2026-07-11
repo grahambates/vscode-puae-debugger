@@ -1202,27 +1202,33 @@ uint32_t wasm_get_chip_mem_size(void) { return puae_debug_get_chip_mem_size(); }
 // / puae_debug_restore_event_phase in puae_debug.c for why this is needed).
 #define EVENT_PHASE_BYTES (PUAE_DEBUG_EVENT_PHASE_WORDS * sizeof(uint32_t))
 
+// Same idea, for the shadow call-stack (see puae_debug_capture_callstack/
+// restore_callstack in puae_debug.c) — also not part of the libretro savestate.
+#define CALLSTACK_PHASE_BYTES (PUAE_DEBUG_CALLSTACK_PHASE_WORDS * sizeof(uint32_t))
+
 EMSCRIPTEN_KEEPALIVE
-size_t wasm_serialize_size(void) { return retro_serialize_size() + EVENT_PHASE_BYTES; }
+size_t wasm_serialize_size(void) { return retro_serialize_size() + EVENT_PHASE_BYTES + CALLSTACK_PHASE_BYTES; }
 
 EMSCRIPTEN_KEEPALIVE
 int wasm_serialize(void *buf, size_t size) {
     size_t base = retro_serialize_size();
-    if (size < base + EVENT_PHASE_BYTES) return 0;
+    if (size < base + EVENT_PHASE_BYTES + CALLSTACK_PHASE_BYTES) return 0;
     if (!retro_serialize(buf, base)) return 0;
     puae_debug_capture_event_phase((uint32_t *)((uint8_t *)buf + base));
+    puae_debug_capture_callstack((uint32_t *)((uint8_t *)buf + base + EVENT_PHASE_BYTES));
     return 1;
 }
 
 EMSCRIPTEN_KEEPALIVE
 int wasm_unserialize(const void *buf, size_t size) {
     size_t base = retro_serialize_size();
-    if (size < base + EVENT_PHASE_BYTES) return 0;
+    if (size < base + EVENT_PHASE_BYTES + CALLSTACK_PHASE_BYTES) return 0;
     puae_debug_suspend_breakpoints();
     int ok = retro_unserialize(buf, base);
     puae_debug_resume_breakpoints();
     if (!ok) return 0;
     puae_debug_restore_event_phase((const uint32_t *)((const uint8_t *)buf + base));
+    puae_debug_restore_callstack((const uint32_t *)((const uint8_t *)buf + base + EVENT_PHASE_BYTES));
     return 1;
 }
 

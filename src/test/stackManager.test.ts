@@ -50,6 +50,7 @@ describe("StackManager - Comprehensive Tests", () => {
 
   beforeEach(() => {
     mockEmulator = sinon.createStubInstance(PuaeEmulator);
+    mockEmulator.getCallstack.resolves([]); // no active calls by default → just the leaf frame
     mockSourceMap = {
       lookupAddress: sinon.stub(),
       getSymbols: () => ({ main: 0x1000, sub1: 0x2000 }),
@@ -57,7 +58,7 @@ describe("StackManager - Comprehensive Tests", () => {
       getSymbolLengths: () => ({}),
       lookupSourceLine: sinon.stub(),
       findSymbolOffset: sinon.stub(),
-      getCfaForPc: sinon.stub().returns(undefined), // no DWARF frame info → use guessStack
+      getCfaForPc: sinon.stub().returns(undefined), // no DWARF frame info → use the real callstack
       getInlineFramesForPc: sinon.stub().returns([]), // no inline frames by default
     };
 
@@ -133,46 +134,44 @@ describe("StackManager - Comprehensive Tests", () => {
       assert.strictEqual(frames[0].instructionPointerReference, "0x00001000");
     });
 
-    it("should stop at ROM calls after finding user code", async () => {
-      // Setup: Mock stack analysis that finds ROM address after user code
+    it("should include ROM call frames (real callstack is authoritative, not heuristically truncated)", async () => {
+      // Setup: shadow stack has a user-code caller and a ROM caller. Unlike the old
+      // guessStack-based heuristic (which stopped at ROM addresses to avoid false
+      // positives from a noisy memory scan), the real callstack is ground truth, so
+      // ROM frames are legitimate and must not be dropped.
       const mockCpuInfo = createMockCpuInfo({ pc: "0x1000", a7: "0x8000" });
       mockEmulator.getCpuInfo.resolves(mockCpuInfo);
+      // C side stores call sites outermost-first: 0x2000 was the first (outer) call,
+      // 0xe80000 (ROM) is the most recent (immediate caller of pc).
+      mockEmulator.getCallstack.resolves([0x2000, 0xe80000]);
 
-      // Mock guessStack to return user code then ROM
-      sinon.stub(stackManager, "guessStack").resolves([
-        [0x1000, 0x1000], // User code PC
-        [0x2000, 0x2000], // User code
-        [0xe80000, 0xe80000], // ROM code - should stop here
-      ]);
-
-      // Mock source lookup - first two have source, third is ROM
       mockSourceMap.lookupAddress
         .withArgs(0x1000)
-        .returns({ path: "/src/main.asm", line: 10 });
+        .returns(null);
+      mockSourceMap.lookupAddress
+        .withArgs(0xe80000)
+        .returns(null);
       mockSourceMap.lookupAddress
         .withArgs(0x2000)
         .returns({ path: "/src/sub.c", line: 20 });
-      mockSourceMap.lookupAddress.withArgs(0xe80000).returns(null);
 
       // Test: Get all stack frames
       const { frames } = await stackManager.getStackFrames(0, 10);
 
-      // Verify: Stops after user code, doesn't include ROM frame
-      assert.strictEqual(frames.length, 2);
-      assert.strictEqual(frames[1].instructionPointerReference, "0x00002000");
+      // Verify: leaf, then immediate ROM caller, then outer user-code caller
+      assert.strictEqual(frames.length, 3);
+      assert.strictEqual(frames[0].instructionPointerReference, "0x00001000");
+      assert.strictEqual(frames[1].instructionPointerReference, "0x00e80000");
+      assert.strictEqual(frames[2].instructionPointerReference, "0x00002000");
     });
 
     it("should handle pagination with startFrame and maxLevels", async () => {
-      // Setup: Mock CPU info and stub guessStack with multiple frames
+      // Setup: Mock CPU info and stub the shadow call-stack with multiple frames.
+      // C side order is outermost-first: 0x5000 was the very first call, 0x2000 the
+      // most recent — reversed by getRealCallstack to innermost-first for display.
       const mockCpuInfo = createMockCpuInfo({ pc: "0x1000", a7: "0x8000" });
       mockEmulator.getCpuInfo.resolves(mockCpuInfo);
-      sinon.stub(stackManager, "guessStack").resolves([
-        [0x1000, 0x1000], // Frame 0
-        [0x2000, 0x2000], // Frame 1
-        [0x3000, 0x3000], // Frame 2
-        [0x4000, 0x4000], // Frame 3
-        [0x5000, 0x5000], // Frame 4
-      ]);
+      mockEmulator.getCallstack.resolves([0x5000, 0x4000, 0x3000, 0x2000]);
 
       mockSourceMap.lookupAddress.returns(null); // All disassembly frames
 
@@ -186,146 +185,78 @@ describe("StackManager - Comprehensive Tests", () => {
     });
   });
 
-  describe("Stack Analysis Algorithm", () => {
-    it("should include current PC as first frame", async () => {
-      // Setup: Mock CPU state
-      mockEmulator.readMemory.resolves(Buffer.alloc(128));
-      mockEmulator.isValidAddress.returns(false);
+  describe("Real Callstack (shadow stack)", () => {
+    it("returns just the current PC when the shadow stack is empty", async () => {
+      mockEmulator.getCallstack.resolves([]);
 
-      // Test: Analyze stack with explicit pc and stackAddress
-      const addresses = await stackManager.guessStack(0x1000, 0x8000, 5);
+      const addresses = await stackManager.getRealCallstack(0x1000, 5);
 
-      // Verify: Current PC is first entry
-      assert.strictEqual(addresses.length, 1);
-      assert.deepStrictEqual(addresses[0], [0x1000, 0x1000]);
+      assert.deepStrictEqual(addresses, [[0x1000, 0x1000]]);
     });
 
-    it("should detect JSR return addresses in stack memory", async () => {
-      // Setup: Mock stack containing return address
-      // Create stack buffer with return address at offset 0
-      const stackBuffer = Buffer.alloc(128);
-      stackBuffer.writeInt32BE(0x2000, 0); // Return address to 0x2000
-      mockEmulator.readMemory.withArgs(0x8000, 128).resolves(stackBuffer);
+    it("reverses the C side's outermost-first order to innermost-first", async () => {
+      // 0x3000 = outermost (oldest) call, 0x2000 = innermost (immediate caller)
+      mockEmulator.getCallstack.resolves([0x3000, 0x2000]);
+      mockEmulator.readMemory.resolves(Buffer.alloc(8)); // unknown bytes → return-address derivation falls back gracefully
 
-      // Mock valid address check
-      mockEmulator.isValidAddress.withArgs(0x2000).returns(true);
+      const addresses = await stackManager.getRealCallstack(0x1000, 5);
 
-      // Mock instruction bytes showing JSR at 0x2000-2
-      const instrBuffer = Buffer.alloc(6);
-      instrBuffer.writeUInt16BE(0x4e80, 4); // JSR instruction at offset 4 (0x2000-2)
-      mockEmulator.readMemory.withArgs(0x2000 - 6, 6).resolves(instrBuffer);
+      assert.strictEqual(addresses.length, 3);
+      assert.strictEqual(addresses[0][0], 0x1000);
+      assert.strictEqual(addresses[1][0], 0x2000); // immediate caller shown first
+      assert.strictEqual(addresses[2][0], 0x3000); // outermost caller shown last
+    });
 
-      // Test: Analyze stack with explicit pc and stackAddress
-      const addresses = await stackManager.guessStack(0x1000, 0x8000, 5);
+    it("derives the return address by decoding the call-site instruction", async () => {
+      mockEmulator.getCallstack.resolves([0x2000]);
+      // BSR.W #$10 = 61 00 00 10 (4 bytes)
+      const bsrBytes = Buffer.from([0x61, 0x00, 0x00, 0x10, 0, 0, 0, 0]);
+      mockEmulator.readMemory.withArgs(0x2000, 8).resolves(bsrBytes);
 
-      // Verify: Finds JSR call site and return address
+      const addresses = await stackManager.getRealCallstack(0x1000, 5);
+
+      assert.deepStrictEqual(addresses[1], [0x2000, 0x2004]);
+    });
+
+    it("falls back to the call-site address as the return address on a decode/read failure", async () => {
+      mockEmulator.getCallstack.resolves([0x2000]);
+      mockEmulator.readMemory.withArgs(0x2000, 8).rejects(new Error("Invalid memory"));
+
+      const addresses = await stackManager.getRealCallstack(0x1000, 5);
+
+      assert.deepStrictEqual(addresses[1], [0x2000, 0x2000]);
+    });
+
+    it("drops the top shadow-stack entry when it duplicates the exception-adjusted leaf PC", async () => {
+      // puae_debug_exceptionEnter pushes the interrupted instruction's own PC using
+      // the same call-site convention as JSR/BSR, so when pc is the exception-
+      // adjusted faulting address, the top (innermost/most recent) entry duplicates
+      // frame 0 and must not be shown twice.
+      mockEmulator.getCallstack.resolves([0x2000, 0x1000]);
+      mockEmulator.readMemory.resolves(Buffer.alloc(8));
+
+      const addresses = await stackManager.getRealCallstack(0x1000, 5);
+
       assert.strictEqual(addresses.length, 2);
-      assert.deepStrictEqual(addresses[0], [0x1000, 0x1000]); // Current PC
-      assert.deepStrictEqual(addresses[1], [0x2000 - 2, 0x2000]); // JSR call site -> return
+      assert.strictEqual(addresses[0][0], 0x1000);
+      assert.strictEqual(addresses[1][0], 0x2000);
     });
 
-    it("should detect BSR return addresses in stack memory", async () => {
-      // Setup: Mock stack containing BSR return
-      const stackBuffer = Buffer.alloc(128);
-      stackBuffer.writeInt32BE(0x2004, 0); // Return address after BSR
-      mockEmulator.readMemory.withArgs(0x8000, 128).resolves(stackBuffer);
+    it("respects maxLength", async () => {
+      mockEmulator.getCallstack.resolves([0x5000, 0x4000, 0x3000, 0x2000]);
+      mockEmulator.readMemory.resolves(Buffer.alloc(8));
 
-      mockEmulator.isValidAddress.withArgs(0x2004).returns(true);
+      const addresses = await stackManager.getRealCallstack(0x1000, 3);
 
-      // Mock BSR instruction bytes
-      const instrBuffer = Buffer.alloc(6);
-      instrBuffer.writeUInt16BE(0x6100, 2); // BSR instruction at offset 2
-      mockEmulator.readMemory.withArgs(0x2004 - 6, 6).resolves(instrBuffer);
-
-      // Test: Analyze stack with explicit pc and stackAddress
-      const addresses = await stackManager.guessStack(0x1000, 0x8000, 5);
-
-      // Verify: Finds BSR call site
-      assert.strictEqual(addresses.length, 2);
-      assert.deepStrictEqual(addresses[1], [0x2004 - 4, 0x2004]); // BSR call site
-    });
-
-    it("should skip invalid addresses and odd addresses", async () => {
-      // Setup: Mock stack with invalid data
-      const stackBuffer = Buffer.alloc(128);
-      stackBuffer.writeInt32BE(0x1001, 0); // Odd address - should skip
-      stackBuffer.writeInt32BE(0x2000, 4); // Valid even address
-      stackBuffer.writeUInt32BE(0xffffffff, 8); // Invalid address (use unsigned)
-      mockEmulator.readMemory.withArgs(0x8000, 128).resolves(stackBuffer);
-
-      // Mock address validation
-      mockEmulator.isValidAddress.withArgs(0x1001).returns(false); // Odd
-      mockEmulator.isValidAddress.withArgs(0x2000).returns(true); // Valid
-      mockEmulator.isValidAddress.withArgs(0xffffffff).returns(false); // Invalid
-
-      // Mock JSR for valid address
-      const instrBuffer = Buffer.alloc(6);
-      instrBuffer.writeUInt16BE(0x4e80, 4);
-      mockEmulator.readMemory.withArgs(0x2000 - 6, 6).resolves(instrBuffer);
-
-      // Test: Analyze stack with explicit pc and stackAddress
-      const addresses = await stackManager.guessStack(0x1000, 0x8000, 5);
-
-      // Verify: Only processes valid even addresses
-      assert.strictEqual(addresses.length, 2);
-      assert.deepStrictEqual(addresses[1], [0x2000 - 2, 0x2000]);
-    });
-
-    it("should handle memory read errors gracefully", async () => {
-      // Setup: Mock stack with return address
-      const stackBuffer = Buffer.alloc(128);
-      stackBuffer.writeInt32BE(0x2000, 0);
-      mockEmulator.readMemory.withArgs(0x8000, 128).resolves(stackBuffer);
-
-      mockEmulator.isValidAddress.withArgs(0x2000).returns(true);
-
-      // Mock memory read failure when checking for JSR/BSR
-      mockEmulator.readMemory
-        .withArgs(0x2000 - 6, 6)
-        .rejects(new Error("Invalid memory"));
-
-      // Test: Analyze stack (should not throw)
-      const addresses = await stackManager.guessStack(0x1000, 0x8000, 5);
-
-      // Verify: Gracefully handles error, returns at least current PC
-      assert.strictEqual(addresses.length, 1);
-      assert.deepStrictEqual(addresses[0], [0x1000, 0x1000]);
-    });
-
-    it("should respect maxLength parameter", async () => {
-      // Setup: Mock stack with many potential return addresses
-      const stackBuffer = Buffer.alloc(128);
-      // Fill with many valid return addresses
-      for (let i = 0; i < 20; i++) {
-        stackBuffer.writeInt32BE(0x2000 + i * 4, i * 4);
-      }
-      mockEmulator.readMemory.withArgs(0x8000, 128).resolves(stackBuffer);
-
-      // Mock all as valid with JSR instructions
-      mockEmulator.isValidAddress.returns(true);
-      const instrBuffer = Buffer.alloc(6);
-      instrBuffer.writeUInt16BE(0x4e80, 4); // JSR instruction at position 4
-
-      // Mock instruction reads for each potential return address
-      for (let i = 0; i < 20; i++) {
-        const retAddr = 0x2000 + i * 4;
-        mockEmulator.readMemory.withArgs(retAddr - 6, 6).resolves(instrBuffer);
-      }
-
-      // Test: Limit to 3 frames with explicit pc and stackAddress
-      const addresses = await stackManager.guessStack(0x1000, 0x8000, 3);
-
-      // Verify: Respects limit (1 current + 2 from stack = 3)
       assert.strictEqual(addresses.length, 3);
     });
   });
 
   describe("Integration with Source Maps", () => {
     it("should use source map for frame naming when available", async () => {
-      // Setup: Mock CPU info and stub guessStack
+      // Setup: Mock CPU info (default getCallstack stub → just the leaf frame)
       const mockCpuInfo = createMockCpuInfo({ pc: "0x1000", a7: "0x8000" });
       mockEmulator.getCpuInfo.resolves(mockCpuInfo);
-      sinon.stub(stackManager, "guessStack").resolves([[0x1000, 0x1000]]);
 
       mockSourceMap.lookupAddress.withArgs(0x1000).returns({
         path: "/project/src/main.asm",
@@ -350,10 +281,9 @@ describe("StackManager - Comprehensive Tests", () => {
     });
 
     it("should fall back to disassembly frames when source map has no info", async () => {
-      // Setup: Mock CPU info and stub guessStack
+      // Setup: Mock CPU info (default getCallstack stub → just the leaf frame)
       const mockCpuInfo = createMockCpuInfo({ pc: "0x1000", a7: "0x8000" });
       mockEmulator.getCpuInfo.resolves(mockCpuInfo);
-      sinon.stub(stackManager, "guessStack").resolves([[0x1000, 0x1000]]);
 
       // Mock source map returns null (no debug info for this address)
       mockSourceMap.lookupAddress.withArgs(0x1000).returns(null);
@@ -455,11 +385,11 @@ describe("StackManager - Comprehensive Tests", () => {
       assert.strictEqual(frames[1].instructionPointerReference, "0x00001000");
     });
 
-    it("should fall back to guessStack when getCfaForPc returns undefined for current PC", async () => {
+    it("should fall back to the real callstack when getCfaForPc returns undefined for current PC", async () => {
       const mockCpuInfo = createMockCpuInfo({ pc: "0x1000", a7: "0x8000" });
       mockEmulator.getCpuInfo.resolves(mockCpuInfo);
-      // getCfaForPc returns undefined (default stub) → guessStack path
-      sinon.stub(stackManager, "guessStack").resolves([[0x1000, 0x1000], [0x2000, 0x2000]]);
+      // getCfaForPc returns undefined (default stub) → real-callstack path
+      mockEmulator.getCallstack.resolves([0x2000]);
       mockSourceMap.lookupAddress.returns(null);
 
       const { frames } = await stackManager.getStackFrames(0, 10);

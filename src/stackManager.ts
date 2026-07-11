@@ -1,4 +1,5 @@
 import { Source, StackFrame } from "@vscode/debugadapter";
+import { decodeInstruction as m68kDecode } from "m68kdecode";
 import { CpuInfo } from "./emulatorProtocol";
 import { Emulator } from "./emulator";
 import { formatAddress, formatHex } from "./numbers";
@@ -9,8 +10,8 @@ import { SourceMap } from "./sourceMap";
  * Manages stack frame analysis and generation for the debug adapter.
  *
  * Provides stack trace functionality by:
- * - Analyzing stack memory to identify return addresses
- * - Detecting JSR/BSR call patterns in the stack
+ * - Reading the emulator's live shadow call-stack (or unwinding via DWARF
+ *   .debug_frame when available)
  * - Creating source-based or disassembly-based stack frames
  * - Handling pagination for large stack traces
  */
@@ -65,7 +66,7 @@ export class StackManager {
     if (this.sourceMap?.getCfaForPc?.(pc) !== undefined) {
       return this.buildDwarfFrames(pc, stackAddress, cpuInfo, startFrame, endFrame);
     } else {
-      return this.buildGuessFrames(pc, stackAddress, startFrame, endFrame);
+      return this.buildRealCallstackFrames(pc, startFrame, endFrame);
     }
   }
 
@@ -129,19 +130,19 @@ export class StackManager {
     return { frames: allFrames.slice(startFrame, endFrame), total: allFrames.length };
   }
 
-  // Builds stack frames by heuristic guessing (no DWARF info available).
-  // No inline frames, no register snapshots.
-  private async buildGuessFrames(
+  // Builds stack frames from the emulator's real shadow call-stack (see
+  // getRealCallstack) rather than guessing from stack memory contents. This
+  // supersedes buildGuessFrames as the non-DWARF path; no inline frames (no
+  // DWARF), no register snapshots.
+  private async buildRealCallstackFrames(
     pc: number,
-    stackAddress: number,
     startFrame: number,
     endFrame: number,
   ): Promise<{ frames: StackFrame[]; total: number }> {
-    const addresses = await this.guessStack(pc, stackAddress, endFrame);
+    const addresses = await this.getRealCallstack(pc, endFrame);
     this.lastFrameRegs.clear();
     const allFrames: StackFrame[] = [];
     let frameId = 0;
-    let foundSource = false;
 
     for (const [addr] of addresses) {
       const loc = this.sourceMap?.lookupAddress(addr);
@@ -149,15 +150,12 @@ export class StackManager {
         const f = new StackFrame(frameId, formatAddress(addr, this.sourceMap), new Source(basename(loc.path), loc.path), loc.line);
         f.instructionPointerReference = formatHex(addr);
         allFrames.push(f);
-        frameId++;
-        foundSource = true;
       } else {
-        if (foundSource && addr > 0x00e00000 && addr < 0x01000000) break;
         const f = new StackFrame(frameId, formatAddress(addr, this.sourceMap));
         f.instructionPointerReference = formatHex(addr);
         allFrames.push(f);
-        frameId++;
       }
+      frameId++;
     }
 
     return { frames: allFrames.slice(startFrame, endFrame), total: allFrames.length };
@@ -223,61 +221,55 @@ export class StackManager {
   }
 
   /**
-   * Analyzes stack memory to guess call frames.
+   * Builds the call chain from the emulator's live shadow call-stack
+   * (Emulator.getCallstack): a continuously self-correcting record of
+   * JSR/BSR/exception-entry pushes and RTS/RTD/RTE/RTR pops maintained by
+   * the C core from boot, kept correct across stepBack/continueReverse
+   * restores. This is the primary non-DWARF path (buildRealCallstackFrames)
+   * and also backs stepOutRequest.
    *
-   * The emulator doesn't track stack frames natively, so this method examines stack
-   * memory looking for patterns that indicate return addresses from JSR/BSR instructions.
+   * The C side only records each call site's PC, outermost-first, not the
+   * return address — so the return address for each entry is derived
+   * locally (returnAddressAfter) by decoding the instruction at the call
+   * site and adding its length, then the array is reversed to this class's
+   * innermost-first [callSiteAddress, returnAddress] convention, with frame
+   * 0 always [pc, pc].
    *
-   * Made protected to allow testing of the stack analysis algorithm.
-   *
-   * Algorithm:
-   * 1. Reads stack memory from current SP
-   * 2. Looks for 32-bit values that could be return addresses
-   * 3. Validates by checking if previous instructions are JSR/BSR
-   * 4. Builds list of [call_site, return_address] pairs
-   *
-   * @param maxLength Maximum number of stack frames to return
-   * @returns Array of [call instruction address, return address] pairs
+   * @param pc Current PC (frame 0)
+   * @param maxLength Maximum number of frames to return
    */
-  public async guessStack(pc: number, stackAddress: number, maxLength = 16): Promise<[number, number][]> {
-    // emulator doesn't currently track stack frames, so we'll need to look at the stack data and guess...
-    // Fetch data from sp, up to a reasonable length
-    const maxSize = 128;
-    const stackData = await this.emulator.readMemory(stackAddress, 128);
+  public async getRealCallstack(pc: number, maxLength = 16): Promise<[number, number][]> {
+    const addresses: [number, number][] = [[pc, pc]];
+    let callSites = await this.emulator.getCallstack(); // outermost-first
 
-    const addresses: [number, number][] = [[pc, pc]]; // Start with at least the current frame
+    // puae_debug_exceptionEnter pushes the interrupted code's own PC using
+    // the same call-site convention as JSR/BSR, so when the current stop is
+    // an exception (pc here is the faulting instruction, not the raw PC),
+    // the top entry duplicates frame 0 — drop it so it isn't shown twice.
+    if (callSites.length > 0 && callSites[callSites.length - 1] === pc) {
+      callSites = callSites.slice(0, -1);
+    }
 
-    // Look for values that could be a possible return address (as opposed to other data pushed to the stack)
-    let offset = 0;
-    addresses: while (offset <= maxSize - 4 && addresses.length < maxLength) {
-      const addr = stackData.readInt32BE(offset);
-      if (
-        this.emulator.isValidAddress(addr) &&
-        addr > 0x100 &&
-        !(addr & 1) // even address
-      ) {
-        try {
-          // Look at previous 3 words, and check if they look like a jsr or bsr
-          const prevBytes = await this.emulator.readMemory(addr - 6, 6);
-          for (let i = 0; i < 3; i++) {
-            const w = prevBytes.readUInt16BE(i * 2);
-            if (
-              (w & 0xffc0) === 0x4e80 || // jsr
-              (w & 0xff00) === 0x6100 // bsr
-            ) {
-              // found likely return
-              addresses.push([addr - 6 + i * 2, addr]);
-              offset += 4;
-              continue addresses;
-            }
-          }
-        } catch (_) {
-          // probably failed to read mem at invalid address
-        }
-      }
-      // next word if match not found
-      offset += 2;
+    for (let i = callSites.length - 1; i >= 0 && addresses.length < maxLength; i--) {
+      const callSitePc = callSites[i];
+      addresses.push([callSitePc, await this.returnAddressAfter(callSitePc)]);
     }
     return addresses;
   }
+
+  // The shadow call-stack only records the call-site PC, not the return
+  // address — derive it locally by decoding the instruction at the call site
+  // and adding its byte length (mirrors doInstructionStepOver's approach in
+  // debugAdapter.ts).
+  private async returnAddressAfter(callSitePc: number): Promise<number> {
+    try {
+      const buf = await this.emulator.readMemory(callSitePc, 8);
+      const mem = new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength);
+      const bytesUsed = Math.max(m68kDecode(mem).bytesUsed, 2);
+      return callSitePc + bytesUsed;
+    } catch {
+      return callSitePc;
+    }
+  }
+
 }

@@ -511,6 +511,27 @@ puae_debug_capture_event_phase(uint32_t *out);
 void
 puae_debug_restore_event_phase(const uint32_t *in);
 
+/* ── Callstack capture/restore ──────────────────────────────────────────────── */
+
+// Captures/restores the shadow call-stack (puae_debug_callstack[]/callstackSP[]/
+// callstackSuper[]/callstackDepth — see puae_debug_read_callstack), none of which
+// is part of the libretro savestate. Without this, the shadow stack goes stale
+// after a checkpoint restore (frozen at whatever depth the original forward run
+// left it at) instead of reflecting the restored PC. Fixed-size layout: always
+// PUAE_DEBUG_CALLSTACK_MAX slots (word 0 = live depth, then 3 words per slot:
+// pc, resume-SP, supervisor-flag), so the size is constant regardless of live
+// depth. Called by wasm_serialize/wasm_unserialize alongside the event phase
+// words. `out`/`in` must hold PUAE_DEBUG_CALLSTACK_PHASE_WORDS uint32_t's.
+// (PUAE_DEBUG_CALLSTACK_MAX must match the definition in puae_debug.c.)
+#define PUAE_DEBUG_CALLSTACK_MAX 256
+#define PUAE_DEBUG_CALLSTACK_PHASE_WORDS (1 + PUAE_DEBUG_CALLSTACK_MAX * 3)
+
+void
+puae_debug_capture_callstack(uint32_t *out);
+
+void
+puae_debug_restore_callstack(const uint32_t *in);
+
 /* ── Catchpoints ─────────────────────────────────────────────────────────────── */
 
 // Enables/disables a halt the next time CPU exception `vector` is raised

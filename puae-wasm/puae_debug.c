@@ -21,7 +21,8 @@
 #include "drawing.h"
 #include "xwin.h"
 
-#define PUAE_DEBUG_CALLSTACK_MAX 256
+// PUAE_DEBUG_CALLSTACK_MAX is defined in puae_debug.h (needed there too, for
+// PUAE_DEBUG_CALLSTACK_PHASE_WORDS).
 #define PUAE_DEBUG_BREAKPOINT_MAX 4096
 
 extern bool libretro_frame_end;
@@ -1777,6 +1778,45 @@ puae_debug_restore_event_phase(const uint32_t *in)
 	lof_store = (int)in[i++];
 	lof_display = (int)in[i++];
 	events_schedule();
+}
+
+// Like puae_debug_capture_event_phase/restore_event_phase: puae_debug_callstack[]/
+// callstackSP[]/callstackSuper[]/callstackDepth aren't part of the libretro savestate,
+// so without this they'd retain whatever the *original forward run* left them at across
+// a stepBack/continueReverse restore, going stale relative to the restored PC. Fixed-size
+// layout (always PUAE_DEBUG_CALLSTACK_MAX slots) so wasm_serialize_size() stays constant
+// regardless of live depth. Called by wasm_serialize/wasm_unserialize alongside the event
+// phase words.
+PUAE_DEBUG_EXPORT void
+puae_debug_capture_callstack(uint32_t *out)
+{
+	out[0] = (uint32_t)puae_debug_callstackDepth;
+	for (size_t i = 0; i < PUAE_DEBUG_CALLSTACK_MAX; ++i) {
+		uint32_t pc = 0, sp = 0, super = 0;
+		if (i < puae_debug_callstackDepth) {
+			pc = puae_debug_callstack[i];
+			sp = puae_debug_callstackSP[i];
+			super = (uint32_t)puae_debug_callstackSuper[i];
+		}
+		out[1 + i * 3 + 0] = pc;
+		out[1 + i * 3 + 1] = sp;
+		out[1 + i * 3 + 2] = super;
+	}
+}
+
+PUAE_DEBUG_EXPORT void
+puae_debug_restore_callstack(const uint32_t *in)
+{
+	size_t depth = (size_t)in[0];
+	if (depth > PUAE_DEBUG_CALLSTACK_MAX) {
+		depth = PUAE_DEBUG_CALLSTACK_MAX;
+	}
+	for (size_t i = 0; i < depth; ++i) {
+		puae_debug_callstack[i] = in[1 + i * 3 + 0];
+		puae_debug_callstackSP[i] = in[1 + i * 3 + 1];
+		puae_debug_callstackSuper[i] = (uint8_t)in[1 + i * 3 + 2];
+	}
+	puae_debug_callstackDepth = depth;
 }
 
 PUAE_DEBUG_EXPORT uint64_t

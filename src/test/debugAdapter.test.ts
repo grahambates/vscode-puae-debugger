@@ -635,7 +635,7 @@ describe("DebugAdapter - Simplified Tests", () => {
       // Setup: Mock stack manager and breakpoint manager
       setupMockCpuState({ pc: "0x1000", a7: "0x8000" });
       const mockStackManager = {
-        guessStack: sinon.stub().resolves([
+        getRealCallstack: sinon.stub().resolves([
           [0x1000, 0x1000], // Current PC
           [0x2000, 0x2010], // Return address
         ]),

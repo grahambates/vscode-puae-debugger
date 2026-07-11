@@ -399,6 +399,10 @@ export abstract class WebviewEmulator implements Emulator {
     return this.sendRpcCommand("getCpuTrace", { count });
   }
 
+  public async getCallstack(): Promise<number[]> {
+    return this.sendRpcCommand("getCallstack");
+  }
+
   public async getCpuInfo(): Promise<CpuInfo> {
     if (!this.cpuInfo) {
       this.cpuInfo = await this.sendRpcCommand("getCpuInfo");

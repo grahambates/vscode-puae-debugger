@@ -739,6 +739,19 @@ export function setupRpcDispatcher(
     return trace;
   }
 
+  // Call-site PCs of the live shadow call-stack (see puae_debug_read_callstack
+  // / puae_debug.c), outermost-first — the same order the C side stores them
+  // in, i.e. index 0 is the oldest active call, not the current PC.
+  function getCallstack(): number[] {
+    const n = M._wasm_read_callstack();
+    const bufPtr = M._wasm_get_callstack_buf() >> 2;
+    const result: number[] = [];
+    for (let i = 0; i < n; i++) {
+      result.push(M.HEAPU32[bufPtr + i]);
+    }
+    return result;
+  }
+
   // addr_mask_operand is a bitmask comparison in e9k_debug_watchpointMatch
   // ((accessAddr & mask) == (wp->addr & mask)), not an arbitrary byte-range
   // check — so `length` can only be expressed by rounding up to the next
@@ -1034,6 +1047,9 @@ export function setupRpcDispatcher(
         break;
       case "getCpuTrace":
         rpcRequest(() => getCpuTrace(args.count ?? 256));
+        break;
+      case "getCallstack":
+        rpcRequest(() => getCallstack());
         break;
       case "stepBack":
         // Lands exactly one instruction before the current state, by
