@@ -95,6 +95,35 @@ describe("fetchDisassembly", () => {
     const model = baseModel(); // "unsized" isn't in model.symbols
     expect(fetchDisassembly(model, samples, map, nopChipMem())).toEqual([]);
   });
+
+  // Zorro II fast RAM's start address is autoconfig-assigned (not fixed like chip's 0x0 or
+  // slow's 0xC00000), so fetchDisassembly/clientDisassembleRange take it as a parameter
+  // rather than hardcoding it — see clientDisassembleRange's comment in profilerManager.ts.
+  it("decodes from fast RAM when fastMem/fastAddr are provided", () => {
+    const samples: InstructionSample[] = [{ stack: [0x200004], cycles: 5 }];
+    const map = sourceMap({ 0x200004: { symbol: "fastFn", offset: 4 } });
+    const model: IProfileModel = { ...baseModel(), symbols: [{ address: 0x200000, name: "fastFn", size: 0x10 }] };
+    const fastMem = new Uint8Array(0x10);
+    for (let i = 0; i < fastMem.length; i += 2) { fastMem[i] = 0x4e; fastMem[i + 1] = 0x71; } // NOPs
+
+    const result = fetchDisassembly(model, samples, map, nopChipMem(), undefined, fastMem, 0x200000);
+
+    expect(result).toHaveLength(1);
+    expect(result[0].name).toBe("fastFn");
+    // instructions[2] = the NOP at 0x200004 (2 NOPs in from fastAddr 0x200000)
+    expect(result[0].instructions[2]).toMatchObject({ address: 0x200004, hits: 1, cycles: 5 });
+  });
+
+  it("returns no instructions for a fast-RAM function when fastMem/fastAddr aren't provided", () => {
+    const samples: InstructionSample[] = [{ stack: [0x200004], cycles: 5 }];
+    const map = sourceMap({ 0x200004: { symbol: "fastFn", offset: 4 } });
+    const model: IProfileModel = { ...baseModel(), symbols: [{ address: 0x200000, name: "fastFn", size: 0x10 }] };
+
+    const result = fetchDisassembly(model, samples, map, nopChipMem());
+
+    expect(result).toHaveLength(1); // the function is still listed...
+    expect(result[0].instructions).toEqual([]); // ...but with no decoded instructions
+  });
 });
 
 describe("profileFormat codec with disassembly", () => {

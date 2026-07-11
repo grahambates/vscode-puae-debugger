@@ -693,6 +693,25 @@ wasm_dma_get_slow_ptr(void)  { return (uint32_t)bogomem_bank.baseaddr; }
 PUAE_DEBUG_EXPORT uint32_t
 wasm_dma_get_slow_size(void) { return bogomem_bank.baseaddr ? (uint32_t)(bogomem_bank.mask + 1) : 0; }
 
+// Zorro II fast RAM (board 0 — this project only exposes a single fastmem_size config
+// option, so board 0 is the only one ever populated; fastmem_bank[] has MAX_RAM_BOARDS
+// slots for multi-board setups this project doesn't use). Unlike chipmem (always at
+// Amiga address 0) and bogomem (always at the fixed 0xC00000), Zorro II fast RAM's
+// start address is autoconfig-assigned and not architecturally fixed, so the profiler
+// snapshot consumer needs the actual address too, not just a size — see
+// wasm_dma_get_fast_addr below. Z3 fast RAM (32-bit-addressed, above the 24-bit line)
+// isn't handled by this — profiler/breakpoint PCs are unconditionally masked to 24 bits
+// elsewhere in this file (puae_debug_maskAddr), so Z3 code isn't reachable by this
+// debug layer at all yet, a separate, larger gap than this fix.
+PUAE_DEBUG_EXPORT uint32_t
+wasm_dma_get_fast_ptr(void)  { return (uint32_t)fastmem_bank[0].baseaddr; }
+
+PUAE_DEBUG_EXPORT uint32_t
+wasm_dma_get_fast_size(void) { return fastmem_bank[0].baseaddr ? (uint32_t)(fastmem_bank[0].mask + 1) : 0; }
+
+PUAE_DEBUG_EXPORT uint32_t
+wasm_dma_get_fast_addr(void) { return fastmem_bank[0].baseaddr ? (uint32_t)fastmem_bank[0].start : 0; }
+
 // ---- DMA live overlay controls ----
 extern void puae_dma_set_channel_enabled(int type, int enabled);
 extern void puae_dma_draw_overlay(uint8_t *rgba, int width, int height, int opacity);

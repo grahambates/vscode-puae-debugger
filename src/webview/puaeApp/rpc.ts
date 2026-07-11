@@ -1343,6 +1343,17 @@ export function setupRpcDispatcher(
           ? new Uint8Array(M.HEAPU8.buffer, slowPtr, slowSize).slice()
           : new Uint8Array(0);
 
+        // Zorro II fast RAM (board 0). Unlike chip (fixed at 0) and slow (fixed at
+        // 0xC00000), fast RAM's start address is autoconfig-assigned, so its Amiga
+        // address is reported alongside the bytes — see wasm_dma_get_fast_addr's
+        // comment in puae_debug.c.
+        const fastPtr = M._wasm_dma_get_fast_ptr();
+        const fastSize = M._wasm_dma_get_fast_size();
+        const fast = fastSize > 0
+          ? new Uint8Array(M.HEAPU8.buffer, fastPtr, fastSize).slice()
+          : new Uint8Array(0);
+        const fastAddr = M._wasm_dma_get_fast_addr();
+
         // save_custom() output: 4-byte chipset_mask header + 256 big-endian u16 words.
         // Profiler expects 256 little-endian u16 words (512 bytes), so byte-swap here.
         M._wasm_read_custom_regs_raw();
@@ -1361,7 +1372,7 @@ export function setupRpcDispatcher(
         const agaPtr = M._wasm_get_aga_colors_buf();
         const agaColors = new Uint8Array(M.HEAPU8.buffer, agaPtr, 256 * 4).slice();
 
-        rpcRequest(() => ({ chip, slow, custom, agaColors }));
+        rpcRequest(() => ({ chip, slow, fast, fastAddr, custom, agaColors }));
         break;
       }
       default:

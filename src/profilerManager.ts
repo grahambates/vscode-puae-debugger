@@ -383,7 +383,7 @@ export interface RawCapture {
   dma?: Uint8Array; // raw enriched DMA grid bytes (absent if DMA capture produced nothing)
   // Reconstruction baseline (raw bytes; `custom` is 256 little-endian u16 = the custom-register
   // file at capture start, used for DMACON / register reconstruction).
-  snapshot?: { chip: Uint8Array; slow: Uint8Array; custom: Uint8Array; agaColors?: Uint8Array };
+  snapshot?: { chip: Uint8Array; slow: Uint8Array; fast?: Uint8Array; fastAddr?: number; custom: Uint8Array; agaColors?: Uint8Array };
   copper?: Uint8Array; // raw copper-instruction-trace bytes (absent if unsupported/empty)
   dmaEvents?: Uint8Array; // raw per-cycle event-bitfield bytes, parallel to `dma` (absent if unsupported/empty)
   disassembly?: RawDisassembledFunction[]; // every function that executed this frame (absent if unsupported/empty)
@@ -505,13 +505,19 @@ function reweightDisassembly(
 }
 
 // Disassemble a [startAddr, endAddr) range directly from snapshot memory using m68kdecode.
-// chipMem starts at address 0x000000; slowMem (Bogo RAM) starts at 0xC00000. Functions outside
-// these regions (fast RAM, ROM) return an empty instruction array rather than erroring.
+// chipMem starts at address 0x000000; slowMem (Bogo RAM) starts at 0xC00000; fastMem (Zorro II
+// fast RAM) starts at fastAddr — unlike chip/slow, fast RAM's start address is autoconfig-
+// assigned rather than architecturally fixed, so it's passed in rather than hardcoded (see
+// wasm_dma_get_fast_addr's comment in puae_debug.c). Functions outside all of these regions
+// (Zorro III fast RAM, ROM) return an empty instruction array rather than erroring — Z3 isn't
+// reachable by this debug layer yet regardless (PCs are unconditionally masked to 24 bits).
 function clientDisassembleRange(
   chipMem: Uint8Array,
   slowMem: Uint8Array | undefined,
   startAddr: number,
   endAddr: number,
+  fastMem?: Uint8Array,
+  fastAddr?: number,
 ): { address: number; hex: string; text: string; length: number; jumpTarget?: number }[] {
   const instructions: { address: number; hex: string; text: string; length: number; jumpTarget?: number }[] = [];
   let addr = startAddr >>> 0;
@@ -522,6 +528,8 @@ function clientDisassembleRange(
       mem = chipMem.subarray(addr);
     } else if (slowMem && addr >= 0xC00000 && addr < 0xC00000 + slowMem.length) {
       mem = slowMem.subarray(addr - 0xC00000);
+    } else if (fastMem && fastAddr !== undefined && addr >= fastAddr && addr < fastAddr + fastMem.length) {
+      mem = fastMem.subarray(addr - fastAddr);
     }
     if (!mem || mem.length < 2) break;
     let bytesUsed = 2;
@@ -560,6 +568,8 @@ export function fetchDisassembly(
   sourceMap: SourceMap,
   chipMem?: Uint8Array,
   slowMem?: Uint8Array,
+  fastMem?: Uint8Array,
+  fastAddr?: number,
 ): RawDisassembledFunction[] {
   if (!chipMem) return [];
 
@@ -587,7 +597,7 @@ export function fetchDisassembly(
 
   const out: RawDisassembledFunction[] = [];
   for (const [startAddr, fn] of ordered) {
-    const raw = clientDisassembleRange(chipMem, slowMem, startAddr, fn.end);
+    const raw = clientDisassembleRange(chipMem, slowMem, startAddr, fn.end, fastMem, fastAddr);
     const instructions: RawDisassembledInstruction[] = raw.map((ins) => {
       const stat = pcStats.get(ins.address);
       return { address: ins.address, hex: ins.hex, text: ins.text, length: ins.length, hits: stat?.hits ?? 0, cycles: stat?.cycles ?? 0, jumpTarget: ins.jumpTarget };
@@ -846,8 +856,8 @@ export class ProfilerManager {
           const dmaBytes = u8(dmaRes.data);
           if (dmaBytes.length) {
             raw.dma = dmaBytes;
-            const snap = await rpc.sendRpcCommand<{ chip: Uint8Array; slow: Uint8Array; custom: Uint8Array; agaColors?: Uint8Array }>("getDmaSnapshot", undefined, 30000);
-            raw.snapshot = { chip: u8(snap.chip), slow: u8(snap.slow), custom: u8(snap.custom), agaColors: snap.agaColors && u8(snap.agaColors) };
+            const snap = await rpc.sendRpcCommand<{ chip: Uint8Array; slow: Uint8Array; fast?: Uint8Array; fastAddr?: number; custom: Uint8Array; agaColors?: Uint8Array }>("getDmaSnapshot", undefined, 30000);
+            raw.snapshot = { chip: u8(snap.chip), slow: u8(snap.slow), fast: snap.fast && u8(snap.fast), fastAddr: snap.fastAddr, custom: u8(snap.custom), agaColors: snap.agaColors && u8(snap.agaColors) };
             const eventsRes = await rpc.sendRpcCommand<{ data: Uint8Array }>("getDmaEvents", undefined, 30000);
             const eventsBytes = u8(eventsRes.data);
             if (eventsBytes.length) raw.dmaEvents = eventsBytes;
@@ -885,7 +895,7 @@ export class ProfilerManager {
         this._frameSamples[0] = samples;
         this._lastSamples0 = samples;
 
-        raw.disassembly = fetchDisassembly(model, samples, sourceMap, raw.snapshot?.chip, raw.snapshot?.slow);
+        raw.disassembly = fetchDisassembly(model, samples, sourceMap, raw.snapshot?.chip, raw.snapshot?.slow, raw.snapshot?.fast, raw.snapshot?.fastAddr);
         if (raw.disassembly.length) model.disassembly = attachDisassembly(raw.disassembly, sourceMap);
 
         if (model.dma) {
@@ -970,11 +980,11 @@ export class ProfilerManager {
 
         // Snapshot captured at end-of-capture state (last frame) — used for memory
         // reconstruction; only attached to the last frame to avoid duplicating 2.5MB per frame.
-        let snapshotRaw: { chip: Uint8Array; slow: Uint8Array; custom: Uint8Array; agaColors?: Uint8Array } | undefined;
+        let snapshotRaw: { chip: Uint8Array; slow: Uint8Array; fast?: Uint8Array; fastAddr?: number; custom: Uint8Array; agaColors?: Uint8Array } | undefined;
         try {
           if (perFrameDmaBytes[numFrames - 1]) {
-            const snap = await rpc.sendRpcCommand<{ chip: Uint8Array; slow: Uint8Array; custom: Uint8Array; agaColors?: Uint8Array }>("getDmaSnapshot", undefined, 30000);
-            snapshotRaw = { chip: u8(snap.chip), slow: u8(snap.slow), custom: u8(snap.custom), agaColors: snap.agaColors && u8(snap.agaColors) };
+            const snap = await rpc.sendRpcCommand<{ chip: Uint8Array; slow: Uint8Array; fast?: Uint8Array; fastAddr?: number; custom: Uint8Array; agaColors?: Uint8Array }>("getDmaSnapshot", undefined, 30000);
+            snapshotRaw = { chip: u8(snap.chip), slow: u8(snap.slow), fast: snap.fast && u8(snap.fast), fastAddr: snap.fastAddr, custom: u8(snap.custom), agaColors: snap.agaColors && u8(snap.agaColors) };
           }
         } catch (e) {
           console.warn("[profiler] snapshot fetch failed:", e);
@@ -1081,7 +1091,7 @@ export class ProfilerManager {
           }
 
           if (fi === 0) {
-            raw.disassembly = fetchDisassembly(model, samples, sourceMap, snapshotRaw?.chip, snapshotRaw?.slow);
+            raw.disassembly = fetchDisassembly(model, samples, sourceMap, snapshotRaw?.chip, snapshotRaw?.slow, snapshotRaw?.fast, snapshotRaw?.fastAddr);
             if (raw.disassembly.length) model.disassembly = attachDisassembly(raw.disassembly, sourceMap);
             this._lastSamples0 = samples;
           } else if (frames[0].raw.disassembly?.length) {
