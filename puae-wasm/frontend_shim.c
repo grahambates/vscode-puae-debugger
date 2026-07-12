@@ -834,6 +834,7 @@ extern uint32_t puae_copper_serialize(uint8_t *out);
 
 extern int  debug_dma;
 extern void record_dma_reset(int start);
+extern int  debug_copper;
 
 // Per-frame thumbnail capture — nearest-neighbour downscale of g_rgba_buf after each
 // retro_run().  Stored as RGBA8888 at a fixed 160×100 resolution (aspect not preserved;
@@ -952,6 +953,15 @@ int wasm_profile_start(int numFrames)
 
     wasm_profile_prepare();
     record_dma_reset(1);   /* alloc if needed, toggle buffer, set debug_dma=1 */
+    // Force copper-instruction recording on for the whole capture, the same way record_dma_reset
+    // just forced debug_dma on. Previously this relied entirely on the JS side's separate
+    // "copperTrackingEnable" RPC call having already landed before this ran — fragile across the
+    // async RPC boundary, and cop_record[]'s WAIT/SKIP entries were (bug, now fixed in custom.c's
+    // COP_wait_in2/COP_skip_in2 record_copper() call) recorded regardless of debug_copper anyway,
+    // silently masking the gap: captures would show a plausible-looking but MOVE-instruction-free
+    // copper trace (no register writes at all — e.g. copper-driven palette bars would just never
+    // show up) instead of no trace, or an honestly-empty one.
+    debug_copper = 1;
     g_wprofThumbCount = 0;
 
     // Allocate per-frame DMA and copper storage.
@@ -1005,6 +1015,7 @@ int wasm_profile_start(int numFrames)
         framesDone++;
     }
     debug_dma = 0;
+    debug_copper = 0;
     wasm_profile_finish(numFrames);
     wasm_dma_serialize_grid();      /* last frame into g_dmaGrid — kept for backward compat */
     wasm_dma_serialize_events();    /* last frame into g_dmaEvents — kept for backward compat */

@@ -1,7 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { BusOwner, IProfileModel } from "../../shared/profilerTypes";
 import { disassembleCopperInstruction } from "../../shared/copperDisassembler";
-import { buildScreenFromModel, computeBeamPosition, DMA_HPOS, IScreen } from "./gfxResources";
+import {
+  buildLinePaletteTimeline, buildLineRegister, buildLineRegisterTimeline, buildPalette,
+  buildScreenFromModel, computeBeamPosition, decodeBplcon0, DMA_HPOS, eventThresholds, expand4,
+  IScreen, PaletteEvent,
+} from "./gfxResources";
 import { CUSTOM_REGISTER_OFFSETS as R } from "../shared/customRegisters";
 
 interface ResourcesViewProps {
@@ -35,7 +39,8 @@ interface PixelSnapshot {
   height: number;
   firstLine: number;
   numPlanes: number;
-  ham: boolean;
+  lineHam: Uint8Array; // per-scanline HAM state (BPLCON0 can change mid-frame)
+  lineDup: Uint8Array; // per-scanline canvas-column duplication factor (1 or 2, see canvasHires)
 }
 
 // One sprite's data for a single scan line.
@@ -45,7 +50,6 @@ interface SpriteLine {
   dataB: number;
 }
 
-const expand4 = (v: number) => v * 0x11;
 // 6-bit component (HAM8's per-pixel R/G/B modify value) -> 8-bit, by bit replication.
 const expand6 = (v: number) => (v << 2) | (v >> 4);
 
@@ -85,7 +89,7 @@ function buildSpriteOverlay(
   model: IProfileModel,
   screen: IScreen,
 ): SpriteLine[][] {
-  const { firstLine, height, hires, displayLeft } = screen;
+  const { firstLine, height, canvasHires, displayLeft } = screen;
   const dma    = model.dma!;
   const copper = model.copper;
   const custom = model.dmaSnapshot?.custom ?? new Uint16Array(256);
@@ -197,7 +201,7 @@ function buildSpriteOverlay(
       if (valCnt[n] < 2) continue;
       const hs = hstartFromRegs(curPos[n], curCtl[n]);
       overlay[n][y] = {
-        hstartCanvas: (hs - displayLeft) * (hires ? 2 : 1),
+        hstartCanvas: (hs - displayLeft) * (canvasHires ? 2 : 1),
         dataA: vals[n * 2],
         dataB: vals[n * 2 + 1],
       };
@@ -205,151 +209,6 @@ function buildSpriteOverlay(
   }
 
   return overlay;
-}
-
-// ── Palette helpers ───────────────────────────────────────────────────────────
-
-// `agaColors`, when present, is AGA's full 256-entry, already-24-bit-per-channel palette
-// (see DmaSnapshot.agaColors's doc comment) — already fully reconstructed C-side (BPLCON3
-// LOCT/bank-select applied), so this just repacks each 0x00RRGGBB entry into the canvas-ready
-// 0xAABBGGRR (RGBA byte order) format the rest of this file uses. Falls back to the OCS/ECS
-// COLOR00-31 window (32 entries, 4-bit-per-channel) when absent (non-AGA capture).
-function buildPalette(regs: Uint16Array, agaColors?: Uint32Array): Uint32Array {
-  if (agaColors) {
-    const pal = new Uint32Array(256);
-    for (let i = 0; i < 256; i++) {
-      const v = agaColors[i];
-      const r = (v >> 16) & 0xff, g = (v >> 8) & 0xff, b = v & 0xff;
-      pal[i] = 0xff000000 | (b << 16) | (g << 8) | r;
-    }
-    return pal;
-  }
-  const pal = new Uint32Array(32);
-  for (let i = 0; i < 32; i++) {
-    const raw = regs[(R.COLOR00 + i * 2) >> 1];
-    const r = expand4((raw >> 8) & 0xf);
-    const g = expand4((raw >> 4) & 0xf);
-    const b = expand4(raw & 0xf);
-    pal[i] = 0xff000000 | (b << 16) | (g << 8) | r;
-  }
-  return pal;
-}
-
-function buildLineBplcon2(
-  baseRegs: Uint16Array,
-  copper: NonNullable<IProfileModel["copper"]>,
-  firstLine: number,
-  height: number,
-): number[] {
-  let cur = baseRegs[R.BPLCON2 >> 1];
-  // Collect copper BPLCON2 writes per vpos (last write per vpos wins).
-  const writesByVpos = new Map<number, number>();
-  for (let i = 0; i < copper.addr.length; i++) {
-    const w1 = copper.w1[i];
-    if (w1 & 1) continue;
-    if ((w1 & 0x1fe) !== R.BPLCON2) continue;
-    writesByVpos.set(copper.vpos[i], copper.w2[i]);
-  }
-  const sortedVpos = [...writesByVpos.keys()].sort((a, b) => a - b);
-  let vposPtr = 0;
-  // Apply writes before the display area.
-  while (vposPtr < sortedVpos.length && sortedVpos[vposPtr] < firstLine) {
-    cur = writesByVpos.get(sortedVpos[vposPtr++])!;
-  }
-  return Array.from({ length: height }, (_, y) => {
-    const vpos = firstLine + y;
-    while (vposPtr < sortedVpos.length && sortedVpos[vposPtr] <= vpos) {
-      cur = writesByVpos.get(sortedVpos[vposPtr++])!;
-    }
-    return cur;
-  });
-}
-
-function buildLinePalettes(
-  baseRegs: Uint16Array,
-  copper: NonNullable<IProfileModel["copper"]>,
-  firstLine: number,
-  height: number,
-  agaColors?: Uint32Array,
-): Uint32Array[] {
-  const cur = buildPalette(baseRegs, agaColors);
-  const COLOR_BASE = R.COLOR00;
-
-  if (agaColors) {
-    // AGA: which of the 256 real palette entries a COLORxx write actually targets depends on
-    // BPLCON3's bank bits *at the moment of that write* (software cycles through banks between
-    // writes to the same 32-register CPU-visible window), and whether it replaces both nibbles
-    // or only refines the low one depends on BPLCON3's LOCT bit — so this walks the copper trace
-    // in strict execution order (not grouped by vpos like the OCS/ECS path below), tracking
-    // BPLCON3 alongside, mirroring custom.c's own AGA COLORxx write handler exactly.
-    // Per-entry R/G/B channel state (0-255 each), seeded from the baseline snapshot so a
-    // LOCT-only write correctly refines an already-loaded high nibble.
-    const chR = new Uint8Array(256), chG = new Uint8Array(256), chB = new Uint8Array(256);
-    for (let i = 0; i < 256; i++) {
-      chR[i] = (agaColors[i] >> 16) & 0xff;
-      chG[i] = (agaColors[i] >> 8) & 0xff;
-      chB[i] = agaColors[i] & 0xff;
-    }
-    let bplcon3 = baseRegs[R.BPLCON3 >> 1];
-    let i = 0;
-    return Array.from({ length: height }, (_, y) => {
-      const vpos = firstLine + y;
-      while (i < copper.addr.length && copper.vpos[i] <= vpos) {
-        const w1 = copper.w1[i];
-        if (!(w1 & 1)) {
-          const da = w1 & 0x1fe;
-          if (da === R.BPLCON3) {
-            bplcon3 = copper.w2[i];
-          } else if (da >= COLOR_BASE && da <= COLOR_BASE + 62) {
-            const ci = (da - COLOR_BASE) >> 1;
-            const colreg = ((bplcon3 >> 13) & 7) * 32 + ci;
-            const val = copper.w2[i];
-            const r4 = (val >> 8) & 0xf, g4 = (val >> 4) & 0xf, b4 = val & 0xf;
-            if (bplcon3 & 0x200) { // LOCT: refine the low nibble only
-              chR[colreg] = (chR[colreg] & 0xf0) | r4;
-              chG[colreg] = (chG[colreg] & 0xf0) | g4;
-              chB[colreg] = (chB[colreg] & 0xf0) | b4;
-            } else { // both nibbles at once
-              chR[colreg] = expand4(r4);
-              chG[colreg] = expand4(g4);
-              chB[colreg] = expand4(b4);
-            }
-            cur[colreg] = 0xff000000 | (chB[colreg] << 16) | (chG[colreg] << 8) | chR[colreg];
-          }
-        }
-        i++;
-      }
-      return new Uint32Array(cur);
-    });
-  }
-
-  const writesByVpos = new Map<number, Array<[number, number]>>();
-  for (let i = 0; i < copper.addr.length; i++) {
-    const w1 = copper.w1[i];
-    if (w1 & 1) continue;
-    const da = w1 & 0x1fe;
-    if (da < COLOR_BASE || da > COLOR_BASE + 62) continue;
-    const ci = (da - COLOR_BASE) >> 1;
-    const vp = copper.vpos[i];
-    const slot = writesByVpos.get(vp);
-    if (slot) slot.push([ci, copper.w2[i]]);
-    else writesByVpos.set(vp, [[ci, copper.w2[i]]]);
-  }
-  const sortedVpos = [...writesByVpos.keys()].sort((a, b) => a - b);
-  let vposPtr = 0;
-  return Array.from({ length: height }, (_, y) => {
-    const vpos = firstLine + y;
-    while (vposPtr < sortedVpos.length && sortedVpos[vposPtr] <= vpos) {
-      for (const [ci, val] of writesByVpos.get(sortedVpos[vposPtr])!) {
-        const r = expand4((val >> 8) & 0xf);
-        const g = expand4((val >> 4) & 0xf);
-        const b = expand4(val & 0xf);
-        cur[ci] = 0xff000000 | (b << 16) | (g << 8) | r;
-      }
-      vposPtr++;
-    }
-    return new Uint32Array(cur);
-  });
 }
 
 function colorToCss(c: number): string {
@@ -374,12 +233,15 @@ function computeHoverExtra(
   logY: number,
   logX: number,
   numPlanes: number,
+  dup: number,
 ): Pick<HoverInfo, "cck" | "planeAddrs" | "bplcon0" | "copperInstr"> {
   const dma    = model.dma!;
   const copper = model.copper;
   const custom = model.dmaSnapshot?.custom ?? new Uint16Array(256);
   const vpos   = firstLine + logY;
-  const wx     = logX >> 4;
+  // Best-effort word index: accounts for this line's resolution (dup), but not any BPLCON1
+  // scroll offset in effect — a scrolled line's reported plane address may be one word off.
+  const wx     = Math.floor(logX / dup) >> 4;
 
   const lineBase   = vpos * DMA_HPOS;
   const wordCounts = new Array(numPlanes).fill(0);
@@ -469,18 +331,58 @@ export function ResourcesView({ model, selectedSlot }: ResourcesViewProps) {
     const cvs = canvas.current;
     if (!cvs || !screen || !model?.dma) return;
 
-    const { numPlanes, width, height, firstLine, ham, hires, dpf } = screen;
-    const rowWords = width >> 4;
+    const { numPlanes, width, height, firstLine, canvasHires } = screen;
 
     const baseRegs     = model.dmaSnapshot?.custom ?? new Uint16Array(256);
     const agaColors    = model.dmaSnapshot?.agaColors;
-    const linePalettes: Uint32Array[] = model.copper
-      ? buildLinePalettes(baseRegs, model.copper, firstLine, height, agaColors)
-      : Array.from({ length: height }, () => buildPalette(baseRegs, agaColors));
+    const isAga        = !!agaColors;
+    const copper       = model.copper;
 
-    const lineBplcon2: number[] = model.copper
-      ? buildLineBplcon2(baseRegs, model.copper, firstLine, height)
-      : Array.from({ length: height }, () => baseRegs[R.BPLCON2 >> 1]);
+    // Registers below are tracked with *sub-scanline* precision (buildLineRegisterTimeline /
+    // buildLinePaletteTimeline): `.start[y]` is the value at the start of line y, and
+    // `.events[y]` are that same line's own copper writes, replayed against the pixel loop's own
+    // timing (eventThresholds) — copper moves can and frequently do happen mid-line with exact
+    // horizontal timing (rainbow colour bars being the classic example), so a single value per
+    // line isn't accurate enough for these. BPLCON0 is the one exception, tracked per-line only
+    // (via the simpler buildLineRegister below): it drives numPlanes/hires/dup/word-count, and
+    // splitting the canvas geometry itself mid-line is out of scope, so a mid-line BPLCON0 write
+    // affects that write's *whole* line rather than just the pixels after it — a known
+    // approximation, but preserves the far more common "WAIT vpos,hpos≈0; MOVE BPLCON0" per-line
+    // split working exactly as before.
+    const paletteTimeline = copper
+      ? buildLinePaletteTimeline(baseRegs, copper, firstLine, height, agaColors)
+      : { start: Array.from({ length: height }, () => buildPalette(baseRegs, agaColors)), events: [] as PaletteEvent[][] };
+    const bplcon1Timeline = copper
+      ? buildLineRegisterTimeline(baseRegs, copper, firstLine, height, R.BPLCON1)
+      : { start: Array.from({ length: height }, () => baseRegs[R.BPLCON1 >> 1]), events: [] as { hpos: number; val: number }[][] };
+    const bplcon2Timeline = copper
+      ? buildLineRegisterTimeline(baseRegs, copper, firstLine, height, R.BPLCON2)
+      : { start: Array.from({ length: height }, () => baseRegs[R.BPLCON2 >> 1]), events: [] as { hpos: number; val: number }[][] };
+
+    // Per-line BPLCON0: numPlanes/hires/ham/dpf can all change mid-frame via a copper split
+    // (e.g. a HAM picture with a normal-mode status bar, or a plane-count reduction partway
+    // down). Zero-BPU writes are ignored — same "not a real mode change" convention
+    // buildScreenFromModel's initial-state scan uses (see decodeBplcon0's doc comment).
+    const lineBplcon0Raw: number[] = copper
+      ? buildLineRegister(baseRegs, copper, firstLine, height, R.BPLCON0, v => ((v >>> 12) & 7) !== 0)
+      : Array.from({ length: height }, () => baseRegs[R.BPLCON0 >> 1]);
+
+    // OCS/ECS 7-plane trick: planes 5/6 (0-based 4/5) aren't DMA-fetched — Denise holds
+    // BPL5DAT/BPL6DAT static instead, so track their value (with the same mid-line precision as
+    // above — the control word is sometimes changed partway down a line too). Tracked whenever
+    // the chipset can even use the trick (non-AGA), not gated on the initial screen.staticPlanes,
+    // so a mid-frame transition into the trick still has data to read.
+    const emptyTimeline = { start: [] as number[], events: [] as { hpos: number; val: number }[][] };
+    const bpl5Timeline = !isAga
+      ? (copper
+          ? buildLineRegisterTimeline(baseRegs, copper, firstLine, height, R.BPL5DAT)
+          : { start: Array.from({ length: height }, () => baseRegs[R.BPL5DAT >> 1]), events: [] as { hpos: number; val: number }[][] })
+      : emptyTimeline;
+    const bpl6Timeline = !isAga
+      ? (copper
+          ? buildLineRegisterTimeline(baseRegs, copper, firstLine, height, R.BPL6DAT)
+          : { start: Array.from({ length: height }, () => baseRegs[R.BPL6DAT >> 1]), events: [] as { hpos: number; val: number }[][] })
+      : emptyTimeline;
 
     // Sprite overlay: per-sprite, per-relative-y line data.
     const spriteOverlay = (model.copper || model.dmaSnapshot)
@@ -504,96 +406,180 @@ export function ResourcesView({ model, selectedSlot }: ResourcesViewProps) {
     const pixColorIdx = new Uint8Array(width * height);
     const pixColors   = new Uint32Array(width * height);
     const pixSprite   = new Uint8Array(width * height).fill(0xff); // 0xff = no sprite
+    const lineDup     = new Uint8Array(height); // per-line canvas-column duplication factor (hover mapping)
+    const lineHamArr  = new Uint8Array(height); // per-line HAM state (hover "Colour" row format)
+    // End-of-line palette snapshot per line, for the hover "Palette" swatch row — loses mid-line
+    // precision (a hovered pixel under a colour-bar split shows the line's *final* palette, not
+    // the one active at that exact x), an acceptable simplification for a debug-only display.
+    const linePalettesSnap: Uint32Array[] = new Array(height);
 
     for (let y = 0; y < height; y++) {
-      const palette  = linePalettes[y];
       const vpos     = firstLine + y;
       const lineBase = vpos * DMA_HPOS;
 
+      const { numPlanes: lnPlanes, hires: lnHires, ham: lnHam, dpf: lnDpf, staticPlanes: lnStatic } =
+        decodeBplcon0(lineBplcon0Raw[y], isAga);
+      // A lores line rendered into a canvasHires canvas draws each fetched bit into 2 columns;
+      // everything else (a hires line, or a whole-lores-frame canvas) draws 1:1.
+      const dup = canvasHires && !lnHires ? 2 : 1;
+      lineDup[y]    = dup;
+      lineHamArr[y] = lnHam ? 1 : 0;
+      // Nominal fetched-word count for this line's own resolution, sized so dup*16*lineRowWords
+      // always fills the full canvas width regardless of which resolution this line uses.
+      const lineRowWords = canvasHires ? (width >> (lnHires ? 4 : 5)) : (width >> 4);
+
       // ── Bitplane data ──────────────────────────────────────────────────
-      const fetchWords: number[][] = Array.from({ length: numPlanes }, () => []);
+      // 7-plane trick: planes 4/5 (0-based) aren't DMA-fetched at all, so don't bother scanning
+      // for them — they're filled from the static per-line register value below instead.
+      const dmaPlanes = lnStatic ? Math.min(lnPlanes, 4) : lnPlanes;
+      const fetchWords: number[][] = Array.from({ length: dmaPlanes }, () => []);
+      // hpos of each fetched word for plane 0 (in fetch order) — the real, captured timing this
+      // line's mid-scanline register events get positioned against (see eventThresholds).
+      const wordHpos: number[] = [];
       for (let hpos = 0; hpos < DMA_HPOS; hpos++) {
         const idx = lineBase + hpos;
         if (idx >= dma.owner.length) break;
         const o = dma.owner[idx];
         if (o < BusOwner.BPL1 || o > BusOwner.BPL8) continue;
         const pIdx = o - BusOwner.BPL1;
-        if (pIdx < numPlanes) fetchWords[pIdx].push(dma.value[idx]);
+        if (pIdx < dmaPlanes) {
+          fetchWords[pIdx].push(dma.value[idx]);
+          if (pIdx === 0) wordHpos.push(hpos);
+        }
       }
 
+      // Live register state for this line, seeded from the start-of-line value and advanced to
+      // the mid-line events' exact position as the pixel loop below crosses their threshold.
+      const palette = paletteTimeline.start[y]; // mutable working copy, safe to write into
+      const paletteEvents = paletteTimeline.events[y] ?? [];
+      const paletteThresh = eventThresholds(paletteEvents, wordHpos);
+      let evPal = 0;
+
+      let curBplcon1 = bplcon1Timeline.start[y];
+      const bplcon1Events = bplcon1Timeline.events[y] ?? [];
+      const bplcon1Thresh = eventThresholds(bplcon1Events, wordHpos);
+      let evB1 = 0;
+
+      let curBplcon2 = bplcon2Timeline.start[y];
+      const bplcon2Events = bplcon2Timeline.events[y] ?? [];
+      const bplcon2Thresh = eventThresholds(bplcon2Events, wordHpos);
+      let evB2 = 0;
+
+      let curBpl5 = bpl5Timeline.start[y] ?? 0;
+      const bpl5Events = bpl5Timeline.events[y] ?? [];
+      const bpl5Thresh = eventThresholds(bpl5Events, wordHpos);
+      let evB5 = 0;
+
+      let curBpl6 = bpl6Timeline.start[y] ?? 0;
+      const bpl6Events = bpl6Timeline.events[y] ?? [];
+      const bpl6Thresh = eventThresholds(bpl6Events, wordHpos);
+      let evB6 = 0;
+
+      // Extra words actually fetched beyond the nominal window, per plane — the scroll margin a
+      // scrolling display's wider DDFSTRT provides. 0 for a non-scrolling line/plane, matching
+      // the pre-scroll-support behaviour exactly.
+      const marginWords = new Array<number>(dmaPlanes);
+      for (let p = 0; p < dmaPlanes; p++) marginWords[p] = fetchWords[p].length - lineRowWords;
+
       let prevColor = palette[0];
+      const totalBits = lineRowWords * 16;
 
-      for (let wx = 0; wx < rowWords; wx++) {
-        const words = new Array<number>(numPlanes).fill(0);
-        for (let p = 0; p < numPlanes; p++) words[p] = fetchWords[p][wx] ?? 0;
+      for (let i = 0; i < totalBits; i++) {
+        // Apply any mid-line register writes whose effect starts at or before this pixel —
+        // exact copper timing for e.g. rainbow palette bars within a single scanline.
+        while (evPal < paletteEvents.length && paletteThresh[evPal] <= i) {
+          const ev = paletteEvents[evPal]; palette[ev.colreg] = ev.rgba; evPal++;
+        }
+        while (evB1 < bplcon1Events.length && bplcon1Thresh[evB1] <= i) { curBplcon1 = bplcon1Events[evB1].val; evB1++; }
+        while (evB2 < bplcon2Events.length && bplcon2Thresh[evB2] <= i) { curBplcon2 = bplcon2Events[evB2].val; evB2++; }
+        while (evB5 < bpl5Events.length   && bpl5Thresh[evB5]   <= i) { curBpl5   = bpl5Events[evB5].val;   evB5++; }
+        while (evB6 < bpl6Events.length   && bpl6Thresh[evB6]   <= i) { curBpl6   = bpl6Events[evB6].val;   evB6++; }
+        const pf1h = curBplcon1 & 0xf;
+        const pf2h = (curBplcon1 >> 4) & 0xf;
 
-        for (let bit = 0; bit < 16; bit++) {
-          let rawPixel = 0;
-          for (let p = 0; p < numPlanes; p++) {
-            if (words[p] & (1 << (15 - bit))) rawPixel |= 1 << p;
+        let rawPixel = 0;
+        for (let p = 0; p < lnPlanes; p++) {
+          let bitVal = 0;
+          if (lnStatic && p === 4) {
+            bitVal = (curBpl5 >> (15 - (i & 15))) & 1;
+          } else if (lnStatic && p === 5) {
+            bitVal = (curBpl6 >> (15 - (i & 15))) & 1;
+          } else if (p < dmaPlanes) {
+            // Odd bitplane index (BPL2/4/6/8, 1-based) -> PF2H; even (BPL1/3/5/7) -> PF1H.
+            const scroll = (p % 2 === 0) ? pf1h : pf2h;
+            const srcBit = marginWords[p] * 16 + i - scroll;
+            if (srcBit >= 0) {
+              const w = fetchWords[p][srcBit >> 4] ?? 0;
+              bitVal = (w >> (15 - (srcBit & 15))) & 1;
+            }
           }
-          let pixel = 0;
-          for (let p = 0; p < numPlanes; p++) {
-            if (planeVis[p] && (rawPixel & (1 << p))) pixel |= 1 << p;
+          if (bitVal) rawPixel |= 1 << p;
+        }
+        let pixel = 0;
+        for (let p = 0; p < lnPlanes; p++) {
+          if (planeVis[p] && (rawPixel & (1 << p))) pixel |= 1 << p;
+        }
+
+        let color: number;
+        let effectiveIdx: number;
+
+        if (lnHam && lnPlanes === 6) {
+          const mode = pixel >> 4;
+          const val  = pixel & 0xf;
+          const exp  = expand4(val);
+          switch (mode) {
+            case 0: color = palette[val]; effectiveIdx = val; break;
+            case 1: color = (prevColor & ~0x00ff0000) | (exp << 16); effectiveIdx = pixel; break;
+            case 2: color = (prevColor & ~0x000000ff) | exp;          effectiveIdx = pixel; break;
+            case 3: color = (prevColor & ~0x0000ff00) | (exp << 8);   effectiveIdx = pixel; break;
+            default: color = prevColor; effectiveIdx = pixel;
           }
-
-          let color: number;
-          let effectiveIdx: number;
-
-          if (ham && numPlanes === 6) {
-            const mode = pixel >> 4;
-            const val  = pixel & 0xf;
-            const exp  = expand4(val);
-            switch (mode) {
-              case 0: color = palette[val]; effectiveIdx = val; break;
-              case 1: color = (prevColor & ~0x00ff0000) | (exp << 16); effectiveIdx = pixel; break;
-              case 2: color = (prevColor & ~0x000000ff) | exp;          effectiveIdx = pixel; break;
-              case 3: color = (prevColor & ~0x0000ff00) | (exp << 8);   effectiveIdx = pixel; break;
-              default: color = prevColor; effectiveIdx = pixel;
-            }
-            prevColor = color;
-          } else if (ham && numPlanes === 8) {
-            // AGA HAM8: top 2 of the 8 plane bits select the mode, the low 6 bits carry either
-            // a direct (low-bank) palette index (mode 0) or a 6-bit new component value (modes
-            // 1-3) — same structure as HAM6 above, just 6-bit fields instead of 4-bit ones.
-            const mode = pixel >> 6;
-            const val  = pixel & 0x3f;
-            const exp  = expand6(val);
-            switch (mode) {
-              case 0: color = palette[val]; effectiveIdx = val; break;
-              case 1: color = (prevColor & ~0x00ff0000) | (exp << 16); effectiveIdx = pixel; break;
-              case 2: color = (prevColor & ~0x000000ff) | exp;          effectiveIdx = pixel; break;
-              case 3: color = (prevColor & ~0x0000ff00) | (exp << 8);   effectiveIdx = pixel; break;
-              default: color = prevColor; effectiveIdx = pixel;
-            }
-            prevColor = color;
-          } else if (dpf) {
-            // Dual playfield: odd planes → PF1, even planes → PF2.
-            // PF1 index uses bits 0,2,4 of pixel; PF2 uses bits 1,3,5.
-            // NOTE: only verified for OCS/ECS's up-to-6-plane DPF (3 planes/playfield, the
-            // hardware-fixed +8 palette offset below). AGA can in principle run DPF with more
-            // planes, but the wider-DPF palette-indexing convention isn't confirmed here, so
-            // planes 7/8 are simply not read by this branch (bits 6/7 of `pixel` are ignored) —
-            // graceful degradation (those planes' data is dropped) rather than a guessed-at,
-            // possibly-wrong decode.
-            const pf1Idx = (pixel & 1) | (((pixel >> 2) & 1) << 1) | (((pixel >> 4) & 1) << 2);
-            const pf2Idx = ((pixel >> 1) & 1) | (((pixel >> 3) & 1) << 1) | (((pixel >> 5) & 1) << 2);
-            const pf2pri = (lineBplcon2[y] >> 6) & 1;
-            if (pf2pri) {
-              if (pf2Idx !== 0)      { effectiveIdx = 8 + pf2Idx; color = palette[8 + pf2Idx]; }
-              else if (pf1Idx !== 0) { effectiveIdx = pf1Idx;      color = palette[pf1Idx]; }
-              else                   { effectiveIdx = 0;            color = palette[0]; }
-            } else {
-              if (pf1Idx !== 0)      { effectiveIdx = pf1Idx;      color = palette[pf1Idx]; }
-              else if (pf2Idx !== 0) { effectiveIdx = 8 + pf2Idx; color = palette[8 + pf2Idx]; }
-              else                   { effectiveIdx = 0;            color = palette[0]; }
-            }
+          prevColor = color;
+        } else if (lnHam && lnPlanes === 8) {
+          // AGA HAM8: top 2 of the 8 plane bits select the mode, the low 6 bits carry either
+          // a direct (low-bank) palette index (mode 0) or a 6-bit new component value (modes
+          // 1-3) — same structure as HAM6 above, just 6-bit fields instead of 4-bit ones.
+          const mode = pixel >> 6;
+          const val  = pixel & 0x3f;
+          const exp  = expand6(val);
+          switch (mode) {
+            case 0: color = palette[val]; effectiveIdx = val; break;
+            case 1: color = (prevColor & ~0x00ff0000) | (exp << 16); effectiveIdx = pixel; break;
+            case 2: color = (prevColor & ~0x000000ff) | exp;          effectiveIdx = pixel; break;
+            case 3: color = (prevColor & ~0x0000ff00) | (exp << 8);   effectiveIdx = pixel; break;
+            default: color = prevColor; effectiveIdx = pixel;
+          }
+          prevColor = color;
+        } else if (lnDpf) {
+          // Dual playfield: odd planes → PF1, even planes → PF2.
+          // PF1 index uses bits 0,2,4 of pixel; PF2 uses bits 1,3,5.
+          // NOTE: only verified for OCS/ECS's up-to-6-plane DPF (3 planes/playfield, the
+          // hardware-fixed +8 palette offset below). AGA can in principle run DPF with more
+          // planes, but the wider-DPF palette-indexing convention isn't confirmed here, so
+          // planes 7/8 are simply not read by this branch (bits 6/7 of `pixel` are ignored) —
+          // graceful degradation (those planes' data is dropped) rather than a guessed-at,
+          // possibly-wrong decode.
+          const pf1Idx = (pixel & 1) | (((pixel >> 2) & 1) << 1) | (((pixel >> 4) & 1) << 2);
+          const pf2Idx = ((pixel >> 1) & 1) | (((pixel >> 3) & 1) << 1) | (((pixel >> 5) & 1) << 2);
+          const pf2pri = (curBplcon2 >> 6) & 1;
+          if (pf2pri) {
+            if (pf2Idx !== 0)      { effectiveIdx = 8 + pf2Idx; color = palette[8 + pf2Idx]; }
+            else if (pf1Idx !== 0) { effectiveIdx = pf1Idx;      color = palette[pf1Idx]; }
+            else                   { effectiveIdx = 0;            color = palette[0]; }
           } else {
-            effectiveIdx = pixel & ((1 << numPlanes) - 1);
-            color = palette[effectiveIdx] ?? palette[0];
+            if (pf1Idx !== 0)      { effectiveIdx = pf1Idx;      color = palette[pf1Idx]; }
+            else if (pf2Idx !== 0) { effectiveIdx = 8 + pf2Idx; color = palette[8 + pf2Idx]; }
+            else                   { effectiveIdx = 0;            color = palette[0]; }
           }
+        } else {
+          effectiveIdx = pixel & ((1 << lnPlanes) - 1);
+          color = palette[effectiveIdx] ?? palette[0];
+        }
 
-          const px = wx * 16 + bit;
+        const outXBase = i * dup;
+        for (let d = 0; d < dup; d++) {
+          const px = outXBase + d;
+          if (px < 0 || px >= width) continue;
           const li = y * width + px;
           pixRawBits[li]  = rawPixel;
           pixColorIdx[li] = effectiveIdx;
@@ -610,13 +596,17 @@ export function ResourcesView({ model, selectedSlot }: ResourcesViewProps) {
       //                   > sprites(pair≥backPFP)
       // In DPF mode, effectiveIdx 1-7 = front-PF pixel, 8-15 = back-PF pixel,
       // 0 = both transparent — so we derive each PF's opacity from pixColorIdx.
-      const bplcon2  = lineBplcon2[y];
+      // Uses curBplcon2's final (end-of-line) value: sprites are composited in a separate pass
+      // after the whole line's bitplane pixels are decided, so a mid-line BPLCON2 change (rare)
+      // only affects sprite priority/colour for this whole line, not just the pixels after it —
+      // the same approximation BPLCON0 makes, see this effect's opening comment.
+      const bplcon2  = curBplcon2;
       const pf1p     = bplcon2 & 0x7;
       const pf2p     = (bplcon2 >> 3) & 0x7;
       const pf2pri   = (bplcon2 >> 6) & 1;
       // Front/back PFP for the priority chain (only matters in DPF).
-      const frontPFP = dpf ? (pf2pri ? pf2p : pf1p) : pf1p;
-      const backPFP  = dpf ? (pf2pri ? pf1p : pf2p) : 0;
+      const frontPFP = lnDpf ? (pf2pri ? pf2p : pf1p) : pf1p;
+      const backPFP  = lnDpf ? (pf2pri ? pf1p : pf2p) : 0;
 
       for (let n = 7; n >= 0; n--) { // lower-numbered sprites drawn last → higher priority
         if (!(activeSpritesMask & (1 << n))) continue;
@@ -635,8 +625,11 @@ export function ResourcesView({ model, selectedSlot }: ResourcesViewProps) {
           b = (b << 1) & 0xffff;
           if (sprPixel === 0) continue; // transparent
 
-          const pxBase = hstartCanvas + bit * (hires ? 2 : 1);
-          const colorsToSet = hires ? 2 : 1;
+          // Sprite dot width follows the canvas's own resolution convention, not this line's —
+          // sprites don't track BPLCON0's HIRES bit the way bitplane data does (see
+          // canvasHires's doc comment in gfxResources.ts).
+          const pxBase = hstartCanvas + bit * (canvasHires ? 2 : 1);
+          const colorsToSet = canvasHires ? 2 : 1;
           for (let dx = 0; dx < colorsToSet; dx++) {
             const px = pxBase + dx;
             if (px < 0 || px >= width) continue;
@@ -645,7 +638,7 @@ export function ResourcesView({ model, selectedSlot }: ResourcesViewProps) {
             // Priority check: sprites in front of frontPFP always draw.
             if (pair >= frontPFP) {
               const ci = pixColorIdx[li];
-              if (dpf) {
+              if (lnDpf) {
                 // Front PF is opaque when ci is in its color range (1-7 or 8-15).
                 const frontOpaque = pf2pri ? ci >= 8 : (ci !== 0 && ci <= 7);
                 if (pair < backPFP) {
@@ -675,13 +668,15 @@ export function ResourcesView({ model, selectedSlot }: ResourcesViewProps) {
           }
         }
       }
+
+      linePalettesSnap[y] = palette; // already this line's own array — no clone needed
     }
 
     ctx.putImageData(imgData, 0, 0);
     pixelSnap.current = {
       rawBits: pixRawBits, colorIdx: pixColorIdx, colors: pixColors,
-      palettes: linePalettes, spriteMask: pixSprite,
-      width, height, firstLine, numPlanes, ham,
+      palettes: linePalettesSnap, spriteMask: pixSprite,
+      width, height, firstLine, numPlanes, lineHam: lineHamArr, lineDup,
     };
     setActiveSpritesMask(activeSpritesMask); // eslint-disable-line react-hooks/set-state-in-effect
   }, [canvas, screen, model, scale, planeVis, spriteVis]);
@@ -699,7 +694,7 @@ export function ResourcesView({ model, selectedSlot }: ResourcesViewProps) {
       return;
     }
     const li    = logY * ps.width + logX;
-    const extra = computeHoverExtra(m, ps.firstLine, logY, logX, ps.numPlanes);
+    const extra = computeHoverExtra(m, ps.firstLine, logY, logX, ps.numPlanes, ps.lineDup[logY]);
     const spr   = ps.spriteMask[li];
     setHover({
       logX, logY,
@@ -707,7 +702,7 @@ export function ResourcesView({ model, selectedSlot }: ResourcesViewProps) {
       rawBits:     ps.rawBits[li],
       colorIdx:    ps.colorIdx[li],
       color:       ps.colors[li],
-      ham:         ps.ham,
+      ham:         !!ps.lineHam[logY],
       palette:     ps.palettes[logY],
       spriteOwner: spr === 0xff ? undefined : spr,
       ...extra,
@@ -732,10 +727,10 @@ export function ResourcesView({ model, selectedSlot }: ResourcesViewProps) {
     return <div className="resources-empty">No bitplane display detected in this capture.</div>;
   }
 
-  const { width, height, numPlanes, hires, ham, dpf, modeChanges } = screen;
+  const { width, height, numPlanes, hires, ham, dpf, staticPlanes, modeChanges } = screen;
   const modeStr = modeChanges
     ? "variable mode"
-    : `${numPlanes}-plane${hires ? " hires" : " lores"}${ham ? " HAM" : ""}${dpf ? " DPF" : ""}`;
+    : `${numPlanes}-plane${hires ? " hires" : " lores"}${ham ? " HAM" : ""}${dpf ? " DPF" : ""}${staticPlanes ? " (7-plane trick)" : ""}`;
   const info = `${width}×${height} · ${modeStr}`;
 
   // "All" buttons' state is derived (not stored) — same pattern as the emulator webview's
