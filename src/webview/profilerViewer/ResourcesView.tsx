@@ -331,7 +331,7 @@ export function ResourcesView({ model, selectedSlot }: ResourcesViewProps) {
     const cvs = canvas.current;
     if (!cvs || !screen || !model?.dma) return;
 
-    const { numPlanes, width, height, firstLine, canvasHires, diwLeft, diwRight, diwTop, diwBottom } = screen;
+    const { numPlanes, width, height, firstLine, canvasHires, diwLeft, diwRight, diwTop, diwBottom, displayLeft } = screen;
 
     const baseRegs     = model.dmaSnapshot?.custom ?? new Uint16Array(256);
     const agaColors    = model.dmaSnapshot?.agaColors;
@@ -454,6 +454,13 @@ export function ResourcesView({ model, selectedSlot }: ResourcesViewProps) {
         ? Math.floor((lineDdfStop - lineDdfStart + 7) / 8) + 1
         : fallbackBlocks;
       const lineRowWords = lineBlocks * (canvasHires && lnHires ? 2 : 1);
+      // This line's fetch can start at a different hpos than the screen-wide displayLeft
+      // reference (the same DDFSTRT split that changes lineRowWords above commonly also moves
+      // the start point) — offset this line's output into canvas-x accordingly, the same
+      // hpos->canvas-x conversion displayLeft/diwLeft themselves use. Without this, a narrowed
+      // *and shifted* fetch window still gets the right word count but drawn from canvas x=0,
+      // i.e. shifted from where it actually belongs.
+      const lineOffsetX = (lineDdfStart * 2 - displayLeft) * (canvasHires ? 2 : 1);
 
       // ── Bitplane data ──────────────────────────────────────────────────
       // 7-plane trick: planes 4/5 (0-based) aren't DMA-fetched at all, so don't bother scanning
@@ -610,7 +617,7 @@ export function ResourcesView({ model, selectedSlot }: ResourcesViewProps) {
           color = palette[effectiveIdx] ?? palette[0];
         }
 
-        const outXBase = i * dup;
+        const outXBase = lineOffsetX + i * dup;
         for (let d = 0; d < dup; d++) {
           const px = outXBase + d;
           if (px < 0 || px >= width) continue;
@@ -625,11 +632,19 @@ export function ResourcesView({ model, selectedSlot }: ResourcesViewProps) {
         }
       }
 
-      // This line's own DDFSTRT/DDFSTOP can produce a narrower fetch than the screen-wide canvas
-      // width (e.g. a split that narrows the window for a plane-count change) — paint any
-      // trailing columns past this line's own decoded range as background rather than leaving
-      // them at the typed array's zero-initialised (fully transparent) default.
-      for (let px = totalBits * dup; px < width; px++) {
+      // This line's own DDFSTRT/DDFSTOP can produce a fetch window narrower than, and/or shifted
+      // from, the screen-wide canvas (e.g. a split that narrows/moves the window for a
+      // plane-count change) — paint any columns outside [lineOffsetX, lineOffsetX+totalBits*dup)
+      // as background rather than leaving them at the typed array's zero-initialised (fully
+      // transparent) default.
+      const lineDecodedStart = Math.max(0, lineOffsetX);
+      const lineDecodedEnd   = Math.min(width, lineOffsetX + totalBits * dup);
+      for (let px = 0; px < lineDecodedStart; px++) {
+        const li = y * width + px;
+        pixColorIdx[li] = 0;
+        pixColors[li]   = palette[0];
+      }
+      for (let px = lineDecodedEnd; px < width; px++) {
         const li = y * width + px;
         pixColorIdx[li] = 0;
         pixColors[li]   = palette[0];
