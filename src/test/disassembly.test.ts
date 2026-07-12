@@ -1,4 +1,11 @@
-import { attachDisassembly, fetchDisassembly, RawDisassembledFunction, InstructionSample, RawCapture } from "../profilerManager";
+import {
+  attachDisassembly,
+  fetchDisassembly,
+  MAX_DISASSEMBLE_INSTRUCTIONS,
+  RawDisassembledFunction,
+  InstructionSample,
+  RawCapture,
+} from "../profilerManager";
 import { encodeCapture, decodeCapture } from "../profileFormat";
 import { SourceMap } from "../sourceMap";
 import { IProfileModel } from "../shared/profilerTypes";
@@ -123,6 +130,68 @@ describe("fetchDisassembly", () => {
 
     expect(result).toHaveLength(1); // the function is still listed...
     expect(result[0].instructions).toEqual([]); // ...but with no decoded instructions
+  });
+
+  it("includes more than 64 small executed symbol ranges", () => {
+    const functionCount = 200;
+    const baseAddress = 0x1000;
+    const symbols = Array.from({ length: functionCount }, (_, i) => ({
+      address: baseAddress + i * 2,
+      name: `fn${i}`,
+      size: 2,
+    }));
+    const samples = symbols.map((symbol, i) => ({ stack: [symbol.address], cycles: functionCount - i }));
+    const resolvable = Object.fromEntries(
+      symbols.map((symbol) => [symbol.address, { symbol: symbol.name, offset: 0 }]),
+    );
+    const chipMem = new Uint8Array(baseAddress + functionCount * 2);
+    for (const symbol of symbols) {
+      chipMem[symbol.address] = 0x4e;
+      chipMem[symbol.address + 1] = 0x71;
+    }
+
+    const result = fetchDisassembly(
+      { ...baseModel(), symbols },
+      samples,
+      sourceMap(resolvable),
+      chipMem,
+    );
+
+    expect(result).toHaveLength(functionCount);
+    expect(result.reduce((total, fn) => total + fn.instructions.length, 0)).toBe(functionCount);
+  });
+
+  it("caps decoded work by total instruction count rather than function count", () => {
+    const baseAddress = 0x1000;
+    const hotInstructionCount = MAX_DISASSEMBLE_INSTRUCTIONS - 10;
+    const coldAddress = baseAddress + hotInstructionCount * 2;
+    const symbols = [
+      { address: baseAddress, name: "hot", size: hotInstructionCount * 2 },
+      { address: coldAddress, name: "cold", size: 100 * 2 },
+    ];
+    const samples = [
+      { stack: [baseAddress], cycles: 100 },
+      { stack: [coldAddress], cycles: 1 },
+    ];
+    const chipMem = new Uint8Array(coldAddress + 200);
+    for (let i = baseAddress; i < chipMem.length; i += 2) {
+      chipMem[i] = 0x4e;
+      chipMem[i + 1] = 0x71;
+    }
+
+    const result = fetchDisassembly(
+      { ...baseModel(), symbols },
+      samples,
+      sourceMap({
+        [baseAddress]: { symbol: "hot", offset: 0 },
+        [coldAddress]: { symbol: "cold", offset: 0 },
+      }),
+      chipMem,
+    );
+
+    expect(result.map((fn) => fn.name)).toEqual(["hot", "cold"]);
+    expect(result.reduce((total, fn) => total + fn.instructions.length, 0)).toBe(MAX_DISASSEMBLE_INSTRUCTIONS);
+    expect(result[1].instructions).toHaveLength(10);
   });
 });
 

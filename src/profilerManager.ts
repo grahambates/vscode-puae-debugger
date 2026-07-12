@@ -474,10 +474,9 @@ export function attachDisassembly(raw: RawDisassembledFunction[], sourceMap: Sou
   }));
 }
 
-// Hard cap on how many distinct functions get disassembled per capture — a safety valve for a
-// pathological profile that touches many tiny functions, not a real-world limit. Sorted by total
-// cycles descending first, so a cap (if ever hit) drops the coldest functions, not the hottest.
-const MAX_DISASSEMBLE_FUNCTIONS = 64;
+// Bound disassembly work by decoded instructions rather than symbol-defined functions. Assembly
+// labels can create hundreds of tiny function ranges, while a single C function can be huge.
+export const MAX_DISASSEMBLE_INSTRUCTIONS = 16_384;
 
 // Re-apply per-instruction hit/cycle counts from a new sample set onto an existing
 // disassembly template (instruction text + addresses unchanged from the template). Used
@@ -517,11 +516,12 @@ function clientDisassembleRange(
   endAddr: number,
   fastMem?: Uint8Array,
   fastAddr?: number,
+  maxInstructions = MAX_DISASSEMBLE_INSTRUCTIONS,
 ): { address: number; hex: string; text: string; length: number; jumpTarget?: number }[] {
   const instructions: { address: number; hex: string; text: string; length: number; jumpTarget?: number }[] = [];
   let addr = startAddr >>> 0;
   const end = endAddr >>> 0;
-  while (addr < end && instructions.length < 8192) {
+  while (addr < end && instructions.length < maxInstructions) {
     let mem: Uint8Array | null = null;
     if (addr < chipMem.length) {
       mem = chipMem.subarray(addr);
@@ -592,11 +592,22 @@ export function fetchDisassembly(
     fn.totalCycles += stat.cycles;
   }
 
-  const ordered = [...functions.entries()].sort((a, b) => b[1].totalCycles - a[1].totalCycles).slice(0, MAX_DISASSEMBLE_FUNCTIONS);
+  const ordered = [...functions.entries()].sort((a, b) => b[1].totalCycles - a[1].totalCycles);
 
   const out: RawDisassembledFunction[] = [];
+  let remainingInstructions = MAX_DISASSEMBLE_INSTRUCTIONS;
   for (const [startAddr, fn] of ordered) {
-    const raw = clientDisassembleRange(chipMem, slowMem, startAddr, fn.end, fastMem, fastAddr);
+    if (remainingInstructions <= 0) break;
+    const raw = clientDisassembleRange(
+      chipMem,
+      slowMem,
+      startAddr,
+      fn.end,
+      fastMem,
+      fastAddr,
+      remainingInstructions,
+    );
+    remainingInstructions -= raw.length;
     const instructions: RawDisassembledInstruction[] = raw.map((ins) => {
       const stat = pcStats.get(ins.address);
       return { address: ins.address, hex: ins.hex, text: ins.text, length: ins.length, hits: stat?.hits ?? 0, cycles: stat?.cycles ?? 0, jumpTarget: ins.jumpTarget };

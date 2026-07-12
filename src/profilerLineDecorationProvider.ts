@@ -32,10 +32,9 @@ function formatCount(n: number): string {
 // via the "puae-debugger.toggleLineProfilerAnnotations" command for anyone who finds
 // decorating every profiled line too visually heavy for routine editing.
 //
-// model.disassembly only covers the hottest ~64 functions (MAX_DISASSEMBLE_FUNCTIONS in
-// profilerManager.ts) — colder functions simply have no entries here (and so show no line
-// decorations) even though they still get a function-level CodeLens from
-// ProfilerCodeLensProvider, which draws from the more complete model.locations instead.
+// model.disassembly is bounded by a total decoded-instruction budget in profilerManager.ts.
+// Functions are visited hottest-first, but the budget is independent of how source or assembly
+// labels happen to divide those instructions into functions.
 export class ProfilerLineDecorationProvider implements vscode.HoverProvider, vscode.Disposable {
   private enabled = true;
 
