@@ -3,10 +3,16 @@ import { CUSTOM_REGISTER_OFFSETS as R } from "../shared/customRegisters";
 
 export interface IScreen {
   numPlanes: number;   // max BPL owner index seen in the DMA grid + 1
-  width: number;       // canvas pixel width, sized for the highest resolution used anywhere
-                        // in the display area (see canvasHires below)
-  height: number;      // number of scan lines with BPL DMA activity
-  firstLine: number;   // vpos of first BPL-active scan line
+  // Canvas pixel width/height: always PUAE's standard PAL preset (STANDARD_FB_WIDTH/HEIGHT below,
+  // converted into this file's own canvas-unit convention — see those constants' doc comment),
+  // not a tight crop around just the DDF-fetched/DMA-active area, so the reconstruction shows a
+  // sensible border like the live emulator view rather than a razor-tight crop. displayLeft/
+  // firstLine below are shifted to center the fetched content within this canvas, so every
+  // existing hpos/vpos->canvas-x/y formula in this file (and ResourcesView's per-line offset/DIW
+  // logic) lands in the correctly-centered coordinate space with no further changes.
+  width: number;
+  height: number;
+  firstLine: number;   // vpos of first BPL-active scan line, shifted by the centering offset above
   hires: boolean;      // BPLCON0 at display start — may not hold for the whole frame
   ham: boolean;        // BPLCON0 at display start — may not hold for the whole frame
   dpf: boolean;        // BPLCON0[10] — dual playfield at display start
@@ -51,6 +57,13 @@ export interface IScreen {
   diwRight: number;
   diwTop: number;
   diwBottom: number;
+  // DDFSTRT/DDFSTOP "blocks" (8-cck fetch units) at display start, i.e. the content-only word
+  // count `width` itself would have been sized from before the standard-canvas substitution
+  // below. Exists purely as a sane fallback for ResourcesView's per-line DDFSTRT/DDFSTOP
+  // tracking (a specific line's own registers can momentarily fail to form a valid window) —
+  // deriving a fallback from `width` directly no longer works once width is the (unrelated)
+  // outer canvas size.
+  blocks: number;
 }
 
 // Decodes the mode-relevant bits of a BPLCON0 value in isolation — shared by the initial-state
@@ -74,6 +87,26 @@ export function decodeBplcon0(bplcon0: number, isAga: boolean): {
 
 export const DMA_HPOS = 227; // slots per scan line in the DMA grid
 export const DMA_VPOS = 313; // scan lines per frame in the DMA grid
+
+// PUAE's standard (non-"extreme overscan") PAL framebuffer preset — see
+// puae-wasm/libretro-uae/libretro/libretro-core.h's PUAE_VIDEO_WIDTH/PUAE_VIDEO_HEIGHT_PAL
+// (== EMULATOR_DEF_WIDTH/HEIGHT, the project's own default geometry) — used as a fixed "sensible
+// border" canvas size for the screen reconstruction, regardless of what the live emulator was
+// actually doing at capture time. These are real digitized-output pixels, a *different* unit from
+// this file's own canvas-x/canvas-y convention, so they need converting before use as width/height
+// below:
+//  - horizontal: this file's canvas-x is in real (hires) pixels when canvasHires, but in
+//    lores-pixel units (half as many) otherwise — see IScreen.canvasHires's doc comment — so
+//    STANDARD_FB_WIDTH must be halved except in the canvasHires case.
+//  - vertical: canvas-y is always raw vpos units (one count per scanline, no doubling), while
+//    STANDARD_FB_HEIGHT is PUAE's line-doubled broadcast-style output height, so it's always
+//    halved regardless of canvasHires.
+// Empirically verified against a real capture (booted demo.adf, lores Kickstart/Workbench
+// screen): content width 320 canvas-units vs. STANDARD_FB_WIDTH 720 real pixels is a ~2.25x
+// ratio (roughly the expected 2x conversion plus a modest genuine border), not 1x — using
+// STANDARD_FB_WIDTH unconverted made the canvas ~2x too wide, matching a "huge border" bug.
+const STANDARD_FB_WIDTH  = 720;
+const STANDARD_FB_HEIGHT = 574;
 
 /**
  * Derive screen geometry from the DMA grid + copper trace.
@@ -174,8 +207,21 @@ export function buildScreenFromModel(model: IProfileModel): IScreen | undefined 
     }
   }
 
-  const width = blocks << (canvasHires ? 5 : 4);
-  const displayLeft = ddfStart * 2;
+  const contentWidth       = blocks << (canvasHires ? 5 : 4);
+  const contentDisplayLeft = ddfStart * 2;
+
+  // ── Canvas sizing: PUAE's standard PAL preset, not a tight crop around the fetched content ──
+  // See STANDARD_FB_WIDTH/HEIGHT's doc comment for the pixel-unit conversion. Centers the fetched
+  // content within the standard-sized canvas by shifting displayLeft/firstLine, so every
+  // hpos/vpos->canvas-x/y formula elsewhere in this file (and in ResourcesView) keeps working
+  // unmodified — they're all already built on `(x - displayLeft) * mult` / `vpos - firstLine`, so
+  // shifting the reference point is equivalent to shifting the content itself.
+  const finalWidth  = STANDARD_FB_WIDTH  / (canvasHires ? 1 : 2);
+  const finalHeight = STANDARD_FB_HEIGHT / 2;
+  const offsetX = Math.floor((finalWidth - contentWidth) / 2);
+  const offsetY = Math.floor((finalHeight - height) / 2);
+  const finalDisplayLeft = contentDisplayLeft - offsetX / (canvasHires ? 2 : 1);
+  const finalFirstLine   = firstLine - offsetY;
 
   // ── DIWSTRT/DIWSTOP: the actual display window, distinct from the DDF fetch window ────────
   // Vertical (VSTART/VSTOP) is in vpos-native units, no conversion needed. VSTOP's
@@ -200,14 +246,15 @@ export function buildScreenFromModel(model: IProfileModel): IScreen | undefined 
   const diwVStopByte = (DIWSTOP >> 8) & 0xff;
   const diwVStop = diwVStopByte & 0x80 ? diwVStopByte : diwVStopByte + 256;
 
-  const diwLeft  = Math.max(0, Math.min(width, (diwHStart - displayLeft) * (canvasHires ? 2 : 1)));
-  const diwRight = Math.max(0, Math.min(width, (diwHStop  - displayLeft) * (canvasHires ? 2 : 1)));
-  const diwTop    = Math.max(firstLine, Math.min(firstLine + height, diwVStart));
-  const diwBottom = Math.max(firstLine, Math.min(firstLine + height, diwVStop));
+  const diwLeft  = Math.max(0, Math.min(finalWidth, (diwHStart - finalDisplayLeft) * (canvasHires ? 2 : 1)));
+  const diwRight = Math.max(0, Math.min(finalWidth, (diwHStop  - finalDisplayLeft) * (canvasHires ? 2 : 1)));
+  const diwTop    = Math.max(finalFirstLine, Math.min(finalFirstLine + finalHeight, diwVStart));
+  const diwBottom = Math.max(finalFirstLine, Math.min(finalFirstLine + finalHeight, diwVStop));
 
   return {
-    numPlanes, width, height, firstLine, hires, ham, dpf, staticPlanes, canvasHires, modeChanges,
-    displayLeft, diwLeft, diwRight, diwTop, diwBottom,
+    numPlanes, hires, ham, dpf, staticPlanes, canvasHires, modeChanges, blocks,
+    width: finalWidth, height: finalHeight, firstLine: finalFirstLine, displayLeft: finalDisplayLeft,
+    diwLeft, diwRight, diwTop, diwBottom,
   };
 }
 

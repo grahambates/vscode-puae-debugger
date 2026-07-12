@@ -20,6 +20,7 @@ const baseScreen: IScreen = {
   diwRight: 320,
   diwTop: 50,
   diwBottom: 250,
+  blocks: 20,
 };
 
 describe("computeBeamPosition", () => {
@@ -124,7 +125,7 @@ function makeModel(opts: {
 }
 
 describe("buildScreenFromModel", () => {
-  it("stays lores-sized when hires never appears in the display area", () => {
+  it("sizes the canvas to the standard PAL preset (360 lores canvas-units wide) when hires never appears in the display area", () => {
     const model = makeModel({
       firstLine: 100, lastLine: 150, planes: 4,
       bplcon0: 4 << 12, ddfstrt: 0x38, ddfstop: 0xd0,
@@ -133,7 +134,8 @@ describe("buildScreenFromModel", () => {
     expect(screen.hires).toBe(false);
     expect(screen.canvasHires).toBe(false);
     expect(screen.modeChanges).toBe(false);
-    expect(screen.width).toBe(screen.width & ~0xf); // sanity: lores (<<4) sizing, not <<5
+    expect(screen.width).toBe(360); // STANDARD_FB_WIDTH(720) halved for lores canvas-units
+    expect(screen.height).toBe(287); // STANDARD_FB_HEIGHT(574) halved
   });
 
   it("sizes the canvas for hires when a mid-frame copper split enables it, even though the initial state is lores", () => {
@@ -150,31 +152,35 @@ describe("buildScreenFromModel", () => {
     expect(screen.hires).toBe(false); // initial state at firstLine is still lores
     expect(screen.canvasHires).toBe(true); // but the canvas is sized for the hires split
     expect(screen.modeChanges).toBe(true);
-    expect(screen.width).toBe(lores.width * 2); // hires sizing is exactly double lores sizing
+    expect(screen.width).toBe(lores.width * 2); // hires standard canvas is exactly double lores's
+    expect(screen.width).toBe(720); // STANDARD_FB_WIDTH used directly (1:1) for hires canvas-units
   });
 
   it("computes DIW bounds using real captured register values (verified against PUAE's own calcdiw())", () => {
-    // Real register values from an actual capture (width/displayLeft below are this project's
-    // own independently-verified numbers for the same capture).
+    // Real register values from an actual capture (displayLeft/diwLeft/diwRight below are this
+    // project's own independently-verified numbers for the same capture, adjusted for the
+    // standard-canvas centering offset — see the "sizes the canvas..." tests above for that math).
     const model = makeModel({
       firstLine: 82, lastLine: 261, planes: 4,
       bplcon0: 4 << 12, ddfstrt: 0x38, ddfstop: 0xc8,
       diwstrt: 0x5291, diwstop: 0x06b1, // VSTART=0x52=82 HSTART=0x91=145, VSTOP byte=0x06(->+256=262) HSTOP=0xb1=177
     });
     const screen = buildScreenFromModel(model)!;
-    expect(screen.width).toBe(304);
-    expect(screen.displayLeft).toBe(112);
+    expect(screen.width).toBe(360); // standard lores canvas, not the content-derived 304
+    // contentWidth = 19 blocks << 4 = 304; offsetX = floor((360-304)/2) = 28;
+    // displayLeft = ddfStart*2(112) - 28 = 84.
+    expect(screen.displayLeft).toBe(84);
     // Vertically, DIW happens to span exactly the DMA-active range here (the common case for a
-    // single, non-split display) — clamped to [firstLine, firstLine+height] either way.
+    // single, non-split display) — still true against the taller standard-canvas height.
     expect(screen.diwTop).toBe(82);
     expect(screen.diwBottom).toBe(262);
-    // Horizontally: HSTART (145) converts 1:1 to canvas-x-before-displayLeft-subtraction, giving
-    // a modest left crop; HSTOP (177) gets the unconditional "+256" DIWHIGH-not-written extension
-    // custom.c's calcdiw() applies, converting to a value well past the canvas width, clamped to
-    // full width — i.e. this capture's DIW crops a small margin off the left and nothing off the
-    // right, not the drastic crop either earlier (wrong) formula produced.
-    expect(screen.diwLeft).toBe(145 - 112);
-    expect(screen.diwRight).toBe(screen.width); // (177+256-112)=321, clamped to 304
+    // Horizontally: HSTART (145) converts 1:1 to canvas-x-before-displayLeft-subtraction; HSTOP
+    // (177) gets the unconditional "+256" DIWHIGH-not-written extension custom.c's calcdiw()
+    // applies. Both relative to the shifted displayLeft(84) above, neither clamped (comfortably
+    // inside [0, 360]) — i.e. this capture's DIW crops a small margin off the left and leaves a
+    // wide margin on the right within the standard canvas.
+    expect(screen.diwLeft).toBe(145 - 84);
+    expect(screen.diwRight).toBe(177 + 256 - 84);
   });
 
   it("clamps a DIW VSTOP wraparound (byte's top bit clear -> +256) to the DMA-active range", () => {
@@ -187,5 +193,29 @@ describe("buildScreenFromModel", () => {
     // VSTOP byte 0x2c has bit7 clear -> real VSTOP = 0x2c + 256 = 300, exactly firstLine+height
     // here (44+256) — proves the wraparound math, not just the clamp.
     expect(screen.diwBottom).toBe(44 + 256);
+  });
+
+  it("centers the fetched content within the standard-sized canvas rather than cropping to it", () => {
+    const base = {
+      firstLine: 100, lastLine: 150, planes: 4,
+      bplcon0: 4 << 12, ddfstrt: 0x38, ddfstop: 0xd0,
+    };
+    const screen = buildScreenFromModel(makeModel(base))!;
+    expect(screen.width).toBe(360);
+    expect(screen.height).toBe(287);
+
+    const ddfStart = 0x38 & 0xfc; // 56
+    const ddfStop  = 0xd0 & 0xfc; // 208
+    const blocks = Math.floor((ddfStop - ddfStart + 7) / 8) + 1; // 20
+    const contentWidth  = blocks << 4; // 320
+    const contentHeight = base.lastLine - base.firstLine + 1; // 51
+    const offsetX = Math.floor((screen.width - contentWidth) / 2);
+    const offsetY = Math.floor((screen.height - contentHeight) / 2);
+
+    // The content's own x=0/y=0 (canvasX/Y at hpos=ddfStart, vpos=firstLine) now lands at the
+    // centering offset, not at the canvas's own (0,0) — i.e. it's centered, not cropped to fit.
+    const contentOrigin = computeBeamPosition(screen, base.firstLine * DMA_HPOS + ddfStart);
+    expect(contentOrigin.x).toBe(offsetX);
+    expect(computeBeamPosition(screen, base.firstLine * DMA_HPOS).y).toBe(offsetY);
   });
 });

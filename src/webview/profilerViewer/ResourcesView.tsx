@@ -381,9 +381,10 @@ export function ResourcesView({ model, selectedSlot }: ResourcesViewProps) {
     const lineDdfstopRaw: number[] = copper
       ? buildLineRegister(baseRegs, copper, firstLine, height, R.DDFSTOP)
       : Array.from({ length: height }, () => baseRegs[R.DDFSTOP >> 1]);
-    // Fallback word count (screen-wide blocks, recovered from width/canvasHires) for the rare
-    // degenerate line where that line's own DDFSTRT/DDFSTOP momentarily don't form a valid window.
-    const fallbackBlocks = canvasHires ? width >> 5 : width >> 4;
+    // Fallback word count for the rare degenerate line where that line's own DDFSTRT/DDFSTOP
+    // momentarily don't form a valid window. screen.blocks is the *content*-only word count
+    // (width itself may now be PUAE's own, unrelated, live framebuffer size — see IScreen.width).
+    const fallbackBlocks = screen.blocks;
 
     // OCS/ECS 7-plane trick: planes 5/6 (0-based 4/5) aren't DMA-fetched — Denise holds
     // BPL5DAT/BPL6DAT static instead, so track their value (with the same mid-line precision as
