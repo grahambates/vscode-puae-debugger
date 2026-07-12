@@ -367,6 +367,24 @@ export function ResourcesView({ model, selectedSlot }: ResourcesViewProps) {
       ? buildLineRegister(baseRegs, copper, firstLine, height, R.BPLCON0, v => ((v >>> 12) & 7) !== 0)
       : Array.from({ length: height }, () => baseRegs[R.BPLCON0 >> 1]);
 
+    // Per-line DDFSTRT/DDFSTOP: a copper split that changes plane count (e.g. into the 7-plane
+    // trick) commonly narrows the fetch window at the same time, to save DMA bandwidth once
+    // fewer planes need it. screen.width/blocks are sized from the *initial* DDFSTRT/DDFSTOP —
+    // using that same (now stale) word count for a line whose real DDFSTRT has since changed
+    // desyncs `marginWords` below (fetchWords.length - nominal goes negative, corrupting the
+    // first word of every such line) — catastrophic for HAM specifically, since it's extremely
+    // sensitive to control/data-bit alignment. Tracked at line granularity only, same as
+    // BPLCON0 — a mid-line DDFSTRT change is exotic and not handled.
+    const lineDdfstrtRaw: number[] = copper
+      ? buildLineRegister(baseRegs, copper, firstLine, height, R.DDFSTRT)
+      : Array.from({ length: height }, () => baseRegs[R.DDFSTRT >> 1]);
+    const lineDdfstopRaw: number[] = copper
+      ? buildLineRegister(baseRegs, copper, firstLine, height, R.DDFSTOP)
+      : Array.from({ length: height }, () => baseRegs[R.DDFSTOP >> 1]);
+    // Fallback word count (screen-wide blocks, recovered from width/canvasHires) for the rare
+    // degenerate line where that line's own DDFSTRT/DDFSTOP momentarily don't form a valid window.
+    const fallbackBlocks = canvasHires ? width >> 5 : width >> 4;
+
     // OCS/ECS 7-plane trick: planes 5/6 (0-based 4/5) aren't DMA-fetched — Denise holds
     // BPL5DAT/BPL6DAT static instead, so track their value (with the same mid-line precision as
     // above — the control word is sometimes changed partway down a line too). Tracked whenever
@@ -427,9 +445,15 @@ export function ResourcesView({ model, selectedSlot }: ResourcesViewProps) {
       const dup = canvasHires && !lnHires ? 2 : 1;
       lineDup[y]    = dup;
       lineHamArr[y] = lnHam ? 1 : 0;
-      // Nominal fetched-word count for this line's own resolution, sized so dup*16*lineRowWords
-      // always fills the full canvas width regardless of which resolution this line uses.
-      const lineRowWords = canvasHires ? (width >> (lnHires ? 4 : 5)) : (width >> 4);
+      // Nominal fetched-word count for this line's own resolution and this line's own DDFSTRT/
+      // DDFSTOP (see the tracking comment above) — sized so dup*16*lineRowWords covers this
+      // line's real fetch window, whether or not that matches the screen-wide canvas width.
+      const lineDdfStart = lineDdfstrtRaw[y] & 0xfc;
+      const lineDdfStop  = lineDdfstopRaw[y] & 0xfc;
+      const lineBlocks = lineDdfStart < lineDdfStop
+        ? Math.floor((lineDdfStop - lineDdfStart + 7) / 8) + 1
+        : fallbackBlocks;
+      const lineRowWords = lineBlocks * (canvasHires && lnHires ? 2 : 1);
 
       // ── Bitplane data ──────────────────────────────────────────────────
       // 7-plane trick: planes 4/5 (0-based) aren't DMA-fetched at all, so don't bother scanning
@@ -503,13 +527,20 @@ export function ResourcesView({ model, selectedSlot }: ResourcesViewProps) {
         let rawPixel = 0;
         for (let p = 0; p < lnPlanes; p++) {
           let bitVal = 0;
+          // Odd bitplane index (BPL2/4/6/8, 1-based) -> PF2H; even (BPL1/3/5/7) -> PF1H. Scroll
+          // is a *display-timing* delay Denise applies uniformly to every bitplane's shift-out —
+          // it doesn't care whether that plane's holding register came from DMA or is held
+          // statically (the 7-plane trick) — so BPL5/BPL6 need it exactly like any other plane,
+          // just against their repeating 16-bit word instead of a fetched one. Skipping it here
+          // was a real bug: on lines where scroll is active the static (unshifted) control bits
+          // desync from the (shifted) data bits by however many pixels the scroll delay is,
+          // producing HAM speckling on exactly those lines.
+          const scroll = (p % 2 === 0) ? pf1h : pf2h;
           if (lnStatic && p === 4) {
-            bitVal = (curBpl5 >> (15 - (i & 15))) & 1;
+            bitVal = (curBpl5 >> (15 - ((i - scroll) & 15))) & 1;
           } else if (lnStatic && p === 5) {
-            bitVal = (curBpl6 >> (15 - (i & 15))) & 1;
+            bitVal = (curBpl6 >> (15 - ((i - scroll) & 15))) & 1;
           } else if (p < dmaPlanes) {
-            // Odd bitplane index (BPL2/4/6/8, 1-based) -> PF2H; even (BPL1/3/5/7) -> PF1H.
-            const scroll = (p % 2 === 0) ? pf1h : pf2h;
             const srcBit = marginWords[p] * 16 + i - scroll;
             if (srcBit >= 0) {
               const w = fetchWords[p][srcBit >> 4] ?? 0;
@@ -592,6 +623,16 @@ export function ResourcesView({ model, selectedSlot }: ResourcesViewProps) {
           pixColorIdx[li] = inDiw ? effectiveIdx : 0;
           pixColors[li]   = inDiw ? color : palette[0];
         }
+      }
+
+      // This line's own DDFSTRT/DDFSTOP can produce a narrower fetch than the screen-wide canvas
+      // width (e.g. a split that narrows the window for a plane-count change) — paint any
+      // trailing columns past this line's own decoded range as background rather than leaving
+      // them at the typed array's zero-initialised (fully transparent) default.
+      for (let px = totalBits * dup; px < width; px++) {
+        const li = y * width + px;
+        pixColorIdx[li] = 0;
+        pixColors[li]   = palette[0];
       }
 
       // ── Sprite composite with BPLCON2 priority ────────────────────────
