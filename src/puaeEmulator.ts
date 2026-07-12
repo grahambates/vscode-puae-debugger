@@ -130,7 +130,9 @@ export class PuaeEmulator extends WebviewEmulator {
         this.panel.reveal();
         this.invalidateCache();
         this.memoryInfo = undefined;
-        this.sendCommand("load");
+        void this.sendRpcCommand("load").catch((error) => {
+          console.error("Failed to reload emulator panel:", error);
+        });
       } else {
         // Config changed: dispose the old panel and create a fresh one so the
         // new ROM / UAE config / program is picked up from the updated HTML.

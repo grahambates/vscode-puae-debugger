@@ -381,7 +381,7 @@ describe("DebugAdapter - Simplified Tests", () => {
   describe("Conditional Breakpoints", () => {
     function stubBreakpointManager(condition: string) {
       const mockBreakpointManager = sinon.createStubInstance(BreakpointManager);
-      mockBreakpointManager.handleBreakpointStop.returns({
+      mockBreakpointManager.handleBreakpointStop.resolves({
         reason: "breakpoint",
         hitBreakpointIds: [1],
       });
@@ -438,7 +438,7 @@ describe("DebugAdapter - Simplified Tests", () => {
   describe("Logpoints", () => {
     function stubBreakpointManager(logMessage: string) {
       const mockBreakpointManager = sinon.createStubInstance(BreakpointManager);
-      mockBreakpointManager.handleBreakpointStop.returns({
+      mockBreakpointManager.handleBreakpointStop.resolves({
         reason: "breakpoint",
         hitBreakpointIds: [1],
       });
@@ -502,7 +502,7 @@ describe("DebugAdapter - Simplified Tests", () => {
   describe("Sourceless stop reason hint", () => {
     function stubBreakpointManager(reason: string) {
       const mockBreakpointManager = sinon.createStubInstance(BreakpointManager);
-      mockBreakpointManager.handleBreakpointStop.returns({ reason: reason as DebugProtocol.StoppedEvent["body"]["reason"] });
+      mockBreakpointManager.handleBreakpointStop.resolves({ reason: reason as DebugProtocol.StoppedEvent["body"]["reason"] });
       (adapter as any).breakpointManager = mockBreakpointManager;
       return mockBreakpointManager;
     }
@@ -569,7 +569,7 @@ describe("DebugAdapter - Simplified Tests", () => {
   describe("Stepping and Execution Control", () => {
     it("should handle stepIn request", async () => {
       // Setup: Mock stepInto functionality
-      mockEmulator.stepInto.returns(undefined);
+      mockEmulator.stepInto.resolves(undefined);
 
       const response =
         createMockResponse<DebugProtocol.StepInResponse>("stepIn");
@@ -613,7 +613,7 @@ describe("DebugAdapter - Simplified Tests", () => {
     it("should handle next (step over) request with non-call instruction", async () => {
       // Setup: Mock CPU state with MOVE (not a call)
       setupMockCpuState({ pc: "0x1000" });
-      mockEmulator.stepInto.returns(undefined);
+      mockEmulator.stepInto.resolves(undefined);
 
       // MOVE.L D0,D1 = [0x22, 0x00] (2 bytes), then NOPs
       const mem = Buffer.alloc(20);
@@ -644,7 +644,7 @@ describe("DebugAdapter - Simplified Tests", () => {
 
       (adapter as any).stackManager = mockStackManager;
       (adapter as any).breakpointManager = mockBreakpointManager;
-      mockEmulator.run.returns(undefined);
+      mockEmulator.run.resolves(undefined);
 
       const response =
         createMockResponse<DebugProtocol.StepOutResponse>("stepOut");

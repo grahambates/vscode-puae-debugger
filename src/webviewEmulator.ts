@@ -14,6 +14,11 @@ import {
 } from "./emulatorProtocol";
 import { SourceMap } from "./sourceMap";
 import { openSourceLocation } from "./sourceNav";
+import type {
+  PuaeRpcArgs,
+  PuaeRpcCommand,
+  PuaeRpcResult,
+} from "./shared/puaeRpcProtocol";
 
 /**
  * A pending request/response RPC awaiting its reply from the webview.
@@ -138,15 +143,6 @@ export abstract class WebviewEmulator implements Emulator {
   // --- RPC plumbing ---
 
   /**
-   * Sends a one-way command to the emulator (no response expected).
-   * @param command Command name to send
-   * @param args Optional command arguments
-   */
-  public sendCommand<A = any>(command: string, args?: A): void {
-    this.panel?.webview.postMessage({ command, args });
-  }
-
-  /**
    * Atomically cleans up a pending RPC and returns its handlers if found.
    * Prevents race conditions between timeout and response handling.
    * @param rpcId The RPC ID to clean up
@@ -178,12 +174,15 @@ export abstract class WebviewEmulator implements Emulator {
    * @returns Promise that resolves with the command response
    * @throws Error on timeout or if webview is not open
    */
-  public async sendRpcCommand<T = any, A = any>(
-    command: string,
-    args?: A,
-    timeoutMs = 5000,
-  ): Promise<T> {
-    return new Promise<T>((resolve, reject) => {
+  public async sendRpcCommand<K extends PuaeRpcCommand>(
+    command: K,
+    ...params: undefined extends PuaeRpcArgs<K>
+      ? [args?: PuaeRpcArgs<K>, timeoutMs?: number]
+      : [args: PuaeRpcArgs<K>, timeoutMs?: number]
+  ): Promise<PuaeRpcResult<K>> {
+    const args = params[0];
+    const timeoutMs = params[1] ?? 5000;
+    return new Promise<PuaeRpcResult<K>>((resolve, reject) => {
       if (!this.panel) {
         reject(new Error("Emulator panel is not open"));
         return;
@@ -202,7 +201,7 @@ export abstract class WebviewEmulator implements Emulator {
       this.pendingRpcs.set(id, { resolve, reject, timeout });
       this.panel.webview.postMessage({
         command,
-        args: { ...args, _rpcId: id },
+        args: { ...(args ?? {}), _rpcId: id },
       });
     });
   }
@@ -300,19 +299,19 @@ export abstract class WebviewEmulator implements Emulator {
 
   // --- Execution control ---
 
-  public pause(): void {
+  public async pause(): Promise<void> {
     this.invalidateCache();
-    this.sendCommand("pause");
+    await this.sendRpcCommand("pause");
   }
 
-  public run(): void {
+  public async run(): Promise<void> {
     this.invalidateCache();
-    this.sendCommand("run");
+    await this.sendRpcCommand("run");
   }
 
-  public stepInto(): void {
+  public async stepInto(): Promise<void> {
     this.invalidateCache();
-    this.sendCommand("stepInto");
+    await this.sendRpcCommand("stepInto");
   }
 
   public async stepBack(): Promise<boolean> {
@@ -333,81 +332,81 @@ export abstract class WebviewEmulator implements Emulator {
     return !!res;
   }
 
-  public eof(): void {
+  public async eof(): Promise<void> {
     this.invalidateCache();
-    this.sendCommand("eof");
+    await this.sendRpcCommand("eof");
   }
 
-  public eol(): void {
+  public async eol(): Promise<void> {
     this.invalidateCache();
-    this.sendCommand("eol");
+    await this.sendRpcCommand("eol");
   }
 
   // --- Breakpoints, watchpoints, catchpoints ---
 
-  public setBreakpoint(address: number, ignores = 0): void {
-    this.sendCommand("setBreakpoint", { address, ignores });
+  public async setBreakpoint(address: number, ignores = 0): Promise<void> {
+    await this.sendRpcCommand("setBreakpoint", { address, ignores });
   }
 
-  public removeBreakpoint(address: number): void {
-    this.sendCommand("removeBreakpoint", { address });
+  public async removeBreakpoint(address: number): Promise<void> {
+    await this.sendRpcCommand("removeBreakpoint", { address });
   }
 
-  public setWatchpoint(
+  public async setWatchpoint(
     address: number,
     ignores = 0,
     options?: WatchpointOptions,
-  ): void {
-    this.sendCommand("setWatchpoint", { address, ignores, ...options });
+  ): Promise<void> {
+    await this.sendRpcCommand("setWatchpoint", { address, ignores, ...options });
   }
 
-  public removeWatchpoint(address: number): void {
-    this.sendCommand("removeWatchpoint", { address });
+  public async removeWatchpoint(address: number): Promise<void> {
+    await this.sendRpcCommand("removeWatchpoint", { address });
   }
 
-  public setRegisterWatch(regIndex: number): void {
-    this.sendCommand("setRegisterWatch", { regIndex });
+  public async setRegisterWatch(regIndex: number): Promise<void> {
+    await this.sendRpcCommand("setRegisterWatch", { regIndex });
   }
 
-  public removeRegisterWatch(regIndex: number): void {
-    this.sendCommand("removeRegisterWatch", { regIndex });
+  public async removeRegisterWatch(regIndex: number): Promise<void> {
+    await this.sendRpcCommand("removeRegisterWatch", { regIndex });
   }
 
-  public resetWatchpoints(): void {
-    this.sendCommand("resetWatchpoints");
+  public async resetWatchpoints(): Promise<void> {
+    await this.sendRpcCommand("resetWatchpoints");
   }
 
-  public setCatchpoint(vector: number, ignores = 0): void {
-    this.sendCommand("setCatchpoint", { vector, ignores });
+  public async setCatchpoint(vector: number, ignores = 0): Promise<void> {
+    await this.sendRpcCommand("setCatchpoint", { vector, ignores });
   }
 
-  public removeCatchpoint(vector: number): void {
-    this.sendCommand("removeCatchpoint", { vector });
+  public async removeCatchpoint(vector: number): Promise<void> {
+    await this.sendRpcCommand("removeCatchpoint", { vector });
   }
 
   // --- Memory protection (breaks on writes to RAM outside an allow-list of
   // ranges, excluding the low-memory vector table) ---
 
-  public setMemoryProtectionEnabled(enabled: boolean): void {
-    this.sendCommand("setMemoryProtectionEnabled", { enabled });
+  public async setMemoryProtectionEnabled(enabled: boolean): Promise<void> {
+    await this.sendRpcCommand("setMemoryProtectionEnabled", { enabled });
   }
 
-  public resetMemoryProtectionRanges(): void {
-    this.sendCommand("resetMemoryProtectionRanges");
+  public async resetMemoryProtectionRanges(): Promise<void> {
+    await this.sendRpcCommand("resetMemoryProtectionRanges");
   }
 
-  public addMemoryProtectionRange(address: number, size: number): void {
-    this.sendCommand("addMemoryProtectionRange", { address, size });
+  public async addMemoryProtectionRange(address: number, size: number): Promise<void> {
+    await this.sendRpcCommand("addMemoryProtectionRange", { address, size });
   }
 
-  public seedResidentLibraries(): void {
-    this.sendCommand("seedMemoryProtectionLibraries");
+  public async seedResidentLibraries(): Promise<void> {
+    await this.sendRpcCommand("seedMemoryProtectionLibraries");
   }
 
   // --- CPU / registers ---
 
-  public enableCpuLogging(enabled: boolean): void {
-    this.sendCommand("enableCpuLogging", { enabled });
+  public async enableCpuLogging(enabled: boolean): Promise<void> {
+    await this.sendRpcCommand("enableCpuLogging", { enabled });
   }
 
   /**
@@ -455,7 +454,7 @@ export abstract class WebviewEmulator implements Emulator {
   public async pokeCustom16(
     address: number,
     value: number,
-  ): Promise<RegisterSetStatus> {
+  ): Promise<void> {
     this.customRegisters = undefined; // Clear cache
     return this.sendRpcCommand("pokeCustom16", { address, value });
   }
@@ -463,7 +462,7 @@ export abstract class WebviewEmulator implements Emulator {
   public async pokeCustom32(
     address: number,
     value: number,
-  ): Promise<RegisterSetStatus> {
+  ): Promise<void> {
     this.customRegisters = undefined; // Clear cache
     return this.sendRpcCommand("pokeCustom32", { address, value });
   }

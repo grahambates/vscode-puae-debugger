@@ -449,7 +449,7 @@ export class MemoryViewerProvider {
         // A memory-viewer watchpoint only lives as long as the current view -
         // navigating elsewhere removes it so nothing is left behind to find.
         if (panel.watchedAddress !== undefined) {
-          this.emulator.removeWatchpoint(panel.watchedAddress);
+          await this.emulator.removeWatchpoint(panel.watchedAddress);
           panel.watchedAddress = undefined;
           this.sendStateToWebview(panel.webviewPanel, { watchedAddress: null });
         }
@@ -539,14 +539,14 @@ export class MemoryViewerProvider {
   ): Promise<void> {
     try {
       if (panel.watchedAddress === address) {
-        this.emulator.removeWatchpoint(address);
+        await this.emulator.removeWatchpoint(address);
         panel.watchedAddress = undefined;
         this.sendStateToWebview(panel.webviewPanel, { watchedAddress: null });
       } else {
         if (panel.watchedAddress !== undefined) {
-          this.emulator.removeWatchpoint(panel.watchedAddress);
+          await this.emulator.removeWatchpoint(panel.watchedAddress);
         }
-        this.emulator.setWatchpoint(address);
+        await this.emulator.setWatchpoint(address);
         panel.watchedAddress = address;
         this.sendStateToWebview(panel.webviewPanel, { watchedAddress: address });
       }
@@ -562,7 +562,9 @@ export class MemoryViewerProvider {
    */
   private removeWatchpoint(panel: MemoryViewerPanel): void {
     if (panel.watchedAddress !== undefined) {
-      this.emulator.removeWatchpoint(panel.watchedAddress);
+      void this.emulator.removeWatchpoint(panel.watchedAddress).catch((error) => {
+        console.error("Failed to remove memory viewer watchpoint:", error);
+      });
       panel.watchedAddress = undefined;
     }
   }

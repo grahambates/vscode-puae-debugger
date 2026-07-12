@@ -275,8 +275,10 @@ export class DebugAdapter extends LoggingDebugSession {
     if (DebugAdapter.activeAdapter === this) {
       DebugAdapter.activeAdapter = undefined;
     }
-    this.emulator.run(); // unpause emulator if we're leaving it open
-    this.breakpointManager?.clearAll();
+    void Promise.resolve(this.emulator.run()).catch(() => undefined); // best effort while disposing
+    if (this.breakpointManager) {
+      void Promise.resolve(this.breakpointManager.clearAll()).catch(() => undefined);
+    }
     this.disposables.forEach((d) => d?.dispose());
     this.disposables = [];
   }
@@ -473,9 +475,9 @@ export class DebugAdapter extends LoggingDebugSession {
     }
   }
 
-  protected configurationDoneRequest(
+  protected async configurationDoneRequest(
     response: DebugProtocol.ConfigurationDoneResponse,
-  ): void {
+  ): Promise<void> {
     // All breakpoints etc are set by client now and we can continue...
     if (this.stopOnEntry && this.fastLoad) {
       // Fast load: send stop on entry event - we're already at this address
@@ -489,19 +491,19 @@ export class DebugAdapter extends LoggingDebugSession {
       // Resume emulator
       // even if stopOnEntry is set, we need to run to hit the temporary breakpoin in normal mode
       this.sendEvent(new OutputEvent(`Program started\n`));
-      this.emulator.run();
+      await this.emulator.run();
     }
     this.sendResponse(response);
   }
 
-  protected continueRequest(response: DebugProtocol.ContinueResponse): void {
-    this.emulator.run();
+  protected async continueRequest(response: DebugProtocol.ContinueResponse): Promise<void> {
+    await this.emulator.run();
     response.body = { allThreadsContinued: true };
     this.sendResponse(response);
   }
 
-  protected pauseRequest(response: DebugProtocol.PauseResponse): void {
-    this.emulator.pause();
+  protected async pauseRequest(response: DebugProtocol.PauseResponse): Promise<void> {
+    await this.emulator.pause();
     this.sendResponse(response);
   }
 
@@ -654,7 +656,7 @@ export class DebugAdapter extends LoggingDebugSession {
       }
       this.stepping = true;
       this.isRunning = true;
-      this.emulator.stepInto();
+      await this.emulator.stepInto();
       this.sendResponse(response);
     } catch (err) {
       this.sendError(
@@ -698,11 +700,11 @@ export class DebugAdapter extends LoggingDebugSession {
     // set tmp breakpoint on next instruction, otherwise just use built-in stepInto.
     const isBranch = currInst.match(/^(jsr|bsr|dbra)/i);
     if (nextAddr !== undefined && isBranch) {
-      this.getBreakpointManager().setTmpBreakpoint(nextAddr, "step");
-      this.emulator.run();
+      await this.getBreakpointManager().setTmpBreakpoint(nextAddr, "step");
+      await this.emulator.run();
     } else {
       this.stepping = true;
-      this.emulator.stepInto();
+      await this.emulator.stepInto();
     }
     this.isRunning = true;
   }
@@ -752,13 +754,13 @@ export class DebugAdapter extends LoggingDebugSession {
 
       // stack 0 is pc
       if (stack[1]) {
-        this.getBreakpointManager().setTmpBreakpoint(stack[1][1], "step");
+        await this.getBreakpointManager().setTmpBreakpoint(stack[1][1], "step");
         this.isRunning = true;
-        this.emulator.run();
+        await this.emulator.run();
       } else {
         this.stepping = true;
         this.isRunning = true;
-        this.emulator.stepInto();
+        await this.emulator.stepInto();
       }
       this.sendResponse(response);
     } catch (err) {
@@ -863,12 +865,12 @@ export class DebugAdapter extends LoggingDebugSession {
     }
   }
 
-  protected setFunctionBreakPointsRequest(
+  protected async setFunctionBreakPointsRequest(
     response: DebugProtocol.SetFunctionBreakpointsResponse,
     args: DebugProtocol.SetFunctionBreakpointsArguments,
-  ): void {
+  ): Promise<void> {
     try {
-      const breakpoints = this.getBreakpointManager().setFunctionBreakpoints(
+      const breakpoints = await this.getBreakpointManager().setFunctionBreakpoints(
         args.breakpoints ?? [],
       );
 
@@ -958,7 +960,7 @@ export class DebugAdapter extends LoggingDebugSession {
     args: { dataId: string; length?: number },
   ): Promise<void> {
     if (command === "setWatchpointLength") {
-      this.getBreakpointManager().setWatchpointLengthOverride(
+      await this.getBreakpointManager().setWatchpointLengthOverride(
         args.dataId,
         args.length,
       );
@@ -1139,10 +1141,10 @@ export class DebugAdapter extends LoggingDebugSession {
     }
   }
 
-  protected setExceptionBreakPointsRequest(
+  protected async setExceptionBreakPointsRequest(
     response: DebugProtocol.SetExceptionBreakpointsResponse,
     args: DebugProtocol.SetExceptionBreakpointsArguments,
-  ): void {
+  ): Promise<void> {
     try {
       if (!this.breakpointManager) {
         // attach() hasn't constructed breakpointManager yet (it can race
@@ -1159,7 +1161,7 @@ export class DebugAdapter extends LoggingDebugSession {
         return;
       }
 
-      const breakpoints = this.breakpointManager.setExceptionBreakpoints(
+      const breakpoints = await this.breakpointManager.setExceptionBreakpoints(
         args.filters,
       );
 
@@ -1283,7 +1285,7 @@ export class DebugAdapter extends LoggingDebugSession {
     try {
       // Ensure the CPU is halted before poking memory/registers — the emulator is
       // still running freely at this point (right after exec-ready).
-      this.emulator.pause();
+      await this.emulator.pause();
       // Clear any watchpoints/register watches left armed from a previous
       // debug session — the webview (and its emulator state) can be reused
       // across sessions, but this session's BreakpointManager starts fresh
@@ -1293,7 +1295,7 @@ export class DebugAdapter extends LoggingDebugSession {
       // signal that lets VS Code start sending this session's own
       // setDataBreakpoints requests) so it can't undo what this session
       // just armed.
-      this.emulator.resetWatchpoints();
+      await this.emulator.resetWatchpoints();
       this.loadedProgram = await loadAmigaProgram(this.emulator, this.hunks);
       logger.log(
         `Program loaded at ${formatHex(this.loadedProgram.entryPoint)}`,
@@ -1302,12 +1304,12 @@ export class DebugAdapter extends LoggingDebugSession {
       // stack budget. Enablement itself is controlled separately, via the
       // "Write to unallocated memory" exception breakpoint filter (see
       // breakpointManager.ts's setExceptionBreakpoints).
-      this.emulator.resetMemoryProtectionRanges();
+      await this.emulator.resetMemoryProtectionRanges();
       for (const alloc of this.loadedProgram.allocations) {
-        this.emulator.addMemoryProtectionRange(alloc.address, alloc.size);
+        await this.emulator.addMemoryProtectionRange(alloc.address, alloc.size);
       }
       if (this.loadedProgram.stackRange) {
-        this.emulator.addMemoryProtectionRange(
+        await this.emulator.addMemoryProtectionRange(
           this.loadedProgram.stackRange.address,
           this.loadedProgram.stackRange.size,
         );
@@ -1330,9 +1332,9 @@ export class DebugAdapter extends LoggingDebugSession {
       // ranges seeded automatically at boot (see webviewEmulator.ts) — put
       // them back so writes into GfxBase/IntuitionBase/DosBase/etc. (e.g. a
       // LoadView call) aren't misflagged alongside this program's own hunks.
-      this.emulator.seedResidentLibraries();
+      await this.emulator.seedResidentLibraries();
       const offsets = this.loadedProgram.allocations.map((s) => s.address);
-      this.attach(offsets);
+      await this.attach(offsets);
     } catch (error) {
       this.sendEvent(
         new OutputEvent(
@@ -1350,7 +1352,7 @@ export class DebugAdapter extends LoggingDebugSession {
    * Creates source maps from either DWARF debug info or Amiga hunk debug data.
    * Sets entry breakpoint if stopOnEntry is enabled.
    */
-  private attach(offsets: number[]) {
+  private async attach(offsets: number[]): Promise<void> {
     try {
       this.segmentOffsets = offsets;
       switch (this.debugFormat) {
@@ -1391,7 +1393,7 @@ export class DebugAdapter extends LoggingDebugSession {
         this.sourceMap,
       );
       if (this.pendingExceptionFilters) {
-        this.breakpointManager.setExceptionBreakpoints(
+        await this.breakpointManager.setExceptionBreakpoints(
           this.pendingExceptionFilters,
         );
         this.pendingExceptionFilters = undefined;
@@ -1409,7 +1411,7 @@ export class DebugAdapter extends LoggingDebugSession {
       );
 
       if (this.stopOnEntry && !this.fastLoad) {
-        this.breakpointManager.setTmpBreakpoint(offsets[0], "entry");
+        await this.breakpointManager.setTmpBreakpoint(offsets[0], "entry");
       }
       this.sendEvent(new InitializedEvent());
     } catch (error) {
@@ -1522,7 +1524,7 @@ export class DebugAdapter extends LoggingDebugSession {
         } else {
           this.stepping = true;
           this.isRunning = true;
-          this.emulator.stepInto();
+          await this.emulator.stepInto();
         }
         return;
       }
@@ -1563,7 +1565,7 @@ export class DebugAdapter extends LoggingDebugSession {
       return;
     }
 
-    const result = this.breakpointManager.handleBreakpointStop(message);
+    const result = await this.breakpointManager.handleBreakpointStop(message);
 
     // Line-granularity step-over: the JSR/BSR return temp BP fired ("step").
     // Check whether the source line has changed; if not, keep looping.
@@ -1606,7 +1608,7 @@ export class DebugAdapter extends LoggingDebugSession {
         }
         if (!shouldStop) {
           this.lineStepStart = null;
-          this.emulator.run();
+          await this.emulator.run();
           return;
         }
       }
@@ -1619,7 +1621,7 @@ export class DebugAdapter extends LoggingDebugSession {
       // setBreakpoints semantics.
       if (this.breakpointManager.consumeIgnore(hitId)) {
         this.lineStepStart = null;
-        this.emulator.run();
+        await this.emulator.run();
         return;
       }
 
@@ -1632,7 +1634,7 @@ export class DebugAdapter extends LoggingDebugSession {
           new OutputEvent(`${await this.formatLogMessage(logMessage)}\n`),
         );
         this.lineStepStart = null;
-        this.emulator.run();
+        await this.emulator.run();
         return;
       }
     }

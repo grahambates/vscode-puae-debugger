@@ -1,10 +1,10 @@
-// Webview-side RPC dispatcher for the PUAE/ami9000 wasm backend.
+﻿// Webview-side RPC dispatcher for the PUAE/ami9000 wasm backend.
 //
 // Implements the same {command, args:{..., _rpcId?}} -> postMessage contract
 // as the vAmiga emulator project's vAmiga_ui.js window.addEventListener('message', ...)
-// handler (see lines ~2589-2773 there): one-way commands are applied directly,
-// commands with `args._rpcId` reply via postMessage({type:'rpcResponse', id,
-// result}), where `result` is either the value or `{error: message}`.
+// handler (see lines ~2589-2773 there). Every command is acknowledged via
+// postMessage({type:'rpcResponse', id, result}), where `result` is either the
+// command's typed value or `{error: message}`.
 //
 // setupRpcDispatcher(M, postMessage) returns { handleMessage(message) } so
 // that test_g3.mjs can drive it directly with a mock postMessage, and
@@ -13,19 +13,25 @@
 
 import type { PuaeModule } from "./types";
 import { srFlags } from "../shared/cpuFlags";
+import type {
+  PuaeDispatcherArgs,
+  PuaeInboundCommand,
+  PuaeRpcResult,
+  PuaeRpcResultValue,
+} from "../../shared/puaeRpcProtocol";
 
-// Must match frontend_shim.c's `#define MEM_BUF_CAP 4096` — wasm_read_memory
+// Must match frontend_shim.c's `#define MEM_BUF_CAP 4096` â€” wasm_read_memory
 // clamps to this per call, so larger reads are chunked below.
 const MEM_BUF_CAP = 4096;
 
 // VS Code's webview<->extension-host postMessage bridge does not structured-clone
-// TypedArrays — it flattens them into plain per-element array-likes (confirmed by
+// TypedArrays â€” it flattens them into plain per-element array-likes (confirmed by
 // profilerManager.ts's `u8()` helper needing to reconstruct a Uint8Array from
 // whatever arrives), which costs roughly 800ms/MB and dominates the profiler's
 // getProfileData/getProfileRegs round-trip once a capture has many in-range
 // instructions (unthrottled fast-RAM code can retire far more instructions per
 // profiled frame than chip-RAM code, ballooning these buffers towards their
-// multi-MB caps) — see the CPU profiler "purely fast RAM" hang investigation.
+// multi-MB caps) â€” see the CPU profiler "purely fast RAM" hang investigation.
 // A base64 string crosses that same bridge as a single primitive value instead of
 // per-element, which is dramatically cheaper. Chunked to avoid blowing the call
 // stack on String.fromCharCode(...bytes) for large buffers.
@@ -42,7 +48,7 @@ function uint8ToBase64(bytes: Uint8Array): string {
 // (see captureSnapshot/restoreSnapshot below). Snapshot size is roughly
 // chipmem + bogomem + fastmem + z3fastmem + ~128KB overhead, e.g. ~1.6MB for
 // a default A500-like config up to ~10MB for an A1200-like config with 8MB
-// fast RAM — so 40 history entries is ~65-400MB. Entries come from both
+// fast RAM â€” so 40 history entries is ~65-400MB. Entries come from both
 // command-boundary snapshots (run/stepInto/eof/eol) and periodic
 // checkpoints taken during a free-run (see pushSnapshot below and
 // app.ts's frame()), giving ~40s of rewindable history at the latter's
@@ -93,7 +99,7 @@ function readRegs(M: PuaeModule): Uint32Array {
 }
 
 // Captures/restores full emulator state via the standard libretro
-// retro_serialize/retro_unserialize API (wasm_serialize/wasm_unserialize) —
+// retro_serialize/retro_unserialize API (wasm_serialize/wasm_unserialize) â€”
 // the same mechanism RetroArch uses for its "rewind" feature. Used by
 // stepBack/continueReverse below.
 function captureSnapshot(M: PuaeModule): Uint8Array {
@@ -156,7 +162,7 @@ function restoreCheckpoint(M: PuaeModule, entry: CheckpointEntry): void {
 // during the replay (e.g. eof/eol callbacks stay suppressed). Used for the
 // final "land on target" replay of stepBack/continueReverse/stepBackFrame, so
 // the on-screen canvas reflects the landed-on state instead of whatever was
-// on screen before the rewind — the restored checkpoint doesn't include
+// on screen before the rewind â€” the restored checkpoint doesn't include
 // rendered pixels. count == 0 is a no-op.
 function replayInstructionsVideo(M: PuaeModule, count: bigint): void {
   M._wasm_replay_instructions_video(Number(count));
@@ -186,7 +192,7 @@ function replayScanFrame(M: PuaeModule, count: bigint): bigint | null {
 }
 
 // Pure predicate: exec.library's AllocMem LVO is a jmp instruction, GfxBase
-// is set, and the CPU is out of supervisor mode — the same three checks
+// is set, and the CPU is out of supervisor mode â€” the same three checks
 // vAmiga_ui.js's tryExec uses. No side effects; safe to call in a tight loop.
 export function isExecReady(M: PuaeModule): boolean {
   const execBase = peekMem(M, 4, 4);
@@ -223,9 +229,9 @@ export interface CurrentProcess {
 // Port of vAmiga's wasm_get_current_process() (main.cpp ~4106-4203). Walks
 // ExecBase -> ThisTask -> CLI -> command name + seglist, returning null unless
 // the active task is a CLI process running `expectedCommand` (the program's
-// basename — app.ts's MainConfig.expectedProcessName, run via DH0:'s
+// basename â€” app.ts's MainConfig.expectedProcessName, run via DH0:'s
 // s/startup-sequence, whether DH0: came from the auto-generated single-exe
-// disk or a mounted hardDrivePath directory) — else {command, segments: [...]}.
+// disk or a mounted hardDrivePath directory) â€” else {command, segments: [...]}.
 export function getCurrentProcess(M: PuaeModule, expectedCommand: string = "file"): CurrentProcess | null {
   const execbase = peekMem(M, 4, 4);
   const activetask = peekMem(M, execbase + 276, 4);
@@ -322,7 +328,7 @@ export function getCurrentStopMessage(M: PuaeModule): StopMessage {
         addr: buf[1] >>> 0,
         value: buf[2] >>> 0,
         sizeBits: buf[3] >>> 0,
-        // 0 = CPU, 1 = DMA (Blitter/disk) — see e9k-lib.h's
+        // 0 = CPU, 1 = DMA (Blitter/disk) â€” see e9k-lib.h's
         // E9K_MEMPROTECT_SOURCE_* and memory.c's hook call sites.
         source: buf[4] >>> 0,
       },
@@ -339,9 +345,8 @@ export function getCurrentStopMessage(M: PuaeModule): StopMessage {
 }
 
 export interface RpcMessage {
-  command: string;
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  args?: Record<string, any>;
+  command: PuaeInboundCommand;
+  args?: PuaeDispatcherArgs;
 }
 
 export interface RpcDispatcher {
@@ -359,16 +364,16 @@ export function setupRpcDispatcher(
 
   // Persistent array of checkpoint "anchors" for stepBack/continueReverse
   // (see captureSnapshot/restoreCheckpoint/replayInstructionsVideo/replayScan
-  // above), sorted ascending by instrCount — current position is read live
+  // above), sorted ascending by instrCount â€” current position is read live
   // via readInstrCount(M), not tracked by popping entries. Each entry is
-  // { bytes, pc, instrCount } — pc/instrCount are the state at capture time,
+  // { bytes, pc, instrCount } â€” pc/instrCount are the state at capture time,
   // for inspection/debugging of what's in the history.
   const snapshotHistory: CheckpointEntry[] = [];
 
   // Captures the current state onto snapshotHistory as a new anchor for
   // stepBack/continueReverse to replay from. Called both before any command
   // that advances execution (run, stepInto, eof, eol) and periodically during
-  // a free-run (see app.ts's frame(), ~once per emulated second) —
+  // a free-run (see app.ts's frame(), ~once per emulated second) â€”
   // giving rewindable history that extends into a long `continue`, not just
   // back to its start. Shared ring buffer for both purposes: heavy
   // single-stepping via stepInto can evict periodic continue-checkpoints from
@@ -390,7 +395,7 @@ export function setupRpcDispatcher(
     if (snapshotHistory.length > MAX_SNAPSHOT_HISTORY) snapshotHistory.shift();
   }
 
-  function getCpuInfo(): Record<string, string> {
+  function getCpuInfo(): PuaeRpcResult<"getCpuInfo"> {
     const n = M._wasm_read_regs();
     const ptr = M._wasm_get_reg_buf();
     const regs = new Uint32Array(M.HEAPU32.buffer, ptr, n);
@@ -406,7 +411,7 @@ export function setupRpcDispatcher(
     for (const name of ["isp", "msp", "vbr", "irc", "sfc", "dfc", "cacr", "caar"]) {
       info[name] = "0x00000000";
     }
-    return info;
+    return info as unknown as PuaeRpcResult<"getCpuInfo">;
   }
 
   function setRegister(name: string, value: number): { value: string } {
@@ -687,7 +692,7 @@ export function setupRpcDispatcher(
     // Chip RAM size is configurable (OpenOptions.chipRam / configFilePath /
     // emulatorOptions.puae's chipmem_size). The chip address space as seen in
     // cpuMemSrc (CHIP + CHIP_MIRROR banks) reflects the Agnus revision's
-    // addressable range, not the installed RAM size — e.g. it's a fixed 2MB
+    // addressable range, not the installed RAM size â€” e.g. it's a fixed 2MB
     // for the default A500/OCS_OLD config even though chipmem_size is 512K
     // (the extra range mirrors the installed RAM). So derive the mask
     // directly from currprefs.chipmem.size via wasm_get_chip_mem_size.
@@ -695,7 +700,7 @@ export function setupRpcDispatcher(
 
     return {
       // This backend always boots a 512KB Kickstart 1.3 ROM directly mapped at
-      // 0xF80000-0xFFFFFF — no boot ROM, WOM, or extended ROM.
+      // 0xF80000-0xFFFFFF â€” no boot ROM, WOM, or extended ROM.
       hasRom: true,
       hasWom: false,
       hasExt: false,
@@ -740,7 +745,7 @@ export function setupRpcDispatcher(
   }
 
   // Call-site PCs of the live shadow call-stack (see puae_debug_read_callstack
-  // / puae_debug.c), outermost-first — the same order the C side stores them
+  // / puae_debug.c), outermost-first â€” the same order the C side stores them
   // in, i.e. index 0 is the oldest active call, not the current PC.
   function getCallstack(): number[] {
     const n = M._wasm_read_callstack();
@@ -754,7 +759,7 @@ export function setupRpcDispatcher(
 
   // addr_mask_operand is a bitmask comparison in e9k_debug_watchpointMatch
   // ((accessAddr & mask) == (wp->addr & mask)), not an arbitrary byte-range
-  // check — so `length` can only be expressed by rounding up to the next
+  // check â€” so `length` can only be expressed by rounding up to the next
   // power of 2 and masking off its low bits. The *effective* watched
   // region is [address rounded down to that boundary, +size), which can
   // start slightly before `address` rather than exactly at it. length=1
@@ -794,7 +799,7 @@ export function setupRpcDispatcher(
   }
 
   // Register watches: break when a CPU register's own value changes (D0-D7/
-  // A0-A7 only — see e9k-lib.h's E9K_REGWATCH_COUNT comment for why there's
+  // A0-A7 only â€” see e9k-lib.h's E9K_REGWATCH_COUNT comment for why there's
   // no read/write/length distinction the way memory watchpoints have one).
   function setRegisterWatch(regIndex: number): void {
     M._wasm_add_regwatch(regIndex >>> 0);
@@ -818,12 +823,14 @@ export function setupRpcDispatcher(
 
   function handleMessage(message: RpcMessage): void {
     if (!message || !message.command) return;
-    const args = message.args || {};
+    const args = (message.args || {}) as PuaeDispatcherArgs;
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const rpcRequest = (resultFn: () => any) => {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const res: any = { type: "rpcResponse", id: args._rpcId };
+    const rpcRequest = (resultFn: () => PuaeRpcResultValue) => {
+      const res: {
+        type: "rpcResponse";
+        id: string | undefined;
+        result?: PuaeRpcResultValue | { error: string };
+      } = { type: "rpcResponse", id: args._rpcId };
       try {
         res.result = resultFn();
       } catch (error) {
@@ -832,22 +839,24 @@ export function setupRpcDispatcher(
       postMessage(res);
     };
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const rpcRequestAsync = (resultFn: () => Promise<any>) => {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const res: any = { type: "rpcResponse", id: args._rpcId };
+    const rpcRequestAsync = (resultFn: () => Promise<PuaeRpcResultValue>) => {
+      const res: {
+        type: "rpcResponse";
+        id: string | undefined;
+        result?: PuaeRpcResultValue | { error: string };
+      } = { type: "rpcResponse", id: args._rpcId };
       resultFn()
         .then(result => { res.result = result; postMessage(res); })
         .catch(error => { res.result = { error: error.message }; postMessage(res); });
     };
 
     switch (message.command) {
-      // --- One-way commands ---
+      // --- Execution and mutation commands ---
       case "pause":
         M._wasm_pause();
         // Mirrors vAmiga_ui.js's wasm_halt(true): tells the DAP adapter the
         // emulator is now paused so it can send a StoppedEvent("pause").
-        // args.silent skips this — used by profilerManager.ts's capture
+        // args.silent skips this â€” used by profilerManager.ts's capture
         // pause/resume bracket, which is an internal implementation detail
         // (stopping contention with the render/tick loop during a capture),
         // not a real debugging pause; sending a StoppedEvent for it made VS
@@ -855,13 +864,10 @@ export function setupRpcDispatcher(
         // profiler capture, popping the editor in front of the profiler
         // webview the user just opened.
         if (!args.silent) postMessage({ type: "emulator-state", state: "paused" });
-        // Also ack via rpcRequest when called with _rpcId (e.g. profilerManager.ts pausing
-        // around a capture) — harmless no-op for plain one-way send() callers, since
-        // rpcRequest posts id: undefined then, which no pending sendRpcCommand matches.
         rpcRequest(() => ({ ok: true }));
         break;
       case "run":
-        // args.silent (see "pause" above) also skips pushSnapshot — the paused
+        // args.silent (see "pause" above) also skips pushSnapshot â€” the paused
         // window it brackets did no execution of its own, so there's nothing
         // meaningful to checkpoint, and doing so would inject an internal
         // capture-bracket point into the user's rewind history.
@@ -870,7 +876,7 @@ export function setupRpcDispatcher(
         // Mirrors vAmiga_ui.js's continue path: tells the DAP adapter the
         // emulator is running again so it can send a ContinuedEvent.
         if (!args.silent) postMessage({ type: "emulator-state", state: "running" });
-        rpcRequest(() => ({ ok: true })); // see "pause"'s comment
+        rpcRequest(() => ({ ok: true }));
         break;
       // Lets a caller (e.g. profilerManager.ts, bracketing a capture) check whether the
       // emulator was already paused before deciding whether to resume it afterwards.
@@ -890,26 +896,31 @@ export function setupRpcDispatcher(
         // Tells the DAP adapter the step completed so it can send a
         // StoppedEvent("step") (handleStep, debugAdapter.ts).
         postMessage({ type: "emulator-state", state: "stopped", message: getCurrentStopMessage(M) });
+        rpcRequest(() => ({ ok: true }));
         break;
       }
       case "eof":
         // wasm_eof() registers a one-shot vblank callback and resumes.
         pushSnapshot();
         M._wasm_eof();
+        rpcRequest(() => ({ ok: true }));
         break;
       case "eol":
         // wasm_eol() registers a one-shot hblank (per-scanline) callback and resumes.
         pushSnapshot();
         M._wasm_eol();
+        rpcRequest(() => ({ ok: true }));
         break;
       case "setBreakpoint":
         if (args.ignores) {
           console.warn("[puae_rpc] setBreakpoint: ignore counts not supported, breakpoint will fire every time");
         }
         M._wasm_add_breakpoint(args.address >>> 0);
+        rpcRequest(() => ({ ok: true }));
         break;
       case "removeBreakpoint":
         M._wasm_remove_breakpoint(args.address >>> 0);
+        rpcRequest(() => ({ ok: true }));
         break;
       case "setWatchpoint":
         if (args.ignores) {
@@ -920,46 +931,58 @@ export function setupRpcDispatcher(
           write: args.write,
           length: args.length,
         });
+        rpcRequest(() => ({ ok: true }));
         break;
       case "removeWatchpoint":
         removeWatchpoint(args.address >>> 0);
+        rpcRequest(() => ({ ok: true }));
         break;
       case "setRegisterWatch":
         setRegisterWatch(args.regIndex >>> 0);
+        rpcRequest(() => ({ ok: true }));
         break;
       case "removeRegisterWatch":
         removeRegisterWatch(args.regIndex >>> 0);
+        rpcRequest(() => ({ ok: true }));
         break;
       case "resetWatchpoints":
         resetWatchpoints();
+        rpcRequest(() => ({ ok: true }));
         break;
       case "setCatchpoint":
         if (args.ignores) {
           console.warn("[puae_rpc] setCatchpoint: ignore counts not supported, catchpoint will fire every time");
         }
         M._wasm_set_catchpoint(args.vector >>> 0);
+        rpcRequest(() => ({ ok: true }));
         break;
       case "removeCatchpoint":
         M._wasm_remove_catchpoint(args.vector >>> 0);
+        rpcRequest(() => ({ ok: true }));
         break;
       case "setMemoryProtectionEnabled":
         M._wasm_memprotect_set_enabled(args.enabled ? 1 : 0);
+        rpcRequest(() => ({ ok: true }));
         break;
       case "resetMemoryProtectionRanges":
         M._wasm_memprotect_reset_ranges();
+        rpcRequest(() => ({ ok: true }));
         break;
       case "addMemoryProtectionRange":
         M._wasm_memprotect_add_range(args.address >>> 0, args.size >>> 0);
+        rpcRequest(() => ({ ok: true }));
         break;
       case "seedMemoryProtectionLibraries":
         M._wasm_memprotect_seed_libraries();
+        rpcRequest(() => ({ ok: true }));
         break;
       case "enableCpuLogging":
         M._wasm_enable_cpu_logging(args.enabled ? 1 : 0);
+        rpcRequest(() => ({ ok: true }));
         break;
       case "load":
         // Reuse the already-booted wasm module + webview for a new debug
-        // session: hard-reset the machine (uae_reset(1,0) — reboots
+        // session: hard-reset the machine (uae_reset(1,0) â€” reboots
         // Kickstart, clears RAM) and re-run the boot warm-up to reach
         // "exec ready" again, then re-signal exec-ready so the extension
         // re-runs fastLoad injection for the new program. Mirrors
@@ -967,16 +990,16 @@ export function setupRpcDispatcher(
         M._wasm_reset();
         // Process the hard reset: quit_program flips from negative ->
         // UAE_RESET_HARD on the first tick (after run_func), then is
-        // actioned (custom_reset, m68k_reset2, memory_clear) on the second —
+        // actioned (custom_reset, m68k_reset2, memory_clear) on the second â€”
         // a couple of extra ticks give margin (see test_reset.mjs).
         for (let i = 0; i < 4; i++) M._wasm_tick();
         // The hard reset invalidated every previously-tracked AllocMem range
-        // (and possibly moved execBase) — drop them and restart the watch
+        // (and possibly moved execBase) â€” drop them and restart the watch
         // fresh, same as the initial boot path. Reset first so no stale
         // range survives even if a tick below catches an AllocMem call
         // before the reset-ranges call would otherwise have landed.
         M._wasm_memprotect_reset_ranges();
-        // Tick until AmigaOS is ready rather than a fixed count — mirrors
+        // Tick until AmigaOS is ready rather than a fixed count â€” mirrors
         // vAmiga_ui.js's tryExec condition. 1000 ticks (~20 PAL seconds) is
         // a generous safety ceiling that should never be reached in practice.
         // Poll the memory-protection watch every tick too (it validates
@@ -994,13 +1017,14 @@ export function setupRpcDispatcher(
           if (!memProtectTrackingStarted) M._wasm_memprotect_start_tracking();
         }
         // GfxBase is confirmed set if isExecReady() actually passed (vs. the
-        // loop timing out) — safe to walk the library list now.
+        // loop timing out) â€” safe to walk the library list now.
         if (isExecReady(M)) M._wasm_memprotect_seed_libraries();
         // Snapshots captured before the reset reference the previous
-        // program's RAM/state — restoring them now would be confusing/
+        // program's RAM/state â€” restoring them now would be confusing/
         // incorrect, so drop them.
         snapshotHistory.length = 0;
         postMessage({ type: "exec-ready" });
+        rpcRequest(() => ({ ok: true }));
         break;
 
       // --- RPC commands ---
@@ -1022,7 +1046,10 @@ export function setupRpcDispatcher(
         rpcRequest(() => ({ data: readMemory(args.address >>> 0, args.count) }));
         break;
       case "writeMemory":
-        rpcRequest(() => writeMemory(args.address >>> 0, args.data));
+        rpcRequest(() => writeMemory(
+          args.address >>> 0,
+          args.data instanceof ArrayBuffer ? new Uint8Array(args.data) : args.data,
+        ));
         break;
       case "peek32":
         rpcRequest(() => peek(args.address, 4));
@@ -1112,7 +1139,7 @@ export function setupRpcDispatcher(
               return true;
             }
           }
-          // No breakpoint found — land at oldest checkpoint, signal "reached start".
+          // No breakpoint found â€” land at oldest checkpoint, signal "reached start".
           restoreCheckpoint(M, snapshotHistory[0]);
           return false;
         });
@@ -1121,13 +1148,13 @@ export function setupRpcDispatcher(
         // Steps back to the start of the current frame (the most recent
         // vblank strictly before the current instrCount). A frame boundary
         // recorded with instrCount==N means "vblank occurred just before
-        // instruction N retires" — it fires during a replay targeting N
+        // instruction N retires" â€” it fires during a replay targeting N
         // itself (before the break-check for instruction N). So to avoid
         // re-finding the boundary we're already paused at/just past, scan up
         // to `target = current - 1`, mirroring stepBack/continueReverse's
         // target computation. Walks back through snapshotHistory's
         // checkpoints (newest first); for each, scans the whole range up to
-        // `target` for frame boundaries — scanLastMatch's "last write wins"
+        // `target` for frame boundaries â€” scanLastMatch's "last write wins"
         // semantics mean this always yields the latest (closest-to-current)
         // boundary regardless of how large the scanned range is, so unlike
         // continueReverse no per-interval upper bound is needed. Returns
@@ -1169,7 +1196,7 @@ export function setupRpcDispatcher(
       case "startProfiling":
         rpcRequest(() => ({ ok: !!M._wasm_profile_start(args.numFrames ?? 1) }));
         break;
-      // `dataBase64` (not `data`) deliberately — see uint8ToBase64's comment above.
+      // `dataBase64` (not `data`) deliberately â€” see uint8ToBase64's comment above.
       case "getProfileData":
         rpcRequest(() => {
           const stats = JSON.parse(M.UTF8ToString(M._wasm_profile_get_stats()));
@@ -1186,8 +1213,8 @@ export function setupRpcDispatcher(
           };
         });
         break;
-      // Per-sample CPU register trace, parallel to (lockstep with) getProfileData's stream — one
-      // 19-word block (D0-D7, A0-A7, SR, PC, USP) per recorded instruction. `dataBase64` — see
+      // Per-sample CPU register trace, parallel to (lockstep with) getProfileData's stream â€” one
+      // 19-word block (D0-D7, A0-A7, SR, PC, USP) per recorded instruction. `dataBase64` â€” see
       // uint8ToBase64's comment above.
       case "getProfileRegs": {
         const ptr = M._wasm_profile_get_regs_buf_ptr();
@@ -1209,7 +1236,7 @@ export function setupRpcDispatcher(
         }));
         break;
       }
-      // The per-cycle event bitfield (BLITIRQ/COPPERWAKE/VB/etc.) — a parallel array, same index
+      // The per-cycle event bitfield (BLITIRQ/COPPERWAKE/VB/etc.) â€” a parallel array, same index
       // as getDmaData's grid, populated by the same wasm_profile_start() pass.
       case "getDmaEvents": {
         const ptr = M._wasm_dma_get_events_ptr();
@@ -1221,7 +1248,7 @@ export function setupRpcDispatcher(
         }));
         break;
       }
-      // Toggles debug_copper — the same flag the live DMA-overlay's COPPER channel button
+      // Toggles debug_copper â€” the same flag the live DMA-overlay's COPPER channel button
       // uses (app.ts's setChannel), but called directly here so the profiler can record the
       // executed copper instruction trace without enabling the visual overlay.
       case "copperTrackingEnable":
@@ -1258,8 +1285,8 @@ export function setupRpcDispatcher(
         });
         break;
       // Batch-encode all per-frame full-resolution RGBA frames into JPEG for hover-to-enlarge.
-      // Returns { data, width, height }[] — one entry per captured frame (matches getProfileThumbBatch).
-      // Encodes in parallel; each JPEG is typically 80–150 KB for a PAL Amiga frame at quality 0.85.
+      // Returns { data, width, height }[] â€” one entry per captured frame (matches getProfileThumbBatch).
+      // Encodes in parallel; each JPEG is typically 80â€“150 KB for a PAL Amiga frame at quality 0.85.
       case "getProfileFullFrameBatch":
         rpcRequestAsync(async () => {
           const count = M._wasm_profile_get_frame_count();
@@ -1278,7 +1305,7 @@ export function setupRpcDispatcher(
         });
         break;
       // Batch-encode all per-frame thumbnails saved by wasm_profile_start into JPEG.
-      // Returns an array of { data, width, height } — one entry per captured frame.
+      // Returns an array of { data, width, height } â€” one entry per captured frame.
       // All encodes run in parallel via Promise.all so the total cost is ~one JPEG encode.
       case "getProfileThumbBatch":
         rpcRequestAsync(async () => {
@@ -1297,7 +1324,7 @@ export function setupRpcDispatcher(
           return Promise.all(encodes);
         });
         break;
-      // Per-frame DMA grid from the multi-frame profile loop — serialized in C right after
+      // Per-frame DMA grid from the multi-frame profile loop â€” serialized in C right after
       // each retro_run() while the toggle buffer still holds that frame's data.
       case "getDmaFrame": {
         const fi = (args.frameIdx ?? 0) >>> 0;
@@ -1345,7 +1372,7 @@ export function setupRpcDispatcher(
 
         // Zorro II fast RAM (board 0). Unlike chip (fixed at 0) and slow (fixed at
         // 0xC00000), fast RAM's start address is autoconfig-assigned, so its Amiga
-        // address is reported alongside the bytes — see wasm_dma_get_fast_addr's
+        // address is reported alongside the bytes â€” see wasm_dma_get_fast_addr's
         // comment in puae_debug.c.
         const fastPtr = M._wasm_dma_get_fast_ptr();
         const fastSize = M._wasm_dma_get_fast_size();
@@ -1366,7 +1393,7 @@ export function setupRpcDispatcher(
         }
 
         // AGA's full 256-entry, already-24-bit palette (0x00RRGGBB per entry, native
-        // little-endian — no byte-swap needed, unlike `custom` above). All zero outside AGA
+        // little-endian â€” no byte-swap needed, unlike `custom` above). All zero outside AGA
         // mode; the profiler treats "all zero" the same as "absent" (see decodeAgaColors).
         M._wasm_read_aga_colors();
         const agaPtr = M._wasm_get_aga_colors_buf();
@@ -1376,7 +1403,7 @@ export function setupRpcDispatcher(
         break;
       }
       default:
-        console.warn(`[puae_rpc] unhandled command: ${message.command}`);
+        message.command satisfies never;
     }
   }
 

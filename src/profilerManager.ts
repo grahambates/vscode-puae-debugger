@@ -1,5 +1,6 @@
 import { decodeInstruction as m68kDecode, instructionToString } from "m68kdecode";
 import { SourceMap } from "./sourceMap";
+import type { PuaeRpcClient } from "./shared/puaeRpcProtocol";
 import { buildUnwindTable } from "./unwindTable";
 import {
   ProfileFrame,
@@ -36,9 +37,7 @@ function buildSymbolList(sourceMap: SourceMap): ISymbol[] {
 
 // Minimal RPC surface (WebviewEmulator.sendRpcCommand) — kept as an interface so the manager
 // is unit-testable with a mock and doesn't pull in the whole emulator/webview module.
-export interface ProfilerRpcClient {
-  sendRpcCommand<T = unknown, A = unknown>(command: string, args?: A, timeoutMs?: number): Promise<T>;
-}
+export type ProfilerRpcClient = PuaeRpcClient;
 
 // One captured instruction: the reconstructed call stack (leaf-first, as the
 // emulator emits it) and the cycles attributed to that instruction.
@@ -759,7 +758,7 @@ export class ProfilerManager {
     // already paused, so a session already stopped at a breakpoint stays stopped.
     let resumeAfterCapture = false;
     try {
-      const { paused } = await rpc.sendRpcCommand<{ paused: boolean }>("isPaused");
+      const { paused } = await rpc.sendRpcCommand("isPaused");
       if (!paused) {
         // silent: true — this pause is an internal implementation detail (see
         // the comment above), not a real debugging pause. Without it, the
@@ -795,7 +794,7 @@ export class ProfilerManager {
         let thumbnail: RawCapture["thumbnail"] | undefined;
         let fullFrame: RawCapture["fullFrame"] | undefined;
         try {
-          const fbRes = await rpc.sendRpcCommand<{ data: Uint8Array; width: number; height: number }>("getFramebuffer", undefined, 30000);
+          const fbRes = await rpc.sendRpcCommand("getFramebuffer", undefined, 30000);
           const fbData = u8(fbRes.data);
           if (fbData.length && fbRes.width > 0 && fbRes.height > 0) {
             thumbnail = { data: fbData, width: fbRes.width, height: fbRes.height };
@@ -806,7 +805,7 @@ export class ProfilerManager {
         try {
           // wasm_profile_start always stores a full-res frame in g_wprofFullFrames[0];
           // batch-encode it via the same OffscreenCanvas path used by multi-frame captures.
-          const ffBatch = await rpc.sendRpcCommand<{ data: Uint8Array; width: number; height: number }[]>("getProfileFullFrameBatch", undefined, 30000);
+          const ffBatch = await rpc.sendRpcCommand("getProfileFullFrameBatch", undefined, 30000);
           const ff = ffBatch[0];
           if (ff && u8(ff.data).length && ff.width > 0 && ff.height > 0) {
             fullFrame = { data: u8(ff.data), width: ff.width, height: ff.height };
@@ -819,15 +818,7 @@ export class ProfilerManager {
         // sample stream whose size scales with in-range instruction count, which unthrottled
         // fast-RAM code (and 68020's higher retirement rate even from chip RAM) can push large
         // enough that the postMessage transfer itself, not just the capture, takes a while.
-        const res = await rpc.sendRpcCommand<{
-          dataBase64: string;
-          start: number;
-          end: number;
-          total: number;
-          inRange: number;
-          frameCycles?: number;
-          isPAL?: boolean;
-        }>("getProfileData", undefined, 30000);
+        const res = await rpc.sendRpcCommand("getProfileData", undefined, 30000);
 
         const raw: RawCapture = {
           profile: {
@@ -844,7 +835,7 @@ export class ProfilerManager {
         };
 
         try {
-          const regsRes = await rpc.sendRpcCommand<{ dataBase64: string }>("getProfileRegs", undefined, 30000);
+          const regsRes = await rpc.sendRpcCommand("getProfileRegs", undefined, 30000);
           const regsBytes = fromBase64(regsRes.dataBase64);
           if (regsBytes.length) raw.registers = regsBytes;
         } catch (e) {
@@ -852,13 +843,13 @@ export class ProfilerManager {
         }
 
         try {
-          const dmaRes = await rpc.sendRpcCommand<{ data: Uint8Array }>("getDmaData", undefined, 30000);
+          const dmaRes = await rpc.sendRpcCommand("getDmaData", undefined, 30000);
           const dmaBytes = u8(dmaRes.data);
           if (dmaBytes.length) {
             raw.dma = dmaBytes;
-            const snap = await rpc.sendRpcCommand<{ chip: Uint8Array; slow: Uint8Array; fast?: Uint8Array; fastAddr?: number; custom: Uint8Array; agaColors?: Uint8Array }>("getDmaSnapshot", undefined, 30000);
+            const snap = await rpc.sendRpcCommand("getDmaSnapshot", undefined, 30000);
             raw.snapshot = { chip: u8(snap.chip), slow: u8(snap.slow), fast: snap.fast && u8(snap.fast), fastAddr: snap.fastAddr, custom: u8(snap.custom), agaColors: snap.agaColors && u8(snap.agaColors) };
-            const eventsRes = await rpc.sendRpcCommand<{ data: Uint8Array }>("getDmaEvents", undefined, 30000);
+            const eventsRes = await rpc.sendRpcCommand("getDmaEvents", undefined, 30000);
             const eventsBytes = u8(eventsRes.data);
             if (eventsBytes.length) raw.dmaEvents = eventsBytes;
           }
@@ -867,7 +858,7 @@ export class ProfilerManager {
         }
 
         try {
-          const copperRes = await rpc.sendRpcCommand<{ data: Uint8Array }>("getCopperData", undefined, 30000);
+          const copperRes = await rpc.sendRpcCommand("getCopperData", undefined, 30000);
           const copperBytes = u8(copperRes.data);
           if (copperBytes.length) raw.copper = copperBytes;
         } catch (e) {
@@ -914,7 +905,7 @@ export class ProfilerManager {
         // All N frame thumbnails encoded in parallel in one round-trip.
         let thumbBatch: { data: Uint8Array; width: number; height: number }[] = [];
         try {
-          thumbBatch = await rpc.sendRpcCommand<{ data: Uint8Array; width: number; height: number }[]>("getProfileThumbBatch", undefined, 30000 * numFrames);
+          thumbBatch = await rpc.sendRpcCommand("getProfileThumbBatch", undefined, 30000 * numFrames);
         } catch (e) {
           console.warn("[profiler] thumbnail batch capture failed:", e);
         }
@@ -922,7 +913,7 @@ export class ProfilerManager {
         // Full-resolution frames for hover-to-enlarge, encoded in parallel alongside thumbnails.
         let fullFrameBatch: { data: Uint8Array; width: number; height: number }[] = [];
         try {
-          fullFrameBatch = await rpc.sendRpcCommand<{ data: Uint8Array; width: number; height: number }[]>("getProfileFullFrameBatch", undefined, 30000 * numFrames);
+          fullFrameBatch = await rpc.sendRpcCommand("getProfileFullFrameBatch", undefined, 30000 * numFrames);
         } catch (e) {
           console.warn("[profiler] full-frame batch capture failed:", e);
         }
@@ -930,21 +921,13 @@ export class ProfilerManager {
         // Same generous, numFrames-scaled budget as startProfiling — this buffer holds all N
         // frames' per-instruction sample streams concatenated, so its transfer time scales
         // with numFrames just like the capture itself.
-        const res = await rpc.sendRpcCommand<{
-          dataBase64: string;
-          start: number;
-          end: number;
-          total: number;
-          inRange: number;
-          frameCycles?: number;
-          isPAL?: boolean;
-        }>("getProfileData", undefined, 30000 * numFrames);
+        const res = await rpc.sendRpcCommand("getProfileData", undefined, 30000 * numFrames);
 
         // Registers: only frame 0 has register data (C disables g_wprofRegEnabled at the first
         // frame marker, so the 65k-sample cap can't block subsequent frames' profile recording).
         let allRegsBytes: Uint8Array = new Uint8Array(0);
         try {
-          const regsRes = await rpc.sendRpcCommand<{ dataBase64: string }>("getProfileRegs", undefined, 30000 * numFrames);
+          const regsRes = await rpc.sendRpcCommand("getProfileRegs", undefined, 30000 * numFrames);
           allRegsBytes = fromBase64(regsRes.dataBase64);
         } catch (e) {
           console.warn("[profiler] register trace failed:", e);
@@ -960,14 +943,14 @@ export class ProfilerManager {
         const perFrameCopperBytes: (Uint8Array | undefined)[] = new Array(numFrames).fill(undefined);
         try {
           for (let fi = 0; fi < numFrames; fi++) {
-            const dmaRes = await rpc.sendRpcCommand<{ data: Uint8Array }>("getDmaFrame", { frameIdx: fi }, 30000);
+            const dmaRes = await rpc.sendRpcCommand("getDmaFrame", { frameIdx: fi }, 30000);
             const db = u8(dmaRes.data);
             if (db.length) perFrameDmaBytes[fi] = db;
-            const evtRes = await rpc.sendRpcCommand<{ data: Uint8Array }>("getDmaEventsFrame", { frameIdx: fi }, 30000);
+            const evtRes = await rpc.sendRpcCommand("getDmaEventsFrame", { frameIdx: fi }, 30000);
             const eb = u8(evtRes.data);
             if (eb.length) perFrameEvtBytes[fi] = eb;
             try {
-              const copperRes = await rpc.sendRpcCommand<{ data: Uint8Array }>("getCopperFrame", { frameIdx: fi }, 30000);
+              const copperRes = await rpc.sendRpcCommand("getCopperFrame", { frameIdx: fi }, 30000);
               const cb = u8(copperRes.data);
               if (cb.length) perFrameCopperBytes[fi] = cb;
             } catch {
@@ -983,7 +966,7 @@ export class ProfilerManager {
         let snapshotRaw: { chip: Uint8Array; slow: Uint8Array; fast?: Uint8Array; fastAddr?: number; custom: Uint8Array; agaColors?: Uint8Array } | undefined;
         try {
           if (perFrameDmaBytes[numFrames - 1]) {
-            const snap = await rpc.sendRpcCommand<{ chip: Uint8Array; slow: Uint8Array; fast?: Uint8Array; fastAddr?: number; custom: Uint8Array; agaColors?: Uint8Array }>("getDmaSnapshot", undefined, 30000);
+            const snap = await rpc.sendRpcCommand("getDmaSnapshot", undefined, 30000);
             snapshotRaw = { chip: u8(snap.chip), slow: u8(snap.slow), fast: snap.fast && u8(snap.fast), fastAddr: snap.fastAddr, custom: u8(snap.custom), agaColors: snap.agaColors && u8(snap.agaColors) };
           }
         } catch (e) {

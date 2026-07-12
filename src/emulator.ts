@@ -71,17 +71,17 @@ export interface Emulator {
   /**
    * Pause the emulator
    */
-  pause(): void;
+  pause(): Promise<void>;
 
   /**
    * Resume running the emulator
    */
-  run(): void;
+  run(): Promise<void>;
 
   /**
    * Stop on next executed instruction
    */
-  stepInto(): void;
+  stepInto(): Promise<void>;
 
   /**
    * Restore previous stopped state
@@ -102,12 +102,12 @@ export interface Emulator {
   /**
    * Run to end of frame
    */
-  eof(): void;
+  eof(): Promise<void>;
 
   /**
    * Run to end of line
    */
-  eol(): void;
+  eol(): Promise<void>;
 
   // --- Breakpoints, watchpoints, catchpoints ---
 
@@ -125,13 +125,13 @@ export interface Emulator {
    * @param address Memory address for the breakpoint
    * @param ignores Number of times to ignore the breakpoint before stopping
    */
-  setBreakpoint(address: number, ignores?: number): void;
+  setBreakpoint(address: number, ignores?: number): Promise<void>;
 
   /**
    * Removes a breakpoint at the specified memory address
    * @param address Memory address of the breakpoint to remove
    */
-  removeBreakpoint(address: number): void;
+  removeBreakpoint(address: number): Promise<void>;
 
   /**
    * Sets a watchpoint at the specified memory address
@@ -143,13 +143,13 @@ export interface Emulator {
     address: number,
     ignores?: number,
     options?: WatchpointOptions,
-  ): void;
+  ): Promise<void>;
 
   /**
    * Removes a watchpoint at the specified memory address
    * @param address Memory address of the watchpoint to remove
    */
-  removeWatchpoint(address: number): void;
+  removeWatchpoint(address: number): Promise<void>;
 
   /**
    * Sets a register watch: break when the register's own value changes
@@ -160,13 +160,13 @@ export interface Emulator {
    * the register's value once per retired instruction, which also means
    * no read/write distinction (only "changed" is observable this way).
    */
-  setRegisterWatch(regIndex: number): void;
+  setRegisterWatch(regIndex: number): Promise<void>;
 
   /**
    * Removes a register watch set via setRegisterWatch.
    * @param regIndex D0-D7 = 0-7, A0-A7 = 8-15
    */
-  removeRegisterWatch(regIndex: number): void;
+  removeRegisterWatch(regIndex: number): Promise<void>;
 
   /**
    * Clears all watchpoints and register watches, in the engine itself —
@@ -177,20 +177,20 @@ export interface Emulator {
    * before stays live and keeps firing even though it's no longer listed
    * anywhere.
    */
-  resetWatchpoints(): void;
+  resetWatchpoints(): Promise<void>;
 
   /**
    * Sets a catchpoint for the specified exception vector
    * @param vector Exception vector number (e.g. 2 for bus error)
    * @param ignores Number of times to ignore the exception before stopping
    */
-  setCatchpoint(vector: number, ignores?: number): void;
+  setCatchpoint(vector: number, ignores?: number): Promise<void>;
 
   /**
    * Removes a catchpoint for the specified exception vector
    * @param vector Exception vector number to remove
    */
-  removeCatchpoint(vector: number): void;
+  removeCatchpoint(vector: number): Promise<void>;
 
   // --- Memory protection ---
 
@@ -199,13 +199,13 @@ export interface Emulator {
    * ranges set via addMemoryProtectionRange (excluding the low-memory
    * vector table, which is always allowed).
    */
-  setMemoryProtectionEnabled(enabled: boolean): void;
+  setMemoryProtectionEnabled(enabled: boolean): Promise<void>;
 
   /** Clears the memory protection allow-list. */
-  resetMemoryProtectionRanges(): void;
+  resetMemoryProtectionRanges(): Promise<void>;
 
   /** Adds a range to the memory protection allow-list. */
-  addMemoryProtectionRange(address: number, size: number): void;
+  addMemoryProtectionRange(address: number, size: number): Promise<void>;
 
   /**
    * Re-adds every currently-resident library (GfxBase, IntuitionBase,
@@ -217,7 +217,7 @@ export interface Emulator {
    * call, so callers that reset the allow-list after boot (e.g. to seed a
    * fastLoad program's own hunks/stack) must call this again afterwards.
    */
-  seedResidentLibraries(): void;
+  seedResidentLibraries(): Promise<void>;
 
   // --- CPU / registers ---
 
@@ -225,7 +225,7 @@ export interface Emulator {
    * Enables/disables CPU instruction logging
    * @param enabled True to enable logging, false to disable
    */
-  enableCpuLogging(enabled: boolean): void;
+  enableCpuLogging(enabled: boolean): Promise<void>;
 
   /**
    * Get CPU instruction trace log
@@ -275,17 +275,15 @@ export interface Emulator {
    * Sets a custom chip register to the specified 16 bit value
    * @param address Register address (e.g. 0xdff180)
    * @param value New register value
-   * @returns Promise resolving to set status
    */
-  pokeCustom16(address: number, value: number): Promise<RegisterSetStatus>;
+  pokeCustom16(address: number, value: number): Promise<void>;
 
   /**
    * Sets a custom chip register to the specified 32 bit value
    * @param address Register address (e.g. 0xdff180)
    * @param value New register value
-   * @returns Promise resolving to set status
    */
-  pokeCustom32(address: number, value: number): Promise<RegisterSetStatus>;
+  pokeCustom32(address: number, value: number): Promise<void>;
 
   // --- Memory access ---
 

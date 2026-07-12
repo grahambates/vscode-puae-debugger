@@ -57,16 +57,16 @@ export function activate(context: vscode.ExtensionContext) {
   );
 
   context.subscriptions.push(
-    vscode.commands.registerCommand("puae-debugger.eof", () => {
+    vscode.commands.registerCommand("puae-debugger.eof", async () => {
       const emulator = DebugAdapter.getActiveAdapter()?.getEmulator() ?? puaeEmulator;
-      emulator.eof();
+      await emulator.eof();
     }),
   );
 
   context.subscriptions.push(
-    vscode.commands.registerCommand("puae-debugger.eol", () => {
+    vscode.commands.registerCommand("puae-debugger.eol", async () => {
       const emulator = DebugAdapter.getActiveAdapter()?.getEmulator() ?? puaeEmulator;
-      emulator.eol();
+      await emulator.eol();
     }),
   );
 
