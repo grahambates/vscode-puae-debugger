@@ -331,7 +331,7 @@ export function ResourcesView({ model, selectedSlot }: ResourcesViewProps) {
     const cvs = canvas.current;
     if (!cvs || !screen || !model?.dma) return;
 
-    const { numPlanes, width, height, firstLine, canvasHires } = screen;
+    const { numPlanes, width, height, firstLine, canvasHires, diwLeft, diwRight, diwTop, diwBottom } = screen;
 
     const baseRegs     = model.dmaSnapshot?.custom ?? new Uint16Array(256);
     const agaColors    = model.dmaSnapshot?.agaColors;
@@ -416,6 +416,9 @@ export function ResourcesView({ model, selectedSlot }: ResourcesViewProps) {
     for (let y = 0; y < height; y++) {
       const vpos     = firstLine + y;
       const lineBase = vpos * DMA_HPOS;
+      // DDF (fetch) commonly fetches more than DIW (display) actually shows — see diwLeft's doc
+      // comment on IScreen. Pixels outside the display window paint as background, below.
+      const lineInDiw = vpos >= diwTop && vpos < diwBottom;
 
       const { numPlanes: lnPlanes, hires: lnHires, ham: lnHam, dpf: lnDpf, staticPlanes: lnStatic } =
         decodeBplcon0(lineBplcon0Raw[y], isAga);
@@ -581,9 +584,13 @@ export function ResourcesView({ model, selectedSlot }: ResourcesViewProps) {
           const px = outXBase + d;
           if (px < 0 || px >= width) continue;
           const li = y * width + px;
+          // Outside the display window: real hardware shows the border (palette[0]) here, not
+          // this fetched bit — decode continues normally above so HAM/scroll state stays correct
+          // for when the line re-enters the window, but the *displayed* pixel is background.
+          const inDiw = lineInDiw && px >= diwLeft && px < diwRight;
           pixRawBits[li]  = rawPixel;
-          pixColorIdx[li] = effectiveIdx;
-          pixColors[li]   = color;
+          pixColorIdx[li] = inDiw ? effectiveIdx : 0;
+          pixColors[li]   = inDiw ? color : palette[0];
         }
       }
 

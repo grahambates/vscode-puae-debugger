@@ -16,6 +16,10 @@ const baseScreen: IScreen = {
   canvasHires: false,
   modeChanges: false,
   displayLeft: 64,
+  diwLeft: 0,
+  diwRight: 320,
+  diwTop: 50,
+  diwBottom: 250,
 };
 
 describe("computeBeamPosition", () => {
@@ -101,12 +105,15 @@ function makeCopper(writes: { vpos: number; reg: number; val: number }[]): ICopp
 function makeModel(opts: {
   firstLine: number; lastLine: number; planes: number;
   bplcon0: number; ddfstrt: number; ddfstop: number;
+  diwstrt?: number; diwstop?: number;
   copperWrites?: { vpos: number; reg: number; val: number }[];
 }): IProfileModel {
   const custom = new Uint16Array(256);
   custom[R.BPLCON0 >> 1] = opts.bplcon0;
   custom[R.DDFSTRT >> 1] = opts.ddfstrt;
   custom[R.DDFSTOP >> 1] = opts.ddfstop;
+  if (opts.diwstrt !== undefined) custom[R.DIWSTRT >> 1] = opts.diwstrt;
+  if (opts.diwstop !== undefined) custom[R.DIWSTOP >> 1] = opts.diwstop;
   return {
     nodes: [], locations: [], samples: [], timeDeltas: [], pcs: [],
     duration: 0, cyclesPerMicroSecond: 7.09379,
@@ -144,5 +151,41 @@ describe("buildScreenFromModel", () => {
     expect(screen.canvasHires).toBe(true); // but the canvas is sized for the hires split
     expect(screen.modeChanges).toBe(true);
     expect(screen.width).toBe(lores.width * 2); // hires sizing is exactly double lores sizing
+  });
+
+  it("computes DIW bounds using real captured register values (verified against PUAE's own calcdiw())", () => {
+    // Real register values from an actual capture (width/displayLeft below are this project's
+    // own independently-verified numbers for the same capture).
+    const model = makeModel({
+      firstLine: 82, lastLine: 261, planes: 4,
+      bplcon0: 4 << 12, ddfstrt: 0x38, ddfstop: 0xc8,
+      diwstrt: 0x5291, diwstop: 0x06b1, // VSTART=0x52=82 HSTART=0x91=145, VSTOP byte=0x06(->+256=262) HSTOP=0xb1=177
+    });
+    const screen = buildScreenFromModel(model)!;
+    expect(screen.width).toBe(304);
+    expect(screen.displayLeft).toBe(112);
+    // Vertically, DIW happens to span exactly the DMA-active range here (the common case for a
+    // single, non-split display) — clamped to [firstLine, firstLine+height] either way.
+    expect(screen.diwTop).toBe(82);
+    expect(screen.diwBottom).toBe(262);
+    // Horizontally: HSTART (145) converts 1:1 to canvas-x-before-displayLeft-subtraction, giving
+    // a modest left crop; HSTOP (177) gets the unconditional "+256" DIWHIGH-not-written extension
+    // custom.c's calcdiw() applies, converting to a value well past the canvas width, clamped to
+    // full width — i.e. this capture's DIW crops a small margin off the left and nothing off the
+    // right, not the drastic crop either earlier (wrong) formula produced.
+    expect(screen.diwLeft).toBe(145 - 112);
+    expect(screen.diwRight).toBe(screen.width); // (177+256-112)=321, clamped to 304
+  });
+
+  it("clamps a DIW VSTOP wraparound (byte's top bit clear -> +256) to the DMA-active range", () => {
+    const model = makeModel({
+      firstLine: 44, lastLine: 299, planes: 4,
+      bplcon0: 4 << 12, ddfstrt: 0x30, ddfstop: 0xd0,
+      diwstrt: 0x2c81, diwstop: 0x2cc1,
+    });
+    const screen = buildScreenFromModel(model)!;
+    // VSTOP byte 0x2c has bit7 clear -> real VSTOP = 0x2c + 256 = 300, exactly firstLine+height
+    // here (44+256) — proves the wraparound math, not just the clamp.
+    expect(screen.diwBottom).toBe(44 + 256);
   });
 });

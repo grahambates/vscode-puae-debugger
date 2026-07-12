@@ -34,6 +34,23 @@ export interface IScreen {
   // Used to map sprite HSTRT register values (lores pixel units) to canvas coords:
   //   canvas_x = (hstart - displayLeft) * (canvasHires ? 2 : 1)
   displayLeft: number;
+  // DIWSTRT/DIWSTOP (the display window Denise actually shows bitplane data in), at display
+  // start. DIW is an *independent* clip against the same raw beam-position counter DDFSTRT/
+  // DDFSTOP use for fetch timing — not nested inside or scaled relative to it, and can be
+  // larger or smaller than the fetched area in either dimension. Columns/lines outside
+  // [diwLeft,diwRight)/[diwTop,diwBottom) were never actually displayed on real hardware
+  // (regardless of whether bitplane data was fetched there), and the render loop paints them as
+  // background (palette[0]) rather than showing the raw fetched bits. diwLeft/diwRight are
+  // canvas-x (clamped to [0,width]); diwTop/diwBottom are *absolute* vpos (same space as
+  // firstLine, clamped to [firstLine, firstLine+height]) — not canvas-y. Both verified against a
+  // real capture (vpos bounds against independently-DMA-grid-derived firstLine/height; canvas-x
+  // bounds by cross-referencing PUAE's own calcdiw() in custom.c, see buildScreenFromModel's
+  // comment). Sprites aren't clipped by any of this — they're a separate hardware unit not gated
+  // by DIW.
+  diwLeft: number;
+  diwRight: number;
+  diwTop: number;
+  diwBottom: number;
 }
 
 // Decodes the mode-relevant bits of a BPLCON0 value in isolation — shared by the initial-state
@@ -110,6 +127,8 @@ export function buildScreenFromModel(model: IProfileModel): IScreen | undefined 
   let BPLCON0 = custom[R.BPLCON0 >> 1];
   let DDFSTRT = custom[R.DDFSTRT >> 1];
   let DDFSTOP = custom[R.DDFSTOP >> 1];
+  let DIWSTRT = custom[R.DIWSTRT >> 1];
+  let DIWSTOP = custom[R.DIWSTOP >> 1];
 
   const count = copper.addr.length;
   for (let i = 0; i < count; i++) {
@@ -122,6 +141,8 @@ export function buildScreenFromModel(model: IProfileModel): IScreen | undefined 
       case R.BPLCON0: if ((rd >>> 12) & 7) BPLCON0 = rd; break;
       case R.DDFSTRT: DDFSTRT = rd; break;
       case R.DDFSTOP: DDFSTOP = rd; break;
+      case R.DIWSTRT: DIWSTRT = rd; break;
+      case R.DIWSTOP: DIWSTOP = rd; break;
     }
   }
 
@@ -154,10 +175,39 @@ export function buildScreenFromModel(model: IProfileModel): IScreen | undefined 
   }
 
   const width = blocks << (canvasHires ? 5 : 4);
+  const displayLeft = ddfStart * 2;
+
+  // ── DIWSTRT/DIWSTOP: the actual display window, distinct from the DDF fetch window ────────
+  // Vertical (VSTART/VSTOP) is in vpos-native units, no conversion needed. VSTOP's
+  // hardware-documented wraparound rule: if its top bit is set (128-255) use it directly, else
+  // the display extends past line 255, so add 256 (e.g. a typical PAL DIWSTOP byte of 0x2C/44,
+  // bit7 clear, means actual VSTOP = 300) — cross-checked against a real capture's independently
+  // DMA-grid-derived firstLine/height and matched exactly.
+  //
+  // Horizontal (HSTART/HSTOP): DIW is an *independent* clip against the same raw beam-position
+  // counter DDFSTRT/DDFSTOP use — it isn't nested inside or scaled relative to the fetch window,
+  // so HSTART/HSTOP convert to canvas-x via the exact same hpos->canvas-x step displayLeft
+  // itself uses (raw byte, no extra doubling). HSTOP alone (never HSTART) gets a further
+  // hardware-documented "+256, in this same pre-doubled unit" extension — mirrored from
+  // PUAE's own calcdiw() (custom.c): `hstop |= 0x100 << 2` unconditionally unless the extended
+  // DIWHIGH register was written on ECS Denise/AGA, which this project doesn't track (DIWHIGH is
+  // rare in practice) — exactly the same shape as the VSTOP wraparound below, just horizontal.
+  // Verified against a real capture/screenshot: without it HSTOP badly under-reached, cropping
+  // away most of the picture from the right.
+  const diwHStart = DIWSTRT & 0xff;
+  const diwHStop  = (DIWSTOP & 0xff) + 256;
+  const diwVStart = (DIWSTRT >> 8) & 0xff;
+  const diwVStopByte = (DIWSTOP >> 8) & 0xff;
+  const diwVStop = diwVStopByte & 0x80 ? diwVStopByte : diwVStopByte + 256;
+
+  const diwLeft  = Math.max(0, Math.min(width, (diwHStart - displayLeft) * (canvasHires ? 2 : 1)));
+  const diwRight = Math.max(0, Math.min(width, (diwHStop  - displayLeft) * (canvasHires ? 2 : 1)));
+  const diwTop    = Math.max(firstLine, Math.min(firstLine + height, diwVStart));
+  const diwBottom = Math.max(firstLine, Math.min(firstLine + height, diwVStop));
 
   return {
     numPlanes, width, height, firstLine, hires, ham, dpf, staticPlanes, canvasHires, modeChanges,
-    displayLeft: ddfStart * 2,
+    displayLeft, diwLeft, diwRight, diwTop, diwBottom,
   };
 }
 
