@@ -1,7 +1,7 @@
 {
   "name": "vscode-puae-debugger",
-  "displayName": "PUAE Debugger",
-  "description": "Debug Amiga programs with an integrated PUAE (WinUAE-derived) emulator in vscode",
+  "displayName": "PUAE Amiga Debugger and Profiler",
+  "description": "Debug and profile Amiga programs with an integrated PUAE (WinUAE-derived) emulator",
   "version": "1.0.0",
   "author": "Graham Bates",
   "publisher": "gigabates",
@@ -232,7 +232,7 @@
               "stopOnEntry": {
                 "type": "boolean",
                 "description": "Automatically stop after launch",
-                "default": true
+                "default": false
               },
               "trace": {
                 "type": "boolean",
@@ -526,7 +526,7 @@
             "name": "Launch PUAE",
             "program": "${workspaceFolder}/out/a.exe",
             "fastLoad": true,
-            "stopOnEntry": true,
+            "stopOnEntry": false,
             "kickstartRom": "${workspaceFolder}/roms/kick13.rom",
             "emulatorOptions": {
               "chipmem_size": 2,
@@ -545,7 +545,7 @@
               "name": "PUAE: A500 OCS 512k + 512k Slow",
               "program": "^\"\\${workspaceFolder\\}/${1:out/a.exe}\"",
               "fastLoad": true,
-              "stopOnEntry": true,
+              "stopOnEntry": false,
               "kickstartRom": "^\"\\${workspaceFolder\\}/${2:roms/kick13.rom}\"",
               "emulatorOptions": {
                 "cpu_model": 68000,
