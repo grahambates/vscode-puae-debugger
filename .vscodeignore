@@ -3,9 +3,13 @@
 **/*.json
 **/*.ts
 **/*.tsx
+puae-wasm
+scripts
 src
 coverage
 node_modules
 !node_modules/@vscode/codicons/dist/**
 esbuild.js
 **/tsconfig.tsbuildinfo
+AGENTS.md
+CLAUDE.md
