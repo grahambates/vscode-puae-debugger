@@ -88,6 +88,25 @@ export function decodeBplcon0(bplcon0: number, isAga: boolean): {
 export const DMA_HPOS = 227; // slots per scan line in the DMA grid
 export const DMA_VPOS = 313; // scan lines per frame in the DMA grid
 
+// A fetched DDF word doesn't appear on-screen at its own raw DDFSTRT/DDFSTOP hpos — real hardware
+// pipelines it through a fixed fetch-scheduling delay before Denise can display it. Mirrored from
+// PUAE's own custom.c (the `decide_line`-adjacent DIW/DDF bookkeeping around `ddffirstword_total`):
+// `int f = 8 << fetchmode; ddffirstword_total = plfstrt + f;` (`plfstrt` is DDFSTRT, already masked
+// the same way `ddfStart` is here) — an 8-color-clock delay for the common (non-AGA-fetchmode) case
+// this project targets, i.e. +16 in this file's already-doubled canvas-x units. DIW_DDF_OFFSET(1) is
+// a further, much smaller "pixel data spends a couple of cycles in the chips" pipeline fudge PUAE
+// applies when finally converting to window-x (drawing.h). Without either, DDFSTRT-derived canvas
+// positions (content position, per-line offsets) land a full DDF block short of where the display
+// window (DIWSTRT/DIWSTOP) actually is — verified against a real capture where the corrected DDF
+// window's edges land exactly on DIWSTRT/DIWSTOP's own canvas-x positions (129 and 449), confirming
+// a normal (default-DDFSTRT/DIWSTRT) display's fetch and display windows are meant to fully overlap,
+// not sit ~16px apart as the unadjusted formula implied. Previously showed up as legitimate content
+// clipped off the left edge of the display window — most visible on sharp-edged content (scrolltext)
+// sitting right at that boundary, but present (just imperceptible against a plain background) for
+// every capture.
+export const DDF_FETCH_DELAY_CCK = 8;
+export const DIW_DDF_OFFSET = 1;
+
 // PUAE's standard (non-"extreme overscan") PAL framebuffer preset — see
 // puae-wasm/libretro-uae/libretro/libretro-core.h's PUAE_VIDEO_WIDTH/PUAE_VIDEO_HEIGHT_PAL
 // (== EMULATOR_DEF_WIDTH/HEIGHT, the project's own default geometry) — used as a fixed "sensible
@@ -208,7 +227,7 @@ export function buildScreenFromModel(model: IProfileModel): IScreen | undefined 
   }
 
   const contentWidth       = blocks << (canvasHires ? 5 : 4);
-  const contentDisplayLeft = ddfStart * 2;
+  const contentDisplayLeft = (ddfStart + DDF_FETCH_DELAY_CCK) * 2 + DIW_DDF_OFFSET;
 
   // ── Canvas sizing: PUAE's standard PAL preset, not a tight crop around the fetched content ──
   // See STANDARD_FB_WIDTH/HEIGHT's doc comment for the pixel-unit conversion. Centers the fetched

@@ -1,5 +1,6 @@
 import {
-  buildScreenFromModel, computeBeamPosition, decodeBplcon0, DMA_HPOS, DMA_VPOS, IScreen,
+  buildScreenFromModel, computeBeamPosition, decodeBplcon0, DDF_FETCH_DELAY_CCK, DIW_DDF_OFFSET,
+  DMA_HPOS, DMA_VPOS, IScreen,
 } from "../webview/profilerViewer/gfxResources";
 import { BusOwner, ICopperModel, IDmaModel, IProfileModel } from "../shared/profilerTypes";
 import { CUSTOM_REGISTER_OFFSETS as R } from "../webview/shared/customRegisters";
@@ -168,19 +169,46 @@ describe("buildScreenFromModel", () => {
     const screen = buildScreenFromModel(model)!;
     expect(screen.width).toBe(360); // standard lores canvas, not the content-derived 304
     // contentWidth = 19 blocks << 4 = 304; offsetX = floor((360-304)/2) = 28;
-    // displayLeft = ddfStart*2(112) - 28 = 84.
-    expect(screen.displayLeft).toBe(84);
+    // contentDisplayLeft = (ddfStart(56) + DDF_FETCH_DELAY_CCK(8)) * 2 + DIW_DDF_OFFSET(1) = 129
+    // (the real DDF-fetch-scheduling delay — see DDF_FETCH_DELAY_CCK's doc comment in
+    // gfxResources.ts); displayLeft = 129 - 28 = 101.
+    expect(screen.displayLeft).toBe(101);
     // Vertically, DIW happens to span exactly the DMA-active range here (the common case for a
     // single, non-split display) — still true against the taller standard-canvas height.
     expect(screen.diwTop).toBe(82);
     expect(screen.diwBottom).toBe(262);
     // Horizontally: HSTART (145) converts 1:1 to canvas-x-before-displayLeft-subtraction; HSTOP
     // (177) gets the unconditional "+256" DIWHIGH-not-written extension custom.c's calcdiw()
-    // applies. Both relative to the shifted displayLeft(84) above, neither clamped (comfortably
+    // applies. Both relative to the shifted displayLeft(101) above, neither clamped (comfortably
     // inside [0, 360]) — i.e. this capture's DIW crops a small margin off the left and leaves a
     // wide margin on the right within the standard canvas.
-    expect(screen.diwLeft).toBe(145 - 84);
-    expect(screen.diwRight).toBe(177 + 256 - 84);
+    expect(screen.diwLeft).toBe(145 - 101);
+    expect(screen.diwRight).toBe(177 + 256 - 101);
+  });
+
+  it("aligns the DDF content window with DIW for a real capture's default (unwidened) DDFSTRT/DIWSTRT pair", () => {
+    // Real register values from an actual capture (hunk2.puaeprofile) whose default DDFSTRT/
+    // DDFSTOP/DIWSTRT/DIWSTOP are all standard AmigaOS defaults. On real hardware, a normal
+    // display's fetch and display windows are tuned by Commodore to overlap almost exactly, not
+    // sit a full DDF block (16px) apart — this regression-guards the fetch-scheduling-delay fix:
+    // without DDF_FETCH_DELAY_CCK, the DDF window used to land 16px short of DIWSTRT/DIWSTOP,
+    // clipping legitimate content off the left edge of the display window (most visible on a
+    // scroller's sharp text, but present, just imperceptible, in any capture using these defaults).
+    const model = makeModel({
+      firstLine: 44, lastLine: 299, planes: 4,
+      bplcon0: 4 << 12, ddfstrt: 0x38, ddfstop: 0xd0,
+      diwstrt: 0x2c81, diwstop: 0x2cc1, // HSTART=0x81=129, HSTOP=0xc1=193(+256=449)
+    });
+    const screen = buildScreenFromModel(model)!;
+    const ddfStart = 0x38 & 0xfc; // 56
+    const contentDisplayLeft = (ddfStart + DDF_FETCH_DELAY_CCK) * 2 + DIW_DDF_OFFSET;
+    // The DDF window's own canvas-x position now lands exactly on DIWSTRT's (129) — confirming the
+    // fetch-scheduling delay is what was missing, not some other unrelated centering/DIW bug.
+    expect(contentDisplayLeft).toBe(129);
+    // diwLeft/diwRight now measure a near-zero gap from the content's own start (not a full 16px
+    // block short of it).
+    const contentCanvasX = contentDisplayLeft - screen.displayLeft;
+    expect(screen.diwLeft).toBe(contentCanvasX);
   });
 
   it("clamps a DIW VSTOP wraparound (byte's top bit clear -> +256) to the DMA-active range", () => {
@@ -212,10 +240,12 @@ describe("buildScreenFromModel", () => {
     const offsetX = Math.floor((screen.width - contentWidth) / 2);
     const offsetY = Math.floor((screen.height - contentHeight) / 2);
 
-    // The content's own x=0/y=0 (canvasX/Y at hpos=ddfStart, vpos=firstLine) now lands at the
-    // centering offset, not at the canvas's own (0,0) — i.e. it's centered, not cropped to fit.
-    const contentOrigin = computeBeamPosition(screen, base.firstLine * DMA_HPOS + ddfStart);
-    expect(contentOrigin.x).toBe(offsetX);
+    // The content's own x=0/y=0 now lands at the centering offset, not at the canvas's own (0,0)
+    // — i.e. it's centered, not cropped to fit. Checked directly against displayLeft (rather than
+    // computeBeamPosition at some hpos) since the real DDF-to-canvas-x conversion includes a
+    // sub-hpos fetch-scheduling fudge (DIW_DDF_OFFSET) that doesn't correspond to any integer hpos.
+    const contentDisplayLeft = (ddfStart + DDF_FETCH_DELAY_CCK) * 2 + DIW_DDF_OFFSET;
+    expect(contentDisplayLeft - screen.displayLeft).toBe(offsetX);
     expect(computeBeamPosition(screen, base.firstLine * DMA_HPOS).y).toBe(offsetY);
   });
 });

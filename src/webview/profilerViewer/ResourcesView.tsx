@@ -3,8 +3,8 @@ import { BusOwner, IProfileModel } from "../../shared/profilerTypes";
 import { disassembleCopperInstruction } from "../../shared/copperDisassembler";
 import {
   buildLinePaletteTimeline, buildLineRegister, buildLineRegisterTimeline, buildPalette,
-  buildScreenFromModel, computeBeamPosition, decodeBplcon0, DMA_HPOS, eventThresholds, expand4,
-  IScreen, PaletteEvent,
+  buildScreenFromModel, computeBeamPosition, decodeBplcon0, DDF_FETCH_DELAY_CCK, DIW_DDF_OFFSET,
+  DMA_HPOS, eventThresholds, expand4, IScreen, PaletteEvent,
 } from "./gfxResources";
 import { CUSTOM_REGISTER_OFFSETS as R } from "../shared/customRegisters";
 
@@ -458,10 +458,12 @@ export function ResourcesView({ model, selectedSlot }: ResourcesViewProps) {
       // This line's fetch can start at a different hpos than the screen-wide displayLeft
       // reference (the same DDFSTRT split that changes lineRowWords above commonly also moves
       // the start point) — offset this line's output into canvas-x accordingly, the same
-      // hpos->canvas-x conversion displayLeft/diwLeft themselves use. Without this, a narrowed
-      // *and shifted* fetch window still gets the right word count but drawn from canvas x=0,
-      // i.e. shifted from where it actually belongs.
-      const lineOffsetX = (lineDdfStart * 2 - displayLeft) * (canvasHires ? 2 : 1);
+      // hpos->canvas-x conversion displayLeft/diwLeft themselves use (including the fetch-
+      // scheduling delay — see DDF_FETCH_DELAY_CCK's doc comment in gfxResources.ts). Without
+      // this, a narrowed *and shifted* fetch window still gets the right word count but drawn
+      // from canvas x=0, i.e. shifted from where it actually belongs.
+      const lineDdfCanvasX = (lineDdfStart + DDF_FETCH_DELAY_CCK) * 2 + DIW_DDF_OFFSET;
+      const lineOffsetX = (lineDdfCanvasX - displayLeft) * (canvasHires ? 2 : 1);
 
       // ── Bitplane data ──────────────────────────────────────────────────
       // 7-plane trick: planes 4/5 (0-based) aren't DMA-fetched at all, so don't bother scanning
