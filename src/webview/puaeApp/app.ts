@@ -557,6 +557,30 @@ export async function main(config: MainConfig = {}): Promise<void> {
     color?: string;
   }
 
+  // Forces a real re-render of the currently-paused frame under whatever debug settings just
+  // changed (bitplane/sprite/blitter mute — see makeToggleGroup below). Unlike
+  // redrawOverlayIfPaused's wasm_redraw_frame() (a cheap recomposite of already-rendered pixels,
+  // fine for the DMA overlay tint/blit-vis highlight, which are pure post-process overlays),
+  // channel muting changes what Denise/Agnus actually draw *into* the framebuffer in the first
+  // place (drawing.c's debug_bpl_mask, custom.c's debug_sprite_mask) — there's nothing cached to
+  // recomposite from, so nothing visibly changes without this.
+  //
+  // wasm_tick() while paused turns out to already do exactly what's needed here, verified
+  // directly against the real wasm module: the CPU's PC/registers/SR come back byte-for-byte
+  // identical before and after (confirmed across repeated calls) — while paused, the 68000 stays
+  // halted at its breakpoint exactly like on real hardware if you assert its HALT line, but Agnus/
+  // Denise/Paula keep running on their own independent clock (the cycle counter *does* advance,
+  // by exactly one frame's worth) and redraw the same already-fetched chip-RAM content with
+  // whatever debug masks are current right now. The one real side effect is a frame's worth of
+  // audio Paula generates along the way that nothing will ever consume (the normal frame() loop's
+  // pushAccumToWorklet isn't in this call path) — discarded via wasm_reset_audio_accum so it can't
+  // cause a glitch on resume.
+  function forceRedrawWhilePaused(): void {
+    if (!M._wasm_is_paused()) return;
+    M._wasm_tick();
+    M._wasm_reset_audio_accum();
+  }
+
   // Builds a labelled group of small numbered toggle squares (toolbar-style,
   // replacing the previous checkbox lists). `items` is [{ key, text, color? }];
   // onToggle(item, active) is called whenever a square is clicked.
@@ -580,6 +604,7 @@ export async function main(config: MainConfig = {}): Promise<void> {
     const setItem = (idx: number, active: boolean): void => {
       btns[idx].classList.toggle("active", active);
       onToggle(items[idx], active);
+      forceRedrawWhilePaused();
     };
 
     let allBtn: HTMLButtonElement | undefined;

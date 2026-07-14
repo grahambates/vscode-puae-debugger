@@ -107,16 +107,30 @@ export interface ScreenHoverInfo {
 // buildScreenFromModel/decodeScreenPixels/computeHoverExtra pipeline the profiler's own Screen
 // view (ResourcesView.tsx) uses, just fed from a live model instead of a captured one.
 //
-// (px, py) are pixel coordinates in the live canvas's own backing-store resolution
-// (fbWidth/fbHeight — whatever the emulator's normal, default-crop framebuffer size currently
-// is, NOT forced to any particular geometry). Mapped proportionally into the reconstruction's
-// own (independently-sized) coordinate space — the same kind of scale ResourcesView.tsx's own
-// hover handler applies between CSS pixels and its canvas's backing store, just one more space
-// over. This works because gfxResources.ts's STANDARD_FB_WIDTH/HEIGHT (the reconstruction's
-// canvas preset) was deliberately chosen to match the live emulator's own default PAL geometry
-// (PUAE_VIDEO_WIDTH/HEIGHT_PAL) — the two aren't byte-for-byte guaranteed identical for every
-// exotic DDFSTRT/DIWSTRT configuration, but line up for the standard case a proportional scale
-// is built to handle regardless.
+// (px, py) are pixel coordinates in the live canvas's own backing-store resolution (fbWidth/
+// fbHeight — whatever the emulator's normal, default-crop framebuffer size currently is, NOT
+// forced to any particular geometry).
+//
+// Horizontally, a straight proportional scale between the live canvas and the reconstruction's
+// own (independently-sized) canvas is correct: gfxResources.ts's STANDARD_FB_WIDTH was chosen to
+// match the live emulator's own default PAL geometry, and both conventions share the same
+// horizontal origin (verified empirically — see below).
+//
+// Vertically they do NOT share an origin, and a plain proportional scale is measurably wrong: the
+// reconstruction's row 0 is centered around whichever vpos the DMA-grid content actually starts
+// at (gfxResources.ts's buildScreenFromModel, content-dependent), while the live framebuffer's
+// row 0 is UAE's own real output, anchored to a fixed hardware line — verified by booting the
+// real Kickstart ROM (kick13.rom) with several different DIWSTRT/DIWSTOP configurations, capturing
+// both the live framebuffer and this exact reconstruction pipeline's output for each, and brute-
+// force searching for the pixel offset that makes them agree: three independent configurations
+// (different DIWSTRT, different DIWSTOP/content-height) all converged on the exact same constant,
+// LIVE_VPOS_ORIGIN = 26 — i.e. live framebuffer row 0 is real vpos 26 (almost certainly PAL's
+// vertical-blanking-end line), giving fb_row = 2*(vpos - 26) (the emulator's real output
+// line-doubles, hence the *2). Solving that for the reconstruction's row (vpos = screen.firstLine
+// + y) is what the `y` formula below does. All three test configurations scored 100% pixel
+// agreement with this formula (vs. 28-90% for the naive proportional guess it replaces).
+const LIVE_VPOS_ORIGIN = 26;
+
 export function decodeScreenHover(M: PuaeModule, px: number, py: number, fbWidth: number, fbHeight: number): ScreenHoverInfo | undefined {
   if (fbWidth <= 0 || fbHeight <= 0) return undefined;
   const model = buildLiveModel(M);
@@ -126,7 +140,11 @@ export function decodeScreenHover(M: PuaeModule, px: number, py: number, fbWidth
   if (!snapshot) return undefined;
 
   const x = Math.floor((px * screen.width) / fbWidth);
-  const y = Math.floor((py * screen.height) / fbHeight);
+  // fbHeight/screen.height is PAL's real:reconstruction line-doubling factor (always exactly 2
+  // in practice — gfxResources.ts's STANDARD_FB_HEIGHT/2 convention — derived at runtime rather
+  // than hardcoded so this keeps working if that ratio is ever different).
+  const vposScale = fbHeight / screen.height;
+  const y = Math.floor(py / vposScale + LIVE_VPOS_ORIGIN - screen.firstLine);
   if (x < 0 || x >= screen.width || y < 0 || y >= screen.height) return undefined;
   const li = y * snapshot.width + x;
 
