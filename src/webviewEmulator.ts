@@ -14,6 +14,7 @@ import {
 } from "./emulatorProtocol";
 import { SourceMap } from "./sourceMap";
 import { openSourceLocation } from "./sourceNav";
+import { decodeAgaColors } from "./shared/dma";
 import type {
   PuaeRpcArgs,
   PuaeRpcCommand,
@@ -449,6 +450,11 @@ export abstract class WebviewEmulator implements Emulator {
       this.customRegisters = await this.sendRpcCommand("getAllCustomRegisters");
     }
     return this.customRegisters;
+  }
+
+  public async getAgaColors(): Promise<Uint32Array | undefined> {
+    const { data } = await this.sendRpcCommand("getAgaColors");
+    return decodeAgaColors(data);
   }
 
   public async pokeCustom16(

@@ -18,16 +18,24 @@ export const expand6 = (v: number) => (v << 2) | (v >> 4);
 // a caller may use for buffer sizing; callers that need "how many planes does *this* BPLCON0 value
 // describe" want this one.
 export function decodeBplcon0(bplcon0: number, isAga: boolean): {
-  numPlanes: number; hires: boolean; ham: boolean; dpf: boolean; staticPlanes: boolean;
+  numPlanes: number; hires: boolean; shres: boolean; ham: boolean; dpf: boolean; staticPlanes: boolean;
 } {
   const hires = (bplcon0 & (1 << 15)) !== 0;
+  // AGA-only "super hi-res" (bit 6) — informational only for now: it takes priority over
+  // `hires` on real hardware (mirrors PUAE's GET_RES_AGNUS/GET_RES_DENISE: `con0 & 0x40 ?
+  // SUPERHIRES : con0 & 0x8000 ? HIRES : LORES`), but this project's screen reconstruction
+  // doesn't yet model a third (4x) canvas pixel-doubling tier — canvasHires/dup elsewhere in
+  // gfxResources.ts still only distinguish hires vs lores. Real-world super-hires usage is
+  // essentially nonexistent (Denise/Lisa's rarest mode), so callers surface this as a label
+  // rather than trying to widen the reconstruction pipeline for it.
+  const shres = (bplcon0 & (1 << 6)) !== 0;
   const ham   = (bplcon0 & (1 << 11)) !== 0;
   const dpf   = (bplcon0 & (1 << 10)) !== 0;
   const bpu   = (bplcon0 >> 12) & 7;
   // See IScreen.staticPlanes's doc comment (gfxResources.ts) for the hardware background.
   const staticPlanes = bpu === 7 && !isAga;
   const numPlanes = staticPlanes ? 6 : bpu;
-  return { numPlanes, hires, ham, dpf, staticPlanes };
+  return { numPlanes, hires, shres, ham, dpf, staticPlanes };
 }
 
 // `agaColors`, when present, is AGA's full 256-entry, already-24-bit-per-channel palette (see

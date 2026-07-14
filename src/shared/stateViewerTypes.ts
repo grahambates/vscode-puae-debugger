@@ -17,23 +17,56 @@ export interface AmigaColor {
 }
 
 /**
+ * One entry of AGA's full 256-colour, 8-bit-per-channel palette (BPLCON3 bank/LOCT already
+ * resolved chip-side — unlike AmigaColor, this is NOT a raw COLORxx register readout).
+ */
+export interface AmigaColor256 {
+  /** 8-bit red value (0-255) */
+  r: number;
+  /** 8-bit green value (0-255) */
+  g: number;
+  /** 8-bit blue value (0-255) */
+  b: number;
+  /** Palette index (0-255) */
+  register: number;
+}
+
+/**
  * Display configuration and state information
  */
 export interface DisplayState {
-  /** Color palette (32 colors from COLOR00-COLOR31 registers) */
+  /** Color palette (32 colors from COLOR00-COLOR31 registers, current BPLCON3 bank only, 4-bit/channel) */
   palette: AmigaColor[];
-  /** Number of active bitplanes (0-6) */
+  /** AGA's full 256-colour, 8-bit-per-channel palette (all 8 BPLCON3 banks). Absent outside AGA mode
+   *  — callers should fall back to `palette` in that case. */
+  aga256Palette?: AmigaColor256[];
+  /** Number of active bitplanes (0-8; AGA supports up to 8, OCS/ECS up to 6) */
   bitplanes?: number;
   /** Is interlaced mode enabled */
   interlaced?: boolean;
   /** Is high-res mode enabled */
   hires?: boolean;
+  /** Is super-hires mode enabled (BPLCON0 bit 6, AGA only) */
+  shres?: boolean;
   /** Is HAM (Hold-And-Modify) mode enabled */
   ham?: boolean;
+  /** HAM variant in effect when `ham` is set: 6 (OCS/ECS, from a 6-plane BPLCON0) or 8 (AGA, from an
+   *  8-plane BPLCON0). Undefined when `ham` is false or the plane count doesn't match either variant. */
+  hamBits?: 6 | 8;
   /** Is DPF (Dual Playfield) mode enabled */
   dpf?: boolean;
   /** Is ECS mode enabled (from BPLCON0) */
   ecsEna?: boolean;
+  /** Is this an AGA chipset capture (aga256Palette/fetchMode/bplam/esprm/osprm all gated on this) */
+  isAga?: boolean;
+  /** AGA bitplane DMA fetch mode (FMODE bits 1-0): 0=1x, 1=2x, 2=4x words per DMA slot */
+  fetchMode?: number;
+  /** BPLCON4 BPLAM: 8-bit XOR mask applied to the playfield colour index before palette lookup */
+  bplam?: number;
+  /** BPLCON4 ESPRM: colour-bank nibble for even-numbered sprites (0/2/4/6) */
+  esprm?: number;
+  /** BPLCON4 OSPRM: colour-bank nibble for odd-numbered sprites (1/3/5/7) */
+  osprm?: number;
   /** Playfield 2 horizontal position (from BPLCON1) */
   pf2h?: number;
   /** Playfield 1 horizontal position (from BPLCON1) */

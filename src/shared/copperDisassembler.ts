@@ -18,12 +18,20 @@ export interface CopperInstruction {
 }
 
 /**
- * Disassemble a single Copper instruction from two words
+ * Disassemble a single Copper instruction from two words.
+ *
+ * `bplcon3`, when given, is the BPLCON3 register value in effect at this point in the copper
+ * list — needed to render an accurate colour-swatch preview for a COLORxx MOVE on AGA, where
+ * BPLCON3's LOCT bit changes what a COLORxx write even means (see below). Callers that don't
+ * track running BPLCON3 state (or are disassembling a static list with no known runtime state)
+ * can omit it; the swatch then falls back to the plain OCS/ECS interpretation, which is exactly
+ * right unless LOCT happens to be set.
  */
 export function disassembleCopperInstruction(
   address: number,
   word1: number,
-  word2: number
+  word2: number,
+  bplcon3?: number,
 ): CopperInstruction {
   const base: CopperInstruction = {
     address,
@@ -46,7 +54,15 @@ export function disassembleCopperInstruction(
     base.operands = `#$${value.toString(16).toUpperCase().padStart(valueLength, '0')},`;
     base.operands += regName || ('$' + regAddr.toString(16).toUpperCase().padStart(3, '0'));
 
-    if (isColor) {
+    // AGA's BPLCON3 LOCT bit (0x200) repurposes a COLORxx write to refine just the *low* nibble
+    // of each channel (the high nibble comes from an earlier, separate write) — the plain 4-bit
+    // nibble-per-channel swatch below would then show only that low nibble as if it were the
+    // whole channel value, which is wrong without the running palette state this function
+    // doesn't have. Skip the swatch rather than show a misleading one; the bank-select bits
+    // (BPLCON3 bits 15-13) don't affect this write's own colour value, only which of the 256
+    // AGA palette entries it targets, so they need no special-casing here.
+    const loct = bplcon3 !== undefined && (bplcon3 & 0x200) !== 0;
+    if (isColor && !loct) {
       const r = ((value >> 8) & 0xf) * 17;
       const g = ((value >> 4) & 0xf) * 17;
       const b = (value & 0xf) * 17;

@@ -272,6 +272,14 @@ export interface Emulator {
   getAllCustomRegisters(): Promise<CustomRegisters>;
 
   /**
+   * Gets AGA's full 256-entry, 24-bit-per-channel colour palette (BPLCON3 bank/LOCT already
+   * resolved chip-side). Returns undefined outside AGA mode (chipset_mask lacks AGA), where
+   * callers should fall back to the OCS/ECS COLOR00-31 window in getAllCustomRegisters().
+   * @returns Promise resolving to a 256-entry 0x00RRGGBB palette, or undefined outside AGA mode
+   */
+  getAgaColors(): Promise<Uint32Array | undefined>;
+
+  /**
    * Sets a custom chip register to the specified 16 bit value
    * @param address Register address (e.g. 0xdff180)
    * @param value New register value

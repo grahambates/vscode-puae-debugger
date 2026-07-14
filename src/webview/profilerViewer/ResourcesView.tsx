@@ -151,10 +151,10 @@ export function ResourcesView({ model, selectedSlot }: ResourcesViewProps) {
     return <div className="resources-empty">No bitplane display detected in this capture.</div>;
   }
 
-  const { width, height, numPlanes, hires, ham, dpf, staticPlanes, modeChanges } = screen;
+  const { width, height, numPlanes, hires, shres, ham, dpf, staticPlanes, modeChanges } = screen;
   const modeStr = modeChanges
     ? "variable mode"
-    : `${numPlanes}-plane${hires ? " hires" : " lores"}${ham ? " HAM" : ""}${dpf ? " DPF" : ""}${staticPlanes ? " (7-plane trick)" : ""}`;
+    : `${numPlanes}-plane${shres ? " super-hires" : hires ? " hires" : " lores"}${ham ? " HAM" : ""}${dpf ? " DPF" : ""}${staticPlanes ? " (7-plane trick)" : ""}`;
   const info = `${width}×${height} · ${modeStr}`;
 
   // "All" buttons' state is derived (not stored) — same pattern as the emulator webview's

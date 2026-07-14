@@ -28,6 +28,8 @@ export const SUPPORTED_REGISTERS = [
   "BPLCON1",
   "BPLCON2",
   "BPLCON3",
+  "BPLCON4",
+  "FMODE",
   "BLTCON0",
   "BLTCON1",
   "VPOS",
@@ -94,6 +96,10 @@ export function parseRegister(
     return parseBplcon2Register(value);
   } else if (upperName === "BPLCON3") {
     return parseBplcon3Register(value);
+  } else if (upperName === "BPLCON4") {
+    return parseBplcon4Register(value);
+  } else if (upperName === "FMODE") {
+    return parseFmodeRegister(value);
   } else if (upperName === "BLTCON0") {
     return parseBltcon0Register(value);
   } else if (upperName === "BLTCON1") {
@@ -217,6 +223,7 @@ export function parseBplcon0Register(bplcon0: number): RegisterBitField[] {
     { name: "10: DUAL_PLAYFIELD", value: (bplcon0 & 0x0400) !== 0 },
     { name: "09: COLOR", value: (bplcon0 & 0x0200) !== 0 },
     { name: "08: GENLOCK_AUDIO", value: (bplcon0 & 0x0100) !== 0 },
+    { name: "06: SHRES", value: (bplcon0 & 0x0040) !== 0 },
     { name: "03: LIGHTPEN", value: (bplcon0 & 0x0008) !== 0 },
     { name: "02: INTERLACE", value: (bplcon0 & 0x0004) !== 0 },
     { name: "01: EXTERNAL_RESYNC", value: (bplcon0 & 0x0002) !== 0 },
@@ -266,6 +273,36 @@ export function parseBplcon3Register(bplcon3: number): RegisterBitField[] {
     { name: "02: ZDCLKEN", value: (bplcon3 & 0x0004) !== 0 },
     { name: "03: BORDER_BLANK", value: (bplcon3 & 0x0008) !== 0 },
     { name: "02-00: LOCT", value: loct },
+  ];
+}
+
+/**
+ * Parses BPLCON4 register bits (Bitplane Control Register 4 - AGA colour-bank remapping)
+ */
+export function parseBplcon4Register(bplcon4: number): RegisterBitField[] {
+  const bplam = (bplcon4 >> 8) & 0xff; // BPLAM7-0 (bits 15-8): playfield colour-index XOR mask
+  const esprm = (bplcon4 >> 4) & 0x0f; // ESPRM3-0 (bits 7-4): even-sprite colour bank
+  const osprm = bplcon4 & 0x0f; // OSPRM3-0 (bits 3-0): odd-sprite colour bank
+
+  return [
+    { name: "15-08: BPLAM", value: formatHex(bplam, 2) },
+    { name: "07-04: ESPRM", value: esprm },
+    { name: "03-00: OSPRM", value: osprm },
+  ];
+}
+
+/**
+ * Parses FMODE register bits (AGA DMA Fetch Mode Control - reads back 0 on OCS/ECS)
+ */
+export function parseFmodeRegister(fmode: number): RegisterBitField[] {
+  const bplFetchMode = fmode & 0x03; // bits 1-0: bitplane fetch mode, 0=1x/1=2x/2=4x words per slot
+  const sprFetchMode = (fmode >> 2) & 0x03; // bits 3-2: sprite fetch mode, 0=1x/2=2x words per slot
+
+  return [
+    { name: "15: SSCAN2", value: (fmode & 0x8000) !== 0 },
+    { name: "14: BSCAN2", value: (fmode & 0x4000) !== 0 },
+    { name: "03-02: SPRFMODE", value: sprFetchMode },
+    { name: "01-00: BPLFMODE", value: bplFetchMode },
   ];
 }
 

@@ -21,6 +21,11 @@
   max-width: 510px;
 }
 
+.palette-grid-256 {
+  grid-template-columns: repeat(32, 1fr);
+  max-width: 100%;
+}
+
 .color-tile {
   min-width: 26px;
   aspect-ratio: 1;

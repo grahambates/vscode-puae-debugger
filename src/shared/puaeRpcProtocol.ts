@@ -108,6 +108,7 @@ export interface PuaeRpcProtocol {
   getDmaEventsFrame: { args: { frameIdx: number }; result: RpcBinaryData };
   getCopperFrame: { args: { frameIdx: number }; result: RpcBinaryData };
   getDmaSnapshot: { args: undefined; result: RpcDmaSnapshot };
+  getAgaColors: { args: undefined; result: RpcBinaryData };
 }
 
 export type PuaeRpcCommand = keyof PuaeRpcProtocol;

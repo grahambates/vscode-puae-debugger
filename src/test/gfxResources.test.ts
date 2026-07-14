@@ -11,6 +11,7 @@ const baseScreen: IScreen = {
   height: 200,
   firstLine: 50,
   hires: false,
+  shres: false,
   ham: false,
   dpf: false,
   staticPlanes: false,
@@ -62,22 +63,28 @@ describe("decodeBplcon0", () => {
   it("reads BPU/hires/ham/dpf straight off the register bits", () => {
     const val = (5 << 12) | (1 << 15) | (1 << 11) | (1 << 10); // 5 planes, hires, ham, dpf
     expect(decodeBplcon0(val, false)).toEqual({
-      numPlanes: 5, hires: true, ham: true, dpf: true, staticPlanes: false,
+      numPlanes: 5, hires: true, shres: false, ham: true, dpf: true, staticPlanes: false,
     });
   });
 
   it("detects the OCS/ECS 7-plane trick (BPU==7, non-AGA) and forces numPlanes to 6", () => {
     const val = 7 << 12;
     expect(decodeBplcon0(val, false)).toEqual({
-      numPlanes: 6, hires: false, ham: false, dpf: false, staticPlanes: true,
+      numPlanes: 6, hires: false, shres: false, ham: false, dpf: false, staticPlanes: true,
     });
   });
 
   it("treats BPU==7 as a literal 7-plane mode on AGA (isAga=true), not the trick", () => {
     const val = 7 << 12;
     expect(decodeBplcon0(val, true)).toEqual({
-      numPlanes: 7, hires: false, ham: false, dpf: false, staticPlanes: false,
+      numPlanes: 7, hires: false, shres: false, ham: false, dpf: false, staticPlanes: false,
     });
+  });
+
+  it("decodes SHRES (bit 6) independently of HIRES", () => {
+    const val = 1 << 6;
+    expect(decodeBplcon0(val, true).shres).toBe(true);
+    expect(decodeBplcon0(val, true).hires).toBe(false);
   });
 });
 

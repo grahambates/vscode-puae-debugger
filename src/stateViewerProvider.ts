@@ -5,6 +5,7 @@ import { DebugAdapter } from "./debugAdapter";
 import {
   DisplayState,
   AmigaColor,
+  AmigaColor256,
   UpdateDisplayStateMessage,
   UpdateMemoryInfoMessage,
   StateViewerMessage,
@@ -15,6 +16,8 @@ import {
   parseBplcon1Register,
   parseBplcon2Register,
   parseBplcon3Register,
+  parseBplcon4Register,
+  parseFmodeRegister,
 } from "./amigaRegisterParsers";
 import { AmigaMemoryMapper } from "./amigaMemoryMapper";
 
@@ -132,7 +135,7 @@ export class StateViewerProvider {
   /**
    * Extracts display state from custom registers
    */
-  private parseDisplayState(registers: CustomRegisters): DisplayState {
+  private parseDisplayState(registers: CustomRegisters, agaColors?: Uint32Array): DisplayState {
     const palette: AmigaColor[] = [];
 
     // Extract color palette from COLOR00-COLOR31 registers
@@ -169,6 +172,7 @@ export class StateViewerProvider {
       dpf,
       _color,
       _genlock,
+      shres,
       _lightpen,
       interlaced,
       _extResync,
@@ -201,14 +205,49 @@ export class StateViewerProvider {
       borderBlank,
     ] = bplcon3Parsed;
 
+    // AGA-only registers: read back 0 on OCS/ECS, which decodes to fetchMode 0 / bplam 0 /
+    // esprm 0 / osprm 0 there — harmless, since isAga below gates whether the UI shows them.
+    const fmode = registers.FMODE?.value;
+    const [_sscan2, _bscan2, _sprFetchMode, fetchMode] = fmode
+      ? parseFmodeRegister(Number(fmode)).map((v) => v.value)
+      : [undefined, undefined, undefined, undefined];
+
+    const bplcon4 = registers.BPLCON4?.value;
+    const [bplam, esprm, osprm] = bplcon4
+      ? parseBplcon4Register(Number(bplcon4)).map((v) => v.value)
+      : [undefined, undefined, undefined];
+
+    const isAga = agaColors !== undefined;
+    const aga256Palette: AmigaColor256[] | undefined = agaColors
+      ? Array.from(agaColors, (v, i) => ({
+          r: (v >> 16) & 0xff,
+          g: (v >> 8) & 0xff,
+          b: v & 0xff,
+          register: i,
+        }))
+      : undefined;
+
+    const bitplaneCount = bitplanes as number;
+    const hamBits: 6 | 8 | undefined = ham
+      ? (bitplaneCount === 6 ? 6 : bitplaneCount === 8 ? 8 : undefined)
+      : undefined;
+
     return {
       palette,
-      bitplanes: bitplanes as number,
+      aga256Palette,
+      bitplanes: bitplaneCount,
       interlaced: interlaced as boolean,
       hires: hires as boolean,
+      shres: shres as boolean,
       ham: ham as boolean,
+      hamBits,
       dpf: dpf as boolean,
       ecsEna: ecsEna as boolean,
+      isAga,
+      fetchMode: fetchMode as number | undefined,
+      bplam: bplam as number | undefined,
+      esprm: esprm as number | undefined,
+      osprm: osprm as number | undefined,
       pf2h,
       pf1h,
       pf2Pri: pf2Pri as boolean,
@@ -237,8 +276,11 @@ export class StateViewerProvider {
       throw new Error("Debugger is not running");
     }
 
-    const registers = await this.emulator.getAllCustomRegisters();
-    const displayState = this.parseDisplayState(registers);
+    const [registers, agaColors] = await Promise.all([
+      this.emulator.getAllCustomRegisters(),
+      this.emulator.getAgaColors(),
+    ]);
+    const displayState = this.parseDisplayState(registers, agaColors);
 
     const message: UpdateDisplayStateMessage = {
       command: "updateDisplayState",

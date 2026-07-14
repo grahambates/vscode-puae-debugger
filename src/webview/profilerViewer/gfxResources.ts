@@ -19,6 +19,11 @@ export interface IScreen {
   height: number;
   firstLine: number;   // vpos of first BPL-active scan line, shifted by the centering offset above
   hires: boolean;      // BPLCON0 at display start — may not hold for the whole frame
+  // AGA-only super-hires (BPLCON0 bit 6) at display start — informational only, for the mode
+  // label (see decodeBplcon0's doc comment): doesn't affect canvasHires/width/dup, so a
+  // super-hires capture still reconstructs at the hires pixel grid, one canvas pixel per 2
+  // actual super-hires pixels.
+  shres: boolean;
   ham: boolean;        // BPLCON0 at display start — may not hold for the whole frame
   dpf: boolean;        // BPLCON0[10] — dual playfield at display start
   // True for the OCS/ECS "7-plane trick" (BPLCON0 BPU field == 7 on a non-AGA capture):
@@ -78,8 +83,9 @@ export const DMA_VPOS = 313; // scan lines per frame in the DMA grid
 // pipelines it through a fixed fetch-scheduling delay before Denise can display it. Mirrored from
 // PUAE's own custom.c (the `decide_line`-adjacent DIW/DDF bookkeeping around `ddffirstword_total`):
 // `int f = 8 << fetchmode; ddffirstword_total = plfstrt + f;` (`plfstrt` is DDFSTRT, already masked
-// the same way `ddfStart` is here) — an 8-color-clock delay for the common (non-AGA-fetchmode) case
-// this project targets, i.e. +16 in this file's already-doubled canvas-x units. DIW_DDF_OFFSET(1) is
+// the same way `ddfStart` is here) — an 8-color-clock delay for fetch mode 0 (OCS/ECS, and AGA's
+// own default fetch mode), i.e. +16 in this file's already-doubled canvas-x units; see
+// fetchDelayCck below for AGA's 2x/4x fetch-mode cases. DIW_DDF_OFFSET(1) is
 // a further, much smaller "pixel data spends a couple of cycles in the chips" pipeline fudge PUAE
 // applies when finally converting to window-x (drawing.h). Without either, DDFSTRT-derived canvas
 // positions (content position, per-line offsets) land a full DDF block short of where the display
@@ -92,6 +98,15 @@ export const DMA_VPOS = 313; // scan lines per frame in the DMA grid
 // every capture.
 export const DDF_FETCH_DELAY_CCK = 8;
 export const DIW_DDF_OFFSET = 1;
+
+// AGA's fetch-mode register (FMODE, $DFF1FC) widens the DMA fetch to 2/4 words per slot for its
+// 2x/4x fetch modes, which lengthens the same fetch-scheduling delay proportionally — mirrors
+// PUAE's own custom.c formula exactly: `int f = 8 << fetchmode;` (fetchmode = FMODE & 3). Absent
+// (reads back 0) on OCS/ECS captures, so this is a no-op — `fetchDelayCck(0) === DDF_FETCH_DELAY_CCK`
+// — everywhere except an AGA capture actually using a non-zero fetch mode.
+export function fetchDelayCck(fmode: number): number {
+  return DDF_FETCH_DELAY_CCK << (fmode & 3);
+}
 
 // PUAE's standard (non-"extreme overscan") PAL framebuffer preset — see
 // puae-wasm/libretro-uae/libretro/libretro-core.h's PUAE_VIDEO_WIDTH/PUAE_VIDEO_HEIGHT_PAL
@@ -167,6 +182,7 @@ export function buildScreenFromModel(model: IProfileModel): IScreen | undefined 
   let DDFSTOP = custom[R.DDFSTOP >> 1];
   let DIWSTRT = custom[R.DIWSTRT >> 1];
   let DIWSTOP = custom[R.DIWSTOP >> 1];
+  let FMODE   = custom[R.FMODE >> 1];
 
   const count = copper.addr.length;
   for (let i = 0; i < count; i++) {
@@ -181,11 +197,12 @@ export function buildScreenFromModel(model: IProfileModel): IScreen | undefined 
       case R.DDFSTOP: DDFSTOP = rd; break;
       case R.DIWSTRT: DIWSTRT = rd; break;
       case R.DIWSTOP: DIWSTOP = rd; break;
+      case R.FMODE:   FMODE = rd; break;
     }
   }
 
   const isAga = !!model.dmaSnapshot?.agaColors;
-  const { hires, ham, dpf, staticPlanes } = decodeBplcon0(BPLCON0, isAga);
+  const { hires, shres, ham, dpf, staticPlanes } = decodeBplcon0(BPLCON0, isAga);
   if (staticPlanes) numPlanes = 6;
 
   const ddfStart = DDFSTRT & 0xfc;
@@ -213,7 +230,7 @@ export function buildScreenFromModel(model: IProfileModel): IScreen | undefined 
   }
 
   const contentWidth       = blocks << (canvasHires ? 5 : 4);
-  const contentDisplayLeft = (ddfStart + DDF_FETCH_DELAY_CCK) * 2 + DIW_DDF_OFFSET;
+  const contentDisplayLeft = (ddfStart + fetchDelayCck(FMODE)) * 2 + DIW_DDF_OFFSET;
 
   // ── Canvas sizing: PUAE's standard PAL preset, not a tight crop around the fetched content ──
   // See STANDARD_FB_WIDTH/HEIGHT's doc comment for the pixel-unit conversion. Centers the fetched
@@ -257,7 +274,7 @@ export function buildScreenFromModel(model: IProfileModel): IScreen | undefined 
   const diwBottom = Math.max(finalFirstLine, Math.min(finalFirstLine + finalHeight, diwVStop));
 
   return {
-    numPlanes, hires, ham, dpf, staticPlanes, canvasHires, modeChanges, blocks,
+    numPlanes, hires, shres, ham, dpf, staticPlanes, canvasHires, modeChanges, blocks,
     width: finalWidth, height: finalHeight, firstLine: finalFirstLine, displayLeft: finalDisplayLeft,
     diwLeft, diwRight, diwTop, diwBottom,
   };
@@ -722,6 +739,12 @@ export function decodeScreenPixels(
   const lineDdfstopRaw: number[] = copper
     ? buildLineRegister(baseRegs, copper, firstLine, height, R.DDFSTOP)
     : Array.from({ length: height }, () => baseRegs[R.DDFSTOP >> 1]);
+  // Per-line FMODE (AGA only; reads back 0 on OCS/ECS) — see fetchDelayCck's doc comment. Tracked
+  // at the same line granularity as DDFSTRT/DDFSTOP, since a copper split that changes fetch mode
+  // commonly changes the fetch window at the same time.
+  const lineFmodeRaw: number[] = copper
+    ? buildLineRegister(baseRegs, copper, firstLine, height, R.FMODE)
+    : Array.from({ length: height }, () => baseRegs[R.FMODE >> 1]);
   // Fallback word count for the rare degenerate line where that line's own DDFSTRT/DDFSTOP
   // momentarily don't form a valid window. screen.blocks is the *content*-only word count
   // (width itself may now be PUAE's own, unrelated, live framebuffer size — see IScreen.width).
@@ -795,7 +818,7 @@ export function decodeScreenPixels(
     // scheduling delay — see DDF_FETCH_DELAY_CCK's doc comment in gfxResources.ts). Without
     // this, a narrowed *and shifted* fetch window still gets the right word count but drawn
     // from canvas x=0, i.e. shifted from where it actually belongs.
-    const lineDdfCanvasX = (lineDdfStart + DDF_FETCH_DELAY_CCK) * 2 + DIW_DDF_OFFSET;
+    const lineDdfCanvasX = (lineDdfStart + fetchDelayCck(lineFmodeRaw[y])) * 2 + DIW_DDF_OFFSET;
     const lineOffsetX = (lineDdfCanvasX - displayLeft) * (canvasHires ? 2 : 1);
 
     // ── Bitplane data ──────────────────────────────────────────────────

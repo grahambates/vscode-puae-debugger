@@ -590,6 +590,8 @@ export function setupRpcDispatcher(
       ["BPL4PT", 0x0ec, 4],
       ["BPL5PT", 0x0f0, 4],
       ["BPL6PT", 0x0f4, 4],
+      ["BPL7PT", 0x0f8, 4],
+      ["BPL8PT", 0x0fc, 4],
       ["BPL1MOD", 0x108, 2],
       ["BPL2MOD", 0x10a, 2],
       ["BPLCON4", 0x10c, 2],
@@ -600,6 +602,8 @@ export function setupRpcDispatcher(
       ["BPL4DAT", 0x116, 2],
       ["BPL5DAT", 0x118, 2],
       ["BPL6DAT", 0x11a, 2],
+      ["BPL7DAT", 0x11c, 2],
+      ["BPL8DAT", 0x11e, 2],
       ["HTOTAL", 0x1c0, 2],
       ["HSSTOP", 0x1c2, 2],
       ["HBSTRT", 0x1c4, 2],
@@ -1400,6 +1404,16 @@ export function setupRpcDispatcher(
         const agaColors = new Uint8Array(M.HEAPU8.buffer, agaPtr, 256 * 4).slice();
 
         rpcRequest(() => ({ chip, slow, fast, fastAddr, custom, agaColors }));
+        break;
+      }
+      // Lightweight counterpart of getDmaSnapshot's agaColors field, for callers (the state
+      // viewer) that just want the live palette without paying for a full chip/slow/fast RAM
+      // dump. All-zero (not undefined) outside AGA mode; decodeAgaColors on the receiving end
+      // treats that the same as "absent" (see its own doc comment).
+      case "getAgaColors": {
+        M._wasm_read_aga_colors();
+        const agaPtr = M._wasm_get_aga_colors_buf();
+        rpcRequest(() => ({ data: new Uint8Array(M.HEAPU8.buffer, agaPtr, 256 * 4).slice() }));
         break;
       }
       default:

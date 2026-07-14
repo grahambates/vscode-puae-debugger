@@ -3,6 +3,7 @@ import { List, ListImperativeAPI, RowComponentProps } from "react-window";
 import { getProfileModel } from "./modelStore";
 import { disassembleCopperInstruction, CopperInstruction } from "../../shared/copperDisassembler";
 import { DMA_HPOS } from "../../shared/profilerTypes";
+import { CUSTOM_REGISTER_OFFSETS as R } from "../shared/customRegisters";
 import { createSourceLookup, SourceLocation } from "./sourceLookup";
 
 interface CopperRow {
@@ -81,6 +82,10 @@ export function CopperView({
   const rows = useMemo<CopperRow[]>(() => {
     if (!copper) return [];
     const out: CopperRow[] = [];
+    // Running BPLCON3 state (for an accurate AGA COLORxx swatch preview — see
+    // disassembleCopperInstruction's doc comment), seeded from the capture-start snapshot and
+    // advanced by the trace's own BPLCON3 writes as we walk it in execution order.
+    let bplcon3 = model?.dmaSnapshot?.custom?.[R.BPLCON3 >> 1] ?? 0;
     for (let i = 0; i < copper.addr.length; i++) {
       // Clamp hpos to [0, DMA_HPOS-1]: cop_record stores raw hardware hpos which can reach
       // up to NR_DMA_REC_HPOS-1 = 287 (e.g. COP1JMP/COP2JMP strobes fired during HBlank).
@@ -89,14 +94,16 @@ export function CopperView({
       // (the strobe appears to come *after* the first instruction of the restarted list).
       const hpos = Math.min(copper.hpos[i], DMA_HPOS - 1);
       const slot = copper.vpos[i] * DMA_HPOS + hpos;
-      const insn = disassembleCopperInstruction(copper.addr[i], copper.w1[i], copper.w2[i]);
+      const insn = disassembleCopperInstruction(copper.addr[i], copper.w1[i], copper.w2[i], bplcon3);
+      const w1 = copper.w1[i];
+      if (!(w1 & 1) && (w1 & 0x1fe) === R.BPLCON3) bplcon3 = copper.w2[i];
       out.push({ slot, insn, loc: sourceLookup(insn.address) });
     }
     // Sort by slot as a safety net: should already be ordered post-clamp, but if any other
     // edge cases cause non-monotonicity the binary floor search for currentIndex requires it.
     out.sort((a, b) => a.slot - b.slot);
     return out;
-  }, [copper, sourceLookup]);
+  }, [copper, sourceLookup, model?.dmaSnapshot?.custom]);
 
   // Latest row whose slot is <= selectedSlot (rows are in execution order, so slot is
   // monotonically non-decreasing — binary search for the floor).
