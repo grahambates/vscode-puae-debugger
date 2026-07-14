@@ -20,7 +20,12 @@ export function installMouseCapture(canvas: HTMLCanvasElement, M: PuaeModule): v
   // (DOM MouseEvent.button: 0=left, 1=middle, 2=right) directly.
   function mouseDown(event: MouseEvent): void {
     if (event.button === 1) {
-      // Middle button releases capture rather than being forwarded.
+      // Middle button releases capture rather than being forwarded. preventDefault stops the
+      // browser's own middle-click autoscroll (the pan-cursor overlay most browsers show on a
+      // middle mousedown) from kicking in at the same moment the pointer is unlocked — otherwise
+      // the freed OS cursor reappears already in autoscroll mode, which looks like the release
+      // didn't work even though exitPointerLock() did fire.
+      event.preventDefault();
       document.exitPointerLock?.();
       return;
     }
@@ -51,6 +56,11 @@ export function installMouseCapture(canvas: HTMLCanvasElement, M: PuaeModule): v
   // when it opens a source file, so a click that opens source doesn't also
   // request pointer lock on the same click.
   canvas.addEventListener("click", () => {
+    // Don't capture the mouse while paused: this is exactly when the user is most likely
+    // hovering the canvas to read the screen-reconstruction tooltip (screenHover.ts) or the DMA
+    // overlay tooltip (dmaHover.ts), and pointer lock would hijack the cursor (hiding it and
+    // switching mousemove to relative deltas) instead of letting them inspect the picture.
+    if (M._wasm_is_paused()) return;
     void canvas.requestPointerLock();
   });
 }
