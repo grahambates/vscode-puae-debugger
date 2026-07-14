@@ -1,5 +1,5 @@
 import { buildColumns, columnIndexAtX, columnIndexToSlot, findLineExecutionSlot, findNextSample, IColumn } from "../webview/profilerViewer/columns";
-import { IDisassembledFunction, IDisassembledInstruction, IProfileModel } from "../shared/profilerTypes";
+import { BusOwner, DMA_CODE, IDisassembledFunction, IDisassembledInstruction, IProfileModel } from "../shared/profilerTypes";
 
 const columns: IColumn[] = [
   { x1: 0, x2: 0.25, rows: [] },
@@ -7,6 +7,67 @@ const columns: IColumn[] = [
   { x1: 0.5, x2: 0.75, rows: [] },
   { x1: 0.75, x2: 1, rows: [] },
 ];
+
+describe("buildColumns (DMA-anchored positions)", () => {
+  // 4 samples, uniform cycle cost — under the old cycle-fraction model these would land at
+  // x1 = 0, 0.25, 0.5, 0.75 (of a 100-slot grid: 0, 25, 50, 75). The DMA grid instead records the
+  // *real* fetch slot for samples 0, 2, 3 (10, 40, 50) with no cell for sample 1 (0x1002) — as if
+  // its opcode word was still sitting in the prefetch queue — which must be recovered by
+  // interpolating between samples 0 and 2's real slots (10 and 40), not by dividing cycle cost.
+  const N = 100;
+  const owner = new Uint8Array(N);
+  const flags = new Uint8Array(N);
+  const addr = new Uint32Array(N);
+  const value = new Uint16Array(N);
+  const fetch = (slot: number, pc: number) => {
+    owner[slot] = BusOwner.CPU;
+    flags[slot] = DMA_CODE;
+    addr[slot] = pc;
+  };
+  fetch(10, 0x1000);
+  // slot for 0x1002 deliberately omitted (unmatched sample).
+  fetch(40, 0x1004);
+  fetch(50, 0x1006);
+
+  const model: IProfileModel = {
+    nodes: [
+      { id: 0, selfTime: 0, aggregateTime: 0, children: [1], locationId: 0 },
+      { id: 1, selfTime: 0, aggregateTime: 0, children: [], locationId: 0, parent: 0 },
+    ],
+    locations: [{ id: 0, selfTime: 0, aggregateTime: 0, category: 1, address: 0x1000,
+      callFrame: { functionName: "fn", url: "a.c", scriptId: "0", lineNumber: 10, columnNumber: 0 } }],
+    samples: [0, 1, 1, 1, 1],
+    timeDeltas: [5, 5, 5, 5],
+    pcs: [0x1000, 0x1002, 0x1004, 0x1006],
+    duration: 20,
+    cyclesPerMicroSecond: 7.09379,
+    dma: { owner, flags, addr, value },
+  };
+
+  it("positions matched samples at their real DMA slot, not a cycle-cost fraction", () => {
+    const columns = buildColumns(model);
+    expect(columns[0].x1).toBeCloseTo(10 / N, 6); // sample 0 -> real slot 10, not 0
+    expect(columns[2].x1).toBeCloseTo(40 / N, 6); // sample 2 -> real slot 40, not 0.5
+    expect(columns[3].x1).toBeCloseTo(50 / N, 6); // sample 3 -> real slot 50, not 0.75
+    expect(columns[3].x2).toBe(1); // last column always closes out the frame
+  });
+
+  it("interpolates an unmatched sample between its matched neighbours", () => {
+    const columns = buildColumns(model);
+    // Sample 1 (0x1002) has no fetch cell: interpolated midway between slots 10 and 40 -> 25.
+    expect(columns[1].x1).toBeCloseTo(25 / N, 6);
+  });
+
+  it("falls back to the cycle-cost fraction when the grid has no matching CPU/CODE cells", () => {
+    const noMatches: IProfileModel = {
+      ...model,
+      dma: { owner: new Uint8Array(N), flags: new Uint8Array(N), addr: new Uint32Array(N), value: new Uint16Array(N) },
+    };
+    const columns = buildColumns(noMatches);
+    expect(columns[0].x1).toBe(0);
+    expect(columns[1].x1).toBeCloseTo(0.25, 6);
+  });
+});
 
 describe("columnIndexToSlot", () => {
   it("maps a column index to a slot within its x1..x2 span (uses midpoint, not left edge)", () => {

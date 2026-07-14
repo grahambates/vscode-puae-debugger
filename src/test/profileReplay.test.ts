@@ -50,7 +50,13 @@ describe("replay template.puaeprofile", () => {
 
     const columns = buildColumns(model);
     expect(columns.length).toBeGreaterThan(0);
-    expect(columns[0].x1).toBe(0);
+    // Not exactly 0: buildColumns anchors CPU columns to the DMA grid's own record of each
+    // instruction's fetch (see columns.ts' buildSampleSlots) rather than a cycle-cost fraction, so
+    // the first column starts at the real DMA slot of the first sampled instruction — which is
+    // rarely slot 0, since some real time (interrupts/OS calls) typically runs before the capture's
+    // first sampled (in-program) instruction that frame.
+    expect(columns[0].x1).toBeGreaterThanOrEqual(0);
+    expect(columns[0].x1).toBeLessThan(0.01);
     expect(columns[columns.length - 1].x2).toBeCloseTo(1, 6);
 
     const groups = Object.values(createTopDownGraph(model).children).map((n) => n.callFrame.functionName);

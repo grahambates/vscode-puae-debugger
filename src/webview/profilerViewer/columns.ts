@@ -7,7 +7,7 @@
 // a given row are coalesced: a numeric cell `n` means "merge with the cell at column
 // n, same row", which is how runs of the same function become a single wide box.
 
-import { IProfileModel, ILocation } from "../../shared/profilerTypes";
+import { IProfileModel, ILocation, IDmaModel, BusOwner, DMA_CODE } from "../../shared/profilerTypes";
 import { binarySearch } from "./array";
 
 export interface IColumnLocation extends ILocation {
@@ -21,10 +21,94 @@ export interface IColumn {
   rows: (IColumnLocation | number)[];
 }
 
+// Cells to search ahead (in the DMA grid) before giving up on matching a given sample's fetch —
+// bounded so a genuinely unmatchable sample (see below) can't turn this into an O(samples * N)
+// scan; a real fetch, when there is one, shows up within a handful of cells of the previous match.
+const CODE_MATCH_WINDOW = 512;
+
+// Anchor each CPU sample to the DMA grid's own record of its instruction fetch (owner==CPU,
+// DMA_CODE flag, real bus address) — ground truth for "when did this instruction actually run,"
+// walked in execution order alongside the samples via a single forward pointer into the grid
+// (both streams are monotonic, so this is O(samples + dmaSlots), not quadratic).
+//
+// The CPU-cycle-cost timeline (model.duration / timeDeltas) and the DMA grid's raster-slot
+// timeline are two independent clocks: the former only starts counting from the first sampled
+// (in-program) instruction of the capture and silently drops any real time spent executing
+// out-of-program code (interrupts/OS calls) in between samples, while the grid always starts at
+// the true frame origin (line 0, color clock 0). Normalizing both by their own totals — as
+// buildColumns' fallback path below does — makes CPU boxes drift from where the DMA/blitter bands
+// (which use the grid slot directly, see FlameGraph.tsx's spanX) place the very same instant.
+// Matching each sample directly against the grid sidesteps that mismatch instead of estimating it.
+//
+// A sample can go unmatched (no fresh fetch cell) when its opcode word was already sitting in the
+// 68000's prefetch queue from an earlier fetch — mostly tight loops/branches; rare in practice.
+// Those are filled in by interpolating between the nearest matched neighbours.
+function buildSampleSlots(pcs: readonly number[], dma: IDmaModel): { slots: Int32Array; matched: number } {
+  const { owner, flags, addr } = dma;
+  const N = owner.length;
+  const slots = new Int32Array(pcs.length).fill(-1);
+
+  let cell = 0;
+  let matched = 0;
+  for (let k = 0; k < pcs.length; k++) {
+    const pc = pcs[k];
+    // The very first sample is the one place a genuinely large gap is expected — everything the
+    // capture didn't sample (interrupts, OS/library calls, Kickstart init) that ran before the
+    // first in-program instruction this frame is real elapsed grid distance, unbounded by
+    // CODE_MATCH_WINDOW. That search only runs once per capture, so it can afford to scan to the
+    // end of the grid; every later sample restricts to the bounded window (steady-state gaps
+    // between samples are small — see the header comment).
+    const limit = k === 0 ? N : Math.min(N, cell + CODE_MATCH_WINDOW);
+    let j = cell;
+    while (j < limit && !(owner[j] === BusOwner.CPU && flags[j] & DMA_CODE && addr[j] === pc)) j++;
+    if (j < limit) {
+      slots[k] = j;
+      cell = j + 1;
+      matched++;
+    }
+    // else: leave unmatched (-1); `cell` stays put so the next sample can still match nearby —
+    // this one just consumed no grid cell.
+  }
+
+  // Fill unmatched runs by interpolating between the nearest matched neighbours (linear in sample
+  // index, which is what buildColumns needs — a straight line between two known points). A run
+  // before the first match or after the last has no far endpoint to interpolate towards, so it
+  // clamps to the nearest match instead of extrapolating off the grid.
+  let prev = -1;
+  for (let k = 0; k < slots.length; k++) {
+    if (slots[k] < 0) continue;
+    if (prev < 0) {
+      for (let j = 0; j < k; j++) slots[j] = slots[k];
+    } else if (k - prev > 1) {
+      const s0 = slots[prev];
+      const s1 = slots[k];
+      const span = k - prev;
+      for (let j = prev + 1; j < k; j++) slots[j] = s0 + Math.round(((s1 - s0) * (j - prev)) / span);
+    }
+    prev = k;
+  }
+  if (prev >= 0) {
+    for (let j = prev + 1; j < slots.length; j++) slots[j] = slots[prev];
+  }
+  return { slots, matched };
+}
+
 export const buildColumns = (model: IProfileModel): IColumn[] => {
   const columns: IColumn[] = [];
   const duration = model.duration || 1;
   let graphIdCounter = 0;
+
+  // Prefer DMA-grid-anchored positions (see buildSampleSlots) over the cycle-cost fallback below —
+  // but only once at least one sample has actually matched a real fetch cell. `matched === 0`
+  // means the grid has no CPU/CODE cells to anchor to at all (e.g. DMA tracking captured nothing
+  // useful), so every column would otherwise collapse to the same interpolated position; the
+  // cycle-cost estimate is strictly better than that.
+  const dma = model.dma;
+  const N = dma ? dma.owner.length : 0;
+  const sampleSlots = dma && N && model.pcs.length ? buildSampleSlots(model.pcs, dma) : undefined;
+  const anchored = !!sampleSlots && sampleSlots.matched > 0;
+  const slotX = (k: number): number =>
+    k < sampleSlots!.slots.length ? sampleSlots!.slots[k] / N : 1;
 
   // 1. One column per instruction, deepest (leaf) frame at rows[bottom]. The leaf row's
   // `address` is overridden with model.pcs[i-1] — the exact PC for THIS sample — rather than
@@ -61,7 +145,10 @@ export const buildColumns = (model: IProfileModel): IColumn[] => {
       });
     }
 
-    columns.push({ x1: timeOffset / duration, x2: (selfTime + timeOffset) / duration, rows });
+    const k = i - 1;
+    const x1 = anchored ? slotX(k) : timeOffset / duration;
+    const x2 = anchored ? slotX(k + 1) : (selfTime + timeOffset) / duration;
+    columns.push({ x1, x2, rows });
     timeOffset += selfTime;
   }
 
