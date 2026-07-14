@@ -1,7 +1,7 @@
 import * as vscode from "vscode";
 import { loadProfile } from "./profileLoader";
 import { packBulk } from "./profilerBulk";
-import { getProfilerHtml, openProfilerSource } from "./profilerViewerProvider";
+import { getProfilerHtml, openProfilerSource, readProfilerSourceFile } from "./profilerViewerProvider";
 import { ProfilerCodeLensProvider } from "./profilerCodeLensProvider";
 import { ProfilerLineDecorationProvider } from "./profilerLineDecorationProvider";
 import { ProfilerInboundMessage, IProfileModel } from "./shared/profilerTypes";
@@ -79,6 +79,10 @@ export class ProfileEditorProvider implements vscode.CustomReadonlyEditorProvide
         }
       } else if (message.command === "openDocument") {
         void openProfilerSource(message.file, message.line, message.toSide);
+      } else if (message.command === "readSourceFile") {
+        void readProfilerSourceFile(message.file).then((lines) => {
+          webviewPanel.webview.postMessage({ command: "sourceFile", file: message.file, lines });
+        });
       }
       // "capture"/"saveProfile" don't apply to a loaded file and are ignored.
     });

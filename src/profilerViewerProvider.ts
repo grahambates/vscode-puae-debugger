@@ -135,13 +135,8 @@ export class ProfilerViewerProvider {
       } else if (message.command === "openDocument") {
         await openProfilerSource(message.file, message.line, message.toSide);
       } else if (message.command === "readSourceFile") {
-        try {
-          const data = await vscode.workspace.fs.readFile(vscode.Uri.file(message.file));
-          const lines = Buffer.from(data).toString("utf8").split(/\r?\n/);
-          this.post({ command: "sourceFile", file: message.file, lines });
-        } catch {
-          this.post({ command: "sourceFile", file: message.file, lines: [] });
-        }
+        const lines = await readProfilerSourceFile(message.file);
+        this.post({ command: "sourceFile", file: message.file, lines });
       }
     });
   }
@@ -269,18 +264,22 @@ export class ProfilerViewerProvider {
 
 }
 
+// Resolve a model-carried `file` path (as seen in ins.file / node.callFrame.url) to a URI:
+// absolute paths open directly; relative paths (e.g. a loaded .puaeprofile whose SourceMap was
+// rebuilt against a baseDir that isn't this machine's absolute layout) resolve against the first
+// workspace folder. Shared by jump-to-source and the "Show source" preview text fetch below, and
+// by both the live panel and the .puaeprofile editor.
+function resolveSourceUri(file: string): vscode.Uri | undefined {
+  if (path.isAbsolute(file)) return vscode.Uri.file(file);
+  const folder = vscode.workspace.workspaceFolders?.[0];
+  return folder ? vscode.Uri.joinPath(folder.uri, file) : undefined;
+}
+
 // Ctrl/Cmd+click in the flame graph: open the function's source at `line` (1-based, as
-// carried in the model). Absolute paths open directly; relative paths resolve against the
-// first workspace folder. Shared by the live panel and the .puaeprofile editor.
+// carried in the model). Shared by the live panel and the .puaeprofile editor.
 export async function openProfilerSource(file: string, line: number, toSide?: boolean): Promise<void> {
   try {
-    let uri: vscode.Uri | undefined;
-    if (path.isAbsolute(file)) {
-      uri = vscode.Uri.file(file);
-    } else {
-      const folder = vscode.workspace.workspaceFolders?.[0];
-      if (folder) uri = vscode.Uri.joinPath(folder.uri, file);
-    }
+    const uri = resolveSourceUri(file);
     if (!uri) return;
     const doc = await vscode.workspace.openTextDocument(uri);
     const l = Math.max(0, line - 1);
@@ -294,6 +293,21 @@ export async function openProfilerSource(file: string, line: number, toSide?: bo
     vscode.window.showWarningMessage(
       `Profiler: couldn't open ${file}: ${error instanceof Error ? error.message : String(error)}`,
     );
+  }
+}
+
+// Backs the DisassemblyView "Show source" preview's readSourceFile RPC: literal line-by-line
+// text for `file`, resolved the same way jump-to-source is (see resolveSourceUri) — an empty
+// array (rather than throwing) means "not found", which the webview renders as a placeholder.
+// Shared by the live panel and the .puaeprofile editor.
+export async function readProfilerSourceFile(file: string): Promise<string[]> {
+  try {
+    const uri = resolveSourceUri(file);
+    if (!uri) return [];
+    const data = await vscode.workspace.fs.readFile(uri);
+    return Buffer.from(data).toString("utf8").split(/\r?\n/);
+  } catch {
+    return [];
   }
 }
 
