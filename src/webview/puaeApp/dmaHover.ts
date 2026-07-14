@@ -389,7 +389,7 @@ function cpuInfoAtSlot(M: PuaeModule, hpos: number, vpos: number): CpuHoverInfo 
 // Maps a framebuffer-space pixel to a DMA-grid (hpos, vpos) cell, inverting
 // e9k_dma_draw_overlay's (debug.c) `h*width/DMA_HPOS`/`v*height/DMA_VPOS`
 // cell-rect mapping.
-function pixelToDmaSlot(
+export function pixelToDmaSlot(
   px: number,
   py: number,
   fbWidth: number,

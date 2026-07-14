@@ -527,7 +527,12 @@ wasm_profile_get_stats(void)
 }
 
 // ---- DMA profiler grid (matches the vAmiga emulator project's own Cell[] format) ----
-// Populated by wasm_dma_serialize_grid() after wasm_profile_start completes.
+// Populated by wasm_dma_serialize_grid() — called internally by wasm_profile_start's per-frame
+// capture loop (frontend_shim.c), and also PUAE_DEBUG_EXPORT'd here so screenHover.ts's live
+// paused-screen tooltip can call it on demand outside of a profiler capture session (it wasn't
+// originally exported — calling it from JS just threw "not a function" until this was added).
+// Safe to call anytime debug_dma has been recording: it just re-serializes dma_record[]'s
+// current "last completed frame" contents, the same source wasm_dma_get_cell_type/etc. read from.
 // 227 * 313 * 8 bytes = ~568KB; serialised by puae_dma_serialize() in debug.c.
 #define PUAE_DMA_CELL_BYTES 8
 static uint8_t g_dmaGrid[227 * 313 * PUAE_DMA_CELL_BYTES];
@@ -535,7 +540,7 @@ static uint32_t g_dmaGridSize;
 
 extern uint32_t puae_dma_serialize(uint8_t *out);
 
-void
+PUAE_DEBUG_EXPORT void
 wasm_dma_serialize_grid(void)
 {
 	g_dmaGridSize = puae_dma_serialize(g_dmaGrid);
@@ -757,6 +762,21 @@ static int g_dmaOverlaySavedDefaultW = -1, g_dmaOverlaySavedDefaultH = -1;
 
 // Non-static: read by the render-time marking hooks in drawing.c/custom.c.
 int g_blitTrackingEnabled = 0;
+
+// Standalone debug_dma toggle, deliberately independent of wasm_dma_overlay_enable below: that
+// one also forces the live emulator into its wide-bordered full-raster geometry (needed for the
+// DMA overlay panel's own pixel-tinting, which draws straight onto the real framebuffer at raw
+// hpos/vpos coordinates). screenHover.ts's paused-screen tooltip only ever needs the per-cycle
+// recording debug_dma gates — it reconstructs its own screen from the DMA/copper trace
+// (gfxResources.ts's buildScreenFromModel/decodeScreenPixels, same as the profiler's Screen
+// view), entirely independent of the live framebuffer's own geometry — so it can enable
+// recording via this export alone, without ever touching crop/overscan and without needing the
+// DMA overlay panel open at all.
+PUAE_DEBUG_EXPORT void
+wasm_dma_tracking_enable(int on)
+{
+	debug_dma = on ? 1 : 0;
+}
 
 PUAE_DEBUG_EXPORT void
 wasm_dma_overlay_enable(int on)

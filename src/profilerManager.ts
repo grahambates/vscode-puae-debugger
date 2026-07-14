@@ -14,7 +14,7 @@ import {
   ILineTableEntry,
   ISegmentRange,
 } from "./shared/profilerTypes";
-import { decodeDmaGrid, decodeCustomRegs, decodeAgaColors, decodeCopperRecords, decodeDmaEvents, decodeRegisterTrace } from "./dma";
+import { decodeDmaGrid, decodeCustomRegs, decodeAgaColors, decodeCopperRecords, decodeDmaEvents, decodeRegisterTrace } from "./shared/dma";
 
 export type { ProfileFrame, IProfileModel };
 

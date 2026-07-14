@@ -6,6 +6,7 @@
 
 import { setupRpcDispatcher, getCurrentStopMessage, tryExec, getCurrentProcess, isExecReady } from "./rpc";
 import { installDmaHoverTooltip, handleDmaHoverMessage } from "./dmaHover";
+import { installScreenHoverTooltip } from "./screenHover";
 import { installMouseCapture } from "./mouseCapture";
 import { installKeyboardCapture } from "./keyboardCapture";
 import { DmaRecordType } from "../../shared/profilerTypes";
@@ -661,6 +662,20 @@ export async function main(config: MainConfig = {}): Promise<void> {
   // which ones are toggled for the visual overlay).
   const enabledChannelTypes = new Set<number>();
 
+  // Auto-enabled DMA/copper *recording* (not the DMA overlay panel's geometry — see
+  // wasm_dma_tracking_enable's own comment in puae_debug.c for why these are independent) for
+  // screenHover.ts's paused-screen tooltip, so it works without the user ever touching the DMA
+  // overlay panel. Reasserted on every pause transition (not just the first) — cheap (just an
+  // int set), and robust against the DMA overlay panel independently turning debug_dma back off
+  // via its own toggle (both write the same underlying flag; whichever call happens later wins).
+  // Critically NOT turned back off on resume: DMA/copper records only exist for cycles that ran
+  // *while* tracking was on, not retroactively, so tracking has to stay on through the *next*
+  // running interval for the following pause to have anything to show. Still sparse right after
+  // this first fires (this same pause's own frame was already rendered before tracking turned
+  // on), but every pause after the next run resolves. No visual side effect (unlike the DMA
+  // overlay panel's own toggle): this never touches crop/overscan/geometry.
+  let wasPausedPrev = false;
+
   // Blit-region highlight. The actual pixel-accurate highlight is drawn C-side:
   // wasm_blit_vis_update() (called each frame below) stamps blitter-written
   // chip-RAM words; the emulator's render marks the on-screen pixels whose
@@ -783,8 +798,19 @@ export async function main(config: MainConfig = {}): Promise<void> {
   // enabledChannelTypes — debug_dma records every channel regardless of
   // which ones the overlay is drawing). Passing `vscode` (undefined outside
   // the real webview, e.g. debug.html) enables copper's and CPU instruction
-  // fetches' source-location lookup and click-to-open.
-  installDmaHoverTooltip(canvas, M, () => dmaOverlayActive, (type) => enabledChannelTypes.has(type), vscode);
+  // fetches' source-location lookup and click-to-open. Suppressed while paused — the
+  // screen-reconstruction tooltip below takes over at that point instead.
+  installDmaHoverTooltip(canvas, M, () => dmaOverlayActive && !M._wasm_is_paused(), (type) => enabledChannelTypes.has(type), vscode);
+
+  // Screen-reconstruction hover tooltip: the profiler's Screen view (Colour/Planes/Addrs/
+  // BPLCON0/Palette/Copper), decoded live for whatever pixel the cursor is over — only while
+  // paused. Unlike the DMA overlay's own per-cell tooltip above, this one does NOT need the
+  // overlay panel or its full-raster geometry at all: it reconstructs its own screen from the
+  // DMA/copper trace (same as the profiler's Screen view), independent of the live framebuffer's
+  // own crop/geometry — see screenHover.ts's header comment. The DMA/copper *recording* it needs
+  // is instead driven directly by the wasPaused transition above (wasm_dma_tracking_enable),
+  // with no visual side effect.
+  installScreenHoverTooltip(canvas, M, () => M._wasm_is_paused());
 
   // Mouse capture (pointer lock) for the emulated Amiga mouse: left click
   // captures, middle click releases. Installed after the tooltip above so
@@ -924,6 +950,11 @@ export async function main(config: MainConfig = {}): Promise<void> {
       emuClockMs = dueFrames * 1000 / PAL_FPS;
     }
     const wasPaused = M._wasm_is_paused();
+    if (wasPaused && !wasPausedPrev) {
+      M._wasm_dma_tracking_enable(1);
+      M._wasm_copper_tracking_enable(1);
+    }
+    wasPausedPrev = wasPaused;
     const fbFrameCount = M._wasm_get_frame_count();
     const fbDirty = fbFrameCount !== lastFbFrameCount;
 

@@ -1,4 +1,4 @@
-import { decodeCopperRecords } from "../dma";
+import { decodeCopperRecords } from "../shared/dma";
 import { packBulk, unpackBulk } from "../profilerBulk";
 import { disassembleCopperInstruction } from "../shared/copperDisassembler";
 import type { RawCapture } from "../profilerManager";

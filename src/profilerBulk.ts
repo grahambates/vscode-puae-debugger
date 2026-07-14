@@ -19,7 +19,7 @@
 // thumbnailLen == 0 means no thumbnail was captured. Added in v2 of the format (7→10 header words).
 
 import type { RawCapture } from "./profilerManager";
-import { decodeDmaGrid, decodeCustomRegs, decodeAgaColors, decodeCopperRecords, decodeDmaEvents, decodeRegisterTrace } from "./dma";
+import { decodeDmaGrid, decodeCustomRegs, decodeAgaColors, decodeCopperRecords, decodeDmaEvents, decodeRegisterTrace } from "./shared/dma";
 import { IDmaModel, DmaSnapshot, ICopperModel } from "./shared/profilerTypes";
 
 // v1 header: 7 × u32 = 28 bytes. v2 header: 10 × u32 = 40 bytes (adds thumbnail).

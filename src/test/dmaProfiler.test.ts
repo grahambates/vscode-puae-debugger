@@ -1,4 +1,4 @@
-import { decodeDmaGrid, decodeCustomRegs, decodeDmaEvents, decodeRegisterTrace } from "../dma";
+import { decodeDmaGrid, decodeCustomRegs, decodeDmaEvents, decodeRegisterTrace } from "../shared/dma";
 import { createSymbolizer } from "../webview/profilerViewer/symbols";
 import {
   reconstructMemoryAt,
