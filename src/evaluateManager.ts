@@ -21,6 +21,15 @@ import { VariablesManager } from "./variablesManager";
 import { DisassemblyManager } from "./disassemblyManager";
 import { CExpressionEvaluator } from "./cExpressionEvaluator";
 
+// Safe membership check for evaluating a user-typed expression against a plain lookup object
+// (variable names / symbols / CPU register names / custom register names). `in` also matches
+// inherited Object.prototype members (constructor/toString/hasOwnProperty/valueOf/...), so
+// typing one of those bare words in the Debug Console would otherwise resolve to the inherited
+// function value instead of being treated as an unknown identifier.
+function hasOwn(obj: object, key: string): boolean {
+  return Object.prototype.hasOwnProperty.call(obj, key);
+}
+
 /**
  * Result of evaluating an expression in the debug context.
  */
@@ -210,23 +219,23 @@ export class EvaluateManager {
     } else {
       const numVars = await this.variablesManager.getFlatVariables();
 
-      if (expression in numVars) {
+      if (hasOwn(numVars, expression)) {
         // Exact match of variable
         value = numVars[expression];
         const cpuInfo = await this.emulator.getCpuInfo();
         const customRegs = await this.emulator.getAllCustomRegisters();
         const symbols = this.sourceMap?.getSymbols() ?? {};
 
-        if (expression in symbols) {
+        if (hasOwn(symbols, expression)) {
           memoryReference = formatHex(value);
           type = EvaluateResultType.SYMBOL;
-        } else if (expression in cpuInfo) {
+        } else if (hasOwn(cpuInfo, expression)) {
           if (expression.match(/^(a[0-7]|pc|usp|msp|vbr)$/)) {
             type = EvaluateResultType.ADDRESS_REGISTER;
           } else {
             type = EvaluateResultType.DATA_REGISTER;
           }
-        } else if (expression in customRegs) {
+        } else if (hasOwn(customRegs, expression)) {
           type = EvaluateResultType.CUSTOM_REGISTER;
         }
       } else {
@@ -394,7 +403,7 @@ export class EvaluateManager {
     // (single source of truth for register writes).
     const cpuInfo = await this.emulator.getCpuInfo();
     const customRegs = await this.emulator.getAllCustomRegisters();
-    if (expr in cpuInfo || expr in customRegs) {
+    if (hasOwn(cpuInfo, expr) || hasOwn(customRegs, expr)) {
       const value = await this.variablesManager.writeRegister(expr, numericValue);
       return { value, variablesReference: 0 };
     }
