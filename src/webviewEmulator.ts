@@ -302,45 +302,77 @@ export abstract class WebviewEmulator implements Emulator {
 
   public async pause(): Promise<void> {
     this.invalidateCache();
-    await this.sendRpcCommand("pause");
+    try {
+      await this.sendRpcCommand("pause");
+    } finally {
+      this.invalidateCache();
+    }
   }
 
   public async run(): Promise<void> {
     this.invalidateCache();
-    await this.sendRpcCommand("run");
+    try {
+      await this.sendRpcCommand("run");
+    } finally {
+      this.invalidateCache();
+    }
   }
 
   public async stepInto(): Promise<void> {
     this.invalidateCache();
-    await this.sendRpcCommand("stepInto");
+    try {
+      await this.sendRpcCommand("stepInto");
+    } finally {
+      this.invalidateCache();
+    }
   }
 
   public async stepBack(): Promise<boolean> {
     this.invalidateCache();
-    const res = await this.sendRpcCommand("stepBack");
-    return !!res;
+    try {
+      const res = await this.sendRpcCommand("stepBack");
+      return !!res;
+    } finally {
+      this.invalidateCache();
+    }
   }
 
   public async continueReverse(): Promise<boolean> {
     this.invalidateCache();
-    const res = await this.sendRpcCommand("continueReverse", undefined, 30000);
-    return !!res;
+    try {
+      const res = await this.sendRpcCommand("continueReverse", undefined, 30000);
+      return !!res;
+    } finally {
+      this.invalidateCache();
+    }
   }
 
   public async stepBackFrame(): Promise<boolean> {
     this.invalidateCache();
-    const res = await this.sendRpcCommand("stepBackFrame");
-    return !!res;
+    try {
+      const res = await this.sendRpcCommand("stepBackFrame");
+      return !!res;
+    } finally {
+      this.invalidateCache();
+    }
   }
 
   public async eof(): Promise<void> {
     this.invalidateCache();
-    await this.sendRpcCommand("eof");
+    try {
+      await this.sendRpcCommand("eof");
+    } finally {
+      this.invalidateCache();
+    }
   }
 
   public async eol(): Promise<void> {
     this.invalidateCache();
-    await this.sendRpcCommand("eol");
+    try {
+      await this.sendRpcCommand("eol");
+    } finally {
+      this.invalidateCache();
+    }
   }
 
   // --- Breakpoints, watchpoints, catchpoints ---
@@ -435,12 +467,20 @@ export abstract class WebviewEmulator implements Emulator {
     value: number,
   ): Promise<RegisterSetStatus> {
     this.cpuInfo = undefined; // Clear cache
-    return this.sendRpcCommand("setRegister", { name, value });
+    try {
+      return await this.sendRpcCommand("setRegister", { name, value });
+    } finally {
+      this.cpuInfo = undefined; // Clear cache
+    }
   }
 
   public async jump(address: number): Promise<void> {
     this.invalidateCache();
-    return this.sendRpcCommand("jump", { address });
+    try {
+      await this.sendRpcCommand("jump", { address });
+    } finally {
+      this.invalidateCache();
+    }
   }
 
   // --- Custom (chipset) registers ---
@@ -468,7 +508,11 @@ export abstract class WebviewEmulator implements Emulator {
     value: number,
   ): Promise<void> {
     this.customRegisters = undefined; // Clear cache
-    return this.sendRpcCommand("pokeCustom16", { address, value });
+    try {
+      await this.sendRpcCommand("pokeCustom16", { address, value });
+    } finally {
+      this.customRegisters = undefined; // Clear cache
+    }
   }
 
   public async pokeCustom32(
@@ -476,7 +520,11 @@ export abstract class WebviewEmulator implements Emulator {
     value: number,
   ): Promise<void> {
     this.customRegisters = undefined; // Clear cache
-    return this.sendRpcCommand("pokeCustom32", { address, value });
+    try {
+      await this.sendRpcCommand("pokeCustom32", { address, value });
+    } finally {
+      this.customRegisters = undefined; // Clear cache
+    }
   }
 
   // --- Memory access ---
@@ -539,6 +587,16 @@ export abstract class WebviewEmulator implements Emulator {
 
   // --- Helpers ---
 
+  // Every mutating RPC (pause/run/step*/jump/setRegister/pokeCustom*) invalidates the relevant
+  // cache field(s) both *before* sending the RPC and again in a `finally` once it resolves --
+  // not just before, despite that looking redundant. A read (getCpuInfo/getAllCustomRegisters)
+  // already in flight when a mutation starts can resolve *after* the pre-mutation invalidation,
+  // repopulating the cache with pre-mutation data with nothing left to invalidate it again.
+  // E.g.: caller A awaits getCpuInfo() (RPC in flight) while caller B calls stepInto()
+  // (invalidates the now-empty cache, sends its own RPC); A's RPC resolves and sets
+  // this.cpuInfo to the pre-step registers; B's RPC completes but (before this fix) never
+  // re-invalidated, so every subsequent getCpuInfo() served stale data until some unrelated
+  // mutation happened to race favorably.
   protected invalidateCache(): void {
     this.cpuInfo = undefined;
     this.customRegisters = undefined;
