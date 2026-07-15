@@ -121,8 +121,16 @@ export function encodeCapture(raw: RawCapture, opts: EncodeOptions = {}): Buffer
   return gzipSync(container);
 }
 
+// A .puaeprofile file is loaded from disk -- possibly one a user didn't create themselves.
+// gzip's compression ratio is effectively unbounded (a few KB can expand to gigabytes), so cap
+// the decompressed size before any of the manifest/section bounds checks below get a chance to
+// run. Generous relative to any real capture (chip RAM tops out at 2MB, slow RAM ~1.8MB, plus a
+// DMA grid/copper trace/disassembly manifest that's still comfortably under this), but firmly
+// blocks a crafted small file from exhausting memory.
+const MAX_DECOMPRESSED_BYTES = 256 * 1024 * 1024;
+
 export function decodeCapture(file: Uint8Array): DecodedCapture {
-  const container = gunzipSync(file);
+  const container = gunzipSync(file, { maxOutputLength: MAX_DECOMPRESSED_BYTES });
   const magic = container.toString("ascii", 0, MAGIC.length);
   if (magic !== MAGIC) throw new Error(`Not a .puaeprofile file (bad magic ${JSON.stringify(magic)})`);
 
