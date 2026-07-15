@@ -1,5 +1,5 @@
 import * as vscode from "vscode";
-import { normalize } from "path";
+import { win32 } from "path";
 import { IProfileModel } from "./shared/profilerTypes";
 
 // Inline per-function "X.X% Self, Y.Y% Total, N Ticks" CodeLenses, sourced from the most
@@ -17,8 +17,15 @@ export class ProfilerCodeLensProvider implements vscode.CodeLensProvider {
   private readonly changeEmitter = new vscode.EventEmitter<void>();
   public readonly onDidChangeCodeLenses = this.changeEmitter.event;
 
-  // Keyed by normalize(path).toUpperCase() — matches SourceMap's path-matching convention
+  // Keyed by win32.normalize(path).toUpperCase() — matches SourceMap's path-matching convention
   // (src/sourceMap.ts), so lookups agree with how breakpoints/source resolution key paths.
+  // Deliberately path.win32, not the platform-native `path` module: debug info commonly carries
+  // Windows-style (backslash) paths regardless of host OS (this project's own toolchain runs via
+  // WSL from a Windows checkout — see CLAUDE.md), and VS Code's own document.uri.fsPath uses
+  // forward slashes on POSIX hosts. `path.win32.normalize` treats both separators as equivalent
+  // and always normalizes to backslash, independent of process.platform — plain `normalize`
+  // (aliased to the host's own module) does NOT, so on a POSIX host it left backslash- and
+  // forward-slash versions of the same path as different, case-sensitive keys.
   private byFile = new Map<string, vscode.CodeLens[]>();
 
   public update(model: IProfileModel | undefined): void {
@@ -42,7 +49,7 @@ export class ProfilerCodeLensProvider implements vscode.CodeLensProvider {
         const range = new vscode.Range(line, 0, line, 0);
         const lens = new vscode.CodeLens(range, { title, command: "" });
 
-        const key = normalize(file).toUpperCase();
+        const key = win32.normalize(file).toUpperCase();
         const list = byFile.get(key);
         if (list) list.push(lens);
         else byFile.set(key, [lens]);
@@ -57,6 +64,6 @@ export class ProfilerCodeLensProvider implements vscode.CodeLensProvider {
   }
 
   public provideCodeLenses(document: vscode.TextDocument): vscode.ProviderResult<vscode.CodeLens[]> {
-    return this.byFile.get(normalize(document.uri.fsPath).toUpperCase()) ?? [];
+    return this.byFile.get(win32.normalize(document.uri.fsPath).toUpperCase()) ?? [];
   }
 }

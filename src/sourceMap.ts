@@ -1,5 +1,5 @@
 import { MemoryType } from "./amigaHunkParser";
-import { normalize } from "path";
+import { win32 } from "path";
 import { DebugFrame, evaluateCfaAtPc, evaluateUnwindRows, UnwindRow } from "./dwarfParser";
 
 export type { UnwindRow };
@@ -82,6 +82,14 @@ export interface SymbolOffset {
 }
 
 export class SourceMap {
+  // Path keys throughout this class are win32.normalize(path).toUpperCase() — not the
+  // platform-native `path` module. Debug info commonly carries Windows-style (backslash) paths
+  // regardless of host OS (this project's own toolchain runs via WSL from a Windows checkout —
+  // see CLAUDE.md), while VS Code's document.uri.fsPath uses forward slashes on POSIX hosts.
+  // path.win32.normalize treats both separators as equivalent and always normalizes to
+  // backslash, independent of process.platform; plain `normalize` (aliased to the host's own
+  // module) does not, so on a POSIX host it left backslash- and forward-slash spellings of the
+  // same path as distinct keys.
   private locationsBySource = new Map<string, Map<number, Location>>();
   private locationsByAddress = new Map<number, Location>();
   private sortedAddresses: number[] = [];
@@ -103,7 +111,7 @@ export class SourceMap {
         this.locationsByAddress.set(location.address, location);
       }
 
-      const pathKey = normalize(location.path).toUpperCase();
+      const pathKey = win32.normalize(location.path).toUpperCase();
       const linesMap =
         this.locationsBySource.get(pathKey) || new Map<number, Location>();
 
@@ -200,7 +208,7 @@ export class SourceMap {
   }
 
   public lookupSourceLine(path: string, line: number): Location {
-    const pathKey = normalize(path).toUpperCase();
+    const pathKey = win32.normalize(path).toUpperCase();
     const fileMap = this.locationsBySource.get(pathKey);
     if (!fileMap) {
       throw new Error(`Source map error: File not found: ${path}`);

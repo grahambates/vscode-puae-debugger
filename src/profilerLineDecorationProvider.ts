@@ -1,5 +1,5 @@
 import * as vscode from "vscode";
-import { normalize } from "path";
+import { win32 } from "path";
 import { IProfileModel } from "./shared/profilerTypes";
 import { heatColor } from "./shared/profilerColor";
 
@@ -38,8 +38,9 @@ function formatCount(n: number): string {
 export class ProfilerLineDecorationProvider implements vscode.HoverProvider, vscode.Disposable {
   private enabled = true;
 
-  // Keyed by normalize(path).toUpperCase() — matches SourceMap/ProfilerCodeLensProvider's
-  // path-matching convention. Line numbers are 1-based (as in IDisassembledInstruction.line).
+  // Keyed by win32.normalize(path).toUpperCase() — matches SourceMap/ProfilerCodeLensProvider's
+  // path-matching convention (see SourceMap's own doc comment for why win32, not the
+  // platform-native `path` module). Line numbers are 1-based (as in IDisassembledInstruction.line).
   private byFile = new Map<string, Map<number, LineStats>>();
   // Per-file hottest single LINE's cycle total (the sum for that line, not one instruction's
   // value) — the heat-tint scale is local to each file, same reasoning DisassemblyView.tsx's
@@ -81,7 +82,7 @@ export class ProfilerLineDecorationProvider implements vscode.HoverProvider, vsc
   // puae-debugger.jumpToProfilerExecution in extension.ts. `line` is 1-based.
   public hasDataAt(file: string, line: number): boolean {
     if (!this.enabled) return false;
-    return !!this.byFile.get(normalize(file).toUpperCase())?.has(line);
+    return !!this.byFile.get(win32.normalize(file).toUpperCase())?.has(line);
   }
 
   public update(model: IProfileModel | undefined): void {
@@ -90,7 +91,7 @@ export class ProfilerLineDecorationProvider implements vscode.HoverProvider, vsc
       for (const ins of fn.instructions) {
         if (!ins.file || ins.line === undefined || ins.line < 0) continue;
         if (ins.cycles <= 0 && ins.hits <= 0) continue;
-        const key = normalize(ins.file).toUpperCase();
+        const key = win32.normalize(ins.file).toUpperCase();
         let lines = byFile.get(key);
         if (!lines) {
           lines = new Map();
@@ -147,7 +148,7 @@ export class ProfilerLineDecorationProvider implements vscode.HoverProvider, vsc
   // whole value is exact (not estimated) numbers, and a dropped line just reappears at the next
   // capture, whereas a wrongly-shifted one would look authoritative while being silently wrong.
   public handleDocumentChange(event: vscode.TextDocumentChangeEvent): void {
-    const key = normalize(event.document.uri.fsPath).toUpperCase();
+    const key = win32.normalize(event.document.uri.fsPath).toUpperCase();
     const lines = this.byFile.get(key);
     if (!lines || lines.size === 0) return;
 
@@ -192,7 +193,7 @@ export class ProfilerLineDecorationProvider implements vscode.HoverProvider, vsc
   }
 
   private applyToEditor(editor: vscode.TextEditor): void {
-    const key = normalize(editor.document.uri.fsPath).toUpperCase();
+    const key = win32.normalize(editor.document.uri.fsPath).toUpperCase();
     const lines = this.byFile.get(key);
     if (!lines) {
       this.clearEditorDecorations(editor);
@@ -223,7 +224,7 @@ export class ProfilerLineDecorationProvider implements vscode.HoverProvider, vsc
     position: vscode.Position,
   ): vscode.ProviderResult<vscode.Hover> {
     if (!this.enabled) return undefined;
-    const key = normalize(document.uri.fsPath).toUpperCase();
+    const key = win32.normalize(document.uri.fsPath).toUpperCase();
     const stats = this.byFile.get(key)?.get(position.line + 1); // 0-based -> 1-based
     if (!stats) return undefined;
     const total = this.totalCyclesByFile.get(key) ?? 0;
