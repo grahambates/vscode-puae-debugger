@@ -497,14 +497,32 @@ export class DebugAdapter extends LoggingDebugSession {
   }
 
   protected async continueRequest(response: DebugProtocol.ContinueResponse): Promise<void> {
-    await this.emulator.run();
-    response.body = { allThreadsContinued: true };
-    this.sendResponse(response);
+    try {
+      await this.emulator.run();
+      response.body = { allThreadsContinued: true };
+      this.sendResponse(response);
+    } catch (err) {
+      this.sendError(
+        response,
+        ErrorCode.CONTINUE_ERROR,
+        "Continue operation failed",
+        err,
+      );
+    }
   }
 
   protected async pauseRequest(response: DebugProtocol.PauseResponse): Promise<void> {
-    await this.emulator.pause();
-    this.sendResponse(response);
+    try {
+      await this.emulator.pause();
+      this.sendResponse(response);
+    } catch (err) {
+      this.sendError(
+        response,
+        ErrorCode.PAUSE_ERROR,
+        "Pause operation failed",
+        err,
+      );
+    }
   }
 
   protected disconnectRequest(
@@ -656,7 +674,16 @@ export class DebugAdapter extends LoggingDebugSession {
       }
       this.stepping = true;
       this.isRunning = true;
-      await this.emulator.stepInto();
+      try {
+        await this.emulator.stepInto();
+      } catch (err) {
+        // A rejected stepInto() never produces a "stopped" state message, so nothing else
+        // resets these — left true, the next unrelated stop (e.g. a real breakpoint) would be
+        // misrouted through handleStep() instead of handleStop() (see updateState's dispatch).
+        this.stepping = false;
+        this.isRunning = false;
+        throw err;
+      }
       this.sendResponse(response);
     } catch (err) {
       this.sendError(
@@ -704,7 +731,14 @@ export class DebugAdapter extends LoggingDebugSession {
       await this.emulator.run();
     } else {
       this.stepping = true;
-      await this.emulator.stepInto();
+      try {
+        await this.emulator.stepInto();
+      } catch (err) {
+        // See stepInRequest's matching catch: a rejected stepInto() leaves `stepping` stuck
+        // true with nothing else to reset it, misrouting the next unrelated stop event.
+        this.stepping = false;
+        throw err;
+      }
     }
     this.isRunning = true;
   }
@@ -959,22 +993,31 @@ export class DebugAdapter extends LoggingDebugSession {
     response: DebugProtocol.Response,
     args: { dataId: string; length?: number },
   ): Promise<void> {
-    if (command === "setWatchpointLength") {
-      await this.getBreakpointManager().setWatchpointLengthOverride(
-        args.dataId,
-        args.length,
+    try {
+      if (command === "setWatchpointLength") {
+        await this.getBreakpointManager().setWatchpointLengthOverride(
+          args.dataId,
+          args.length,
+        );
+        this.sendResponse(response);
+        return;
+      }
+      if (command === "getWatchpointLength") {
+        response.body = await this.getBreakpointManager().getWatchpointLengthInfo(
+          args.dataId,
+        );
+        this.sendResponse(response);
+        return;
+      }
+      super.customRequest(command, response, args);
+    } catch (err) {
+      this.sendError(
+        response,
+        ErrorCode.BREAKPOINT_INFO_ERROR,
+        `Custom request '${command}' failed`,
+        err,
       );
-      this.sendResponse(response);
-      return;
     }
-    if (command === "getWatchpointLength") {
-      response.body = await this.getBreakpointManager().getWatchpointLengthInfo(
-        args.dataId,
-      );
-      this.sendResponse(response);
-      return;
-    }
-    super.customRequest(command, response, args);
   }
 
   protected async evaluateRequest(
@@ -1524,7 +1567,15 @@ export class DebugAdapter extends LoggingDebugSession {
         } else {
           this.stepping = true;
           this.isRunning = true;
-          await this.emulator.stepInto();
+          try {
+            await this.emulator.stepInto();
+          } catch (err) {
+            // See stepInRequest's matching catch: a rejected stepInto() leaves `stepping`
+            // stuck true with nothing else to reset it, misrouting the next unrelated stop.
+            this.stepping = false;
+            this.isRunning = false;
+            throw err;
+          }
         }
         return;
       }
