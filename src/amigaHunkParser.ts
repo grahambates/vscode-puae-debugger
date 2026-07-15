@@ -177,13 +177,17 @@ function parseHeader(reader: BufferReader): Allocation[] {
   // uint32 L  Last hunk. The last hunk that should be used in loading.
   // uint32 * (L-F+1)     A list of hunk sizes.
   reader.skip(4); // Skip header/string section
-  const tableSize = reader.readLong();
+  reader.readLong(); // table size (highest hunk number + 1) -- unused, just advances the reader
   const firstHunk = reader.readLong();
   const lastHunk = reader.readLong();
 
-  // Validate sizes
-  if (tableSize < 0 || firstHunk < 0 || lastHunk < 0) {
-    throw new Error("Invalid hunk file: Hunk size table is invalid");
+  // readLong() reads via readUInt32BE, so these are never negative -- the real invariant a
+  // corrupted header can violate is lastHunk < firstHunk, which would otherwise make
+  // `hunkCount` <= 0 below and silently produce an empty hunk table instead of an error.
+  if (lastHunk < firstHunk) {
+    throw new Error(
+      `Invalid hunk file: last hunk (${lastHunk}) is before first hunk (${firstHunk})`,
+    );
   }
 
   const hunkTable: Allocation[] = [];
@@ -370,7 +374,18 @@ function parseDebug(
   const numNameLongs = reader.readLong();
   const sourceFilename = reader.readString(numNameLongs * 4);
 
-  const numLines = (numLongs - numNameLongs - 3) / 2; // 3 longs + name already read, 2 per item
+  // 3 longs (base offset, "LINE" tag, numNameLongs) + name already read, 2 longs per line entry.
+  // A corrupted/mismatched numNameLongs can make this negative or odd; used unvalidated, the loop
+  // below would either not run (silently dropping real line entries) or stop mid-entry, leaving
+  // the reader desynced for every block that follows in this hunk instead of erroring here.
+  const remainingLongs = numLongs - numNameLongs - 3;
+  if (remainingLongs < 0 || remainingLongs % 2 !== 0) {
+    throw new Error(
+      `Invalid LINE debug block: ${numLongs} longs total, ${numNameLongs} name longs leaves ` +
+      `${remainingLongs} for line entries (must be a non-negative even count)`,
+    );
+  }
+  const numLines = remainingLongs / 2;
   const lines: SourceLine[] = [];
 
   for (let i = 0; i < numLines; i++) {
@@ -539,17 +554,29 @@ class BufferReader {
   }
 
   public readString(length: number) {
+    if (this.pos + length > this.buffer.length) {
+      throw new Error(
+        `Buffer overrun: trying to read ${length} bytes at position ${this.pos}, buffer length is ${this.buffer.length}`,
+      );
+    }
     const startPos = this.pos;
-    const charCodes: number[] = [];
-    for (let i = 0; i < length; i++) {
-      const v = this.readByte();
-      if (v === 0) {
+    // Find the null terminator (if any) within [startPos, startPos+length) directly against the
+    // buffer, rather than building a charCodes array and spreading it into
+    // String.fromCharCode(...charCodes): `length` is an unbounded field straight from the file
+    // (HUNK_SYMBOL name length, HUNK_DEBUG LINE filename length), and spreading a large enough
+    // array as call arguments throws "RangeError: Maximum call stack size exceeded" instead of a
+    // clean parse error.
+    let end = startPos + length;
+    for (let i = startPos; i < end; i++) {
+      if (this.buffer[i] === 0) {
+        end = i;
         break;
       }
-      charCodes.push(v);
     }
     this.pos = startPos + length;
-    return String.fromCharCode(...charCodes);
+    // latin1 maps each byte 0-255 to the same-valued UTF-16 code unit, matching
+    // String.fromCharCode's original per-byte semantics exactly.
+    return this.buffer.toString("latin1", startPos, end);
   }
 
   public skip(bytes: number) {

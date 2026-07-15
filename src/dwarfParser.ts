@@ -673,7 +673,12 @@ export function parseDwarf(elfBuffer: Buffer): DWARFData {
       }
       size++;
 
-      result |= (byte & 0x7f) << shift;
+      // Plain arithmetic, not `|=`/`<<`: those coerce both operands to 32-bit ints, so `shift`
+      // silently wraps mod 32 once a value needs a 5th+ byte (>= 2^28) -- e.g. shift=35 behaves
+      // as shift=3, aliasing high bits into low ones instead of erroring or reading correctly.
+      // Multiplication stays exact up to JS's 2^53 safe-integer range, comfortably covering any
+      // length/offset field this format actually carries.
+      result += (byte & 0x7f) * Math.pow(2, shift);
 
       if ((byte & 0x80) === 0) break;
       shift += 7;
@@ -703,7 +708,9 @@ export function parseDwarf(elfBuffer: Buffer): DWARFData {
       }
       size++;
 
-      result |= (byte & 0x7f) << shift;
+      // See readULEB128's matching comment: plain arithmetic instead of `|=`/`<<`, which wrap
+      // mod 32 (aliasing bits) once a value needs a 5th+ byte instead of decoding correctly.
+      result += (byte & 0x7f) * Math.pow(2, shift);
       shift += 7;
 
       // Prevent infinite loops on malformed data
@@ -712,8 +719,10 @@ export function parseDwarf(elfBuffer: Buffer): DWARFData {
       }
     } while (byte & 0x80);
 
-    if (shift < 32 && byte & 0x40) {
-      result |= -(1 << shift);
+    // Sign-extend: two's complement means "negative" is equivalent to "subtract the full 2^shift
+    // range" -- exact via arithmetic (unlike the old `-(1 << shift)`, itself 32-bit-wrapped).
+    if (byte & 0x40) {
+      result -= Math.pow(2, shift);
     }
 
     return { value: result, size };
