@@ -359,6 +359,15 @@ export function setupRpcDispatcher(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   postMessage: (message: any) => void,
 ): RpcDispatcher {
+  // Copies `size` bytes out of the wasm heap at `ptr` into a detached Uint8Array (`.slice()`,
+  // not a view — the wasm heap can grow/move between this call and whenever the RPC response
+  // actually gets read, invalidating a live view into it). Shared by every RPC handler below
+  // that just hands a raw ptr/size pair back as `{ data }` — was duplicated inline at each call
+  // site as `size > 0 ? new Uint8Array(M.HEAPU8.buffer, ptr, size).slice() : new Uint8Array(0)`.
+  function readWasmBuffer(ptr: number, size: number): Uint8Array {
+    return size > 0 ? new Uint8Array(M.HEAPU8.buffer, ptr, size).slice() : new Uint8Array(0);
+  }
+
   // Watchpoint address -> e9k_debug watchpoint slot index, for removeWatchpoint.
   const watchpoints = new Map<number, number>();
 
@@ -1233,11 +1242,7 @@ export function setupRpcDispatcher(
       case "getDmaData": {
         const ptr = M._wasm_dma_get_grid_ptr();
         const size = M._wasm_dma_get_grid_size();
-        rpcRequest(() => ({
-          data: size > 0
-            ? new Uint8Array(M.HEAPU8.buffer, ptr, size).slice()
-            : new Uint8Array(0),
-        }));
+        rpcRequest(() => ({ data: readWasmBuffer(ptr, size) }));
         break;
       }
       // The per-cycle event bitfield (BLITIRQ/COPPERWAKE/VB/etc.) â€” a parallel array, same index
@@ -1245,11 +1250,7 @@ export function setupRpcDispatcher(
       case "getDmaEvents": {
         const ptr = M._wasm_dma_get_events_ptr();
         const size = M._wasm_dma_get_events_size();
-        rpcRequest(() => ({
-          data: size > 0
-            ? new Uint8Array(M.HEAPU8.buffer, ptr, size).slice()
-            : new Uint8Array(0),
-        }));
+        rpcRequest(() => ({ data: readWasmBuffer(ptr, size) }));
         break;
       }
       // Toggles debug_copper â€” the same flag the live DMA-overlay's COPPER channel button
@@ -1262,11 +1263,7 @@ export function setupRpcDispatcher(
       case "getCopperData": {
         const ptr = M._wasm_copper_get_records_ptr();
         const size = M._wasm_copper_get_records_size();
-        rpcRequest(() => ({
-          data: size > 0
-            ? new Uint8Array(M.HEAPU8.buffer, ptr, size).slice()
-            : new Uint8Array(0),
-        }));
+        rpcRequest(() => ({ data: readWasmBuffer(ptr, size) }));
         break;
       }
       case "getFramebuffer":
@@ -1334,45 +1331,31 @@ export function setupRpcDispatcher(
         const fi = (args.frameIdx ?? 0) >>> 0;
         const ptr  = M._wasm_profile_get_dma_frame_ptr(fi);
         const size = ptr ? M._wasm_profile_get_dma_frame_bytes() : 0;
-        rpcRequest(() => ({
-          data: size > 0
-            ? new Uint8Array(M.HEAPU8.buffer as ArrayBuffer, ptr, size).slice()
-            : new Uint8Array(0),
-        }));
+        rpcRequest(() => ({ data: readWasmBuffer(ptr, size) }));
         break;
       }
       case "getDmaEventsFrame": {
         const fi = (args.frameIdx ?? 0) >>> 0;
         const ptr  = M._wasm_profile_get_evt_frame_ptr(fi);
         const size = ptr ? M._wasm_profile_get_evt_frame_bytes() : 0;
-        rpcRequest(() => ({
-          data: size > 0
-            ? new Uint8Array(M.HEAPU8.buffer as ArrayBuffer, ptr, size).slice()
-            : new Uint8Array(0),
-        }));
+        rpcRequest(() => ({ data: readWasmBuffer(ptr, size) }));
         break;
       }
       case "getCopperFrame": {
         const fi = (args.frameIdx ?? 0) >>> 0;
         const ptr  = M._wasm_profile_get_copper_frame_ptr(fi);
         const size = ptr ? M._wasm_profile_get_copper_frame_bytes(fi) : 0;
-        rpcRequest(() => ({
-          data: size > 0
-            ? new Uint8Array(M.HEAPU8.buffer as ArrayBuffer, ptr, size).slice()
-            : new Uint8Array(0),
-        }));
+        rpcRequest(() => ({ data: readWasmBuffer(ptr, size) }));
         break;
       }
       case "getDmaSnapshot": {
         const chipPtr = M._wasm_dma_get_chip_ptr();
         const chipSize = M._wasm_dma_get_chip_size();
-        const chip = new Uint8Array(M.HEAPU8.buffer, chipPtr, chipSize).slice();
+        const chip = readWasmBuffer(chipPtr, chipSize);
 
         const slowPtr = M._wasm_dma_get_slow_ptr();
         const slowSize = M._wasm_dma_get_slow_size();
-        const slow = slowSize > 0
-          ? new Uint8Array(M.HEAPU8.buffer, slowPtr, slowSize).slice()
-          : new Uint8Array(0);
+        const slow = readWasmBuffer(slowPtr, slowSize);
 
         // Zorro II fast RAM (board 0). Unlike chip (fixed at 0) and slow (fixed at
         // 0xC00000), fast RAM's start address is autoconfig-assigned, so its Amiga
@@ -1380,9 +1363,7 @@ export function setupRpcDispatcher(
         // comment in puae_debug.c.
         const fastPtr = M._wasm_dma_get_fast_ptr();
         const fastSize = M._wasm_dma_get_fast_size();
-        const fast = fastSize > 0
-          ? new Uint8Array(M.HEAPU8.buffer, fastPtr, fastSize).slice()
-          : new Uint8Array(0);
+        const fast = readWasmBuffer(fastPtr, fastSize);
         const fastAddr = M._wasm_dma_get_fast_addr();
 
         // save_custom() output: 4-byte chipset_mask header + 256 big-endian u16 words.
@@ -1405,7 +1386,7 @@ export function setupRpcDispatcher(
         // mode; the profiler treats "all zero" the same as "absent" (see decodeAgaColors).
         M._wasm_read_aga_colors();
         const agaPtr = M._wasm_get_aga_colors_buf();
-        const agaColors = new Uint8Array(M.HEAPU8.buffer, agaPtr, 256 * 4).slice();
+        const agaColors = readWasmBuffer(agaPtr, 256 * 4);
 
         rpcRequest(() => ({ chip, slow, fast, fastAddr, custom, agaColors }));
         break;
@@ -1417,7 +1398,7 @@ export function setupRpcDispatcher(
       case "getAgaColors": {
         M._wasm_read_aga_colors();
         const agaPtr = M._wasm_get_aga_colors_buf();
-        rpcRequest(() => ({ data: new Uint8Array(M.HEAPU8.buffer, agaPtr, 256 * 4).slice() }));
+        rpcRequest(() => ({ data: readWasmBuffer(agaPtr, 256 * 4) }));
         break;
       }
       default:
