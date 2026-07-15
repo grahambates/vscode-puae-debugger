@@ -173,7 +173,7 @@ export function DisplayTab({ displayState }: DisplayTabProps) {
               <div className="config-item">
                 <span className="config-label">BPLAM:</span>
                 <span className="config-value">
-                  ${typeof bplam === "number" ? bplam.toString(16).toUpperCase().padStart(2, "0") : "00"}
+                  ${(bplam ?? 0).toString(16).toUpperCase().padStart(2, "0")}
                 </span>
               </div>
               <div className="config-item">

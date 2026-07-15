@@ -16,7 +16,6 @@ import {
   parseBplcon1Register,
   parseBplcon2Register,
   parseBplcon3Register,
-  parseBplcon4Register,
   parseFmodeRegister,
 } from "./amigaRegisterParsers";
 import { AmigaMemoryMapper } from "./amigaMemoryMapper";
@@ -212,10 +211,15 @@ export class StateViewerProvider {
       ? parseFmodeRegister(Number(fmode)).map((v) => v.value)
       : [undefined, undefined, undefined, undefined];
 
+    // Computed directly rather than via parseBplcon4Register: that parser formats BPLAM as a hex
+    // *string* (for the generic register-inspector display), which isn't a number DisplayState.bplam
+    // can just take on trust — ESPRM/OSPRM come back as real numbers, but only because they happen
+    // to skip formatHex.
     const bplcon4 = registers.BPLCON4?.value;
-    const [bplam, esprm, osprm] = bplcon4
-      ? parseBplcon4Register(Number(bplcon4)).map((v) => v.value)
-      : [undefined, undefined, undefined];
+    const bplcon4Num = bplcon4 !== undefined ? Number(bplcon4) : undefined;
+    const bplam = bplcon4Num !== undefined ? (bplcon4Num >> 8) & 0xff : undefined;
+    const esprm = bplcon4Num !== undefined ? (bplcon4Num >> 4) & 0x0f : undefined;
+    const osprm = bplcon4Num !== undefined ? bplcon4Num & 0x0f : undefined;
 
     const isAga = agaColors !== undefined;
     const aga256Palette: AmigaColor256[] | undefined = agaColors
