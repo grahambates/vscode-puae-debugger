@@ -454,7 +454,13 @@ export abstract class WebviewEmulator implements Emulator {
 
   public async getAgaColors(): Promise<Uint32Array | undefined> {
     const { data } = await this.sendRpcCommand("getAgaColors");
-    return decodeAgaColors(data);
+    // The webview<->extension-host postMessage bridge doesn't preserve a real Uint8Array across
+    // the boundary (same reason profilerManager.ts's own `u8()` helper exists) — `data` arrives
+    // without `.buffer`/`.byteLength`, which decodeAgaColors requires (its own `bytes.byteLength`
+    // guard silently passes on a value where that's `undefined`, then `new DataView(bytes.buffer,
+    // ...)` throws). Reconstruct a real Uint8Array first.
+    const bytes = data instanceof Uint8Array ? data : new Uint8Array((data as ArrayLike<number>) ?? 0);
+    return decodeAgaColors(bytes);
   }
 
   public async pokeCustom16(
