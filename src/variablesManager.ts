@@ -56,6 +56,23 @@ export class VariablesManager {
     private sourceMap: SourceMap,
   ) {}
 
+  /**
+   * Clears all variablesReference handles and their backing context maps. Per the DAP spec, a
+   * variablesReference is only valid until the next stop event — VS Code always re-fetches scopes
+   * (and any variablesReference it's still holding onto) after a stop, never reusing a stale one
+   * across stops. Call this once per stop (debugAdapter.ts's stackTraceRequest, alongside its own
+   * analogous frameIdToPc.clear()) so these maps don't grow unbounded over a long session: without
+   * it, every getScopes()/struct/array/pointer expansion permanently adds entries that are never
+   * removed.
+   */
+  public reset(): void {
+    this.variableHandles.reset();
+    this.locationHandles.reset();
+    this.localsContextByRef.clear();
+    this.structPtrByRef.clear();
+    this.arrayByRef.clear();
+  }
+
   public getScopes(pc: number | null = null, regs: Map<number, number> | null = null): DebugProtocol.Scope[] {
     const scopes: DebugProtocol.Scope[] = [];
     const hasLocals = pc !== null && ((this.sourceMap?.getLocalsForPc(pc)?.length ?? 0) > 0);

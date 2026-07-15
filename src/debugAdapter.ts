@@ -557,6 +557,11 @@ export class DebugAdapter extends LoggingDebugSession {
       );
       this.exceptionInstruction = null; // clear after using it once
       this.frameIdToPc.clear();
+      // A variablesReference is only valid until the next stop (DAP spec); VS Code always
+      // re-fetches scopes after a stop rather than reusing a stale reference, so this can be
+      // dropped for the new stop too -- otherwise every scope/struct/array/pointer expansion
+      // grows VariablesManager's handle maps unbounded over a long session.
+      this.variablesManager?.reset();
       for (const f of stk) {
         if (f.instructionPointerReference)
           this.frameIdToPc.set(f.id, parseInt(f.instructionPointerReference, 16));
