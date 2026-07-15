@@ -105,6 +105,36 @@ export class AmigaMemoryMapper {
   }
 
   /**
+   * Walks the MemHeader linked list starting at `memListAddr`, invoking `visit` for each node
+   * whose ln_Type is NT_MEMORY. Shared by every method that needs to enumerate memory regions
+   * (getMemoryInfo walks them all to accumulate totals; updateMemHeaderFreeCount/
+   * updatePreviousChunkPointer/freeMemory each look for one matching header and stop) --
+   * previously each reimplemented the same 10-header safety cap and >0xffffff address sanity
+   * check (guarding against a corrupt/circular list) independently.
+   *
+   * `visit` returning `true` stops the walk early; returning `false`/`undefined` continues to
+   * the next header.
+   */
+  private async forEachMemHeader(
+    memListAddr: number,
+    visit: (memHeader: number) => Promise<boolean | void>,
+  ): Promise<void> {
+    let memHeader = await this.emulator.peek32(memListAddr);
+    let safetyCounter = 0;
+    while (memHeader !== 0 && safetyCounter < 10) {
+      if (memHeader > 0xffffff) break;
+
+      const nodeType = await this.emulator.peek8(memHeader + 0x08);
+      if (nodeType === NT_MEMORY) {
+        if (await visit(memHeader)) return;
+      }
+
+      memHeader = await this.emulator.peek32(memHeader);
+      safetyCounter++;
+    }
+  }
+
+  /**
    * Get comprehensive memory information from exec structures
    */
   async getMemoryInfo(): Promise<ExecMemoryInfo> {
@@ -123,58 +153,42 @@ export class AmigaMemoryMapper {
     const blocks: MemoryBlock[] = [];
     const regions: MemoryRegion[] = [];
 
-    // Walk the memory header list
-    let memHeader = await this.emulator.peek32(memListAddr);
+    await this.forEachMemHeader(memListAddr, async (memHeader) => {
+      const attributes = await this.emulator.peek16(memHeader + 0x0e);
+      const lower = await this.emulator.peek32(memHeader + 0x14);
+      const upper = await this.emulator.peek32(memHeader + 0x18);
+      const free = await this.emulator.peek32(memHeader + 0x1c);
+      const firstChunk = await this.emulator.peek32(memHeader + 0x10);
 
-    let safetyCounter = 0;
-    while (memHeader !== 0 && safetyCounter < 10) {
-      // Validate memHeader address is reasonable
-      if (memHeader > 0xffffff) {
-        break;
-      }
+      // Validate memory region makes sense
+      if (lower < upper && lower < 0x1000000 && upper < 0x1000000) {
+        const regionSize = upper - lower;
+        const memClass = classifyMemory(attributes, lower);
 
-      const nodeType = await this.emulator.peek8(memHeader + 0x08);
-
-      if (nodeType === NT_MEMORY) {
-        const attributes = await this.emulator.peek16(memHeader + 0x0e);
-        const lower = await this.emulator.peek32(memHeader + 0x14);
-        const upper = await this.emulator.peek32(memHeader + 0x18);
-        const free = await this.emulator.peek32(memHeader + 0x1c);
-        const firstChunk = await this.emulator.peek32(memHeader + 0x10);
-
-        // Validate memory region makes sense
-        if (lower < upper && lower < 0x1000000 && upper < 0x1000000) {
-          const regionSize = upper - lower;
-          const memClass = classifyMemory(attributes, lower);
-
-          if (memClass === MemoryClass.CHIP) {
-            totalChip += regionSize;
-            freeChip += free;
-          } else if (memClass === MemoryClass.SLOW) {
-            totalSlow += regionSize;
-            freeSlow += free;
-          } else {
-            totalFast += regionSize;
-            freeFast += free;
-          }
-
-          // Store region info
-          regions.push({
-            lower,
-            upper,
-            attributes,
-            firstChunk,
-          });
-
-          // Walk free chunks in this memory header
-          await this.walkFreeChunks(firstChunk, attributes, blocks);
+        if (memClass === MemoryClass.CHIP) {
+          totalChip += regionSize;
+          freeChip += free;
+        } else if (memClass === MemoryClass.SLOW) {
+          totalSlow += regionSize;
+          freeSlow += free;
+        } else {
+          totalFast += regionSize;
+          freeFast += free;
         }
-      }
 
-      // Next memory header - read ln_Succ (first field of Node structure)
-      memHeader = await this.emulator.peek32(memHeader);
-      safetyCounter++;
-    }
+        // Store region info
+        regions.push({
+          lower,
+          upper,
+          attributes,
+          firstChunk,
+        });
+
+        // Walk free chunks in this memory header
+        await this.walkFreeChunks(firstChunk, attributes, blocks);
+      }
+      // Visit every header (never stop early) -- getMemoryInfo accumulates across all of them.
+    });
 
     // Calculate allocated blocks by finding gaps between free blocks
     this.calculateAllocatedBlocks(regions, blocks);
@@ -425,36 +439,27 @@ export class AmigaMemoryMapper {
     const execBase = await this.getExecBase();
     const memListAddr = execBase + 0x142;
 
-    let memHeader = await this.emulator.peek32(memListAddr);
+    let found = false;
+    await this.forEachMemHeader(memListAddr, async (memHeader) => {
+      const lower = await this.emulator.peek32(memHeader + 0x14);
+      const upper = await this.emulator.peek32(memHeader + 0x18);
 
-    let safetyCounter = 0;
-    while (memHeader !== 0 && safetyCounter < 10) {
-      if (memHeader > 0xffffff) break; // Safety check
-
-      const nodeType = await this.emulator.peek8(memHeader + 0x08);
-
-      if (nodeType === NT_MEMORY) {
-        const lower = await this.emulator.peek32(memHeader + 0x14);
-        const upper = await this.emulator.peek32(memHeader + 0x18);
-
-        if (address >= lower && address < upper) {
-          // Found the correct MemHeader - update free count
-          const freeAddr = memHeader + 0x1c;
-          const currentFree = await this.emulator.peek32(freeAddr);
-          const newFree = currentFree + delta;
-
-          await this.emulator.poke32(freeAddr, newFree);
-          return;
-        }
+      if (address >= lower && address < upper) {
+        // Found the correct MemHeader - update free count
+        const freeAddr = memHeader + 0x1c;
+        const currentFree = await this.emulator.peek32(freeAddr);
+        await this.emulator.poke32(freeAddr, currentFree + delta);
+        found = true;
+        return true;
       }
+      return false;
+    });
 
-      memHeader = await this.emulator.peek32(memHeader);
-      safetyCounter++;
+    if (!found) {
+      throw new Error(
+        `Could not find MemHeader for address 0x${address.toString(16)}`,
+      );
     }
-
-    throw new Error(
-      `Could not find MemHeader for address 0x${address.toString(16)}`,
-    );
   }
 
   /**
@@ -469,39 +474,28 @@ export class AmigaMemoryMapper {
     const execBase = await this.getExecBase();
     const memListAddr = execBase + 0x142;
 
-    let memHeader = await this.emulator.peek32(memListAddr);
+    await this.forEachMemHeader(memListAddr, async (memHeader) => {
+      const firstChunkAddr = memHeader + 0x10; // Address of first chunk pointer
+      const firstChunk = await this.emulator.peek32(firstChunkAddr);
 
-    let safetyCounter = 0;
-    while (memHeader !== 0 && safetyCounter < 10) {
-      if (memHeader > 0xffffff) break; // Safety check
-
-      const nodeType = await this.emulator.peek8(memHeader + 0x08);
-
-      if (nodeType === NT_MEMORY) {
-        const firstChunkAddr = memHeader + 0x10; // Address of first chunk pointer
-        const firstChunk = await this.emulator.peek32(firstChunkAddr);
-
-        // Check if this memory header's first chunk is the one we're updating
-        if (firstChunk === oldChunk) {
-          await this.emulator.poke32(firstChunkAddr, newChunk);
-          return;
-        }
-
-        // Walk chunks to find previous one
-        let chunk = firstChunk;
-        while (chunk !== 0) {
-          const nextChunk = await this.emulator.peek32(chunk);
-          if (nextChunk === oldChunk) {
-            await this.emulator.poke32(chunk, newChunk);
-            return;
-          }
-          chunk = nextChunk;
-        }
+      // Check if this memory header's first chunk is the one we're updating
+      if (firstChunk === oldChunk) {
+        await this.emulator.poke32(firstChunkAddr, newChunk);
+        return true;
       }
 
-      memHeader = await this.emulator.peek32(memHeader);
-      safetyCounter++;
-    }
+      // Walk chunks to find previous one
+      let chunk = firstChunk;
+      while (chunk !== 0) {
+        const nextChunk = await this.emulator.peek32(chunk);
+        if (nextChunk === oldChunk) {
+          await this.emulator.poke32(chunk, newChunk);
+          return true;
+        }
+        chunk = nextChunk;
+      }
+      return false;
+    });
   }
 
   /**
@@ -518,45 +512,38 @@ export class AmigaMemoryMapper {
     const execBase = await this.getExecBase();
     const memListAddr = execBase + 0x142;
 
-    let memHeader = await this.emulator.peek32(memListAddr);
+    let found = false;
+    await this.forEachMemHeader(memListAddr, async (memHeader) => {
+      const lower = await this.emulator.peek32(memHeader + 0x14);
+      const upper = await this.emulator.peek32(memHeader + 0x18);
 
-    let safetyCounter = 0;
-    while (memHeader !== 0 && safetyCounter < 10) {
-      if (memHeader > 0xffffff) break; // Safety check
+      if (address >= lower && address < upper) {
+        // Add this chunk to the beginning of the free list
+        const firstChunkAddr = memHeader + 0x10;
+        const oldFirstChunk = await this.emulator.peek32(firstChunkAddr);
 
-      const nodeType = await this.emulator.peek8(memHeader + 0x08);
+        // Set up freed chunk
+        await this.emulator.poke32(address, oldFirstChunk); // next pointer
+        await this.emulator.poke32(address + 0x04, alignedSize); // size
 
-      if (nodeType === NT_MEMORY) {
-        const lower = await this.emulator.peek32(memHeader + 0x14);
-        const upper = await this.emulator.peek32(memHeader + 0x18);
+        // Update memory header to point to this chunk
+        await this.emulator.poke32(firstChunkAddr, address);
 
-        if (address >= lower && address < upper) {
-          // Add this chunk to the beginning of the free list
-          const firstChunkAddr = memHeader + 0x10;
-          const oldFirstChunk = await this.emulator.peek32(firstChunkAddr);
+        // Update free bytes count
+        const freeAddr = memHeader + 0x1c;
+        const currentFree = await this.emulator.peek32(freeAddr);
+        await this.emulator.poke32(freeAddr, currentFree + alignedSize);
 
-          // Set up freed chunk
-          await this.emulator.poke32(address, oldFirstChunk); // next pointer
-          await this.emulator.poke32(address + 0x04, alignedSize); // size
-
-          // Update memory header to point to this chunk
-          await this.emulator.poke32(firstChunkAddr, address);
-
-          // Update free bytes count
-          const freeAddr = memHeader + 0x1c;
-          const currentFree = await this.emulator.peek32(freeAddr);
-          await this.emulator.poke32(freeAddr, currentFree + alignedSize);
-
-          return;
-        }
+        found = true;
+        return true;
       }
+      return false;
+    });
 
-      memHeader = await this.emulator.peek32(memHeader);
-      safetyCounter++;
+    if (!found) {
+      throw new Error(
+        `Address ${address.toString(16)} not found in any memory region`,
+      );
     }
-
-    throw new Error(
-      `Address ${address.toString(16)} not found in any memory region`,
-    );
   }
 }
