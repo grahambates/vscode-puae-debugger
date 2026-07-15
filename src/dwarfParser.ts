@@ -1071,12 +1071,22 @@ export function parseDwarf(elfBuffer: Buffer): DWARFData {
     return ops;
   }
 
+  // A corrupted/pathological abbreviation table (e.g. every DIE claiming hasChildren with no
+  // real null terminator) can nest parseDIE's recursion far past any real compiler's output,
+  // hitting "RangeError: Maximum call stack size exceeded" instead of a clean parse error. Real
+  // DWARF nesting (nested scopes/structs/namespaces) is nowhere near this deep in practice.
+  const MAX_DIE_DEPTH = 1000;
+
   function parseDIE(
     offset: number,
     abbrevTable: AbbreviationEntry[],
     addressSize: number,
     cuStartOffset: number,
+    depth = 0,
   ): DebugInfoEntry | null {
+    if (depth > MAX_DIE_DEPTH) {
+      throw new Error(`DWARF DIE nesting exceeds ${MAX_DIE_DEPTH} levels -- likely corrupted debug info`);
+    }
     const abbrevCode = readULEB128(offset);
     if (abbrevCode.value === 0) return null;
 
@@ -1154,7 +1164,7 @@ export function parseDwarf(elfBuffer: Buffer): DWARFData {
 
     if (abbrevEntry.hasChildren) {
       while (currentOffset < elfBuffer.length) {
-        const child = parseDIE(currentOffset, abbrevTable, addressSize, cuStartOffset);
+        const child = parseDIE(currentOffset, abbrevTable, addressSize, cuStartOffset, depth + 1);
         if (!child) {
           // Null DIE entry marks the end of children for this parent
           currentOffset += 1;
@@ -1424,13 +1434,28 @@ export function parseDwarf(elfBuffer: Buffer): DWARFData {
     const version = readUInt16(offset);
     offset += 2;
 
+    // Reads one header byte or throws -- unlike `elfBuffer[offset++] || default`, which this
+    // function used to use throughout: `||` also fires when the read is genuinely in-bounds but
+    // the byte value is legitimately 0 (masking it as "field absent"), and more importantly fires
+    // when `offset` has run past a truncated buffer (`elfBuffer[offset]` reads back `undefined`),
+    // silently substituting a fabricated default and letting parsing continue past the real end
+    // of the section instead of failing loud like the rest of this function already does (see
+    // the minimumInstructionLength/lineRange/opcodeBase check just below).
+    const readU8 = (label: string): number => {
+      const b = elfBuffer[offset++];
+      if (b === undefined) {
+        throw new Error(`Invalid line number program header: truncated at ${label}`);
+      }
+      return b;
+    };
+
     let addressSize = 4; // Default for DWARF 2-4
     let _segmentSelectorSize = 0;
 
     // DWARF 5 has additional header fields
     if (version >= 5) {
-      addressSize = elfBuffer[offset++] || 4;
-      _segmentSelectorSize = elfBuffer[offset++] || 0;
+      addressSize = readU8("address_size");
+      _segmentSelectorSize = readU8("segment_selector_size");
     }
 
     const headerLength = readUInt32(offset);
@@ -1441,7 +1466,7 @@ export function parseDwarf(elfBuffer: Buffer): DWARFData {
     // DWARF 4+ has maximum_operations_per_instruction
     let _maxOpsPerInstruction = 1;
     if (version >= 4) {
-      _maxOpsPerInstruction = elfBuffer[offset++] || 1;
+      _maxOpsPerInstruction = readU8("maximum_operations_per_instruction");
     }
 
     const defaultIsStmt = elfBuffer[offset++] === 1;
@@ -1473,7 +1498,7 @@ export function parseDwarf(elfBuffer: Buffer): DWARFData {
       // DWARF 5 format with directory_entry_format and file_name_entry_format
 
       // Parse directory entry format
-      const directoryEntryFormatCount = elfBuffer[offset++] || 0;
+      const directoryEntryFormatCount = readU8("directory_entry_format_count");
       const directoryEntryFormats: Array<{ contentType: number; form: number }> = [];
       for (let i = 0; i < directoryEntryFormatCount; i++) {
         const contentType = readULEB128(offset);
@@ -1513,7 +1538,7 @@ export function parseDwarf(elfBuffer: Buffer): DWARFData {
       }
 
       // Parse file entry format
-      const fileEntryFormatCount = elfBuffer[offset++] || 0;
+      const fileEntryFormatCount = readU8("file_entry_format_count");
       const fileEntryFormats: Array<{ contentType: number; form: number }> = [];
       for (let i = 0; i < fileEntryFormatCount; i++) {
         const contentType = readULEB128(offset);
@@ -1559,15 +1584,19 @@ export function parseDwarf(elfBuffer: Buffer): DWARFData {
         }
       }
     } else {
-      // DWARF 2-4 format with null-terminated strings
-      while (elfBuffer[offset] !== 0) {
+      // DWARF 2-4 format with null-terminated strings. Bounds-check `offset` in the loop
+      // condition itself, not just `!== 0`: once offset runs past a truncated buffer,
+      // elfBuffer[offset] reads back `undefined` forever (never `0`), and readString(offset) on
+      // an out-of-bounds offset returns a 0-length string (size 1) rather than throwing -- so
+      // without the bounds check this would loop forever incrementing offset by 1 each time.
+      while (offset < elfBuffer.length && elfBuffer[offset] !== 0) {
         const dir = readString(offset);
         includeDirectories.push(dir.value);
         offset += dir.size;
       }
       offset++;
 
-      while (elfBuffer[offset] !== 0) {
+      while (offset < elfBuffer.length && elfBuffer[offset] !== 0) {
         const fileName = readString(offset);
         offset += fileName.size;
 
