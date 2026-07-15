@@ -1387,9 +1387,13 @@ export function setupRpcDispatcher(
 
         // save_custom() output: 4-byte chipset_mask header + 256 big-endian u16 words.
         // Profiler expects 256 little-endian u16 words (512 bytes), so byte-swap here.
-        M._wasm_read_custom_regs_raw();
+        // Tracks the real returned capacity (like getCustomRegsRaw()'s sibling below) rather
+        // than hardcoding it: PUAE_CUSTOM_REGS_RAW_SIZE's buffer capacity is a few bytes larger
+        // than the header+registers actually written, so a hardcoded window here would silently
+        // desync from the real layout if that padding, or the format itself, ever changes.
+        const rawCap = M._wasm_read_custom_regs_raw();
         const rawPtr = M._wasm_get_custom_regs_raw_buf();
-        const rawView = new DataView(M.HEAPU8.buffer, rawPtr, 520);
+        const rawView = new DataView(M.HEAPU8.buffer, rawPtr, rawCap);
         const custom = new Uint8Array(512);
         const customView = new DataView(custom.buffer);
         for (let i = 0; i < 256; i++) {
