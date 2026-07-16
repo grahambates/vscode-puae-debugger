@@ -45,7 +45,11 @@ export class DisassemblyManager {
     instructionOffset: number,
     count: number,
   ): Promise<DebugProtocol.DisassembledInstruction[]> {
-    const MAX_BYTES_PER_INSTRUCTION = 8; // really 10, but super unlikely
+    // True 68k worst case (e.g. MOVE.L $12345678.L,$12345678.L -- long-absolute source AND
+    // destination): not actually rare in real code that references hardware registers directly
+    // by address. Undersizing this both under-fetches the backward-estimate buffer (below) and
+    // can make startIndex's search fail to find baseAddress at all for otherwise-valid code.
+    const MAX_BYTES_PER_INSTRUCTION = 10;
     const MIN_BYTES_PER_INSTRUCTION = 2;
     let requestCount = count;
     let startAddress = baseAddress;
@@ -85,14 +89,19 @@ export class DisassemblyManager {
     }
     let realStart = startIndex + instructionOffset;
 
+    // Total returned must be exactly `count` (the DAP `disassemble` request contract) --
+    // padding rows count against that budget too, capped at `count` itself in case the
+    // negative offset is large enough that padding alone would exceed it.
     const includedInstructions: RawInstr[] = [];
     if (realStart < 0) {
-      for (let i = 0; i < -realStart; i++) {
+      const paddingCount = Math.min(-realStart, count);
+      for (let i = 0; i < paddingCount; i++) {
         includedInstructions.push({ addr: 0, instruction: "invalid", hex: "00 00 00 00" });
       }
       realStart = 0;
     }
-    includedInstructions.push(...decoded.slice(realStart, realStart + count));
+    const remaining = count - includedInstructions.length;
+    includedInstructions.push(...decoded.slice(realStart, realStart + remaining));
 
     return includedInstructions.map(instr => {
       const disasm: DebugProtocol.DisassembledInstruction = {
@@ -100,10 +109,15 @@ export class DisassemblyManager {
         instruction: instr.instruction,
         instructionBytes: instr.hex,
       };
-      if (instr.instruction === "invalid" || instr.instruction.startsWith("dc.")) {
+      const isPadding = instr.instruction === "invalid";
+      if (isPadding || instr.instruction.startsWith("dc.")) {
         disasm.presentationHint = "invalid";
       }
-      if (this.sourceMap) {
+      // Padding rows carry a placeholder addr:0, not a real address (see the padding loop
+      // above) -- address 0 is meaningful on the Amiga memory map (reset SP/PC vectors), so a
+      // symbol/line lookup there could attach a plausible-looking but bogus location to a row
+      // that's supposed to represent unavailable data.
+      if (this.sourceMap && !isPadding) {
         const loc = this.sourceMap.lookupAddress(instr.addr);
         if (loc) {
           disasm.symbol = basename(loc.path) + ":" + loc.line;

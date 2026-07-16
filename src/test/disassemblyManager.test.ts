@@ -77,9 +77,9 @@ describe("DisassemblyManager", () => {
   describe("Negative offset", () => {
     it("returns instructions before base address (no clamping needed)", async () => {
       // baseAddress=0x1010, offset=-2, count=2
-      // startAddress = 0x1010 - 2*8 = 0x1000
-      // With NOPs: decoded[0..] at 0x1000, 0x1002, ..., 0x1010 (index 8)
-      // realStart = 8 + (-2) = 6 → result at 0x100C, 0x100E
+      // startAddress = 0x1010 - 2*10 = 0xFFC
+      // With NOPs: decoded[0..] at 0xFFC, 0xFFE, 0x1000, ..., 0x1010 (index 10)
+      // realStart = 10 + (-2) = 8 → result at 0x100C, 0x100E
       setupNopMemory();
       const result = await mgr.disassemble(0x1010, -2, 2);
       assert.strictEqual(result.length, 2);
@@ -87,19 +87,29 @@ describe("DisassemblyManager", () => {
       assert.strictEqual(result[1].address, "0x100e");
     });
 
-    it("pads with invalid instructions when offset exceeds available memory", async () => {
+    it("pads with invalid instructions when offset exceeds available memory, without exceeding the requested count", async () => {
       // baseAddress=0x4, offset=-3, count=3
-      // startAddress = max(0x4 - 24, 0) = 0
+      // startAddress = max(0x4 - 3*10, 0) = 0
       // With NOPs: decoded[0..] at 0, 2, 4 (base, index 2), 6, ...
-      // realStart = 2 + (-3) = -1 → 1 padding + decoded[0..2]
+      // realStart = 2 + (-3) = -1 → 1 padding, leaving 2 more of budget (count=3 total,
+      // matching the DAP disassemble contract -- padding counts against that budget too).
       setupNopMemory();
       const result = await mgr.disassemble(0x4, -3, 3);
-      assert.strictEqual(result.length, 4); // 1 padding + 3 from decoded
+      assert.strictEqual(result.length, 3);
       assert.strictEqual(result[0].instruction, "invalid");
       assert.strictEqual(result[0].presentationHint, "invalid");
+      assert.strictEqual(result[0].address, "0x0"); // placeholder addr, not looked up as a real symbol
       assert.strictEqual(result[1].address, "0x0");
       assert.strictEqual(result[2].address, "0x2");
-      assert.strictEqual(result[3].address, "0x4");
+    });
+
+    it("caps padding at the requested count when the negative offset is larger than count itself", async () => {
+      // baseAddress=0x4, offset=-100, count=2: far more padding would be "needed" than the
+      // whole request budget -- must still return exactly `count` rows, all padding.
+      setupNopMemory();
+      const result = await mgr.disassemble(0x4, -100, 2);
+      assert.strictEqual(result.length, 2);
+      assert.ok(result.every(r => r.instruction === "invalid"));
     });
   });
 
