@@ -220,8 +220,10 @@ export function instructionAttrs(line: string): {
       } else if (byteDefault.includes(mnemonic)) {
         byteLength = 1;
       } else if (bitOps.includes(mnemonic)) {
-        // depends on dest type
-        byteLength = parsed.operands?.[1].value.match(/^d[0-7]$/i) ? 4 : 1;
+        // depends on dest type -- parsed.operands may have fewer than 2 entries for an
+        // incomplete/as-you-type line (see parseLine's own tolerance for that), so the
+        // destination operand itself, not just the array, needs an optional guard.
+        byteLength = parsed.operands?.[1]?.value.match(/^d[0-7]$/i) ? 4 : 1;
       }
     }
   }

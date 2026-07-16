@@ -1,4 +1,4 @@
-import { parseLine, symbolDeclaredSize } from "../sourceParsing";
+import { instructionAttrs, parseLine, symbolDeclaredSize } from "../sourceParsing";
 describe("parse", () => {
   describe("#symbolDeclaredSize()", () => {
     it("sizes a single dc.w as 2 bytes", () => {
@@ -35,6 +35,24 @@ describe("parse", () => {
 
     it("returns undefined for an unrecognized directive", () => {
       expect(symbolDeclaredSize("foo: even")).toBeUndefined();
+    });
+  });
+
+  describe("#instructionAttrs()", () => {
+    // Leading whitespace matters: an unindented first word parses as a label, not a mnemonic
+    // (see parseLine's own convention, exercised elsewhere in this file via "loop: ...").
+    it("sizes a bit-op with a data-register destination as 4 bytes (long)", () => {
+      expect(instructionAttrs("  btst d1,d0").byteLength).toBe(4);
+    });
+
+    it("sizes a bit-op with a memory destination as 1 byte", () => {
+      expect(instructionAttrs("  btst #3,(a0)").byteLength).toBe(1);
+    });
+
+    it("does not throw for a bit-op with only one operand, as typed mid-edit", () => {
+      // parseLine explicitly tolerates incomplete lines (see its own docstring) -- a bit-op
+      // with only its source operand entered so far must degrade gracefully, not crash.
+      expect(() => instructionAttrs("  btst d0")).not.toThrow();
     });
   });
 
