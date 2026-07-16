@@ -12,7 +12,7 @@
  */
 
 import { StabData } from "./amigaHunkParser";
-import { TypeDescriptor, FieldDescriptor } from "./sourceMap";
+import { TypeDescriptor, FieldDescriptor, LocalLocation, Variable } from "./sourceMap";
 
 /** stab n_type values (a.out / GNU). */
 export const StabType = {
@@ -108,6 +108,41 @@ export interface StabProgram {
   globals: StabGlobal[];
   /** Resolve a type key (from a StabVariable/return type) to a TypeDescriptor. */
   resolveType(typeKey: string): TypeDescriptor;
+}
+
+/**
+ * GNU stabs frame locals live at [A5 + offset], which is the SourceMap `fbreg` case. Shared by
+ * both stabs consumers (amigaHunkSourceMap.ts for HUNK_DEBUG-embedded stabs, elfStabsSourceMap.ts
+ * for ELF .stab/.stabstr sections) — previously duplicated identically in each.
+ */
+export function stabToLocalLocation(loc: StabLocation): LocalLocation {
+  switch (loc.kind) {
+    case "frame":
+      return { kind: "fbreg", offset: loc.offset };
+    case "register":
+      // m68k stabs register numbers: 0-7 = D0-D7, 8-15 = A0-A7 (same as DWARF).
+      return { kind: "reg", reg: loc.reg };
+    // File-static locals can't be resolved to a readable memory location here (their owning
+    // hunk/section is ambiguous), so surface them as unknown.
+    default:
+      return { kind: "unknown" };
+  }
+}
+
+/**
+ * Builds a SourceMap Variable from a parsed stabs variable, resolving its type via `program`
+ * (the same StabProgram the variable came from). Shared by both stabs consumers — see
+ * stabToLocalLocation's doc comment.
+ */
+export function buildStabVariable(program: StabProgram, v: StabVariable): Variable {
+  const td = program.resolveType(v.typeKey);
+  return {
+    name: v.name,
+    typeName: td.typeName,
+    byteSize: td.byteSize,
+    typeDescriptor: td,
+    location: stabToLocalLocation(v.location),
+  };
 }
 
 /**

@@ -6,10 +6,9 @@ import {
   Location,
   ScopeEntry,
   Variable,
-  LocalLocation,
 } from "./sourceMap";
 import { StabData } from "./amigaHunkParser";
-import { parseStabs, StabLocation, StabVariable } from "./stabsParser";
+import { parseStabs, StabVariable, buildStabVariable } from "./stabsParser";
 
 /**
  * Creates a source map from GNU stabs debug information embedded in an ELF
@@ -77,16 +76,7 @@ export function sourceMapFromElfStabs(
     sources.add(normalize(file));
   }
 
-  const mkVar = (v: StabVariable): Variable => {
-    const td = program.resolveType(v.typeKey);
-    return {
-      name: v.name,
-      typeName: td.typeName,
-      byteSize: td.byteSize,
-      typeDescriptor: td,
-      location: stabToLocalLocation(v.location),
-    };
-  };
+  const mkVar = (v: StabVariable): Variable => buildStabVariable(program, v);
 
   for (const ln of program.lines) {
     const resolved = resolveElfAddress(ln.address, dwarfData, sectionOffsets);
@@ -158,19 +148,6 @@ export function sourceMapFromElfStabs(
     [], // no inline table
     globalVars,
   );
-}
-
-/** GNU stabs frame locals live at [A5 + offset], which is the SourceMap `fbreg` case. */
-function stabToLocalLocation(loc: StabLocation): LocalLocation {
-  switch (loc.kind) {
-    case "frame":
-      return { kind: "fbreg", offset: loc.offset };
-    case "register":
-      // m68k stabs register numbers: 0-7 = D0-D7, 8-15 = A0-A7 (same as DWARF).
-      return { kind: "reg", reg: loc.reg };
-    default:
-      return { kind: "unknown" };
-  }
 }
 
 /**

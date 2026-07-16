@@ -6,9 +6,8 @@ import {
   Location,
   ScopeEntry,
   Variable,
-  LocalLocation,
 } from "./sourceMap";
-import { parseStabs, StabLocation, StabVariable } from "./stabsParser";
+import { parseStabs, StabVariable, buildStabVariable } from "./stabsParser";
 
 /**
  * Creates a source map from Amiga hunk debug information.
@@ -136,21 +135,6 @@ function findEnclosingSymbol(
   return { symbol, symbolOffset };
 }
 
-/** GNU stabs frame locals live at [A5 + offset], which is the SourceMap `fbreg` case. */
-function stabToLocalLocation(loc: StabLocation): LocalLocation {
-  switch (loc.kind) {
-    case "frame":
-      return { kind: "fbreg", offset: loc.offset };
-    case "register":
-      // m68k stabs register numbers: 0-7 = D0-D7, 8-15 = A0-A7 (same as DWARF).
-      return { kind: "reg", reg: loc.reg };
-    // File-static locals can't be resolved to a readable memory location here
-    // (their owning hunk is ambiguous), so surface them as unknown.
-    default:
-      return { kind: "unknown" };
-  }
-}
-
 /** Decode a hunk's GNU stabs and append lines, scopes, globals and types. */
 function addStabs(
   hunk: Hunk,
@@ -168,16 +152,7 @@ function addStabs(
     sources.add(normalize(file));
   }
 
-  const mkVar = (v: StabVariable): Variable => {
-    const td = program.resolveType(v.typeKey);
-    return {
-      name: v.name,
-      typeName: td.typeName,
-      byteSize: td.byteSize,
-      typeDescriptor: td,
-      location: stabToLocalLocation(v.location),
-    };
-  };
+  const mkVar = (v: StabVariable): Variable => buildStabVariable(program, v);
 
   for (const ln of program.lines) {
     const { symbol, symbolOffset } = findEnclosingSymbol(hunk.symbols, ln.address);
