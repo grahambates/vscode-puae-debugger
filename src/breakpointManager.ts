@@ -249,14 +249,22 @@ export class BreakpointManager {
   ): Promise<DebugProtocol.Breakpoint[]> {
     logger.log(`Set breakpoints request: ${path}`);
 
-    // Remove existing breakpoints for source
+    // Remove existing breakpoints for source. Each removal is independently caught so one
+    // failure (e.g. a transient RPC error) doesn't abort the loop and leave later entries
+    // still tracked as active after this method resets `refs` to a fresh array below --
+    // they'd otherwise become permanently unremovable (never in any future removal loop)
+    // while VS Code believes they're gone.
     const existing = this.sourceBreakpoints.get(path);
     if (existing) {
       for (const ref of existing) {
-        logger.log(
-          `Breakpoint #${ref.id} removed at ${formatHex(ref.address)}`,
-        );
-        await this.emulator.removeBreakpoint(ref.address);
+        try {
+          await this.emulator.removeBreakpoint(ref.address);
+          logger.log(
+            `Breakpoint #${ref.id} removed at ${formatHex(ref.address)}`,
+          );
+        } catch (error) {
+          logger.log(`Failed to remove breakpoint #${ref.id} at ${formatHex(ref.address)} - ${error}`);
+        }
       }
     }
 
@@ -273,8 +281,8 @@ export class BreakpointManager {
         const id = this.bpId++;
         const ignores = this.parseHitCondition(bp.hitCondition);
 
-        refs.push({ id, address, condition: bp.condition, logMessage: bp.logMessage });
         await this.emulator.setBreakpoint(address, this.armHitCount(id, ignores));
+        refs.push({ id, address, condition: bp.condition, logMessage: bp.logMessage });
         logger.log(
           `Breakpoint #${id} at ${path}:${bp.line} set at ${instructionReference}`,
         );
@@ -307,12 +315,17 @@ export class BreakpointManager {
   public async setInstructionBreakpoints(
     breakpoints: DebugProtocol.InstructionBreakpoint[],
   ): Promise<DebugProtocol.Breakpoint[]> {
-    // Remove existing
+    // Remove existing. Each removal independently caught -- see setSourceBreakpoints' matching
+    // comment for why (a mid-loop failure must not stop the array reset below).
     for (const ref of this.instructionBreakpoints) {
-      logger.log(
-        `Instruction breakpoint #${ref.id} removed at ${formatHex(ref.address)}`,
-      );
-      await this.emulator.removeBreakpoint(ref.address);
+      try {
+        await this.emulator.removeBreakpoint(ref.address);
+        logger.log(
+          `Instruction breakpoint #${ref.id} removed at ${formatHex(ref.address)}`,
+        );
+      } catch (error) {
+        logger.log(`Failed to remove instruction breakpoint #${ref.id} at ${formatHex(ref.address)} - ${error}`);
+      }
     }
     this.instructionBreakpoints = [];
 
@@ -324,17 +337,27 @@ export class BreakpointManager {
       const id = this.bpId++;
       const ignores = this.parseHitCondition(bp.hitCondition);
 
-      this.instructionBreakpoints.push({ id, address, condition: bp.condition });
-      await this.emulator.setBreakpoint(address, this.armHitCount(id, ignores));
-      logger.log(
-        `Instruction breakpoint #${id} set at ${bp.instructionReference}`,
-      );
+      try {
+        await this.emulator.setBreakpoint(address, this.armHitCount(id, ignores));
+        this.instructionBreakpoints.push({ id, address, condition: bp.condition });
+        logger.log(
+          `Instruction breakpoint #${id} set at ${bp.instructionReference}`,
+        );
 
-      resultBreakpoints.push({
-        id,
-        verified: true,
-        ...bp,
-      });
+        resultBreakpoints.push({
+          id,
+          verified: true,
+          ...bp,
+        });
+      } catch (error) {
+        logger.log(`Failed to set instruction breakpoint at ${bp.instructionReference} - ${error}`);
+        resultBreakpoints.push({
+          id,
+          verified: false,
+          message: `Cannot set breakpoint: ${error}`,
+          ...bp,
+        });
+      }
     }
 
     return resultBreakpoints;
@@ -346,12 +369,17 @@ export class BreakpointManager {
   public async setFunctionBreakpoints(
     breakpoints: DebugProtocol.FunctionBreakpoint[],
   ): Promise<DebugProtocol.Breakpoint[]> {
-    // Remove existing
+    // Remove existing. Each removal independently caught -- see setSourceBreakpoints' matching
+    // comment for why (a mid-loop failure must not stop the array reset below).
     for (const ref of this.functionBreakpoints) {
-      logger.log(
-        `Function breakpoint #${ref.id} removed at ${formatHex(ref.address)}`,
-      );
-      await this.emulator.removeBreakpoint(ref.address);
+      try {
+        await this.emulator.removeBreakpoint(ref.address);
+        logger.log(
+          `Function breakpoint #${ref.id} removed at ${formatHex(ref.address)}`,
+        );
+      } catch (error) {
+        logger.log(`Failed to remove function breakpoint #${ref.id} at ${formatHex(ref.address)} - ${error}`);
+      }
     }
     this.functionBreakpoints = [];
 
@@ -362,20 +390,27 @@ export class BreakpointManager {
       const id = this.bpId++;
       const address = this.sourceMap.getSymbols()?.[bp.name];
 
+      let message: string | undefined = address ? undefined : `Symbol '${bp.name}' not found`;
+      let verified = false;
       if (address) {
         const ignores = this.parseHitCondition(bp.hitCondition);
-
-        this.functionBreakpoints.push({ id, address, condition: bp.condition });
-        await this.emulator.setBreakpoint(address, this.armHitCount(id, ignores));
-        logger.log(
-          `Function breakpoint #${id} set at ${formatHex(address)} for ${bp.name}`,
-        );
+        try {
+          await this.emulator.setBreakpoint(address, this.armHitCount(id, ignores));
+          this.functionBreakpoints.push({ id, address, condition: bp.condition });
+          logger.log(
+            `Function breakpoint #${id} set at ${formatHex(address)} for ${bp.name}`,
+          );
+          verified = true;
+        } catch (error) {
+          logger.log(`Failed to set function breakpoint for ${bp.name} at ${formatHex(address)} - ${error}`);
+          message = `Cannot set breakpoint: ${error}`;
+        }
       }
 
       resultBreakpoints.push({
         id,
-        verified: Boolean(address),
-        message: address ? undefined : `Symbol '${bp.name}' not found`,
+        verified,
+        message,
         ...bp,
       });
     }
@@ -466,19 +501,29 @@ export class BreakpointManager {
   ): Promise<DebugProtocol.Breakpoint[]> {
     logger.log(`Set data breakpoints request`);
 
-    // Remove existing data breakpoints
+    // Remove existing data breakpoints. Each removal independently caught -- see
+    // setSourceBreakpoints' matching comment for why (a mid-loop failure must not stop the
+    // array resets below).
     for (const ref of this.dataBreakpoints) {
+      for (const address of ref.addresses) {
+        try {
+          await this.emulator.removeWatchpoint(address);
+        } catch (error) {
+          logger.log(`Failed to remove data breakpoint #${ref.id} at ${formatHex(address)} - ${error}`);
+        }
+      }
       logger.log(
         `Data breakpoint #${ref.id} removed at ${ref.addresses.map(formatHex).join(", ")}`,
       );
-      for (const address of ref.addresses) {
-        await this.emulator.removeWatchpoint(address);
-      }
     }
     this.dataBreakpoints = [];
     for (const ref of this.registerWatchpoints) {
-      logger.log(`Register watch #${ref.id} removed (reg index ${ref.regIndex})`);
-      await this.emulator.removeRegisterWatch(ref.regIndex);
+      try {
+        await this.emulator.removeRegisterWatch(ref.regIndex);
+        logger.log(`Register watch #${ref.id} removed (reg index ${ref.regIndex})`);
+      } catch (error) {
+        logger.log(`Failed to remove register watch #${ref.id} (reg index ${ref.regIndex}) - ${error}`);
+      }
     }
     this.registerWatchpoints = [];
 
@@ -510,8 +555,8 @@ export class BreakpointManager {
           // hit counting for it is always TS-side.
           const ignores = this.parseHitCondition(bp.hitCondition);
           if (ignores > 0) this.hitCounters.set(id, ignores);
-          this.registerWatchpoints.push({ id, regIndex, dataId: bp.dataId, condition: bp.condition });
           await this.emulator.setRegisterWatch(regIndex);
+          this.registerWatchpoints.push({ id, regIndex, dataId: bp.dataId, condition: bp.condition });
           logger.log(`Register watch #${id} set on ${parts[1]} (index ${regIndex})`);
           resultBreakpoints.push({ id, verified: true });
           continue;
@@ -547,12 +592,26 @@ export class BreakpointManager {
           const ignores = this.parseHitCondition(bp.hitCondition);
           const nativeIgnores = this.armHitCount(id, ignores);
           const length = custom!.long ? 4 : 2;
-          for (const plan of plans) {
-            await this.emulator.setWatchpoint(plan.addr, nativeIgnores, {
-              read: plan.read,
-              write: plan.write,
-              length,
-            });
+          // A "readWrite" register needs two watchpoints armed as one atomic unit (this method's
+          // whole tracking model has no way to represent "half" of a DataBreakpointRef). If the
+          // second setWatchpoint throws after the first succeeded, roll the first back rather
+          // than leaving it live in the emulator but untracked here -- otherwise it can never be
+          // removed (not in any future removal loop) and would misroute a later hit to nothing.
+          const armed: typeof plans = [];
+          try {
+            for (const plan of plans) {
+              await this.emulator.setWatchpoint(plan.addr, nativeIgnores, {
+                read: plan.read,
+                write: plan.write,
+                length,
+              });
+              armed.push(plan);
+            }
+          } catch (err) {
+            for (const plan of armed) {
+              await this.emulator.removeWatchpoint(plan.addr).catch(() => { /* best-effort rollback */ });
+            }
+            throw err;
           }
           this.dataBreakpoints.push({
             id,
@@ -599,6 +658,12 @@ export class BreakpointManager {
           const id = this.bpId++;
           const accessType = bp.accessType || "readWrite";
           const ignores = this.parseHitCondition(bp.hitCondition);
+
+          await this.emulator.setWatchpoint(address, this.armHitCount(id, ignores), {
+            read: accessType !== "write",
+            write: accessType !== "read",
+            length,
+          });
           this.dataBreakpoints.push({
             id,
             addresses: [address],
@@ -606,12 +671,6 @@ export class BreakpointManager {
             accessType,
             ignores,
             condition: bp.condition,
-          });
-
-          await this.emulator.setWatchpoint(address, this.armHitCount(id, ignores), {
-            read: accessType !== "write",
-            write: accessType !== "read",
-            length,
           });
           logger.log(
             `Data breakpoint #${id} set at ${formatHex(address)} (${accessType})` +
@@ -756,8 +815,13 @@ export class BreakpointManager {
     logger.log(
       `Setting temporary breakpoint at ${formatHex(address)} (${reason})`,
     );
-    this.tmpBreakpoints.push({ address, reason });
+    // Tracked only after the emulator call succeeds -- a failed setBreakpoint (e.g. a
+    // transient RPC error) previously left a phantom entry here forever, since nothing else
+    // ever cleans up a tmp breakpoint that was never actually armed. A stray phantom entry at
+    // an address a later, real tmp/user breakpoint reuses can also misroute that later
+    // breakpoint's hit through handleBreakpointStop's tmp-match path instead of its real one.
     await this.emulator.setBreakpoint(address);
+    this.tmpBreakpoints.push({ address, reason });
   }
 
   /**
