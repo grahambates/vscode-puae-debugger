@@ -1,9 +1,39 @@
 import * as Path from "path";
-import { parseHunksFromFile } from "../amigaHunkParser";
-import { parseStabs } from "../stabsParser";
+import { parseHunksFromFile, StabData } from "../amigaHunkParser";
+import { parseStabs, StabType } from "../stabsParser";
 import { sourceMapFromHunks } from "../amigaHunkSourceMap";
 
 const FIXTURES_PATH = Path.join(__dirname, "fixtures");
+
+/** Build a synthetic HUNK_DEBUG stabs section (nlist table + string table) from raw entries. */
+function buildStabSection(
+  entries: { str: string; type: number; value: number }[],
+): StabData {
+  // String table: offset 0 is reserved (readStabString treats offset <= 0 as ""),
+  // so the first real string starts at offset 1.
+  const strParts: Buffer[] = [Buffer.from([0])];
+  let offset = 1;
+  const strx: number[] = [];
+  for (const e of entries) {
+    strx.push(e.str ? offset : 0);
+    const buf = Buffer.from(e.str + "\0", "latin1");
+    strParts.push(buf);
+    offset += buf.length;
+  }
+  const strings = Buffer.concat(strParts);
+
+  const stabs = Buffer.alloc(entries.length * 12);
+  entries.forEach((e, i) => {
+    const o = i * 12;
+    stabs.writeUInt32BE(strx[i], o);
+    stabs.writeUInt8(e.type, o + 4);
+    stabs.writeUInt8(0, o + 5); // n_other
+    stabs.writeUInt16BE(0, o + 6); // n_desc
+    stabs.writeUInt32BE(e.value >>> 0, o + 8);
+  });
+
+  return { stabs, strings };
+}
 
 // pt1210-debug.exe: m68k-amigaos-gcc build with GNU stabs in HUNK_DEBUG (magic 0x10b).
 describe("stabsParser", function () {
@@ -35,7 +65,7 @@ describe("stabsParser", function () {
     expect(rescan?.address).toBe(0xd8);
     expect(rescan?.size).toBe(0x16);
     expect(rescan?.isGlobal).toBe(false);
-    expect(rescan?.returnTypeRef).toBe("17");
+    expect(rescan?.returnTypeRef).toBe("0:17");
     expect(rescan?.file.endsWith("action.c")).toBe(true);
 
     const sw = program.functions.find(
@@ -59,13 +89,14 @@ describe("stabsParser", function () {
     const program = parseStabs(hunks.flatMap((h) => h.stabs));
 
     // Base type: `int:t1=r1;...` → primitive int, 4 bytes.
-    const intType = program.resolveType("1");
+    // Type keys are namespaced per stabs section ("0:" — see the mixed-object test below).
+    const intType = program.resolveType("0:1");
     expect(intType.kind).toBe("primitive");
     expect(intType.typeName).toBe("int");
     expect(intType.byteSize).toBe(4);
 
     // `char:t2=r2;0;127;` → 1 byte.
-    expect(program.resolveType("2").byteSize).toBe(1);
+    expect(program.resolveType("0:2").byteSize).toBe(1);
 
     // At least one function has parameters located at a frame offset.
     const withParams = program.functions.find((f) => f.params.length > 0);
@@ -140,5 +171,37 @@ describe("stabsParser", function () {
     expect(regScope).toBeDefined();
     const scopeLocals = sm.getLocalsForPc(base + regScope!.start);
     expect(scopeLocals.some((v) => v.location.kind === "reg")).toBe(true);
+  });
+
+  // A linker (e.g. vlink) merging several object files' CODE sections into one
+  // output hunk packs each object's stabs as a separate HUNK_DEBUG block, so a
+  // single hunk's `stabs` array can hold more than one entry. Type numbers are
+  // only unique within the compilation unit that defined them, so two blocks
+  // reusing the same raw number (very likely - both start counting from 1)
+  // must not resolve to each other's definition.
+  it("keeps type numbers from different merged stabs blocks distinct", function () {
+    // Section 0: `fnA` returns type 1, defined inline as a 4-byte int range.
+    const sectionA = buildStabSection([
+      { str: "fnA:F1=r1;-2147483648;2147483647;", type: StabType.FUN, value: 0x10 },
+      { str: "", type: StabType.FUN, value: 4 }, // size terminator
+    ]);
+    // Section 1: `fnB` also returns type 1, but here it's a 1-byte range.
+    const sectionB = buildStabSection([
+      { str: "fnB:F1=r1;0;127;", type: StabType.FUN, value: 0x20 },
+      { str: "", type: StabType.FUN, value: 4 },
+    ]);
+
+    const program = parseStabs([sectionA, sectionB]);
+
+    const fnA = program.functions.find((f) => f.name === "fnA");
+    const fnB = program.functions.find((f) => f.name === "fnB");
+    expect(fnA).toBeDefined();
+    expect(fnB).toBeDefined();
+
+    // Namespaced keys, not the same raw "1" clobbering each other.
+    expect(fnA!.returnTypeRef).not.toBe(fnB!.returnTypeRef);
+
+    expect(program.resolveType(fnA!.returnTypeRef).byteSize).toBe(4);
+    expect(program.resolveType(fnB!.returnTypeRef).byteSize).toBe(1);
   });
 });

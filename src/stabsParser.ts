@@ -262,6 +262,13 @@ const NAMED_SIZES: Record<string, number> = {
  * Accumulates stabs type definitions (keyed by type number) and resolves them
  * to the shared TypeDescriptor lazily (structs keep their fields behind a
  * closure so recursive/self-referential types don't loop).
+ *
+ * Type numbers are only unique within the compilation unit that defined them
+ * (each merged HUNK_DEBUG stabs block, i.e. section, is one unit — a linker
+ * can pack several object files' stabs into one hunk). `sectionScope` is
+ * prefixed onto every number/tuple key read from the stream so the same raw
+ * number from two different sections can't collide and clobber each other's
+ * definition.
  */
 class StabTypeTable {
   private defs = new Map<string, TypeNode>();
@@ -269,6 +276,12 @@ class StabTypeTable {
   private anonCounter = 0;
   private resolving = new Set<string>();
   private cache = new Map<string, TypeDescriptor>();
+  private sectionScope = "";
+
+  /** Set the current section's key namespace prefix (call between sections). */
+  setSectionScope(scope: string): void {
+    this.sectionScope = scope;
+  }
 
   /** Register a type name (from a `t`/`T` symbol descriptor). */
   setName(key: string, name: string): void {
@@ -313,12 +326,12 @@ class StabTypeTable {
       let s = r.next(); // '('
       while (!r.eof() && r.peek() !== ")") s += r.next();
       if (r.peek() === ")") s += r.next();
-      return s;
+      return this.sectionScope + s;
     }
     let s = "";
     if (r.peek() === "-") s += r.next();
     while (!r.eof() && r.peek() >= "0" && r.peek() <= "9") s += r.next();
-    return s;
+    return this.sectionScope + s;
   }
 
   private parseTypeDef(r: Cursor): TypeNode {
@@ -628,7 +641,8 @@ export function parseStabs(sections: StabData[]): StabProgram {
     }
   };
 
-  for (const section of sections) {
+  sections.forEach((section, sectionIndex) => {
+    types.setSectionScope(`${sectionIndex}:`);
     const stabs = joinContinuations(decodeStabs(section));
 
     // Current source context. N_SO sets the compilation dir (trailing '/') then
@@ -734,7 +748,7 @@ export function parseStabs(sections: StabData[]): StabProgram {
           break;
       }
     }
-  }
+  });
 
   return {
     files,
