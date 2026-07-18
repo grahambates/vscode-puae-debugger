@@ -43,22 +43,64 @@ const CODE_MATCH_WINDOW = 512;
 // A sample can go unmatched (no fresh fetch cell) when its opcode word was already sitting in the
 // 68000's prefetch queue from an earlier fetch — mostly tight loops/branches; rare in practice.
 // Those are filled in by interpolating between the nearest matched neighbours.
+//
+// Sample 0 specifically is *always* at risk of exactly this prefetch-queue miss: it's whatever
+// instruction was already being fetched the instant recording turned on, so there was never a
+// recording-enabled fetch cycle for its own opcode. In a long-running loop (this program's own
+// bug report case: a multi-scanline-per-iteration loop), that same address doesn't come around
+// again until the *next* lap — many lines later — while the very next sample (0x2 or 0x4 bytes
+// on) gets fetched normally right away and shows up within a handful of cells of the true start.
+// Naively searching for sample 0's own address across the whole grid (see below) would then latch
+// onto that later lap instead of the true start, rendering a large, spurious empty gap at the
+// left edge of the flame graph even though real samples begin almost immediately.
+const ANCHOR_CANDIDATES = 32;
+
 function buildSampleSlots(pcs: readonly number[], dma: IDmaModel): { slots: Int32Array; matched: number } {
   const { owner, flags, addr } = dma;
   const N = owner.length;
   const slots = new Int32Array(pcs.length).fill(-1);
 
+  const findUnbounded = (pc: number): number => {
+    let j = 0;
+    while (j < N && !(owner[j] === BusOwner.CPU && flags[j] & DMA_CODE && addr[j] === pc)) j++;
+    return j < N ? j : -1;
+  };
+
+  // Find the true starting anchor by checking the first few samples' addresses (each via an
+  // unbounded scan — paid once per capture, negligible cost) and picking whichever yields the
+  // EARLIEST grid position. A same-loop revisit of an earlier sample's address always resolves to
+  // a LATER position than whichever sample genuinely executes first, so the minimum is correct —
+  // this is what makes the fix robust without needing to special-case "sample 0 specifically".
+  // A genuinely large gap before the first in-program instruction (interrupts/OS/Kickstart init —
+  // see the header comment) still works: every early sample's earliest occurrence clusters around
+  // that same real start, so the minimum still lands there.
+  let anchorK = -1;
+  let anchorSlot = -1;
+  for (let k = 0; k < Math.min(ANCHOR_CANDIDATES, pcs.length); k++) {
+    const j = findUnbounded(pcs[k]);
+    if (j >= 0 && (anchorSlot < 0 || j < anchorSlot)) {
+      anchorSlot = j;
+      anchorK = k;
+    }
+  }
+
   let cell = 0;
   let matched = 0;
-  for (let k = 0; k < pcs.length; k++) {
+  let startK = 0;
+  if (anchorK >= 0) {
+    slots[anchorK] = anchorSlot;
+    cell = anchorSlot + 1;
+    matched = 1;
+    startK = anchorK + 1;
+    // Samples before the anchor never got a matchable fetch cell (that's the whole point of
+    // picking the earliest candidate) — left unmatched, they're interpolated/clamped to the
+    // anchor below, same as any other unmatched run.
+  }
+  for (let k = startK; k < pcs.length; k++) {
     const pc = pcs[k];
-    // The very first sample is the one place a genuinely large gap is expected — everything the
-    // capture didn't sample (interrupts, OS/library calls, Kickstart init) that ran before the
-    // first in-program instruction this frame is real elapsed grid distance, unbounded by
-    // CODE_MATCH_WINDOW. That search only runs once per capture, so it can afford to scan to the
-    // end of the grid; every later sample restricts to the bounded window (steady-state gaps
-    // between samples are small — see the header comment).
-    const limit = k === 0 ? N : Math.min(N, cell + CODE_MATCH_WINDOW);
+    // Bounded: steady-state gaps between consecutive samples are small (see the header comment);
+    // a real fetch, when there is one, shows up within a handful of cells of the previous match.
+    const limit = Math.min(N, cell + CODE_MATCH_WINDOW);
     let j = cell;
     while (j < limit && !(owner[j] === BusOwner.CPU && flags[j] & DMA_CODE && addr[j] === pc)) j++;
     if (j < limit) {

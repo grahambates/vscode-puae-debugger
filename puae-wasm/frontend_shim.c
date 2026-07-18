@@ -821,6 +821,7 @@ void wasm_write_instr_count(uint32_t lo, uint32_t hi) {
 // --- CPU + DMA profiler ---
 
 extern int  g_wprofActive;
+extern void wasm_profile_prepare_align(void);
 extern void wasm_profile_prepare(int numFrames);
 extern void wasm_profile_finish(int numFrames);
 extern void wasm_profile_emit_frame_marker(int frameIdx);
@@ -986,6 +987,23 @@ int wasm_profile_start(int numFrames)
     g_wprofCopperCount = 0;
     g_wprofFullFrameW  = 0;
     g_wprofFullFrameH  = 0;
+
+    // Align capture start to the frame boundary before any recording turns on.  retro_run()
+    // (below, and in the capture loop) doesn't run "one frame from vpos 0" — it runs the CPU
+    // from wherever it currently is until the next libretro_frame_end signal (set in
+    // unlockscr(), libretro-glue.c — a fixed point once per real Amiga frame). Without this,
+    // frame 0's CPU samples start recording at whatever raster line the emulator happened to
+    // be at when Capture was invoked (confirmed: as late as vpos ~19/312 in one capture),
+    // silently dropping everything that ran earlier in that frame — while the DMA grid (indexed
+    // by absolute vpos/hpos, debug.c's dma_record[]) always shows a complete 0..312 frame
+    // regardless, so only the CPU flame graph/columns view looked wrong. This throwaway,
+    // unrecorded frame burns off whatever partial frame is currently in progress so the *real*
+    // capture below always starts right at the boundary — subsequent frames in a multi-frame
+    // capture are already naturally aligned this way (each one starts where the previous
+    // retro_run() call ended), only frame 0 needs the extra nudge.
+    wasm_profile_prepare_align();
+    libretro_frame_end = false;
+    retro_run();
 
     wasm_profile_prepare(numFrames);
     record_dma_reset(1);   /* alloc if needed, toggle buffer, set debug_dma=1 */

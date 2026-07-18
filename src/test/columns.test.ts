@@ -67,6 +67,45 @@ describe("buildColumns (DMA-anchored positions)", () => {
     expect(columns[0].x1).toBe(0);
     expect(columns[1].x1).toBeCloseTo(0.25, 6);
   });
+
+  // Regression test for a real bug report: a long-running loop where sample 0's own opcode fetch
+  // never got recorded (it was already in the 68000's prefetch queue when recording turned on),
+  // so its address doesn't reappear in the grid until the *next* lap of the loop — many cells
+  // later. Searching for sample 0's address across the whole grid used to latch onto that later
+  // lap, rendering a large, spurious empty gap at the start of the flame graph even though sample
+  // 1 (and everything after it) genuinely started almost immediately.
+  it("anchors on an early sample instead of a later same-address loop revisit for sample 0", () => {
+    const M = 1000;
+    const owner = new Uint8Array(M);
+    const flags = new Uint8Array(M);
+    const addr = new Uint32Array(M);
+    const value = new Uint16Array(M);
+    const fetch = (slot: number, pc: number) => {
+      owner[slot] = BusOwner.CPU;
+      flags[slot] = DMA_CODE;
+      addr[slot] = pc;
+    };
+    // Sample 0's own address (0x2000) has NO cell near the true start — it only reappears at
+    // slot 900, on the loop's next lap. Sample 1 (0x2004, the very next instruction) is fetched
+    // normally and shows up right away, at slot 20.
+    fetch(20, 0x2004);
+    fetch(30, 0x2006);
+    fetch(900, 0x2000); // the "next lap" revisit — must NOT be picked as sample 0's anchor.
+
+    const loopModel: IProfileModel = {
+      ...model,
+      samples: [0, 1, 1, 1],
+      timeDeltas: [5, 5, 5],
+      pcs: [0x2000, 0x2004, 0x2006],
+      duration: 15,
+      dma: { owner, flags, addr, value },
+    };
+    const columns = buildColumns(loopModel);
+    // Sample 0 must clamp to sample 1's real (early) slot, not jump to the loop-revisit slot 900.
+    expect(columns[0].x1).toBeCloseTo(20 / M, 6);
+    expect(columns[1].x1).toBeCloseTo(20 / M, 6);
+    expect(columns[2].x1).toBeCloseTo(30 / M, 6);
+  });
 });
 
 describe("columnIndexToSlot", () => {

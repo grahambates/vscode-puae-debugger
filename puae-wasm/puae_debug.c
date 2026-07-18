@@ -340,6 +340,24 @@ wasm_profile_dwarf_walk(uint32_t pc, uint32_t *callers, uint32_t maxCallers)
 	return depth;
 }
 
+// Pause/breakpoint bookkeeping split out of wasm_profile_prepare() so frontend_shim.c's
+// wasm_profile_start can run its unrecorded alignment retro_run() (see that function's
+// comment) with breakpoints already suspended and the CPU already unpaused — otherwise a
+// breakpoint hit during alignment would halt the CPU before recording even starts, and
+// puae_debug_suspend_breakpoints (single suspended slot, not reentrant) couldn't safely be
+// called a second time once wasm_profile_prepare below runs.
+void
+wasm_profile_prepare_align(void)
+{
+	g_wprofWasPaused       = puae_debug_paused;
+	puae_debug_paused       = 0;
+	// Ignore breakpoints for the duration of the capture — see
+	// puae_debug_suspend_breakpoints's comment. Without this, a breakpoint hit
+	// mid-capture halts the CPU (frame count/DMA/video keep advancing) and the
+	// rest of the capture silently loses its CPU samples.
+	puae_debug_suspend_breakpoints();
+}
+
 void
 wasm_profile_prepare(int numFrames)
 {
@@ -361,13 +379,6 @@ wasm_profile_prepare(int numFrames)
 	g_wprofFrameCycles     = 0;
 	g_wprofPendingCycleSlot = WASM_PROFILE_NO_PENDING_SLOT;
 	g_wprofActive          = 1;
-	g_wprofWasPaused       = puae_debug_paused;
-	puae_debug_paused       = 0;
-	// Ignore breakpoints for the duration of the capture — see
-	// puae_debug_suspend_breakpoints's comment. Without this, a breakpoint hit
-	// mid-capture halts the CPU (frame count/DMA/video keep advancing) and the
-	// rest of the capture silently loses its CPU samples.
-	puae_debug_suspend_breakpoints();
 	g_wprofStartCycles     = get_cycles();
 	/* Force CE blitter for the capture frame so every D-channel write (including fill
 	 * mode, which the fast blitter never records) appears in the DMA grid.  The
