@@ -988,23 +988,7 @@ int wasm_profile_start(int numFrames)
     g_wprofFullFrameW  = 0;
     g_wprofFullFrameH  = 0;
 
-    // Align capture start to the frame boundary before any recording turns on.  retro_run()
-    // (below, and in the capture loop) doesn't run "one frame from vpos 0" — it runs the CPU
-    // from wherever it currently is until the next libretro_frame_end signal (set in
-    // unlockscr(), libretro-glue.c — a fixed point once per real Amiga frame). Without this,
-    // frame 0's CPU samples start recording at whatever raster line the emulator happened to
-    // be at when Capture was invoked (confirmed: as late as vpos ~19/312 in one capture),
-    // silently dropping everything that ran earlier in that frame — while the DMA grid (indexed
-    // by absolute vpos/hpos, debug.c's dma_record[]) always shows a complete 0..312 frame
-    // regardless, so only the CPU flame graph/columns view looked wrong. This throwaway,
-    // unrecorded frame burns off whatever partial frame is currently in progress so the *real*
-    // capture below always starts right at the boundary — subsequent frames in a multi-frame
-    // capture are already naturally aligned this way (each one starts where the previous
-    // retro_run() call ended), only frame 0 needs the extra nudge.
     wasm_profile_prepare_align();
-    libretro_frame_end = false;
-    retro_run();
-
     wasm_profile_prepare(numFrames);
     record_dma_reset(1);   /* alloc if needed, toggle buffer, set debug_dma=1 */
     // Force copper-instruction recording on for the whole capture, the same way record_dma_reset
@@ -1019,6 +1003,29 @@ int wasm_profile_start(int numFrames)
     g_wprofThumbCount = 0;
     g_wprofThumbW = 0; // recomputed from frame 0 on the first wasm_profile_save_thumbnail call
     g_wprofThumbH = 0;
+
+    // Discard one throwaway frame's worth of data before the capture we actually keep.
+    // g_wprofActive/debug_dma just got armed above, but necessarily at an arbitrary raster
+    // position (wherever the CPU happened to be) — there's no way to synchronously wait for the
+    // true frame boundary (vpos wrapping to 0) from C before arming. retro_run() itself can't be
+    // used for that either: it only returns once the CPU execution loop notices the
+    // libretro_frame_end flag, which — confirmed by direct instrumentation — happens a few
+    // scanlines *after* the true boundary, not at it. Arming synchronously right after a
+    // "priming" retro_run() call (the previous approach here) was therefore itself always a few
+    // lines late, silently missing genuinely-executed instructions at the very start of every
+    // capture's frame 0.
+    //
+    // Instead: run one throwaway retro_run() call with recording already armed. Every such call
+    // spans at least one real vsync, so puae_debug_frame_boundary_notify() (custom.c's precise
+    // per-frame hook, fired exactly when vpos wraps to 0 — unlike retro_run()'s own return)
+    // fires during it and rewinds the profile buffer (g_wprofResetPending, puae_debug.c) right at
+    // that true boundary, discarding whatever accumulated before it. The DMA grid needs no
+    // equivalent rewind — record_dma_reset()'s double-buffer toggle already happens automatically
+    // at that same precise hsync_handler_post() point regardless of profiling, so by the time the
+    // *next* (real, counted) retro_run() call below finishes, the buffer it reads is already
+    // exactly bounded by two such true boundaries.
+    libretro_frame_end = false;
+    retro_run();
 
     // Allocate per-frame DMA and copper storage.
     if (numFrames > 0) {

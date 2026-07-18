@@ -267,6 +267,19 @@ static int      g_wprofRegEnabled;
 static uint32_t g_wprofPendingCycleSlot;
 #define WASM_PROFILE_NO_PENDING_SLOT 0xFFFFFFFFu
 
+/* Set by wasm_profile_prepare(), cleared by the next puae_debug_frame_boundary_notify() (the
+ * emulator's own precise per-frame vsync hook — fires exactly when vpos wraps to 0, unlike
+ * retro_run()'s return, which the CPU execution loop only notices a few scanlines later; see
+ * wasm_profile_start's comment in frontend_shim.c). g_wprofActive/debug_dma get armed as soon as
+ * wasm_profile_start calls wasm_profile_prepare — necessarily at an imprecise raster position,
+ * since there's no way to synchronously wait for the true boundary from C before that. Whatever
+ * CPU samples/register snapshots accumulate between arming and the *next* true boundary are
+ * discarded (the buffer position is rewound to 0) right at that boundary, so the frame the caller
+ * actually keeps starts exactly at the true raster origin instead of wherever arming happened to
+ * land — fixing a real, if small (~1% of a frame), gap where genuinely-executed instructions at
+ * the very start of every capture were previously never recorded at all. */
+static int      g_wprofResetPending;
+
 /* DWARF unwind table uploaded by wasm_profile_set_unwind (NULL = assembly/branch-stack). */
 static uint8_t *g_wprofUnwindBuf = NULL;
 static uint32_t g_wprofUnwindLen = 0;
@@ -379,6 +392,7 @@ wasm_profile_prepare(int numFrames)
 	g_wprofFrameCycles     = 0;
 	g_wprofPendingCycleSlot = WASM_PROFILE_NO_PENDING_SLOT;
 	g_wprofActive          = 1;
+	g_wprofResetPending    = 1; /* rewind to the true frame boundary — see its declaration's comment */
 	g_wprofStartCycles     = get_cycles();
 	/* Force CE blitter for the capture frame so every D-channel write (including fill
 	 * mode, which the fast blitter never records) appears in the DMA grid.  The
@@ -2073,6 +2087,19 @@ puae_debug_frame_boundary_notify(void)
 {
 	if (puae_debug_replayMode && puae_debug_scanFrameMode) {
 		puae_debug_scanLastMatch = puae_debug_instrCount;
+	}
+	// Rewind the profile buffer to the true frame boundary — see g_wprofResetPending's comment.
+	// g_wprofActive gates this so it's a no-op outside of an active capture (replay mode never
+	// has g_wprofActive set, so this can't interfere with the scan-frame logic above).
+	if (g_wprofResetPending && g_wprofActive) {
+		g_wprofBufLen           = 0;
+		g_wprofRegSampleCount   = 0;
+		g_wprofPendingCycleSlot = WASM_PROFILE_NO_PENDING_SLOT;
+		g_wprofLastCycleValid   = 0;
+		g_wprofTotalInstrs      = 0;
+		g_wprofInRangeInstrs    = 0;
+		g_wprofStartCycles      = get_cycles();
+		g_wprofResetPending     = 0;
 	}
 }
 
