@@ -837,27 +837,51 @@ extern void record_dma_reset(int start);
 extern int  debug_copper;
 
 // Per-frame thumbnail capture — nearest-neighbour downscale of g_rgba_buf after each
-// retro_run().  Stored as RGBA8888 at a fixed 160×100 resolution (aspect not preserved;
-// thumbnails are for visual identification in the filmstrip, not analysis).
-// 60 frames × 160×100×4 = 3.84 MB of static storage, comfortably within the 320 MB heap.
-#define WASM_THUMB_W 160
-#define WASM_THUMB_H 100
+// retro_run(). Every frame in a capture shares one screen resolution (like
+// g_wprofFullFrames below), so the actual thumbnail size (g_wprofThumbW/H) is computed
+// once, from frame 0, by scaling uniformly (one factor on both axes, so the real aspect
+// ratio is preserved rather than stretched) to fit within WASM_THUMB_MAX_W x
+// WASM_THUMB_MAX_H — that box just bounds storage, it's not the stored shape.
+// 60 frames x that box's worst case x 4 bytes = 3.84 MB of static storage, comfortably
+// within the 320 MB heap.
+#define WASM_THUMB_MAX_W 160
+#define WASM_THUMB_MAX_H 100
 #define WASM_THUMB_MAX_FRAMES 60
-static uint8_t g_wprofThumbs[WASM_THUMB_MAX_FRAMES * WASM_THUMB_W * WASM_THUMB_H * 4];
-static int     g_wprofThumbCount;
+static uint8_t   g_wprofThumbs[WASM_THUMB_MAX_FRAMES * WASM_THUMB_MAX_W * WASM_THUMB_MAX_H * 4];
+static int       g_wprofThumbCount;
+static unsigned  g_wprofThumbW; // actual per-capture thumbnail size, set from frame 0
+static unsigned  g_wprofThumbH;
 
 static void wasm_profile_save_thumbnail(void) {
     if (g_wprofThumbCount >= WASM_THUMB_MAX_FRAMES) return;
     unsigned fw = g_fb_width  < MAX_FB_WIDTH  ? g_fb_width  : MAX_FB_WIDTH;
     unsigned fh = g_fb_height < MAX_FB_HEIGHT ? g_fb_height : MAX_FB_HEIGHT;
     if (fw == 0 || fh == 0) return;
-    uint8_t *dst = g_wprofThumbs + g_wprofThumbCount * (WASM_THUMB_W * WASM_THUMB_H * 4);
-    for (int ty = 0; ty < WASM_THUMB_H; ty++) {
-        int sy = (int)((unsigned)ty * fh / WASM_THUMB_H);
-        for (int tx = 0; tx < WASM_THUMB_W; tx++) {
-            int sx = (int)((unsigned)tx * fw / WASM_THUMB_W);
-            const uint8_t *s = g_rgba_buf + (sy * (int)fw + sx) * 4;
-            uint8_t *d = dst + (ty * WASM_THUMB_W + tx) * 4;
+
+    if (g_wprofThumbCount == 0) {
+        // Scale uniformly (same factor on both axes) to fit within the WASM_THUMB_MAX_W x
+        // WASM_THUMB_MAX_H box — a per-axis scale (the old behaviour) stretched non-square
+        // source frames to fill a fixed 160x100 box regardless of their real aspect ratio,
+        // most visibly squashing a typical ~320x256 PAL framebuffer into that box's 1.6:1
+        // shape. Every later frame this capture reuses this size (see the block comment).
+        unsigned scaledW = WASM_THUMB_MAX_W;
+        unsigned scaledH = (unsigned)((uint64_t)WASM_THUMB_MAX_W * fh / fw);
+        if (scaledH > WASM_THUMB_MAX_H) {
+            scaledH = WASM_THUMB_MAX_H;
+            scaledW = (unsigned)((uint64_t)WASM_THUMB_MAX_H * fw / fh);
+        }
+        g_wprofThumbW = scaledW < 1 ? 1 : scaledW;
+        g_wprofThumbH = scaledH < 1 ? 1 : scaledH;
+    }
+
+    uint8_t *dst = g_wprofThumbs + (size_t)g_wprofThumbCount * (g_wprofThumbW * g_wprofThumbH * 4);
+    for (unsigned ty = 0; ty < g_wprofThumbH; ty++) {
+        unsigned sy = ty * fh / g_wprofThumbH;
+        uint8_t *drow = dst + ty * g_wprofThumbW * 4;
+        for (unsigned tx = 0; tx < g_wprofThumbW; tx++) {
+            unsigned sx = tx * fw / g_wprofThumbW;
+            const uint8_t *s = g_rgba_buf + (sy * fw + sx) * 4;
+            uint8_t *d = drow + tx * 4;
             d[0] = s[0]; d[1] = s[1]; d[2] = s[2]; d[3] = s[3];
         }
     }
@@ -865,11 +889,11 @@ static void wasm_profile_save_thumbnail(void) {
 }
 
 EMSCRIPTEN_KEEPALIVE int         wasm_profile_get_frame_count(void) { return g_wprofThumbCount; }
-EMSCRIPTEN_KEEPALIVE int         wasm_profile_get_thumb_w(void) { return WASM_THUMB_W; }
-EMSCRIPTEN_KEEPALIVE int         wasm_profile_get_thumb_h(void) { return WASM_THUMB_H; }
+EMSCRIPTEN_KEEPALIVE int         wasm_profile_get_thumb_w(void) { return (int)g_wprofThumbW; }
+EMSCRIPTEN_KEEPALIVE int         wasm_profile_get_thumb_h(void) { return (int)g_wprofThumbH; }
 EMSCRIPTEN_KEEPALIVE const void *wasm_profile_get_thumb_ptr(int frameIdx) {
     if (frameIdx < 0 || frameIdx >= g_wprofThumbCount) return (void *)0;
-    return g_wprofThumbs + frameIdx * (WASM_THUMB_W * WASM_THUMB_H * 4);
+    return g_wprofThumbs + (size_t)frameIdx * (g_wprofThumbW * g_wprofThumbH * 4);
 }
 
 // Per-frame DMA grids — dynamically allocated inside wasm_profile_start for N>1
@@ -963,6 +987,8 @@ int wasm_profile_start(int numFrames)
     // show up) instead of no trace, or an honestly-empty one.
     debug_copper = 1;
     g_wprofThumbCount = 0;
+    g_wprofThumbW = 0; // recomputed from frame 0 on the first wasm_profile_save_thumbnail call
+    g_wprofThumbH = 0;
 
     // Allocate per-frame DMA and copper storage.
     if (numFrames > 0) {
