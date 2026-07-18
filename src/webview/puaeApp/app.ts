@@ -447,6 +447,25 @@ export async function main(config: MainConfig = {}): Promise<void> {
   // advancing.
   let lastFbFrameCount = -1;
 
+  // Cached view over the wasm framebuffer, reused every frame instead of
+  // allocating a new Uint8ClampedArray wrapper 50x/sec. Only recreated when
+  // the pointer/length change (canvas resize) or the wasm memory buffer
+  // itself is replaced (ALLOW_MEMORY_GROWTH growing the heap detaches any
+  // view still pointing at the old ArrayBuffer).
+  let fbView: Uint8ClampedArray | null = null;
+  let fbViewBuffer: ArrayBufferLike | null = null;
+  let fbViewPtr = -1;
+  let fbViewLen = -1;
+  function getFbView(ptr: number, len: number): Uint8ClampedArray {
+    if (!fbView || fbViewBuffer !== M.HEAPU8.buffer || fbViewPtr !== ptr || fbViewLen !== len) {
+      fbView = new Uint8ClampedArray(M.HEAPU8.buffer, ptr, len);
+      fbViewBuffer = M.HEAPU8.buffer;
+      fbViewPtr = ptr;
+      fbViewLen = len;
+    }
+    return fbView;
+  }
+
   // Called by rpc.ts's async continueReverse to paint the current wasm
   // framebuffer to the canvas between checkpoint intervals.
   globalThis.drawCurrentFrame = () => {
@@ -457,7 +476,7 @@ export async function main(config: MainConfig = {}): Promise<void> {
       canvas.width = w; canvas.height = h; imgData = null;
     }
     if (!imgData) imgData = ctx.createImageData(w, h);
-    imgData.data.set(new Uint8ClampedArray(M.HEAPU8.buffer, M._wasm_get_fb_rgba(), w * h * 4));
+    imgData.data.set(getFbView(M._wasm_get_fb_rgba(), w * h * 4));
     ctx.putImageData(imgData, 0, 0);
     lastFbFrameCount = M._wasm_get_frame_count();
   };
@@ -1118,7 +1137,7 @@ export async function main(config: MainConfig = {}): Promise<void> {
     if (!imgData) imgData = ctx.createImageData(w, h);
     const ptr = M._wasm_get_fb_rgba();
     const tSetStart = performance.now();
-    imgData.data.set(new Uint8ClampedArray(M.HEAPU8.buffer, ptr, w * h * 4));
+    imgData.data.set(getFbView(ptr, w * h * 4));
     const tBlitStart = performance.now();
     ctx.putImageData(imgData, 0, 0);
     if (blitTrackingEnabled) updateBlitVis();
