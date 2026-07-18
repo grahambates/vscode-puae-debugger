@@ -60,28 +60,73 @@ function buildSampleSlots(pcs: readonly number[], dma: IDmaModel): { slots: Int3
   const N = owner.length;
   const slots = new Int32Array(pcs.length).fill(-1);
 
-  const findUnbounded = (pc: number): number => {
-    let j = 0;
-    while (j < N && !(owner[j] === BusOwner.CPU && flags[j] & DMA_CODE && addr[j] === pc)) j++;
-    return j < N ? j : -1;
+  const numCandidates = Math.min(ANCHOR_CANDIDATES, pcs.length);
+
+  // Resolve all ANCHOR_CANDIDATES samples' addresses in a single O(N) pass over the grid (instead
+  // of one independent O(N) scan per candidate) — a candidate PC can repeat across k (e.g. a
+  // 2-byte NOP loop), so track every k waiting on a given address, not just one.
+  const pcToKs = new Map<number, number[]>();
+  for (let k = 0; k < numCandidates; k++) {
+    const pc = pcs[k];
+    let ks = pcToKs.get(pc);
+    if (!ks) { ks = []; pcToKs.set(pc, ks); }
+    ks.push(k);
+  }
+  const candidateSlot = new Int32Array(numCandidates).fill(-1);
+  for (let j = 0; j < N && pcToKs.size > 0; j++) {
+    if (owner[j] !== BusOwner.CPU || !(flags[j] & DMA_CODE)) continue;
+    const ks = pcToKs.get(addr[j]);
+    if (!ks) continue;
+    for (const k of ks) candidateSlot[k] = j;
+    pcToKs.delete(addr[j]);
+  }
+
+  // Confirm a candidate anchor by checking that at least one of its next few samples also
+  // resolves nearby — a genuine run of real execution has consecutive samples close together in
+  // the grid; an isolated coincidental match (e.g. a shared subroutine an interrupt handler also
+  // happens to call, whose address collides with one of the profiled program's own early samples)
+  // won't have anything nearby confirming it. Tolerates an occasional individual miss among the
+  // lookahead samples (the same prefetch-queue effect can affect any sample, not just the anchor
+  // itself), by accepting as soon as any of them matches rather than requiring all to.
+  const confirms = (k: number, slot: number): boolean => {
+    const lookahead = Math.min(pcs.length, k + 5);
+    const cell = slot + 1;
+    for (let m = k + 1; m < lookahead; m++) {
+      const limit = Math.min(N, cell + CODE_MATCH_WINDOW);
+      let j = cell;
+      while (j < limit && !(owner[j] === BusOwner.CPU && flags[j] & DMA_CODE && addr[j] === pcs[m])) j++;
+      if (j < limit) return true;
+    }
+    return k + 1 >= pcs.length; // nothing left to confirm against (anchor is at/near the very end)
   };
 
-  // Find the true starting anchor by checking the first few samples' addresses (each via an
-  // unbounded scan — paid once per capture, negligible cost) and picking whichever yields the
-  // EARLIEST grid position. A same-loop revisit of an earlier sample's address always resolves to
-  // a LATER position than whichever sample genuinely executes first, so the minimum is correct —
-  // this is what makes the fix robust without needing to special-case "sample 0 specifically".
-  // A genuinely large gap before the first in-program instruction (interrupts/OS/Kickstart init —
-  // see the header comment) still works: every early sample's earliest occurrence clusters around
-  // that same real start, so the minimum still lands there.
+  // Find the true starting anchor: among the resolved candidates, ordered earliest grid position
+  // first, pick the first one that's confirmed by a nearby run (see confirms). A same-loop revisit
+  // of an earlier sample's address always resolves to a LATER position than whichever sample
+  // genuinely executes first, so trying candidates in ascending order is what makes the fix robust
+  // without needing to special-case "sample 0 specifically". A genuinely large gap before the
+  // first in-program instruction (interrupts/OS/Kickstart init — see the header comment) still
+  // works: every early sample's earliest occurrence clusters around that same real start.
+  const ordered: { k: number; slot: number }[] = [];
+  for (let k = 0; k < numCandidates; k++) {
+    if (candidateSlot[k] >= 0) ordered.push({ k, slot: candidateSlot[k] });
+  }
+  ordered.sort((a, b) => a.slot - b.slot);
   let anchorK = -1;
   let anchorSlot = -1;
-  for (let k = 0; k < Math.min(ANCHOR_CANDIDATES, pcs.length); k++) {
-    const j = findUnbounded(pcs[k]);
-    if (j >= 0 && (anchorSlot < 0 || j < anchorSlot)) {
-      anchorSlot = j;
-      anchorK = k;
+  for (const c of ordered) {
+    if (confirms(c.k, c.slot)) {
+      anchorK = c.k;
+      anchorSlot = c.slot;
+      break;
     }
+  }
+  // Nothing passed confirmation (extremely unlikely — would need every candidate to be an
+  // isolated coincidental match) — anchoring on the unvalidated earliest is still better than not
+  // anchoring at all.
+  if (anchorK < 0 && ordered.length > 0) {
+    anchorK = ordered[0].k;
+    anchorSlot = ordered[0].slot;
   }
 
   let cell = 0;

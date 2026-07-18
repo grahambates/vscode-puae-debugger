@@ -106,6 +106,45 @@ describe("buildColumns (DMA-anchored positions)", () => {
     expect(columns[1].x1).toBeCloseTo(20 / M, 6);
     expect(columns[2].x1).toBeCloseTo(30 / M, 6);
   });
+
+  // Regression test for a code-review finding on the fix above: checking only the EARLIEST grid
+  // position among the first ANCHOR_CANDIDATES samples (with no further validation) can itself
+  // pick a wrong anchor if one of those samples' addresses happens to also occur earlier for an
+  // unrelated reason — e.g. a shared subroutine an interrupt handler calls moments before the
+  // profiled program's own code starts. That coincidental occurrence has nothing executing near
+  // it that belongs to the profiled run, unlike the genuine start.
+  it("rejects a coincidental earlier same-address match with no nearby confirming run", () => {
+    const M = 5000;
+    const owner = new Uint8Array(M);
+    const flags = new Uint8Array(M);
+    const addr = new Uint32Array(M);
+    const value = new Uint16Array(M);
+    const fetch = (slot: number, pc: number) => {
+      owner[slot] = BusOwner.CPU;
+      flags[slot] = DMA_CODE;
+      addr[slot] = pc;
+    };
+    // A coincidental earlier occurrence of sample 0's address, with nothing nearby confirming
+    // it's part of a real run of the profiled program.
+    fetch(5, 0xA000);
+    // The genuine run, far enough away (beyond CODE_MATCH_WINDOW) that it can't confirm slot 5.
+    fetch(3005, 0xA004);
+    fetch(3010, 0xA008);
+
+    const runModel: IProfileModel = {
+      ...model,
+      samples: [0, 1, 1, 1],
+      timeDeltas: [5, 5, 5],
+      pcs: [0xA000, 0xA004, 0xA008],
+      duration: 15,
+      dma: { owner, flags, addr, value },
+    };
+    const columns = buildColumns(runModel);
+    // Must NOT anchor on the coincidental slot 5 match; sample 0 clamps to the genuine run instead.
+    expect(columns[0].x1).toBeCloseTo(3005 / M, 6);
+    expect(columns[1].x1).toBeCloseTo(3005 / M, 6);
+    expect(columns[2].x1).toBeCloseTo(3010 / M, 6);
+  });
 });
 
 describe("columnIndexToSlot", () => {

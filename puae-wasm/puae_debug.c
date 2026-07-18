@@ -267,31 +267,42 @@ static int      g_wprofRegEnabled;
 static uint32_t g_wprofPendingCycleSlot;
 #define WASM_PROFILE_NO_PENDING_SLOT 0xFFFFFFFFu
 
-/* Set by wasm_profile_prepare(), cleared by the next puae_debug_frame_boundary_notify() (the
- * emulator's own precise per-frame vsync hook — fires exactly when vpos wraps to 0, unlike
- * retro_run()'s return, which the CPU execution loop only notices a few scanlines later; see
- * wasm_profile_start's comment in frontend_shim.c). g_wprofActive/debug_dma get armed as soon as
- * wasm_profile_start calls wasm_profile_prepare — necessarily at an imprecise raster position,
- * since there's no way to synchronously wait for the true boundary from C before that. Whatever
- * CPU samples/register snapshots accumulate between arming and the *next* true boundary are
- * discarded (the buffer position is rewound to 0) right at that boundary, so the frame the caller
- * actually keeps starts exactly at the true raster origin instead of wherever arming happened to
- * land — fixing a real, if small (~1% of a frame), gap where genuinely-executed instructions at
- * the very start of every capture were previously never recorded at all. */
-static int      g_wprofResetPending;
+/* Set by wasm_profile_prepare(), cleared at the next true frame boundary (see
+ * wasm_profile_on_frame_boundary()) — the emulator's own precise per-frame vsync hook, fired
+ * from puae_debug_frame_boundary_notify() exactly when vpos wraps to 0, unlike retro_run()'s
+ * return (the CPU execution loop only notices a few scanlines later; see wasm_profile_start's
+ * comment in frontend_shim.c). g_wprofActive itself stays 0 the whole time this flag is set —
+ * recording only turns on exactly at that first true boundary, both so the frame the caller keeps
+ * starts at the true raster origin (not a few scanlines late, silently missing genuinely-executed
+ * instructions — a real, if small, ~1% of a frame gap this fixed) and so wasm_profile_start's
+ * throwaway alignment retro_run() call does none of instrHook's stack-walk/register-snapshot work
+ * for data that's going to be discarded anyway (there's nothing to discard: instrHook is a no-op
+ * the whole time g_wprofActive is 0). debug_dma needs no equivalent delay — its own double-buffer
+ * toggle is unconditional per real vsync regardless of profiling, so it's already correctly
+ * bounded by the time the first *counted* retro_run() call finishes. */
+static int      g_wprofArmPending;
 
 /* Total frames requested (wasm_profile_prepare) and how many inter-frame markers have been
  * emitted so far (0..numFrames-2 — numFrames frames need numFrames-1 markers between them).
- * Like g_wprofResetPending, frame markers used to be inserted by frontend_shim.c right after each
- * retro_run() call returned — the same few-scanlines-late point that made frame 0's own start
- * imprecise. That misattributed each frame's first few lines to the *previous* frame's tail
- * instead of its own, and equally over-extended the previous frame — the CPU flame graph would
- * end up a few lines out of phase with that same frame's own (correctly-bounded, since the DMA
- * grid's double-buffer toggle is driven by this same true-vsync hook already) DMA/raster view, for
- * every frame after frame 0. Markers are now inserted from puae_debug_frame_boundary_notify()
- * instead, at the same precise true-vsync point the reset above uses. */
+ * Frame markers used to be inserted by frontend_shim.c right after each retro_run() call
+ * returned — the same few-scanlines-late point that made frame 0's own start imprecise. That
+ * misattributed each frame's first few lines to the *previous* frame's tail instead of its own,
+ * and equally over-extended the previous frame — the CPU flame graph would end up a few lines out
+ * of phase with that same frame's own (correctly-bounded — see g_wprofArmPending) DMA/raster view,
+ * for every frame after frame 0. Markers are now inserted from wasm_profile_on_frame_boundary()
+ * instead, at the same precise true-vsync point. */
 static int      g_wprofNumFrames;
 static int      g_wprofFrameMarkersEmitted;
+
+/* Set by wasm_profile_start (frontend_shim.c) only *after* its throwaway alignment retro_run()
+ * call has returned. Guards the marker-emission branch of wasm_profile_on_frame_boundary()
+ * against the case — unobserved in practice, but not structurally ruled out — where that single
+ * throwaway call crosses more than one true boundary: the first crossing consumes
+ * g_wprofArmPending as usual, but without this gate a second crossing within the very same
+ * throwaway call would fall straight into the marker branch before any real frame-0 samples
+ * exist, emitting a spurious marker that also zeroes g_wprofRegEnabled and permanently loses
+ * register-trace data for the whole capture. */
+int             g_wprofMarkersAllowed;
 
 /* DWARF unwind table uploaded by wasm_profile_set_unwind (NULL = assembly/branch-stack). */
 static uint8_t *g_wprofUnwindBuf = NULL;
@@ -384,6 +395,21 @@ wasm_profile_prepare_align(void)
 	puae_debug_suspend_breakpoints();
 }
 
+// Shared reset of the per-capture CPU-sample bookkeeping — used both to establish
+// wasm_profile_prepare()'s initial state and (via wasm_profile_on_frame_boundary()) to rewind to
+// the true frame boundary once it's reached.
+static void
+wasm_profile_reset_counters(void)
+{
+	g_wprofBufLen           = 0;
+	g_wprofRegSampleCount   = 0;
+	g_wprofPendingCycleSlot = WASM_PROFILE_NO_PENDING_SLOT;
+	g_wprofLastCycleValid   = 0;
+	g_wprofTotalInstrs      = 0;
+	g_wprofInRangeInstrs    = 0;
+	g_wprofStartCycles      = get_cycles();
+}
+
 void
 wasm_profile_prepare(int numFrames)
 {
@@ -396,19 +422,14 @@ wasm_profile_prepare(int numFrames)
 	g_wprofBuf = (uint32_t *)malloc((size_t)g_wprofBufCapWords * sizeof(uint32_t));
 	if (!g_wprofBuf) g_wprofBufCapWords = 0; /* allocation failed: recording stays disabled via the cap below */
 
-	g_wprofBufLen          = 0;
-	g_wprofRegSampleCount  = 0;
+	wasm_profile_reset_counters();
 	g_wprofRegEnabled      = 1;
-	g_wprofTotalInstrs     = 0;
-	g_wprofInRangeInstrs   = 0;
-	g_wprofLastCycleValid  = 0;
 	g_wprofFrameCycles     = 0;
-	g_wprofPendingCycleSlot = WASM_PROFILE_NO_PENDING_SLOT;
-	g_wprofActive          = 1;
-	g_wprofResetPending    = 1; /* rewind to the true frame boundary — see its declaration's comment */
-	g_wprofNumFrames          = numFrames;
+	g_wprofActive          = 0; /* stays 0 until the true boundary fires — see g_wprofArmPending's comment */
+	g_wprofArmPending      = 1;
+	g_wprofNumFrames       = numFrames;
 	g_wprofFrameMarkersEmitted = 0;
-	g_wprofStartCycles     = get_cycles();
+	g_wprofMarkersAllowed  = 0;
 	/* Force CE blitter for the capture frame so every D-channel write (including fill
 	 * mode, which the fast blitter never records) appears in the DMA grid.  The
 	 * do_blitter() call reads currprefs.blitter_cycle_exact at each blit-start, so
@@ -425,6 +446,7 @@ wasm_profile_finish(int numFrames)
 		g_wprofFrameCycles = (uint64_t)elapsed / (uint64_t)CYCLE_UNIT / (uint64_t)numFrames;
 	}
 	g_wprofActive    = 0;
+	g_wprofArmPending = 0; /* in case numFrames <= 0 left it set with no boundary ever consuming it */
 	puae_debug_paused = g_wprofWasPaused;
 	puae_debug_resume_breakpoints();
 	currprefs.blitter_cycle_exact = g_wprofSavedBlitterCE;
@@ -521,23 +543,27 @@ wasm_profile_instrHook(uint32_t pc24)
 }
 
 /* Emit a frame-boundary sentinel into g_wprofBuf between consecutive profiled frames.
- * Called by wasm_profile_start (in frontend_shim.c) after each completed retro_run(), except
- * the last frame.  Sentinel layout: [WASM_PROFILE_FRAME_MARKER, frameIdx] (2 words).
+ * Called by wasm_profile_on_frame_boundary(), once per true frame boundary, except the last one.
+ * Sentinel layout: [WASM_PROFILE_FRAME_MARKER, frameIdx] (2 words).
  * 0xFFFFFF01 is safe: real depth values are 1-64; it is far outside that range and the JS
  * splitProfileStream() stops at the first word that looks like a depth > MAX_DEPTH.
  * Also disables register recording for subsequent frames so the register cap can't block the
- * profile buffer from accumulating samples for frames 1..N-1. */
+ * profile buffer from accumulating samples for frames 1..N-1.
+ * Returns 1 if the marker was actually written, 0 if it was silently skipped (not active, or the
+ * buffer is full) — callers must only count a marker as emitted when this returns 1, or their own
+ * emitted-count bookkeeping drifts from what's actually in the buffer. */
 #define WASM_PROFILE_FRAME_MARKER 0xFFFFFF01u
-PUAE_DEBUG_EXPORT void
+PUAE_DEBUG_EXPORT int
 wasm_profile_emit_frame_marker(int frameIdx)
 {
-	if (!g_wprofActive) return;
-	if (g_wprofBufLen + 2 > g_wprofBufCapWords) return;
+	if (!g_wprofActive) return 0;
+	if (g_wprofBufLen + 2 > g_wprofBufCapWords) return 0;
 	g_wprofPendingCycleSlot = WASM_PROFILE_NO_PENDING_SLOT;
 	g_wprofLastCycleValid   = 0;
 	g_wprofRegEnabled       = 0;
 	g_wprofBuf[g_wprofBufLen++] = WASM_PROFILE_FRAME_MARKER;
 	g_wprofBuf[g_wprofBufLen++] = (uint32_t)frameIdx;
+	return 1;
 }
 
 PUAE_DEBUG_EXPORT void
@@ -2093,36 +2119,49 @@ puae_hsync_notify(void)
 	}
 }
 
+// Arms/advances CPU-sample profiler-capture state exactly at a true frame boundary — kept
+// separate from puae_debug_frame_boundary_notify() below (whose own original, still-active job is
+// replay/stepBackFrame scanning) so the two unrelated responsibilities sharing this one precise
+// hook stay visually and structurally distinct. g_wprofActive gates the whole thing so it's a
+// no-op outside of an active capture (replay mode never has g_wprofActive set, so this can't
+// interfere with the scan-frame logic in the caller).
+static void
+wasm_profile_on_frame_boundary(void)
+{
+	if (!g_wprofActive && !g_wprofArmPending) return;
+	if (g_wprofArmPending) {
+		// First true boundary since wasm_profile_prepare(): this is frame 0's real start — turn
+		// recording on exactly here (see g_wprofArmPending's comment) and rewind any bookkeeping
+		// wasm_profile_prepare() already initialized speculatively.
+		wasm_profile_reset_counters();
+		g_wprofActive     = 1;
+		g_wprofArmPending = 0;
+	} else if (g_wprofMarkersAllowed && g_wprofFrameMarkersEmitted < g_wprofNumFrames - 1) {
+		// Every true boundary after the first one (consumed above as frame 0's start) splits the
+		// previous frame from the next — see g_wprofNumFrames's comment. The last boundary
+		// (crossed while the final counted retro_run() call runs) deliberately gets no marker,
+		// same as the old post-retro_run() call site never marked after the last frame.
+		// g_wprofMarkersAllowed additionally guards against emitting a marker for a boundary
+		// crossed before frontend_shim.c's throwaway alignment call has even returned — see its
+		// declaration's comment.
+		if (wasm_profile_emit_frame_marker(g_wprofFrameMarkersEmitted + 1)) {
+			g_wprofFrameMarkersEmitted++;
+		}
+	}
+}
+
 // Called from hsync_handler() (custom.c) on the scanline where a new frame's
 // vblank starts — including during replay (unlike puae_vblank_notify, which
 // is suppressed then). Used by puae_debug_replay_scan_frame to find the most
-// recent frame boundary within a replayed range, for stepBackFrame.
+// recent frame boundary within a replayed range, for stepBackFrame — and by
+// wasm_profile_on_frame_boundary() above for exact profiler-capture timing.
 PUAE_DEBUG_EXPORT void
 puae_debug_frame_boundary_notify(void)
 {
 	if (puae_debug_replayMode && puae_debug_scanFrameMode) {
 		puae_debug_scanLastMatch = puae_debug_instrCount;
 	}
-	// Rewind the profile buffer to the true frame boundary — see g_wprofResetPending's comment.
-	// g_wprofActive gates this so it's a no-op outside of an active capture (replay mode never
-	// has g_wprofActive set, so this can't interfere with the scan-frame logic above).
-	if (g_wprofResetPending && g_wprofActive) {
-		g_wprofBufLen           = 0;
-		g_wprofRegSampleCount   = 0;
-		g_wprofPendingCycleSlot = WASM_PROFILE_NO_PENDING_SLOT;
-		g_wprofLastCycleValid   = 0;
-		g_wprofTotalInstrs      = 0;
-		g_wprofInRangeInstrs    = 0;
-		g_wprofStartCycles      = get_cycles();
-		g_wprofResetPending     = 0;
-	} else if (g_wprofActive && g_wprofFrameMarkersEmitted < g_wprofNumFrames - 1) {
-		// Every true boundary after the first one (which the reset above consumes as frame 0's
-		// start) splits the previous frame from the next — see g_wprofNumFrames's comment. The
-		// last boundary (crossed while the final counted retro_run() call runs) deliberately gets
-		// no marker, same as the old post-retro_run() call site never marked after the last frame.
-		wasm_profile_emit_frame_marker(g_wprofFrameMarkersEmitted + 1);
-		g_wprofFrameMarkersEmitted++;
-	}
+	wasm_profile_on_frame_boundary();
 }
 
 static void

@@ -821,6 +821,7 @@ void wasm_write_instr_count(uint32_t lo, uint32_t hi) {
 // --- CPU + DMA profiler ---
 
 extern int  g_wprofActive;
+extern int  g_wprofMarkersAllowed;
 extern void wasm_profile_prepare_align(void);
 extern void wasm_profile_prepare(int numFrames);
 extern void wasm_profile_finish(int numFrames);
@@ -1003,28 +1004,32 @@ int wasm_profile_start(int numFrames)
     g_wprofThumbW = 0; // recomputed from frame 0 on the first wasm_profile_save_thumbnail call
     g_wprofThumbH = 0;
 
-    // Discard one throwaway frame's worth of data before the capture we actually keep.
-    // g_wprofActive/debug_dma just got armed above, but necessarily at an arbitrary raster
+    // debug_dma just got armed above (record_dma_reset(1)), but necessarily at an arbitrary raster
     // position (wherever the CPU happened to be) — there's no way to synchronously wait for the
-    // true frame boundary (vpos wrapping to 0) from C before arming. retro_run() itself can't be
-    // used for that either: it only returns once the CPU execution loop notices the
-    // libretro_frame_end flag, which — confirmed by direct instrumentation — happens a few
-    // scanlines *after* the true boundary, not at it. Arming synchronously right after a
-    // "priming" retro_run() call (the previous approach here) was therefore itself always a few
-    // lines late, silently missing genuinely-executed instructions at the very start of every
-    // capture's frame 0.
+    // true frame boundary (vpos wrapping to 0) from C first. retro_run() itself can't be used for
+    // that either: it only returns once the CPU execution loop notices the libretro_frame_end
+    // flag, which — confirmed by direct instrumentation — happens a few scanlines *after* the true
+    // boundary, not at it. g_wprofActive (CPU-sample recording) is therefore deliberately left off
+    // by wasm_profile_prepare() above (see g_wprofArmPending, puae_debug.c) rather than armed here
+    // too: it turns on exactly at the true boundary instead, from within
+    // puae_debug_frame_boundary_notify() (custom.c's precise per-frame hook, fired exactly when
+    // vpos wraps to 0), so wasm_profile_instrHook does none of its stack-walk/register-snapshot
+    // work for the throwaway period below — there's nothing to discard, because nothing gets
+    // recorded until the real boundary.
     //
-    // Instead: run one throwaway retro_run() call with recording already armed. Every such call
-    // spans at least one real vsync, so puae_debug_frame_boundary_notify() (custom.c's precise
-    // per-frame hook, fired exactly when vpos wraps to 0 — unlike retro_run()'s own return)
-    // fires during it and rewinds the profile buffer (g_wprofResetPending, puae_debug.c) right at
-    // that true boundary, discarding whatever accumulated before it. The DMA grid needs no
-    // equivalent rewind — record_dma_reset()'s double-buffer toggle already happens automatically
-    // at that same precise hsync_handler_post() point regardless of profiling, so by the time the
-    // *next* (real, counted) retro_run() call below finishes, the buffer it reads is already
-    // exactly bounded by two such true boundaries.
+    // One throwaway retro_run() call is still needed to reach that boundary in the first place:
+    // every such call spans at least one real vsync, guaranteeing puae_debug_frame_boundary_notify
+    // fires during it. The DMA grid needs no equivalent delay — record_dma_reset()'s double-buffer
+    // toggle already happens automatically at that same precise hsync_handler_post() point
+    // regardless of profiling, so by the time the *next* (real, counted) retro_run() call below
+    // finishes, the buffer it reads is already exactly bounded by two such true boundaries.
     libretro_frame_end = false;
     retro_run();
+    // Only after the throwaway call has fully returned is it safe to let true boundaries emit
+    // inter-frame markers — see g_wprofMarkersAllowed's comment (puae_debug.c) for why gating this
+    // matters even though a single throwaway call crossing more than one boundary has never been
+    // observed in practice.
+    g_wprofMarkersAllowed = 1;
 
     // Allocate per-frame DMA and copper storage.
     if (numFrames > 0) {
