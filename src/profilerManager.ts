@@ -402,6 +402,10 @@ export interface FrameCapture {
   model: IProfileModel;
   raw: RawCapture;
   combined?: IProfileModel;
+  // True iff this frame's pixels are byte-identical to the previous frame's — see
+  // wasm_profile_get_dup_ptr's comment in frontend_shim.c. Always false for frame 0 and for
+  // single-frame captures (no previous frame to compare against).
+  duplicateOfPrevious?: boolean;
 }
 
 // Pure transform: RawCapture + SourceMap → IProfileModel (+ the decoded samples, retained
@@ -920,6 +924,18 @@ export class ProfilerManager {
           console.warn("[profiler] full-frame batch capture failed:", e);
         }
 
+        // One byte per frame (0/1): pixel-identical to the previous frame — lets the filmstrip
+        // flag repeated frames (e.g. to read off an effect's real update rate when it runs
+        // slower than the display refresh rate). Compared in C on the full-resolution capture
+        // (see wasm_profile_get_dup_ptr's comment), not re-derived here from the JPEGs above.
+        let dupBytes: Uint8Array = new Uint8Array(0);
+        try {
+          const dupRes = await rpc.sendRpcCommand("getProfileFrameDups", undefined, 30000 * numFrames);
+          dupBytes = dupRes.data instanceof Uint8Array ? dupRes.data : new Uint8Array(0);
+        } catch (e) {
+          console.warn("[profiler] frame-duplicate flags fetch failed:", e);
+        }
+
         // Same generous, numFrames-scaled budget as startProfiling — this buffer holds all N
         // frames' per-instruction sample streams concatenated, so its transfer time scales
         // with numFrames just like the capture itself.
@@ -1084,7 +1100,7 @@ export class ProfilerManager {
             model.disassembly = attachDisassembly(raw.disassembly, sourceMap);
           }
 
-          frames.push({ model, raw });
+          frames.push({ model, raw, duplicateOfPrevious: dupBytes[fi] === 1 });
         }
       }
     } finally {

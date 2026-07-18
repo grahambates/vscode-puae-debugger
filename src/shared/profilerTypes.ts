@@ -277,6 +277,10 @@ export const REG_USP = 18;
 export interface CaptureFrameInfo {
   model: IProfileModel;
   bulkUri?: string;
+  // True iff this frame's pixels are byte-identical to the previous frame's (always false for
+  // frame 0). Lets the filmstrip flag repeated frames, e.g. to read off an effect's real update
+  // rate when it runs slower than the display refresh rate.
+  duplicateOfPrevious?: boolean;
 }
 
 export interface CaptureResultMessage {

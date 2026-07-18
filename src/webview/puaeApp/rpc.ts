@@ -1325,6 +1325,15 @@ export function setupRpcDispatcher(
           return Promise.all(encodes);
         });
         break;
+      // One byte per captured frame (0/1): whether it's pixel-identical to the frame before
+      // it (see wasm_profile_get_dup_ptr's comment in frontend_shim.c). NULL/count 0 when the
+      // capture allocated no per-frame storage.
+      case "getProfileFrameDups": {
+        const count = M._wasm_profile_get_frame_count();
+        const ptr = M._wasm_profile_get_dup_ptr();
+        rpcRequest(() => ({ data: ptr && count > 0 ? readWasmBuffer(ptr, count) : new Uint8Array(0) }));
+        break;
+      }
       // Per-frame DMA grid from the multi-frame profile loop â€” serialized in C right after
       // each retro_run() while the toggle buffer still holds that frame's data.
       case "getDmaFrame": {

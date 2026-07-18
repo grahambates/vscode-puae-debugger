@@ -104,6 +104,9 @@ export interface PuaeRpcProtocol {
   getFramebuffer: { args: undefined; result: RpcFramebuffer };
   getProfileFullFrameBatch: { args: undefined; result: RpcFramebuffer[] };
   getProfileThumbBatch: { args: undefined; result: RpcFramebuffer[] };
+  // One byte per captured frame (0/1) — whether that frame is byte-identical to the one
+  // before it. See wasm_profile_get_dup_ptr's comment in frontend_shim.c.
+  getProfileFrameDups: { args: undefined; result: RpcBinaryData };
   getDmaFrame: { args: { frameIdx: number }; result: RpcBinaryData };
   getDmaEventsFrame: { args: { frameIdx: number }; result: RpcBinaryData };
   getCopperFrame: { args: { frameIdx: number }; result: RpcBinaryData };

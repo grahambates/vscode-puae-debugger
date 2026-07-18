@@ -31,6 +31,9 @@ interface FrameInfo {
   thumbUrl?: string;     // blob: URL of the small filmstrip JPEG
   fullFrameUrl?: string; // blob: URL of the full-resolution JPEG (for hover-to-enlarge)
   dmaBar?: Array<{ color: string; flex: number }>; // precomputed stacked bar segments
+  // True iff this frame's pixels are byte-identical to the previous frame's — flagged in the
+  // filmstrip so a slower-than-refresh-rate effect's real update rate is visible at a glance.
+  duplicateOfPrevious?: boolean;
 }
 
 // Compute stacked DMA bar segments from a frame's owner array (BusOwner ordinals).
@@ -225,7 +228,8 @@ export function App() {
         // Fetch all frame bulk blobs in parallel, then update state once all are ready.
         const framePromises = m.frames.map((fi) => {
           const base = symbolsRef.current ? { ...fi.model, symbols: symbolsRef.current } : fi.model;
-          if (!fi.bulkUri) return Promise.resolve({ model: base });
+          const duplicateOfPrevious = fi.duplicateOfPrevious;
+          if (!fi.bulkUri) return Promise.resolve({ model: base, duplicateOfPrevious });
           return fetch(fi.bulkUri)
             .then((r) => r.arrayBuffer())
             .then((buf) => {
@@ -240,21 +244,37 @@ export function App() {
               if (fullFrame) {
                 fullFrameUrl = URL.createObjectURL(new Blob([fullFrame.data.buffer as ArrayBuffer], { type: "image/jpeg" }));
               }
-              return { model: { ...base, dma, dmaSnapshot, copper, registers } as IProfileModel, thumbUrl, fullFrameUrl, dmaBar: computeDmaBar(dma?.owner) };
+              return { model: { ...base, dma, dmaSnapshot, copper, registers } as IProfileModel, thumbUrl, fullFrameUrl, dmaBar: computeDmaBar(dma?.owner), duplicateOfPrevious };
             })
             .catch((e) => {
               console.warn("[profiler] bulk fetch failed:", e);
-              return { model: base }; // render without DMA rather than nothing
+              return { model: base, duplicateOfPrevious }; // render without DMA rather than nothing
             });
         });
 
         Promise.all(framePromises)
           .then((results) => {
             const newFrames: FrameInfo[] = results;
+            // A duplicate frame's own thumbnail/full-frame JPEGs are (deterministically)
+            // byte-identical to the previous frame's — reuse that frame's blob URLs instead of
+            // holding a second live Blob for pixel data that's already showing on screen.
+            for (let i = 1; i < newFrames.length; i++) {
+              if (!newFrames[i].duplicateOfPrevious) continue;
+              if (newFrames[i].thumbUrl && newFrames[i - 1].thumbUrl) {
+                URL.revokeObjectURL(newFrames[i].thumbUrl!);
+                newFrames[i].thumbUrl = newFrames[i - 1].thumbUrl;
+              }
+              if (newFrames[i].fullFrameUrl && newFrames[i - 1].fullFrameUrl) {
+                URL.revokeObjectURL(newFrames[i].fullFrameUrl!);
+                newFrames[i].fullFrameUrl = newFrames[i - 1].fullFrameUrl;
+              }
+            }
             // Track all blob URLs for revocation — both small thumbnails and full frames.
-            prevThumbUrlsRef.current = newFrames.flatMap((f) =>
+            // (De-duped via Set: reused URLs above would otherwise appear multiple times, which
+            // is harmless for revokeObjectURL but pointless.)
+            prevThumbUrlsRef.current = [...new Set(newFrames.flatMap((f) =>
               [f.thumbUrl, f.fullFrameUrl].filter(Boolean) as string[]
-            );
+            ))];
             setFrames(newFrames);
             setFrameIndex(0);
             setSelectedRange(null);
@@ -616,7 +636,7 @@ export function App() {
                     <button
                       key={i}
                       className={"filmstrip-frame" + (inRange ? " active" : "")}
-                      title={`Frame ${i + 1}${frames.length > 1 ? " (Shift-click to select a range)" : ""}`}
+                      title={`Frame ${i + 1}${f.duplicateOfPrevious ? " — identical to previous frame" : ""}${frames.length > 1 ? " (Shift-click to select a range)" : ""}`}
                       role="option"
                       aria-selected={inRange}
                       onClick={(e) => {
@@ -642,6 +662,7 @@ export function App() {
                       {f.thumbUrl
                         ? <img src={f.thumbUrl} alt={`Frame ${i + 1}`} />
                         : <span className="filmstrip-no-thumb">{i + 1}</span>}
+                      {f.duplicateOfPrevious && <span className="dup-badge" aria-hidden="true">=</span>}
                       <div className="dma-bar" aria-hidden="true">
                         {f.dmaBar?.map((s, si) => <div key={si} style={{ background: s.color, flex: s.flex }} />)}
                       </div>

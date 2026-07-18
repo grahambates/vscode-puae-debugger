@@ -947,12 +947,23 @@ static uint8_t *g_wprofFullFrames = NULL; /* [frameCount][W×H×4], contiguous *
 static unsigned  g_wprofFullFrameW = 0;
 static unsigned  g_wprofFullFrameH = 0;
 
+// Per-frame "identical to the previous frame" flag (1 byte each, 0/1) — lets the filmstrip UI
+// flag repeated frames, e.g. to read off an effect's real update rate when it runs slower than
+// the display refresh rate. Compared on the full-resolution RGBA capture (byte-exact, not the
+// downscaled/lossy-JPEG thumbnail) right after it's copied into g_wprofFullFrames below, so it's
+// an exact pixel comparison, not an approximation. Frame 0 is never a duplicate (no earlier frame
+// in this capture to compare against). Allocated/freed alongside the other per-frame buffers.
+static uint8_t *g_wprofFrameDup = NULL; /* [frameCount], 1 = identical to frame N-1 */
+
 EMSCRIPTEN_KEEPALIVE unsigned    wasm_profile_get_fullframe_w(void)    { return g_wprofFullFrameW; }
 EMSCRIPTEN_KEEPALIVE unsigned    wasm_profile_get_fullframe_h(void)    { return g_wprofFullFrameH; }
 EMSCRIPTEN_KEEPALIVE const void *wasm_profile_get_fullframe_ptr(int fi) {
     if (!g_wprofFullFrames || fi < 0 || fi >= g_wprofThumbCount) return (void *)0;
     return g_wprofFullFrames + (size_t)fi * g_wprofFullFrameW * g_wprofFullFrameH * 4u;
 }
+// Flat [frameCount] byte array, one entry per captured frame (0/1) — see g_wprofFrameDup's
+// comment above. NULL if the capture allocated no per-frame storage (numFrames <= 0).
+EMSCRIPTEN_KEEPALIVE const void *wasm_profile_get_dup_ptr(void) { return g_wprofFrameDup; }
 
 // Runs numFrames PAL/NTSC frames, sampling CPU call stacks and DMA slots.
 // For N>1, emits a WASM_PROFILE_FRAME_MARKER sentinel between consecutive frames in the
@@ -970,6 +981,7 @@ int wasm_profile_start(int numFrames)
     free(g_wprofFullFrames); g_wprofFullFrames = NULL;
     free(g_wprofCopperAll);   g_wprofCopperAll   = NULL;
     free(g_wprofCopperSizes); g_wprofCopperSizes = NULL;
+    free(g_wprofFrameDup);   g_wprofFrameDup   = NULL;
     g_wprofDmaCount    = 0;
     g_wprofCopperCount = 0;
     g_wprofFullFrameW  = 0;
@@ -996,6 +1008,10 @@ int wasm_profile_start(int numFrames)
         g_wprofEvtAll    = (uint8_t *)malloc((size_t)numFrames * WASM_EVT_FRAME_BYTES);
         g_wprofCopperAll   = (uint8_t *)malloc((size_t)numFrames * WASM_COPPER_FRAME_MAX_BYTES);
         g_wprofCopperSizes = (uint32_t *)calloc((size_t)numFrames, sizeof(uint32_t));
+        // calloc, not malloc: frame 0 is left at its zero default (never a duplicate) rather
+        // than set explicitly below, and any frame the fw/fh-mismatch guard skips stays a safe
+        // "not a duplicate" rather than leaking uninitialized bytes.
+        g_wprofFrameDup    = (uint8_t *)calloc((size_t)numFrames, 1);
     }
 
     int target = (int)g_frame_count + numFrames;
@@ -1019,6 +1035,14 @@ int wasm_profile_start(int numFrames)
                 if (g_wprofFullFrames && fw == g_wprofFullFrameW && fh == g_wprofFullFrameH) {
                     memcpy(g_wprofFullFrames + (size_t)framesDone * fw * fh * 4u,
                            g_rgba_buf, (size_t)fw * fh * 4u);
+                    // Exact byte comparison against the previous frame — see g_wprofFrameDup's
+                    // comment. Frame 0 has no earlier frame this capture to compare against, so
+                    // it keeps its calloc'd default of "not a duplicate".
+                    if (g_wprofFrameDup && framesDone > 0) {
+                        const uint8_t *prev = g_wprofFullFrames + (size_t)(framesDone - 1) * fw * fh * 4u;
+                        const uint8_t *cur  = g_wprofFullFrames + (size_t)framesDone * fw * fh * 4u;
+                        g_wprofFrameDup[framesDone] = memcmp(prev, cur, (size_t)fw * fh * 4u) == 0;
+                    }
                 }
             }
         }
