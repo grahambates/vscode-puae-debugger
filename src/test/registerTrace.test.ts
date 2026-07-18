@@ -43,7 +43,7 @@ describe("profileFormat codec with a register trace", () => {
       profile: { data: new Uint8Array([1, 0, 0, 0]), start: 0, end: 0, total: 0, inRange: 0, frameCycles: 0, isPAL: true },
       registers: packRegs(new Array(REG_COUNT).fill(0).map((_, i) => i + 1)),
     };
-    const { raw: out } = decodeCapture(encodeCapture(raw));
+    const { raws: [out] } = decodeCapture(encodeCapture([raw]));
     expect(Array.from(out.registers!)).toEqual(Array.from(raw.registers!));
   });
 
@@ -51,7 +51,7 @@ describe("profileFormat codec with a register trace", () => {
     const raw: RawCapture = {
       profile: { data: new Uint8Array([1, 0, 0, 0]), start: 0, end: 0, total: 0, inRange: 0, frameCycles: 0, isPAL: true },
     };
-    const { raw: out } = decodeCapture(encodeCapture(raw));
+    const { raws: [out] } = decodeCapture(encodeCapture([raw]));
     expect(out.registers).toBeUndefined();
   });
 });

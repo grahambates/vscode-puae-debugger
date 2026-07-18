@@ -208,7 +208,7 @@ describe("profileFormat codec with disassembly", () => {
   });
 
   it("round-trips raw.disassembly through encode/decode", () => {
-    const { raw: out } = decodeCapture(encodeCapture(sampleRaw()));
+    const { raws: [out] } = decodeCapture(encodeCapture([sampleRaw()]));
     expect(out.disassembly).toEqual(sampleRaw().disassembly);
   });
 
@@ -216,7 +216,7 @@ describe("profileFormat codec with disassembly", () => {
     const raw: RawCapture = {
       profile: { data: new Uint8Array([1, 0, 0, 0]), start: 0, end: 0, total: 0, inRange: 0, frameCycles: 0, isPAL: true },
     };
-    const { raw: out } = decodeCapture(encodeCapture(raw));
+    const { raws: [out] } = decodeCapture(encodeCapture([raw]));
     expect(out.disassembly).toBeUndefined();
   });
 });

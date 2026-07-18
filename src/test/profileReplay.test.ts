@@ -16,7 +16,7 @@ describe("replay template.puaeprofile", () => {
   const file = readFileSync(FIXTURE);
 
   it("decodes a complete, relocation-bearing bundle", () => {
-    const { raw, elf, manifest } = decodeCapture(file);
+    const { raws: [raw], elf, manifest } = decodeCapture(file);
     expect(manifest.version).toBe(1);
     expect(elf && elf.length).toBeGreaterThan(0);
     expect(manifest.program.elfEmbedded).toBe(true);
@@ -26,7 +26,8 @@ describe("replay template.puaeprofile", () => {
   });
 
   it("rebuilds the model with symbolicated + inlined frames (extension layer)", () => {
-    const { model, manifest } = loadProfile(file);
+    const { frames, manifest } = loadProfile(file);
+    const model = frames[0].model;
     const names = model.locations.map((l) => l.callFrame.functionName);
 
     expect(model.locations.length).toBeGreaterThan(10);
@@ -46,7 +47,8 @@ describe("replay template.puaeprofile", () => {
   });
 
   it("turns the model into columns + a CPU/DMA top-down tree (webview layer)", () => {
-    const { model } = loadProfile(file);
+    const { frames } = loadProfile(file);
+    const model = frames[0].model;
 
     const columns = buildColumns(model);
     expect(columns.length).toBeGreaterThan(0);
@@ -62,5 +64,54 @@ describe("replay template.puaeprofile", () => {
     const groups = Object.values(createTopDownGraph(model).children).map((n) => n.callFrame.functionName);
     expect(groups).toContain("CPU");
     expect(groups).toContain("DMA");
+  });
+});
+
+// A 2-frame document built from the same real captured bytes as template.puaeprofile (frame 1 is
+// a duplicate of frame 0, minus its own disassembly/registers — matching what a live multi-frame
+// capture actually stores for frames 1..N-1, see buildFramesFromCaptures). Real profile-stream/
+// DMA-grid/copper bytes for both frames, so decodeProfileStream/decodeDmaGrid/symbolication all
+// run against genuine data, not hand-crafted mocks — just exercising the save/load round trip
+// with more than one frame present.
+const MULTI_FIXTURE = path.join(__dirname, "fixtures/profiles/template-multiframe.puaeprofile");
+
+describe("replay template-multiframe.puaeprofile", () => {
+  const file = readFileSync(MULTI_FIXTURE);
+
+  it("decodes both frames independently", () => {
+    const { raws, manifest } = decodeCapture(file);
+    expect(manifest.frameCount).toBe(2);
+    expect(raws).toHaveLength(2);
+    expect(raws[0].dma?.length).toBe(DMA_HPOS * DMA_VPOS * 8);
+    expect(raws[1].dma?.length).toBe(DMA_HPOS * DMA_VPOS * 8);
+    // Only frame 0 could ever persist real disassembly — this particular fixture's capture
+    // has none (see the single-frame replay above, which doesn't assert on it either), so
+    // frame 1 has none too. profileFormat.test.ts's synthetic multi-frame test covers the
+    // actual reweighting mechanic with a fixture that does carry disassembly.
+    expect(raws[1].disassembly).toBeUndefined();
+  });
+
+  it("rebuilds both frames independently", () => {
+    const { frames } = loadProfile(file);
+    expect(frames).toHaveLength(2);
+
+    for (const f of frames) {
+      const names = f.model.locations.map((l) => l.callFrame.functionName);
+      expect(names[0]).toBe("(all)");
+      expect(f.model.dma?.owner.length).toBe(DMA_HPOS * DMA_VPOS);
+    }
+    expect(frames[1].raw.disassembly).toBeUndefined();
+  });
+
+  it("attaches a combined all-frames model to frame 0", () => {
+    const { frames } = loadProfile(file);
+    const combined = frames[0].combined;
+    expect(combined).toBeDefined();
+    // Both frames' samples concatenated — roughly double frame 0's duration alone.
+    expect(combined!.samples.length).toBeGreaterThan(frames[0].model.samples.length);
+    expect(combined!.symbols).toEqual(frames[0].model.symbols);
+
+    const columns = buildColumns(combined!);
+    expect(columns.length).toBeGreaterThan(0);
   });
 });

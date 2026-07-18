@@ -1,8 +1,8 @@
-// Loads a .puaeprofile into an IProfileModel — the file-side counterpart of a live
-// capture. Reconstructs the exact SourceMap the capture used (from the embedded ELF +
-// the manifest's relocation), then runs the same buildModelFromCapture as live capture.
-// Pure (no vscode/fs): the CustomEditor provider passes in the file bytes, and the replay
-// tests call it directly.
+// Loads a .puaeprofile into FrameCapture[] — the file-side counterpart of a live capture.
+// Reconstructs the exact SourceMap the capture used (from the embedded ELF + the manifest's
+// relocation), then runs the same buildFramesFromCaptures as ProfilerManager.capture() does for
+// its live multi-frame path. Pure (no vscode/fs): the CustomEditor provider passes in the file
+// bytes, and the replay tests call it directly.
 
 import { parseDwarf } from "./dwarfParser";
 import { parseHunks } from "./amigaHunkParser";
@@ -11,8 +11,7 @@ import { sourceMapFromHunks } from "./amigaHunkSourceMap";
 import { SourceMap } from "./sourceMap";
 import { kickstartSymbolModuleBySha1 } from "./kickstart";
 import { decodeCapture, ProfileManifest } from "./profileFormat";
-import { buildModelFromCapture, RawCapture } from "./profilerManager";
-import { IProfileModel } from "./shared/profilerTypes";
+import { buildFramesFromCaptures, FrameCapture, InstructionSample } from "./profilerManager";
 
 const ELF_MAGIC = [0x7f, 0x45, 0x4c, 0x46]; // \x7fELF
 
@@ -36,13 +35,18 @@ export function buildSourceMapFromBundle(program: Uint8Array, manifest: ProfileM
   return sourceMap;
 }
 
-export function loadProfile(file: Uint8Array): { model: IProfileModel; raw: RawCapture; manifest: ProfileManifest } {
-  const { raw, elf, manifest } = decodeCapture(file);
+// Returns every captured frame (one-element array for a single-frame capture, matching a live
+// capture's own return shape) — frames[0].combined carries the all-frames-combined model when
+// there's more than one, exactly as ProfilerManager.capture() attaches it. frameSamples[i]
+// (parallel to frames[i]) + sourceMap let the caller resolve "computeRange" sub-selections the
+// same way a live capture session does (see profilerManager.buildFrameRangeModel).
+export function loadProfile(file: Uint8Array): { frames: FrameCapture[]; frameSamples: InstructionSample[][]; sourceMap: SourceMap; manifest: ProfileManifest } {
+  const { raws, elf, manifest } = decodeCapture(file);
   if (!elf) {
     // The path+sha1 fallback (load the ELF from disk) is a future addition for the UI.
     throw new Error("This .puaeprofile has no embedded program; loading by path isn't supported yet.");
   }
   const sourceMap = buildSourceMapFromBundle(elf, manifest);
-  const { model } = buildModelFromCapture(raw, sourceMap);
-  return { model, raw, manifest };
+  const { frames, frameSamples } = buildFramesFromCaptures(raws, sourceMap);
+  return { frames, frameSamples, sourceMap, manifest };
 }

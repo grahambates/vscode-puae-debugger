@@ -203,6 +203,8 @@ describe("Kickstart symbols", () => {
         relocation: { segmentOffsets: new Array(sectionCount).fill(0), baseDir: "" },
         kickstart: { sha1, name: "" },
         sections: [],
+        frameCount: 1,
+        frameImages: [{}],
       };
     }
 

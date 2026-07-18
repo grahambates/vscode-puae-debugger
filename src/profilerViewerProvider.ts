@@ -23,6 +23,7 @@ export class ProfilerViewerProvider {
   // without advancing the emulator (a reload resets webview state, not the extension host).
   private lastFrames: FrameCapture[] = [];
   private lastBulkUris: string[] = [];
+  private lastBulkFileUris: vscode.Uri[] = []; // parallel to lastBulkUris, for cleanup on reset
   // Everything Save needs, grabbed at capture time while the debug session is live.
   private lastSaveData?: { elf: Uint8Array; programName: string; segmentOffsets: number[]; baseDir: string; kickstart: { sha1: string; name: string } };
   private lastSaveAdapter?: DebugAdapter;
@@ -51,35 +52,17 @@ export class ProfilerViewerProvider {
   }
 
   private resetCapture(): void {
-    for (let i = 0; i < this.lastBulkUris.length; i++) {
-      void vscode.workspace.fs.delete(this.bulkFileUri(i)).then(undefined, () => undefined);
+    for (const fileUri of this.lastBulkFileUris) {
+      void vscode.workspace.fs.delete(fileUri).then(undefined, () => undefined);
     }
     this.lastFrames = [];
     this.lastBulkUris = [];
+    this.lastBulkFileUris = [];
     this.symbolsSent = false;
     this.lastSaveData = undefined;
     this.lastSaveAdapter = undefined;
     this.codeLens?.clear();
     this.lineDecorations?.clear();
-  }
-
-  private bulkFileUri(index: number): vscode.Uri {
-    return vscode.Uri.joinPath(this.storageUri, `profiler-live-bulk-${index}.bin`);
-  }
-
-  private async writeAllBulks(frames: FrameCapture[]): Promise<string[]> {
-    if (!this.panel) return [];
-    await vscode.workspace.fs.createDirectory(this.storageUri);
-    const v = Date.now();
-    const uris: string[] = [];
-    for (let i = 0; i < frames.length; i++) {
-      const bytes = packBulk(frames[i].raw);
-      if (!bytes) { uris.push(""); continue; }
-      const fileUri = this.bulkFileUri(i);
-      await vscode.workspace.fs.writeFile(fileUri, bytes);
-      uris.push(`${this.panel.webview.asWebviewUri(fileUri)}?v=${v}`);
-    }
-    return uris;
   }
 
   // Reveals the panel and asks the webview to jump to the next execution of a source line,
@@ -146,26 +129,8 @@ export class ProfilerViewerProvider {
   }
 
   private postResult(frames: FrameCapture[], bulkUris: string[]): void {
-    const result: CaptureFrameInfo[] = frames.map((f, i) => {
-      const stripped: IProfileModel = { ...f.model, dma: undefined, dmaSnapshot: undefined, registers: undefined };
-      // Symbols are session-constant — include only on the first post per webview mount.
-      if (i === 0 && !this.symbolsSent) {
-        if (f.model.symbols) this.symbolsSent = true;
-      } else {
-        stripped.symbols = undefined;
-      }
-      return { model: stripped, bulkUri: bulkUris[i] || undefined, duplicateOfPrevious: f.duplicateOfPrevious };
-    });
-    // Include the combined model when present (multi-frame captures only).
-    // Strip per-frame data (DMA/copper/registers) — combined view shows CPU/time data only.
-    let combinedModel: IProfileModel | undefined;
-    if (frames[0]?.combined) {
-      const c = frames[0].combined;
-      combinedModel = { ...c, dma: undefined, dmaSnapshot: undefined, registers: undefined };
-      // Symbols are already on the combined model (copied from frame 0 in profilerManager);
-      // suppress them if we already sent them this session to avoid a redundant transfer.
-      if (this.symbolsSent) combinedModel.symbols = undefined;
-    }
+    const { frames: result, combinedModel, symbolsNowSent } = stripFramesForPost(frames, this.symbolsSent, bulkUris);
+    this.symbolsSent = symbolsNowSent;
     this.post({ command: "captureResult", frames: result, combinedModel });
   }
 
@@ -187,7 +152,14 @@ export class ProfilerViewerProvider {
       this.codeLens?.update(frames[0].model);
       this.lineDecorations?.update(frames[0].model);
       await this.cacheSaveData();
-      this.lastBulkUris = await this.writeAllBulks(frames);
+      if (this.panel) {
+        const { uris, fileUris } = await writeBulkFiles(this.storageUri, this.panel.webview, frames, (i) => `profiler-live-bulk-${i}.bin`);
+        this.lastBulkUris = uris;
+        this.lastBulkFileUris = fileUris;
+      } else {
+        this.lastBulkUris = [];
+        this.lastBulkFileUris = [];
+      }
       this.postResult(frames, this.lastBulkUris);
     } catch (error) {
       this.post({
@@ -221,8 +193,8 @@ export class ProfilerViewerProvider {
   }
 
   private async saveProfile(): Promise<void> {
-    const raw = this.manager.getLastRaw();
-    if (!raw) {
+    const raws = this.manager.getAllRaw();
+    if (!raws) {
       vscode.window.showWarningMessage("Profiler: nothing to save yet — capture a frame first.");
       return;
     }
@@ -244,7 +216,7 @@ export class ProfilerViewerProvider {
     if (!target) return;
 
     try {
-      const buf = encodeCapture(raw, {
+      const buf = encodeCapture(raws, {
         elf: save.elf,
         programName: save.programName,
         capturedAt: Date.now(),
@@ -262,6 +234,67 @@ export class ProfilerViewerProvider {
     }
   }
 
+}
+
+// Writes one bulk blob (DMA grid + snapshot + JPEGs, see profilerBulk.ts) per frame to
+// `storageUri`, named by the caller-supplied `fileName` (so the live panel and the .puaeprofile
+// editor — which can have several tabs open at once — don't collide with each other's files).
+// Returns both the webview-fetchable URIs (for the captureResult/ready postMessage) and the
+// underlying file URIs (so the caller can delete them later, e.g. on panel/tab dispose).
+// Shared by the live panel and the .puaeprofile editor.
+export async function writeBulkFiles(
+  storageUri: vscode.Uri,
+  webview: vscode.Webview,
+  frames: FrameCapture[],
+  fileName: (frameIndex: number) => string,
+): Promise<{ uris: string[]; fileUris: vscode.Uri[] }> {
+  await vscode.workspace.fs.createDirectory(storageUri);
+  const v = Date.now();
+  const uris: string[] = [];
+  const fileUris: vscode.Uri[] = [];
+  for (let i = 0; i < frames.length; i++) {
+    const bytes = packBulk(frames[i].raw);
+    if (!bytes) { uris.push(""); continue; }
+    const fileUri = vscode.Uri.joinPath(storageUri, fileName(i));
+    await vscode.workspace.fs.writeFile(fileUri, bytes);
+    fileUris.push(fileUri);
+    uris.push(`${webview.asWebviewUri(fileUri)}?v=${v}`);
+  }
+  return { uris, fileUris };
+}
+
+// Strips per-frame data (DMA/copper/registers — fetched separately via bulkUri instead) from
+// every frame's model for the captureResult postMessage, and builds the combined-model payload
+// (multi-frame captures only). Symbols are session-constant, so they're included only once per
+// webview mount: `symbolsAlreadySent` gates that, and the caller should persist the returned
+// `symbolsNowSent` for the next call. Shared by the live panel and the .puaeprofile editor.
+export function stripFramesForPost(
+  frames: FrameCapture[],
+  symbolsAlreadySent: boolean,
+  bulkUris: string[],
+): { frames: CaptureFrameInfo[]; combinedModel?: IProfileModel; symbolsNowSent: boolean } {
+  let symbolsNowSent = symbolsAlreadySent;
+  const result: CaptureFrameInfo[] = frames.map((f, i) => {
+    const stripped: IProfileModel = { ...f.model, dma: undefined, dmaSnapshot: undefined, registers: undefined };
+    // Symbols are session-constant — include only on the first post per webview mount.
+    if (i === 0 && !symbolsAlreadySent) {
+      if (f.model.symbols) symbolsNowSent = true;
+    } else {
+      stripped.symbols = undefined;
+    }
+    return { model: stripped, bulkUri: bulkUris[i] || undefined, duplicateOfPrevious: f.duplicateOfPrevious };
+  });
+  // Include the combined model when present (multi-frame captures only).
+  // Strip per-frame data (DMA/copper/registers) — combined view shows CPU/time data only.
+  let combinedModel: IProfileModel | undefined;
+  if (frames[0]?.combined) {
+    const c = frames[0].combined;
+    combinedModel = { ...c, dma: undefined, dmaSnapshot: undefined, registers: undefined };
+    // Symbols are already on the combined model (copied from frame 0 in profilerManager);
+    // suppress them if we already sent them this session to avoid a redundant transfer.
+    if (symbolsNowSent) combinedModel.symbols = undefined;
+  }
+  return { frames: result, combinedModel, symbolsNowSent };
 }
 
 // Resolve a model-carried `file` path (as seen in ins.file / node.callFrame.url) to a URI:

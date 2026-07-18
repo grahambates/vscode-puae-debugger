@@ -4,10 +4,14 @@
 //   [ magic "PUAEPROF1" ][ u32 LE manifestLen ][ manifest: JSON utf8 ][ section bytes… ]
 //
 // The manifest indexes the raw binary sections (offsets relative to the section blob). This
-// stores the *raw* capture (RawCapture) plus the program ELF, not the built model — so it's
-// compact (binary, gzip), and re-symbolicates on load via buildModelFromCapture, picking up
-// any later symbolication improvements. One document serves save/load, the dev fixture, and
-// the replay tests. See the design notes for the rationale (raw-not-model, embed-the-ELF).
+// stores the *raw* capture (RawCapture[], one per frame) plus the program ELF, not the built
+// model — so it's compact (binary, gzip), and re-symbolicates on load via buildModelFromCapture,
+// picking up any later symbolication improvements. One document serves save/load, the dev
+// fixture, and the replay tests. See the design notes for the rationale (raw-not-model,
+// embed-the-ELF).
+//
+// Stores every captured frame (section names prefixed "f0:", "f1:", ...) so a multi-frame
+// capture's Save button round-trips the whole filmstrip, not just frame 0.
 
 import { gzipSync, gunzipSync } from "zlib";
 import { createHash } from "crypto";
@@ -23,6 +27,9 @@ export interface ProfileManifest {
     elfSha1?: string; // sha1 of the embedded (or referenced) ELF, for the load-time fallback
     elfEmbedded: boolean;
   };
+  // Shared across every frame in the capture — a live multi-frame capture fetches these once
+  // (getProfileData) and copies them onto every frame's RawCapture.profile, so there's nothing
+  // frame-specific to store here even in a multi-frame document.
   meta: {
     capturedAt?: number; // ms since epoch (stamped by the caller; clock isn't available here)
     frameCycles: number; // 0 = emulator didn't report one
@@ -47,11 +54,17 @@ export interface ProfileManifest {
   // manifest (JSON, not a binary section) since it's naturally structured data, not a flat
   // buffer, and the whole container is gzipped anyway. Re-symbolicated (file/line) on load via
   // attachDisassembly, same as every other RawCapture field. Absent in pre-disassembly documents.
+  // Frame 0's only, like a live capture — later frames reweight it (see buildFramesFromCaptures).
   disassembly?: RawDisassembledFunction[];
+  // Number of captured frames.
+  frameCount: number;
+  // Per-frame thumbnail/full-frame JPEG dimensions, parallel to frameCount — byte lengths already
+  // live in `sections`, but width/height aren't recoverable from a JPEG's length alone.
+  frameImages: { thumbWidth?: number; thumbHeight?: number; fullWidth?: number; fullHeight?: number }[];
 }
 
 export interface DecodedCapture {
-  raw: RawCapture;
+  raws: RawCapture[]; // one per captured frame, in capture order
   elf?: Uint8Array; // present iff the document embedded the ELF
   manifest: ProfileManifest;
 }
@@ -70,17 +83,39 @@ function asBuffer(a: Uint8Array): Buffer {
   return Buffer.from(a.buffer, a.byteOffset, a.byteLength);
 }
 
-export function encodeCapture(raw: RawCapture, opts: EncodeOptions = {}): Buffer {
-  const sections: { name: string; bytes: Uint8Array }[] = [{ name: "profile", bytes: raw.profile.data }];
-  if (raw.dma) sections.push({ name: "dma", bytes: raw.dma });
+// One frame's binary sections, named with `prefix` (e.g. "f3:") so every frame's sections coexist
+// in the document's single flat section list without colliding.
+function frameSections(raw: RawCapture, prefix: string): { name: string; bytes: Uint8Array }[] {
+  const sections: { name: string; bytes: Uint8Array }[] = [{ name: `${prefix}profile`, bytes: raw.profile.data }];
+  if (raw.dma) sections.push({ name: `${prefix}dma`, bytes: raw.dma });
   if (raw.snapshot) {
-    sections.push({ name: "chip", bytes: raw.snapshot.chip });
-    sections.push({ name: "slow", bytes: raw.snapshot.slow });
-    sections.push({ name: "custom", bytes: raw.snapshot.custom });
+    sections.push({ name: `${prefix}chip`, bytes: raw.snapshot.chip });
+    sections.push({ name: `${prefix}slow`, bytes: raw.snapshot.slow });
+    sections.push({ name: `${prefix}custom`, bytes: raw.snapshot.custom });
+    if (raw.snapshot.agaColors) sections.push({ name: `${prefix}agaColors`, bytes: raw.snapshot.agaColors });
   }
-  if (raw.copper) sections.push({ name: "copper", bytes: raw.copper });
-  if (raw.dmaEvents) sections.push({ name: "dmaEvents", bytes: raw.dmaEvents });
-  if (raw.registers) sections.push({ name: "registers", bytes: raw.registers });
+  if (raw.copper) sections.push({ name: `${prefix}copper`, bytes: raw.copper });
+  if (raw.dmaEvents) sections.push({ name: `${prefix}dmaEvents`, bytes: raw.dmaEvents });
+  if (raw.registers) sections.push({ name: `${prefix}registers`, bytes: raw.registers });
+  if (raw.thumbnail) sections.push({ name: `${prefix}thumbnail`, bytes: raw.thumbnail.data });
+  if (raw.fullFrame) sections.push({ name: `${prefix}fullFrame`, bytes: raw.fullFrame.data });
+  return sections;
+}
+
+export function encodeCapture(raws: RawCapture[], opts: EncodeOptions = {}): Buffer {
+  if (raws.length === 0) throw new Error("encodeCapture: at least one frame is required");
+
+  const sections: { name: string; bytes: Uint8Array }[] = [];
+  const frameImages: ProfileManifest["frameImages"] = [];
+  raws.forEach((raw, i) => {
+    sections.push(...frameSections(raw, `f${i}:`));
+    frameImages.push({
+      thumbWidth: raw.thumbnail?.width,
+      thumbHeight: raw.thumbnail?.height,
+      fullWidth: raw.fullFrame?.width,
+      fullHeight: raw.fullFrame?.height,
+    });
+  });
   if (opts.elf) sections.push({ name: "elf", bytes: opts.elf });
 
   let offset = 0;
@@ -90,6 +125,7 @@ export function encodeCapture(raw: RawCapture, opts: EncodeOptions = {}): Buffer
     return entry;
   });
 
+  const first = raws[0];
   const manifest: ProfileManifest = {
     version: FORMAT_VERSION,
     program: {
@@ -99,17 +135,19 @@ export function encodeCapture(raw: RawCapture, opts: EncodeOptions = {}): Buffer
     },
     meta: {
       capturedAt: opts.capturedAt,
-      frameCycles: raw.profile.frameCycles,
-      isPAL: raw.profile.isPAL,
-      start: raw.profile.start,
-      end: raw.profile.end,
-      total: raw.profile.total,
-      inRange: raw.profile.inRange,
+      frameCycles: first.profile.frameCycles,
+      isPAL: first.profile.isPAL,
+      start: first.profile.start,
+      end: first.profile.end,
+      total: first.profile.total,
+      inRange: first.profile.inRange,
     },
     relocation: { segmentOffsets: opts.segmentOffsets ?? [], baseDir: opts.baseDir ?? "" },
     kickstart: opts.kickstart ?? { sha1: "", name: "" },
     sections: index,
-    disassembly: raw.disassembly,
+    disassembly: first.disassembly,
+    frameCount: raws.length,
+    frameImages,
   };
 
   const manifestJson = Buffer.from(JSON.stringify(manifest), "utf8");
@@ -125,8 +163,9 @@ export function encodeCapture(raw: RawCapture, opts: EncodeOptions = {}): Buffer
 // gzip's compression ratio is effectively unbounded (a few KB can expand to gigabytes), so cap
 // the decompressed size before any of the manifest/section bounds checks below get a chance to
 // run. Generous relative to any real capture (chip RAM tops out at 2MB, slow RAM ~1.8MB, plus a
-// DMA grid/copper trace/disassembly manifest that's still comfortably under this), but firmly
-// blocks a crafted small file from exhausting memory.
+// DMA grid/copper trace/disassembly manifest that's still comfortably under this per frame, times
+// however many frames a multi-frame capture stores), but firmly blocks a crafted small file from
+// exhausting memory.
 const MAX_DECOMPRESSED_BYTES = 256 * 1024 * 1024;
 
 export function decodeCapture(file: Uint8Array): DecodedCapture {
@@ -145,9 +184,6 @@ export function decodeCapture(file: Uint8Array): DecodedCapture {
   if (manifest.version !== FORMAT_VERSION) {
     throw new Error(`Unsupported .puaeprofile version ${manifest.version} (expected ${FORMAT_VERSION})`);
   }
-  // Normalize legacy files (pre-kickstart-field) to the empty sentinel here, at the decode boundary,
-  // so every consumer reads manifest.kickstart.sha1 without a guard.
-  manifest.kickstart ??= { sha1: "", name: "" };
   const blobStart = manifestStart + manifestLen;
 
   // Copy each section into its own ArrayBuffer (byteOffset 0) so downstream typed-array
@@ -162,29 +198,45 @@ export function decodeCapture(file: Uint8Array): DecodedCapture {
     return new Uint8Array(container.subarray(start, start + s.length));
   };
 
-  const profile = get("profile");
-  if (!profile) throw new Error(".puaeprofile is missing the required 'profile' section");
-  const chip = get("chip");
-  const slow = get("slow");
+  const raws: RawCapture[] = [];
+  for (let i = 0; i < manifest.frameCount; i++) {
+    const prefix = `f${i}:`;
+    const profile = get(`${prefix}profile`);
+    if (!profile) throw new Error(`.puaeprofile is missing the required '${prefix}profile' section`);
+    const chip = get(`${prefix}chip`);
+    const slow = get(`${prefix}slow`);
+    const images = manifest.frameImages[i];
+    const thumbBytes = get(`${prefix}thumbnail`);
+    const fullBytes = get(`${prefix}fullFrame`);
 
-  const raw: RawCapture = {
-    profile: {
-      data: profile,
-      start: manifest.meta.start,
-      end: manifest.meta.end,
-      total: manifest.meta.total,
-      inRange: manifest.meta.inRange,
-      frameCycles: manifest.meta.frameCycles,
-      isPAL: manifest.meta.isPAL,
-    },
-    dma: get("dma"),
-    // `custom` (the custom-register baseline) may be absent in pre-baseline documents;
-    // decodeCustomRegs() tolerates an empty array, so default it rather than dropping the snapshot.
-    snapshot: chip && slow ? { chip, slow, custom: get("custom") ?? new Uint8Array(0) } : undefined,
-    copper: get("copper"), // absent in pre-copper-trace documents
-    dmaEvents: get("dmaEvents"), // absent in pre-events documents
-    disassembly: manifest.disassembly, // absent in pre-disassembly documents
-    registers: get("registers"), // absent in pre-register-trace documents
-  };
-  return { raw, elf: get("elf"), manifest };
+    raws.push({
+      profile: {
+        data: profile,
+        start: manifest.meta.start,
+        end: manifest.meta.end,
+        total: manifest.meta.total,
+        inRange: manifest.meta.inRange,
+        frameCycles: manifest.meta.frameCycles,
+        isPAL: manifest.meta.isPAL,
+      },
+      dma: get(`${prefix}dma`),
+      // `custom` (the custom-register baseline) may be absent in pre-baseline documents;
+      // decodeCustomRegs() tolerates an empty array, so default it rather than dropping the snapshot.
+      snapshot: chip && slow ? { chip, slow, custom: get(`${prefix}custom`) ?? new Uint8Array(0), agaColors: get(`${prefix}agaColors`) } : undefined,
+      copper: get(`${prefix}copper`), // absent in pre-copper-trace documents
+      dmaEvents: get(`${prefix}dmaEvents`), // absent in pre-events documents
+      // Only frame 0 ever carries real disassembly (see ProfileManifest.disassembly's comment) —
+      // buildFramesFromCaptures reweights it onto frames 1..N-1 the same way a live capture does.
+      disassembly: i === 0 ? manifest.disassembly : undefined,
+      registers: get(`${prefix}registers`), // absent in pre-register-trace documents, or frames 1..N-1
+      thumbnail: thumbBytes && images?.thumbWidth && images?.thumbHeight
+        ? { data: thumbBytes, width: images.thumbWidth, height: images.thumbHeight }
+        : undefined,
+      fullFrame: fullBytes && images?.fullWidth && images?.fullHeight
+        ? { data: fullBytes, width: images.fullWidth, height: images.fullHeight }
+        : undefined,
+    });
+  }
+
+  return { raws, elf: get("elf"), manifest };
 }

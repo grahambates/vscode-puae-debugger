@@ -506,6 +506,83 @@ function reweightDisassembly(
   }));
 }
 
+// Build one combined model spanning every frame of a multi-frame capture, by re-running
+// buildProfileModel on all frames' InstructionSamples concatenated. Gives correct aggregate
+// node/location times and a single flame-graph timeline across the full capture — can't be done
+// in the webview because IProfileModel.samples holds call-tree node IDs local to each model's
+// own nodes[]. Returns undefined for a single-frame capture (nothing to combine). Shared between
+// ProfilerManager.capture()'s live multi-frame path and buildFramesFromCaptures' file-load path.
+export function combineFrames(frames: FrameCapture[], allSamples: InstructionSample[], sourceMap: SourceMap): IProfileModel | undefined {
+  if (frames.length <= 1) return undefined;
+  const avgCycles = frames.reduce((s, f) => s + f.model.cyclesPerMicroSecond, 0) / frames.length;
+  const combined = buildProfileModel(allSamples, sourceMap, avgCycles);
+  // Session-constant metadata lives on frame 0.
+  combined.symbols   = frames[0].model.symbols;
+  combined.lineTable = frames[0].model.lineTable;
+  combined.segments  = frames[0].model.segments;
+  if (frames[0].raw.disassembly?.length) {
+    const reweighted = reweightDisassembly(frames[0].raw.disassembly, allSamples);
+    combined.disassembly = attachDisassembly(reweighted, sourceMap);
+  }
+  return combined;
+}
+
+// Build a combined model for a sub-range [a, b] of frames (inclusive), given each frame's raw
+// InstructionSamples (frameSamples[i] parallels frames[i]). Used server-side in response to a
+// "computeRange" webview message (shift-click filmstrip selection) — shared by ProfilerManager's
+// live-session instance method and the file-editor's loaded-document counterpart.
+export function buildFrameRangeModel(
+  frames: FrameCapture[],
+  frameSamples: InstructionSample[][],
+  sourceMap: SourceMap,
+  range: [number, number],
+): IProfileModel | null {
+  const [a, b] = range;
+  if (a < 0 || b >= frameSamples.length || a > b) return null;
+  const samples: InstructionSample[] = [];
+  for (let i = a; i <= b; i++) samples.push(...frameSamples[i]);
+  if (!samples.length) return null;
+  const avgCycles = frames.slice(a, b + 1).reduce((s, f) => s + f.model.cyclesPerMicroSecond, 0) / (b - a + 1);
+  const model = buildProfileModel(samples, sourceMap, avgCycles);
+  model.symbols   = frames[0]?.model.symbols;
+  model.lineTable = frames[0]?.model.lineTable;
+  model.segments  = frames[0]?.model.segments;
+  if (frames[0]?.raw.disassembly?.length) {
+    const reweighted = reweightDisassembly(frames[0].raw.disassembly, samples);
+    model.disassembly = attachDisassembly(reweighted, sourceMap);
+  }
+  return model;
+}
+
+// Rebuild every frame of a capture from already-complete RawCapture data — no RPC/emulator
+// involved — the file-load counterpart of ProfilerManager.capture()'s live multi-frame loop.
+// Frame 0 carries its own real disassembly (persisted in the .puaeprofile manifest); later
+// frames have none of their own (matching what a live capture actually stores — see
+// profileFormat.ts), so they reuse frame 0's, reweighted to their own sample counts, exactly as
+// the live capture's multi-frame loop does for frames 1..N-1. frameSamples[i] (parallel to
+// frames[i]) is returned too, so the caller can support "computeRange" sub-selections the same
+// way a live ProfilerManager session does (see buildFrameRangeModel).
+export function buildFramesFromCaptures(raws: RawCapture[], sourceMap: SourceMap): { frames: FrameCapture[]; frameSamples: InstructionSample[][] } {
+  const frames: FrameCapture[] = [];
+  const frameSamples: InstructionSample[][] = [];
+  const allSamples: InstructionSample[] = [];
+  for (let i = 0; i < raws.length; i++) {
+    const raw = raws[i];
+    const { model, samples } = buildModelFromCapture(raw, sourceMap);
+    frameSamples.push(samples);
+    allSamples.push(...samples);
+    if (i > 0 && frames[0].raw.disassembly?.length) {
+      const reweighted = reweightDisassembly(frames[0].raw.disassembly, samples);
+      raw.disassembly = reweighted;
+      model.disassembly = attachDisassembly(reweighted, sourceMap);
+    }
+    frames.push({ model, raw });
+  }
+  const combined = combineFrames(frames, allSamples, sourceMap);
+  if (combined) frames[0] = { ...frames[0], combined };
+  return { frames, frameSamples };
+}
+
 // Disassemble a [startAddr, endAddr) range directly from snapshot memory using m68kdecode.
 // chipMem starts at address 0x000000; slowMem (Bogo RAM) starts at 0xC00000; fastMem (Zorro II
 // fast RAM) starts at fastAddr — unlike chip/slow, fast RAM's start address is autoconfig-
@@ -690,8 +767,10 @@ export class ProfilerManager {
   }
   private _lastSamples0: InstructionSample[] = [];
 
-  public getLastRaw(): RawCapture | undefined {
-    return this.lastFrames[0]?.raw;
+  // All frames' raw captures from the last capture, for the webview "Save" button to persist
+  // the whole multi-frame capture to a .puaeprofile (not just frame 0).
+  public getAllRaw(): RawCapture[] | undefined {
+    return this.lastFrames.length ? this.lastFrames.map((f) => f.raw) : undefined;
   }
 
   // Build a combined model for a sub-range [a, b] of captured frames (inclusive).
@@ -699,21 +778,7 @@ export class ProfilerManager {
   public buildRangeModel(range: [number, number]): IProfileModel | null {
     const sourceMap = this.getSourceMap();
     if (!sourceMap) return null;
-    const [a, b] = range;
-    if (a < 0 || b >= this._frameSamples.length || a > b) return null;
-    const samples: InstructionSample[] = [];
-    for (let i = a; i <= b; i++) samples.push(...this._frameSamples[i]);
-    if (!samples.length) return null;
-    const avgCycles = this.lastFrames.slice(a, b + 1).reduce((s, f) => s + f.model.cyclesPerMicroSecond, 0) / (b - a + 1);
-    const model = buildProfileModel(samples, sourceMap, avgCycles);
-    model.symbols   = this.lastFrames[0]?.model.symbols;
-    model.lineTable = this.lastFrames[0]?.model.lineTable;
-    model.segments  = this.lastFrames[0]?.model.segments;
-    if (this.lastFrames[0]?.raw.disassembly?.length) {
-      const reweighted = reweightDisassembly(this.lastFrames[0].raw.disassembly, samples);
-      model.disassembly = attachDisassembly(reweighted, sourceMap);
-    }
-    return model;
+    return buildFrameRangeModel(this.lastFrames, this._frameSamples, sourceMap, range);
   }
 
   // Capture `numFrames` independent single-frame profiles in sequence, each with its own
@@ -1118,23 +1183,8 @@ export class ProfilerManager {
       }
     }
 
-    // For multi-frame captures, build one combined model by re-running buildProfileModel on all
-    // frames' InstructionSamples concatenated. This gives correct aggregate node/location times
-    // and a single flame-graph timeline spanning the full capture. Can't be done in the webview
-    // because IProfileModel.samples holds call-tree node IDs local to each model's own nodes[].
-    if (numFrames > 1 && frames.length > 0) {
-      const avgCycles = frames.reduce((s, f) => s + f.model.cyclesPerMicroSecond, 0) / frames.length;
-      const combined = buildProfileModel(allSamples, sourceMap, avgCycles);
-      // Session-constant metadata lives on frame 0.
-      combined.symbols   = frames[0].model.symbols;
-      combined.lineTable = frames[0].model.lineTable;
-      combined.segments  = frames[0].model.segments;
-      if (frames[0].raw.disassembly?.length) {
-        const reweighted = reweightDisassembly(frames[0].raw.disassembly, allSamples);
-        combined.disassembly = attachDisassembly(reweighted, sourceMap);
-      }
-      frames[0] = { ...frames[0], combined };
-    }
+    const combined = combineFrames(frames, allSamples, sourceMap);
+    if (combined) frames[0] = { ...frames[0], combined };
 
     this.lastFrames = frames;
     return frames;

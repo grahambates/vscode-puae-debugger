@@ -1,23 +1,6 @@
-import { gzipSync, gunzipSync } from "zlib";
+import { gzipSync } from "zlib";
 import { encodeCapture, decodeCapture } from "../profileFormat";
 import type { RawCapture } from "../profilerManager";
-
-// Rebuild a container with the `kickstart` manifest field removed, simulating a legacy
-// (pre-kickstart-field) .puaeprofile so we can assert decode normalizes it to the sentinel.
-function stripKickstart(file: Buffer): Buffer {
-  const MAGIC = "PUAEPROF1";
-  const c = gunzipSync(file);
-  const manifestLen = c.readUInt32LE(MAGIC.length);
-  const start = MAGIC.length + 4;
-  const manifest = JSON.parse(c.toString("utf8", start, start + manifestLen));
-  delete manifest.kickstart;
-  const blob = c.subarray(start + manifestLen);
-  const json = Buffer.from(JSON.stringify(manifest), "utf8");
-  const header = Buffer.alloc(MAGIC.length + 4);
-  header.write(MAGIC, 0, "ascii");
-  header.writeUInt32LE(json.length, MAGIC.length);
-  return gzipSync(Buffer.concat([header, json, blob]));
-}
 
 function sampleRaw(withDma: boolean): RawCapture {
   const raw: RawCapture = {
@@ -50,8 +33,8 @@ describe("profileFormat codec", () => {
   it("round-trips a full capture (DMA + snapshot + embedded ELF)", () => {
     const raw = sampleRaw(true);
     const elf = new Uint8Array([0x7f, 0x45, 0x4c, 0x46, 1, 2, 3, 4]);
-    const { raw: out, elf: outElf, manifest } = decodeCapture(
-      encodeCapture(raw, {
+    const { raws: [out], elf: outElf, manifest } = decodeCapture(
+      encodeCapture([raw], {
         elf,
         programName: "a.elf",
         capturedAt: 1234,
@@ -73,6 +56,8 @@ describe("profileFormat codec", () => {
     eq(out.copper, raw.copper);
     eq(outElf, elf);
 
+    expect(manifest.version).toBe(1);
+    expect(manifest.frameCount).toBe(1);
     expect(manifest.program.name).toBe("a.elf");
     expect(manifest.program.elfEmbedded).toBe(true);
     expect(manifest.program.elfSha1).toMatch(/^[0-9a-f]{40}$/);
@@ -82,7 +67,7 @@ describe("profileFormat codec", () => {
 
   it("round-trips a profile-only capture (no DMA, no ELF)", () => {
     const raw = sampleRaw(false);
-    const { raw: out, elf, manifest } = decodeCapture(encodeCapture(raw));
+    const { raws: [out], elf, manifest } = decodeCapture(encodeCapture([raw]));
     eq(out.profile.data, raw.profile.data);
     expect(out.dma).toBeUndefined();
     expect(out.snapshot).toBeUndefined();
@@ -93,19 +78,75 @@ describe("profileFormat codec", () => {
     expect(manifest.kickstart).toEqual({ sha1: "", name: "" });
   });
 
-  it("normalizes a legacy file with no kickstart field to the empty sentinel", () => {
-    const legacy = stripKickstart(encodeCapture(sampleRaw(false)));
-    const { manifest } = decodeCapture(legacy);
-    expect(manifest.kickstart).toEqual({ sha1: "", name: "" });
+  it("round-trips raw.snapshot.agaColors", () => {
+    const raw = sampleRaw(true);
+    raw.snapshot!.agaColors = new Uint8Array([0x11, 0x22, 0x33, 0x44]);
+    const { raws: [out] } = decodeCapture(encodeCapture([raw]));
+    eq(out.snapshot!.agaColors, raw.snapshot!.agaColors);
   });
 
   it("yields fresh, 4-byte-alignable profile bytes (Uint32Array view works)", () => {
-    const { raw } = decodeCapture(encodeCapture(sampleRaw(false)));
+    const { raws: [raw] } = decodeCapture(encodeCapture([sampleRaw(false)]));
     expect(raw.profile.data.byteOffset).toBe(0);
     expect(() => new Uint32Array(raw.profile.data.buffer, 0, raw.profile.data.byteLength >>> 2)).not.toThrow();
   });
 
   it("throws on a non-puaeprofile payload", () => {
     expect(() => decodeCapture(gzipSync(Buffer.from("not a profile")))).toThrow(/bad magic/);
+  });
+
+  it("throws encoding zero frames", () => {
+    expect(() => encodeCapture([])).toThrow(/at least one frame/);
+  });
+});
+
+describe("profileFormat codec: multi-frame captures", () => {
+  it("round-trips every frame independently — no cross-contamination between frames", () => {
+    const raw0: RawCapture = {
+      ...sampleRaw(true),
+      disassembly: [
+        { address: 0x1000, name: "foo", instructions: [{ address: 0x1000, hex: "4e71", text: "nop", length: 2, hits: 1, cycles: 4 }] },
+      ],
+      thumbnail: { data: new Uint8Array([1, 2, 3]), width: 4, height: 5 },
+      fullFrame: { data: new Uint8Array([9, 9]), width: 10, height: 20 },
+    };
+    const raw1: RawCapture = {
+      profile: {
+        data: new Uint8Array([2, 0, 0, 0, 0x99, 0x99, 0x99, 0x99, 4, 0, 0, 0]),
+        start: 0x1000, end: 0x2000, total: 1234, inRange: 1000, frameCycles: 226_000, isPAL: true,
+      },
+      dma: new Uint8Array([9, 9, 9, 9, 9, 9, 9, 9]),
+      thumbnail: { data: new Uint8Array([4, 5, 6]), width: 4, height: 5 },
+    };
+
+    const { raws, manifest } = decodeCapture(encodeCapture([raw0, raw1]));
+
+    expect(manifest.version).toBe(1);
+    expect(manifest.frameCount).toBe(2);
+    expect(raws).toHaveLength(2);
+
+    eq(raws[0].profile.data, raw0.profile.data);
+    eq(raws[1].profile.data, raw1.profile.data);
+    eq(raws[0].dma, raw0.dma);
+    eq(raws[1].dma, raw1.dma);
+    expect(Array.from(raws[0].dma!)).not.toEqual(Array.from(raws[1].dma!));
+
+    // Only frame 0 persists real disassembly — later frames reweight it on load
+    // (see profilerManager.buildFramesFromCaptures), matching a live capture exactly.
+    expect(raws[0].disassembly).toEqual(raw0.disassembly);
+    expect(raws[1].disassembly).toBeUndefined();
+
+    eq(raws[0].thumbnail!.data, raw0.thumbnail!.data);
+    expect(raws[0].thumbnail!.width).toBe(4);
+    expect(raws[0].thumbnail!.height).toBe(5);
+    eq(raws[1].thumbnail!.data, raw1.thumbnail!.data);
+
+    eq(raws[0].fullFrame!.data, raw0.fullFrame!.data);
+    expect(raws[1].fullFrame).toBeUndefined(); // frame 1 never had one
+
+    // meta is shared across every frame — matches how a live multi-frame capture actually
+    // populates it (one getProfileData fetch, copied onto every frame's raw.profile).
+    expect(manifest.meta.start).toBe(raw0.profile.start);
+    expect(manifest.meta.frameCycles).toBe(raw0.profile.frameCycles);
   });
 });

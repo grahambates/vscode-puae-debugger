@@ -1,24 +1,26 @@
 import * as vscode from "vscode";
 import { loadProfile } from "./profileLoader";
-import { packBulk } from "./profilerBulk";
-import { getProfilerHtml, openProfilerSource, readProfilerSourceFile } from "./profilerViewerProvider";
+import { getProfilerHtml, openProfilerSource, readProfilerSourceFile, writeBulkFiles, stripFramesForPost } from "./profilerViewerProvider";
 import { ProfilerCodeLensProvider } from "./profilerCodeLensProvider";
 import { ProfilerLineDecorationProvider } from "./profilerLineDecorationProvider";
-import { ProfilerInboundMessage, IProfileModel } from "./shared/profilerTypes";
+import { ProfilerInboundMessage, IProfileModel, ComputeRangeMessage } from "./shared/profilerTypes";
+import { FrameCapture, InstructionSample, buildFrameRangeModel } from "./profilerManager";
+import { SourceMap } from "./sourceMap";
 
 /**
- * Read-only custom editor for .puaeprofile files: decodes the bundle, rebuilds the model
- * via loadProfile (same buildModelFromCapture path as a live capture), and hosts the
- * profiler webview in "file" mode (no Capture/Save). Registered as the default editor for
- * *.puaeprofile, so opening the file in the Explorer shows the profiler directly.
+ * Read-only custom editor for .puaeprofile files: decodes the bundle, rebuilds every captured
+ * frame's model via loadProfile (same buildFramesFromCaptures path as a live multi-frame
+ * capture), and hosts the profiler webview in "file" mode (no Capture/Save) — including the
+ * filmstrip when the saved document has more than one frame. Registered as the default editor
+ * for *.puaeprofile, so opening the file in the Explorer shows the profiler directly.
  *
- * Like the live panel, the bulk binary (DMA grid + snapshot) is shipped via a fetched temp
- * blob rather than postMessage (which is slow for large binary); only the small symbolicated
- * model crosses via postMessage.
+ * Like the live panel, each frame's bulk binary (DMA grid + snapshot + JPEGs) is shipped via a
+ * fetched temp blob rather than postMessage (which is slow for large binary); only the small
+ * symbolicated models cross via postMessage.
  */
 export class ProfileEditorProvider implements vscode.CustomReadonlyEditorProvider {
   public static readonly viewType = "puae-debugger.profileEditor";
-  private seq = 0; // unique temp-blob name per opened editor
+  private seq = 0; // unique temp-blob file prefix per opened editor (several tabs can be open at once)
 
   constructor(
     private readonly extensionUri: vscode.Uri,
@@ -41,42 +43,59 @@ export class ProfileEditorProvider implements vscode.CustomReadonlyEditorProvide
     };
     webviewPanel.webview.html = getProfilerHtml(webviewPanel.webview, this.extensionUri, "file");
 
-    // Build the model + write the bulk blob eagerly so both are ready when the webview signals
-    // "ready". Symbolication (DWARF) is Node-side, so the model is built here, not in the webview.
-    let model: IProfileModel | undefined;
-    let bulkUri: string | undefined;
+    // Build every frame's model + write its bulk blob eagerly so both are ready when the
+    // webview signals "ready". Symbolication (DWARF) is Node-side, so models are built here,
+    // not in the webview. frameSamples/sourceMap are kept around (not just frames) so a
+    // multi-frame document's filmstrip shift-click range selection ("computeRange") can be
+    // answered the same way a live capture session answers it.
+    let frames: FrameCapture[] | undefined;
+    let frameSamples: InstructionSample[][] = [];
+    let sourceMap: SourceMap | undefined;
+    let bulkUris: string[] = [];
     let loadError: string | undefined;
+    let symbolsSent = false; // symbols are session-constant — send them only in the first post
     try {
       const bytes = await vscode.workspace.fs.readFile(document.uri);
       const loaded = loadProfile(bytes);
-      model = loaded.model;
-      this.codeLens?.update(model);
-      this.lineDecorations?.update(model);
-      const blob = packBulk(loaded.raw);
-      if (blob) {
-        await vscode.workspace.fs.createDirectory(this.storageUri);
-        const fileUri = vscode.Uri.joinPath(this.storageUri, `profiler-editor-bulk-${this.seq++}.bin`);
-        await vscode.workspace.fs.writeFile(fileUri, blob);
-        webviewPanel.onDidDispose(() => {
+      frames = loaded.frames;
+      frameSamples = loaded.frameSamples;
+      sourceMap = loaded.sourceMap;
+      this.codeLens?.update(frames[0].model);
+      this.lineDecorations?.update(frames[0].model);
+
+      const mySeq = this.seq++;
+      const { uris, fileUris } = await writeBulkFiles(
+        this.storageUri,
+        webviewPanel.webview,
+        frames,
+        (i) => `profiler-editor-bulk-${mySeq}-${i}.bin`,
+      );
+      bulkUris = uris;
+      webviewPanel.onDidDispose(() => {
+        for (const fileUri of fileUris) {
           void vscode.workspace.fs.delete(fileUri).then(undefined, () => undefined);
-        });
-        bulkUri = `${webviewPanel.webview.asWebviewUri(fileUri)}?v=${this.seq}`;
-      }
+        }
+      });
     } catch (error) {
       loadError = error instanceof Error ? error.message : String(error);
     }
 
     webviewPanel.webview.onDidReceiveMessage((message: ProfilerInboundMessage) => {
       if (message.command === "ready") {
-        // Strip the big arrays — the webview fetches them via bulkUri.
-        if (model) {
-          webviewPanel.webview.postMessage({
-            command: "captureResult",
-            frames: [{ model: { ...model, dma: undefined, dmaSnapshot: undefined, registers: undefined }, bulkUri }],
-          });
+        if (frames) {
+          const { frames: result, combinedModel, symbolsNowSent } = stripFramesForPost(frames, symbolsSent, bulkUris);
+          symbolsSent = symbolsNowSent;
+          webviewPanel.webview.postMessage({ command: "captureResult", frames: result, combinedModel });
         } else {
           webviewPanel.webview.postMessage({ command: "showError", error: loadError ?? "Failed to load profile" });
         }
+      } else if (message.command === "computeRange") {
+        if (!frames || !sourceMap) return;
+        const model = buildFrameRangeModel(frames, frameSamples, sourceMap, (message as ComputeRangeMessage).range);
+        if (!model) return;
+        const stripped: IProfileModel = { ...model, dma: undefined, dmaSnapshot: undefined, registers: undefined };
+        if (symbolsSent) stripped.symbols = undefined;
+        webviewPanel.webview.postMessage({ command: "rangeResult", model: stripped });
       } else if (message.command === "openDocument") {
         void openProfilerSource(message.file, message.line, message.toSide);
       } else if (message.command === "readSourceFile") {
@@ -84,7 +103,7 @@ export class ProfileEditorProvider implements vscode.CustomReadonlyEditorProvide
           webviewPanel.webview.postMessage({ command: "sourceFile", file: message.file, lines });
         });
       }
-      // "capture"/"saveProfile" don't apply to a loaded file and are ignored.
+      // "capture"/"saveProfile"/"setNumFrames" don't apply to a loaded file and are ignored.
     });
   }
 }

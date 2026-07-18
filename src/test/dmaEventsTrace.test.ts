@@ -49,7 +49,7 @@ describe("profileFormat codec with DMA events", () => {
       profile: { data: new Uint8Array([1, 0, 0, 0]), start: 0, end: 0, total: 0, inRange: 0, frameCycles: 0, isPAL: true },
       dmaEvents: packEvents([0x20000000, 0]), // CPUSTOP, then nothing
     };
-    const { raw: out } = decodeCapture(encodeCapture(raw));
+    const { raws: [out] } = decodeCapture(encodeCapture([raw]));
     expect(Array.from(out.dmaEvents!)).toEqual(Array.from(raw.dmaEvents!));
   });
 
@@ -57,7 +57,7 @@ describe("profileFormat codec with DMA events", () => {
     const raw: RawCapture = {
       profile: { data: new Uint8Array([1, 0, 0, 0]), start: 0, end: 0, total: 0, inRange: 0, frameCycles: 0, isPAL: true },
     };
-    const { raw: out } = decodeCapture(encodeCapture(raw));
+    const { raws: [out] } = decodeCapture(encodeCapture([raw]));
     expect(out.dmaEvents).toBeUndefined();
   });
 });
