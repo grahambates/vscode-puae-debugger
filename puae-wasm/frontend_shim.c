@@ -824,7 +824,6 @@ extern int  g_wprofActive;
 extern void wasm_profile_prepare_align(void);
 extern void wasm_profile_prepare(int numFrames);
 extern void wasm_profile_finish(int numFrames);
-extern void wasm_profile_emit_frame_marker(int frameIdx);
 extern void wasm_dma_serialize_grid(void);
 extern void wasm_dma_serialize_events(void);
 // Per-frame DMA serializers — write the just-completed frame's DMA into an
@@ -1084,9 +1083,8 @@ int wasm_profile_start(int numFrames)
             g_wprofCopperSizes[framesDone] = csz;
             g_wprofCopperCount = framesDone + 1;
         }
-        // Emit frame marker between frames (not after the last one).
-        if ((int)g_frame_count < target)
-            wasm_profile_emit_frame_marker(framesDone);
+        // Frame markers are now emitted from puae_debug_frame_boundary_notify() (puae_debug.c),
+        // at the precise true-vsync point rather than here — see g_wprofNumFrames's comment.
         framesDone++;
     }
     debug_dma = 0;

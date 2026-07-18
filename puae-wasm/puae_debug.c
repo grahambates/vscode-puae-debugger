@@ -280,6 +280,19 @@ static uint32_t g_wprofPendingCycleSlot;
  * the very start of every capture were previously never recorded at all. */
 static int      g_wprofResetPending;
 
+/* Total frames requested (wasm_profile_prepare) and how many inter-frame markers have been
+ * emitted so far (0..numFrames-2 — numFrames frames need numFrames-1 markers between them).
+ * Like g_wprofResetPending, frame markers used to be inserted by frontend_shim.c right after each
+ * retro_run() call returned — the same few-scanlines-late point that made frame 0's own start
+ * imprecise. That misattributed each frame's first few lines to the *previous* frame's tail
+ * instead of its own, and equally over-extended the previous frame — the CPU flame graph would
+ * end up a few lines out of phase with that same frame's own (correctly-bounded, since the DMA
+ * grid's double-buffer toggle is driven by this same true-vsync hook already) DMA/raster view, for
+ * every frame after frame 0. Markers are now inserted from puae_debug_frame_boundary_notify()
+ * instead, at the same precise true-vsync point the reset above uses. */
+static int      g_wprofNumFrames;
+static int      g_wprofFrameMarkersEmitted;
+
 /* DWARF unwind table uploaded by wasm_profile_set_unwind (NULL = assembly/branch-stack). */
 static uint8_t *g_wprofUnwindBuf = NULL;
 static uint32_t g_wprofUnwindLen = 0;
@@ -393,6 +406,8 @@ wasm_profile_prepare(int numFrames)
 	g_wprofPendingCycleSlot = WASM_PROFILE_NO_PENDING_SLOT;
 	g_wprofActive          = 1;
 	g_wprofResetPending    = 1; /* rewind to the true frame boundary — see its declaration's comment */
+	g_wprofNumFrames          = numFrames;
+	g_wprofFrameMarkersEmitted = 0;
 	g_wprofStartCycles     = get_cycles();
 	/* Force CE blitter for the capture frame so every D-channel write (including fill
 	 * mode, which the fast blitter never records) appears in the DMA grid.  The
@@ -2100,6 +2115,13 @@ puae_debug_frame_boundary_notify(void)
 		g_wprofInRangeInstrs    = 0;
 		g_wprofStartCycles      = get_cycles();
 		g_wprofResetPending     = 0;
+	} else if (g_wprofActive && g_wprofFrameMarkersEmitted < g_wprofNumFrames - 1) {
+		// Every true boundary after the first one (which the reset above consumes as frame 0's
+		// start) splits the previous frame from the next — see g_wprofNumFrames's comment. The
+		// last boundary (crossed while the final counted retro_run() call runs) deliberately gets
+		// no marker, same as the old post-retro_run() call site never marked after the last frame.
+		wasm_profile_emit_frame_marker(g_wprofFrameMarkersEmitted + 1);
+		g_wprofFrameMarkersEmitted++;
 	}
 }
 
