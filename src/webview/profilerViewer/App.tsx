@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import "./App.css";
-import { ProfilerOutboundMessage, ISymbol, IProfileModel, IDmaModel, ComputeRangeMessage, DMA_HPOS, DMA_VPOS, ReadSourceFileMessage } from "../../shared/profilerTypes";
+import { ProfilerOutboundMessage, ISymbol, IProfileModel, IDmaModel, ComputeRangeMessage, DMA_HPOS, DMA_VPOS, ReadSourceFileMessage, BusOwner } from "../../shared/profilerTypes";
 import { unpackBulk } from "../../profilerBulk";
 import { setProfileModel, getProfileModel, useModelVersion } from "./modelStore";
 import { FlameGraph } from "./FlameGraph";
@@ -34,23 +34,24 @@ interface FrameInfo {
 }
 
 // Compute stacked DMA bar segments from a frame's owner array (BusOwner ordinals).
-// Grouped: BLITTER(23), BPL(8-13), SPR(14-21), AUD(4-7), COPPER(22), CPU(1,24), REFRESH(2), DISK(3), idle(0).
-// Colors match dma.ts OWNER_STYLE (0xAABBGGRR format, R=low byte).
+// Grouped: BLITTER, BPL1-8, SPRITE0-7, AUD0-3, COPPER, CPU, REFRESH, DISK, idle (NONE/BLOCKED).
+// Colors match dma.ts's OWNER_STYLE/CPU_CODE — one representative color per group rather than
+// per-channel (e.g. every bitplane shares BPL1's color) since this is a coarse thumbnail-sized bar.
 function computeDmaBar(owner: Uint8Array | undefined): Array<{ color: string; flex: number }> | undefined {
   if (!owner || owner.length === 0) return undefined;
   const c = new Int32Array(8); // [blitter, bpl, spr, aud, cop, cpu, refresh, disk]
   let idle = 0;
   for (let i = 0; i < owner.length; i++) {
     const o = owner[i];
-    if      (o === 23)              c[0]++;
-    else if (o >= 8 && o <= 13)    c[1]++;
-    else if (o >= 14 && o <= 21)   c[2]++;
-    else if (o >= 4 && o <= 7)     c[3]++;
-    else if (o === 22)              c[4]++;
-    else if (o === 1 || o === 24)   c[5]++;
-    else if (o === 2)               c[6]++;
-    else if (o === 3)               c[7]++;
-    else                            idle++;
+    if      (o === BusOwner.BLITTER)                          c[0]++;
+    else if (o >= BusOwner.BPL1 && o <= BusOwner.BPL8)        c[1]++;
+    else if (o >= BusOwner.SPRITE0 && o <= BusOwner.SPRITE7)  c[2]++;
+    else if (o >= BusOwner.AUD0 && o <= BusOwner.AUD3)        c[3]++;
+    else if (o === BusOwner.COPPER)                           c[4]++;
+    else if (o === BusOwner.CPU)                              c[5]++;
+    else if (o === BusOwner.REFRESH)                          c[6]++;
+    else if (o === BusOwner.DISK)                             c[7]++;
+    else                                                       idle++; // NONE, BLOCKED
   }
   const COLORS = ["rgb(0,136,136)","rgb(0,0,255)","rgb(255,0,255)","rgb(255,0,0)",
                   "rgb(238,238,0)","rgb(162,83,66)","rgb(68,68,68)","rgb(255,255,255)"];
