@@ -195,21 +195,32 @@ static int puae_debug_regwatchCheck(uint32_t pc24);
 
 // Bounds the worst-case size of the buffer getProfileData ships back over the
 // webview<->extension-host postMessage bridge (~800ms/MB even base64-encoded —
-// see rpc.ts's uint8ToBase64 comment). A single profiled frame's instruction
-// count isn't bounded by real elapsed time the way it would be on real hardware:
-// unthrottled fast-RAM code retires far more instructions per frame than
-// chip-RAM code (no DMA bus-contention wait states), and 68020/030's cycle-exact
-// accounting (m68k_run_2ce, wait_memory_cycles' 16-instruction grace period) lets
-// register/cache-heavy code go even further per frame than 68040/060's coarser
-// per-instruction accounting (m68k_run_3ce) — confirmed by direct measurement,
-// same real program, same warmup: 68020 retired ~5x more in-range instructions
-// than 68040. Once a profiled frame's sample count would blow this cap, later
-// samples are silently dropped (see the bounds check in wasm_profile_instrHook)
-// rather than growing the buffer further — a truncated-but-fast profile beats a
-// complete-but-unusable one that times out or freezes the webview in transit.
-#define WASM_PROFILE_BUF_WORDS (1 << 18)   /* 1 MB ≈ 43k samples at avg depth 5 */
-static uint32_t g_wprofBuf[WASM_PROFILE_BUF_WORDS];
-static uint32_t g_wprofBufLen;
+// see rpc.ts's uint8ToBase64 comment), per profiled frame. A single frame's
+// instruction count isn't bounded by real elapsed time the way it would be on
+// real hardware: unthrottled fast-RAM code retires far more instructions per
+// frame than chip-RAM code (no DMA bus-contention wait states), and 68020/030's
+// cycle-exact accounting (m68k_run_2ce, wait_memory_cycles' 16-instruction grace
+// period) lets register/cache-heavy code go even further per frame than
+// 68040/060's coarser per-instruction accounting (m68k_run_3ce) — confirmed by
+// direct measurement, same real program, same warmup: 68020 retired ~5x more
+// in-range instructions than 68040. Once a frame's sample count would blow this
+// cap, later samples for that frame are silently dropped (see the bounds check
+// in wasm_profile_instrHook) rather than growing the buffer further — a
+// truncated-but-fast profile beats a complete-but-unusable one that times out or
+// freezes the webview in transit.
+//
+// g_wprofBuf is allocated per capture in wasm_profile_prepare() at
+// numFrames * WASM_PROFILE_BUF_WORDS_PER_FRAME — one frame's worth of headroom
+// for each frame actually requested, rather than a single fixed-size total
+// shared across the whole multi-frame capture. A shared total silently ran out
+// partway through a multi-frame capture once busy frames' samples added up,
+// dropping both later samples AND the frame-boundary markers themselves — which
+// showed up as a 10-frame capture returning only 6 (sometimes CPU-data-less)
+// frames instead of 10 evenly-truncated ones.
+#define WASM_PROFILE_BUF_WORDS_PER_FRAME (1 << 18)   /* 1 MB/frame ≈ 43k samples/frame at avg depth 5 */
+static uint32_t *g_wprofBuf = NULL;
+static uint32_t  g_wprofBufCapWords = 0;   /* current g_wprofBuf allocation, in words */
+static uint32_t  g_wprofBufLen;
 
 /* Per-sample CPU register snapshot, parallel to (lockstep with) g_wprofBuf — a fixed 19-word
  * block per recorded sample (D0-D7, A0-A7, SR, PC, USP; see WASM_REG_COUNT/wasm_read_regs below),
@@ -330,8 +341,17 @@ wasm_profile_dwarf_walk(uint32_t pc, uint32_t *callers, uint32_t maxCallers)
 }
 
 void
-wasm_profile_prepare(void)
+wasm_profile_prepare(int numFrames)
 {
+	// Freed/reallocated every capture rather than grown-on-demand, matching the
+	// per-frame DMA/copper/full-frame buffers frontend_shim.c's wasm_profile_start
+	// already allocates this way — a capture's frame count is known up front, so
+	// there's no benefit to keeping a stale allocation around between captures.
+	free(g_wprofBuf);
+	g_wprofBufCapWords = (uint32_t)(numFrames > 0 ? numFrames : 1) * WASM_PROFILE_BUF_WORDS_PER_FRAME;
+	g_wprofBuf = (uint32_t *)malloc((size_t)g_wprofBufCapWords * sizeof(uint32_t));
+	if (!g_wprofBuf) g_wprofBufCapWords = 0; /* allocation failed: recording stays disabled via the cap below */
+
 	g_wprofBufLen          = 0;
 	g_wprofRegSampleCount  = 0;
 	g_wprofRegEnabled      = 1;
@@ -434,7 +454,7 @@ wasm_profile_instrHook(uint32_t pc24)
 
 	uint32_t depth  = 1 + stkDepth;
 	uint32_t needed = 1 + depth + 1;   /* depth-word + PCs + cycleDelta placeholder */
-	if (g_wprofBufLen + needed > WASM_PROFILE_BUF_WORDS) return;
+	if (g_wprofBufLen + needed > g_wprofBufCapWords) return;
 	/* When register recording is active (frame 0 of multi-frame; always in single-frame mode),
 	 * gate on the register cap too — the two buffers stay in lockstep so registers[k] reliably
 	 * belongs to the k-th decoded InstructionSample.  wasm_profile_emit_frame_marker() clears
@@ -472,7 +492,7 @@ PUAE_DEBUG_EXPORT void
 wasm_profile_emit_frame_marker(int frameIdx)
 {
 	if (!g_wprofActive) return;
-	if (g_wprofBufLen + 2 > WASM_PROFILE_BUF_WORDS) return;
+	if (g_wprofBufLen + 2 > g_wprofBufCapWords) return;
 	g_wprofPendingCycleSlot = WASM_PROFILE_NO_PENDING_SLOT;
 	g_wprofLastCycleValid   = 0;
 	g_wprofRegEnabled       = 0;

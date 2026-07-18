@@ -821,7 +821,7 @@ void wasm_write_instr_count(uint32_t lo, uint32_t hi) {
 // --- CPU + DMA profiler ---
 
 extern int  g_wprofActive;
-extern void wasm_profile_prepare(void);
+extern void wasm_profile_prepare(int numFrames);
 extern void wasm_profile_finish(int numFrames);
 extern void wasm_profile_emit_frame_marker(int frameIdx);
 extern void wasm_dma_serialize_grid(void);
@@ -951,7 +951,7 @@ int wasm_profile_start(int numFrames)
     g_wprofFullFrameW  = 0;
     g_wprofFullFrameH  = 0;
 
-    wasm_profile_prepare();
+    wasm_profile_prepare(numFrames);
     record_dma_reset(1);   /* alloc if needed, toggle buffer, set debug_dma=1 */
     // Force copper-instruction recording on for the whole capture, the same way record_dma_reset
     // just forced debug_dma on. Previously this relied entirely on the JS side's separate
