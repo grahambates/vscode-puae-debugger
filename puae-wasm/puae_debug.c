@@ -2132,10 +2132,19 @@ wasm_profile_on_frame_boundary(void)
 	if (g_wprofArmPending) {
 		// First true boundary since wasm_profile_prepare(): this is frame 0's real start — turn
 		// recording on exactly here (see g_wprofArmPending's comment) and rewind any bookkeeping
-		// wasm_profile_prepare() already initialized speculatively.
+		// wasm_profile_prepare() already initialized speculatively. debug_dma/debug_copper are
+		// deliberately armed here too, not any earlier: nothing reads their output during the
+		// throwaway alignment call in frontend_shim.c (it's discarded, same as the CPU samples
+		// g_wprofActive would otherwise have recorded), so turning them on early would only pay
+		// for a whole frame's worth of DMA/copper bookkeeping purely to throw it away — a real,
+		// measured cost (profile captures got noticeably slower once the throwaway call was
+		// introduced). record_dma_reset()'s own toggle/clear still runs exactly once per capture,
+		// same as before, just later.
 		wasm_profile_reset_counters();
 		g_wprofActive     = 1;
 		g_wprofArmPending = 0;
+		record_dma_reset(1); /* alloc if needed, toggle buffer, set debug_dma=1 */
+		debug_copper      = 1;
 	} else if (g_wprofMarkersAllowed && g_wprofFrameMarkersEmitted < g_wprofNumFrames - 1) {
 		// Every true boundary after the first one (consumed above as frame 0's start) splits the
 		// previous frame from the next — see g_wprofNumFrames's comment. The last boundary

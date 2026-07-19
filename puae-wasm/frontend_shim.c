@@ -834,7 +834,6 @@ extern void     wasm_dma_serialize_events_to_buf(uint8_t *dst);
 extern uint32_t puae_copper_serialize(uint8_t *out);
 
 extern int  debug_dma;
-extern void record_dma_reset(int start);
 extern int  debug_copper;
 
 // Per-frame thumbnail capture — nearest-neighbour downscale of g_rgba_buf after each
@@ -990,39 +989,27 @@ int wasm_profile_start(int numFrames)
 
     wasm_profile_prepare_align();
     wasm_profile_prepare(numFrames);
-    record_dma_reset(1);   /* alloc if needed, toggle buffer, set debug_dma=1 */
-    // Force copper-instruction recording on for the whole capture, the same way record_dma_reset
-    // just forced debug_dma on. Previously this relied entirely on the JS side's separate
-    // "copperTrackingEnable" RPC call having already landed before this ran — fragile across the
-    // async RPC boundary, and cop_record[]'s WAIT/SKIP entries were (bug, now fixed in custom.c's
-    // COP_wait_in2/COP_skip_in2 record_copper() call) recorded regardless of debug_copper anyway,
-    // silently masking the gap: captures would show a plausible-looking but MOVE-instruction-free
-    // copper trace (no register writes at all — e.g. copper-driven palette bars would just never
-    // show up) instead of no trace, or an honestly-empty one.
-    debug_copper = 1;
     g_wprofThumbCount = 0;
     g_wprofThumbW = 0; // recomputed from frame 0 on the first wasm_profile_save_thumbnail call
     g_wprofThumbH = 0;
 
-    // debug_dma just got armed above (record_dma_reset(1)), but necessarily at an arbitrary raster
-    // position (wherever the CPU happened to be) — there's no way to synchronously wait for the
-    // true frame boundary (vpos wrapping to 0) from C first. retro_run() itself can't be used for
-    // that either: it only returns once the CPU execution loop notices the libretro_frame_end
-    // flag, which — confirmed by direct instrumentation — happens a few scanlines *after* the true
-    // boundary, not at it. g_wprofActive (CPU-sample recording) is therefore deliberately left off
-    // by wasm_profile_prepare() above (see g_wprofArmPending, puae_debug.c) rather than armed here
-    // too: it turns on exactly at the true boundary instead, from within
-    // puae_debug_frame_boundary_notify() (custom.c's precise per-frame hook, fired exactly when
-    // vpos wraps to 0), so wasm_profile_instrHook does none of its stack-walk/register-snapshot
-    // work for the throwaway period below — there's nothing to discard, because nothing gets
-    // recorded until the real boundary.
+    // Neither debug_dma/debug_copper (DMA grid + copper trace recording) nor g_wprofActive
+    // (CPU-sample recording) are armed yet at this point — wasm_profile_prepare() left
+    // g_wprofActive off and g_wprofArmPending set. There's no way to synchronously wait for the
+    // true frame boundary (vpos wrapping to 0) from C before arming: retro_run() only returns once
+    // the CPU execution loop notices the libretro_frame_end flag, which — confirmed by direct
+    // instrumentation — fires a few scanlines *after* the true boundary, not at it. So all of
+    // debug_dma/debug_copper/g_wprofActive turn on together, exactly at that true boundary, from
+    // within puae_debug_frame_boundary_notify() (custom.c's precise per-frame hook — see
+    // g_wprofArmPending's comment in puae_debug.c). Arming any of them here instead (the original
+    // approach) meant a whole frame's worth of DMA/copper/CPU-sample bookkeeping ran and was then
+    // discarded for the throwaway call below — a real, measured cost (profile captures got
+    // noticeably slower once this throwaway call was introduced) for data nothing ever reads.
     //
     // One throwaway retro_run() call is still needed to reach that boundary in the first place:
     // every such call spans at least one real vsync, guaranteeing puae_debug_frame_boundary_notify
-    // fires during it. The DMA grid needs no equivalent delay — record_dma_reset()'s double-buffer
-    // toggle already happens automatically at that same precise hsync_handler_post() point
-    // regardless of profiling, so by the time the *next* (real, counted) retro_run() call below
-    // finishes, the buffer it reads is already exactly bounded by two such true boundaries.
+    // fires during it — and with recording still fully off, this call is now just plain,
+    // unrecorded emulation.
     libretro_frame_end = false;
     retro_run();
     // Only after the throwaway call has fully returned is it safe to let true boundaries emit

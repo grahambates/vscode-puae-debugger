@@ -14,18 +14,28 @@ export interface RpcBinaryData {
   data: Uint8Array;
 }
 
+// Base64-encoded counterpart of RpcBinaryData — see rpc.ts's uint8ToBase64 comment: the
+// webview<->extension-host postMessage bridge flattens a raw Uint8Array into a slow per-element
+// array-like, which dominates transfer time once a buffer reaches the profiler's typical
+// hundreds-of-KB-to-multi-MB sizes. A base64 string crosses that bridge as a single primitive
+// value instead, which is dramatically cheaper.
+export interface RpcBinaryDataBase64 {
+  dataBase64: string;
+}
+
 export interface RpcFramebuffer extends RpcBinaryData {
   width: number;
   height: number;
 }
 
+// All fields base64-encoded — see RpcBinaryDataBase64's comment.
 export interface RpcDmaSnapshot {
-  chip: Uint8Array;
-  slow: Uint8Array;
-  fast?: Uint8Array;
+  chipBase64: string;
+  slowBase64: string;
+  fastBase64?: string;
   fastAddr?: number;
-  custom: Uint8Array;
-  agaColors?: Uint8Array;
+  customBase64: string;
+  agaColorsBase64: string;
 }
 
 export interface RpcProfileData {
@@ -97,19 +107,19 @@ export interface PuaeRpcProtocol {
   startProfiling: { args: { numFrames: number }; result: RpcOk };
   getProfileData: { args: undefined; result: RpcProfileData };
   getProfileRegs: { args: undefined; result: { dataBase64: string } };
-  getDmaData: { args: undefined; result: RpcBinaryData };
-  getDmaEvents: { args: undefined; result: RpcBinaryData };
+  getDmaData: { args: undefined; result: RpcBinaryDataBase64 };
+  getDmaEvents: { args: undefined; result: RpcBinaryDataBase64 };
   copperTrackingEnable: { args: { enabled: boolean }; result: RpcOk };
-  getCopperData: { args: undefined; result: RpcBinaryData };
+  getCopperData: { args: undefined; result: RpcBinaryDataBase64 };
   getFramebuffer: { args: undefined; result: RpcFramebuffer };
   getProfileFullFrameBatch: { args: undefined; result: RpcFramebuffer[] };
   getProfileThumbBatch: { args: undefined; result: RpcFramebuffer[] };
   // One byte per captured frame (0/1) — whether that frame is byte-identical to the one
   // before it. See wasm_profile_get_dup_ptr's comment in frontend_shim.c.
   getProfileFrameDups: { args: undefined; result: RpcBinaryData };
-  getDmaFrame: { args: { frameIdx: number }; result: RpcBinaryData };
-  getDmaEventsFrame: { args: { frameIdx: number }; result: RpcBinaryData };
-  getCopperFrame: { args: { frameIdx: number }; result: RpcBinaryData };
+  getDmaFrame: { args: { frameIdx: number }; result: RpcBinaryDataBase64 };
+  getDmaEventsFrame: { args: { frameIdx: number }; result: RpcBinaryDataBase64 };
+  getCopperFrame: { args: { frameIdx: number }; result: RpcBinaryDataBase64 };
   getDmaSnapshot: { args: undefined; result: RpcDmaSnapshot };
   getAgaColors: { args: undefined; result: RpcBinaryData };
 }

@@ -157,9 +157,19 @@ export function applyContextReuse(samples: InstructionSample[], sourceMap: Sourc
   // "has DWARF CFI" signal (empty for asm); compute it once.
   const hasCfi = sourceMap.getUnwindRows().length > 0;
   let lastProgramStack: number[] = [];
+  // Memoized per PC — see trimToProgramRoot's identical caching for why: leaf PCs repeat heavily
+  // across samples (tight loops), so recomputing syntheticLabel uncached for every sample wastes
+  // the same work expandPc already avoids for location lookups.
+  const syntheticCache = new Map<number, string | undefined>();
+  const cachedSyntheticLabel = (pc: number): string | undefined => {
+    if (syntheticCache.has(pc)) return syntheticCache.get(pc);
+    const v = syntheticLabel(pc, sourceMap);
+    syntheticCache.set(pc, v);
+    return v;
+  };
   return samples.map((s) => {
     const leaf = s.stack[0];
-    const synthetic = syntheticLabel(leaf, sourceMap);
+    const synthetic = cachedSyntheticLabel(leaf);
     if (synthetic === "[IRQ]") return s; // standalone, never nested or reused as context
 
     const depth1 = s.stack.length === 1;
@@ -200,7 +210,21 @@ export function applyContextReuse(samples: InstructionSample[], sourceMap: Sourc
 // excludes the Kickstart ROM range (and the IRQ marker) before falling back to the segment
 // check, so it's the correct "is this genuinely the user's own program" predicate.
 export function trimToProgramRoot(samples: InstructionSample[], sourceMap: SourceMap): InstructionSample[] {
-  const inProgram = (pc: number) => syntheticLabel(pc, sourceMap) === undefined;
+  // Memoized per PC — see expandPc's identical caching in buildProfileModel for why this
+  // matters: the root portion of a branch-stack sample's stack is largely a shared OS/Kickstart
+  // boot-ancestry prefix, so the SAME small set of PCs recurs across the (sample, stack-position)
+  // pairs this scans — but syntheticLabel (via sourceMap.findSegmentForAddress) is expensive
+  // enough that leaving it uncached here dominated capture time (measured: ~2s per frame for
+  // ~11,000 samples, versus low milliseconds once memoized).
+  const inProgramCache = new Map<number, boolean>();
+  const inProgram = (pc: number): boolean => {
+    let v = inProgramCache.get(pc);
+    if (v === undefined) {
+      v = syntheticLabel(pc, sourceMap) === undefined;
+      inProgramCache.set(pc, v);
+    }
+    return v;
+  };
   return samples.map((s) => {
     const stack = s.stack;
     let rootIdx = stack.length - 1;
@@ -924,13 +948,20 @@ export class ProfilerManager {
 
         try {
           const dmaRes = await rpc.sendRpcCommand("getDmaData", undefined, 30000);
-          const dmaBytes = u8(dmaRes.data);
+          const dmaBytes = fromBase64(dmaRes.dataBase64);
           if (dmaBytes.length) {
             raw.dma = dmaBytes;
             const snap = await rpc.sendRpcCommand("getDmaSnapshot", undefined, 30000);
-            raw.snapshot = { chip: u8(snap.chip), slow: u8(snap.slow), fast: snap.fast && u8(snap.fast), fastAddr: snap.fastAddr, custom: u8(snap.custom), agaColors: snap.agaColors && u8(snap.agaColors) };
+            raw.snapshot = {
+              chip: fromBase64(snap.chipBase64),
+              slow: fromBase64(snap.slowBase64),
+              fast: snap.fastBase64 ? fromBase64(snap.fastBase64) : undefined,
+              fastAddr: snap.fastAddr,
+              custom: fromBase64(snap.customBase64),
+              agaColors: fromBase64(snap.agaColorsBase64),
+            };
             const eventsRes = await rpc.sendRpcCommand("getDmaEvents", undefined, 30000);
-            const eventsBytes = u8(eventsRes.data);
+            const eventsBytes = fromBase64(eventsRes.dataBase64);
             if (eventsBytes.length) raw.dmaEvents = eventsBytes;
           }
         } catch (e) {
@@ -939,7 +970,7 @@ export class ProfilerManager {
 
         try {
           const copperRes = await rpc.sendRpcCommand("getCopperData", undefined, 30000);
-          const copperBytes = u8(copperRes.data);
+          const copperBytes = fromBase64(copperRes.dataBase64);
           if (copperBytes.length) raw.copper = copperBytes;
         } catch (e) {
           console.warn("[profiler] frame 0: copper trace failed:", e);
@@ -1018,23 +1049,24 @@ export class ProfilerManager {
 
         // Per-frame DMA grids — serialized in C right after each retro_run() while the
         // toggle buffer still holds that frame's data.  These are fast fetches (no emulation,
-        // just HEAPU8 slices): each 568KB grid transfers in ~454ms at 800ms/MB, so for
-        // N=10 frames the total DMA transfer is ~4.5s vs. ~4.5s in the old N-loop — same
-        // total data volume, but we've already saved the snapshot + register round-trips.
+        // just HEAPU8 slices) transferred as base64 (see rpc.ts's uint8ToBase64 comment) — the
+        // raw-Uint8Array path this replaced was the dominant cost of a multi-frame capture
+        // (measured: tens of seconds for N=10, versus ~200ms of actual C-side emulation work),
+        // since it multiplies the postMessage bridge's slow per-element transfer by numFrames.
         const perFrameDmaBytes: (Uint8Array | undefined)[] = new Array(numFrames).fill(undefined);
         const perFrameEvtBytes: (Uint8Array | undefined)[] = new Array(numFrames).fill(undefined);
         const perFrameCopperBytes: (Uint8Array | undefined)[] = new Array(numFrames).fill(undefined);
         try {
           for (let fi = 0; fi < numFrames; fi++) {
             const dmaRes = await rpc.sendRpcCommand("getDmaFrame", { frameIdx: fi }, 30000);
-            const db = u8(dmaRes.data);
+            const db = fromBase64(dmaRes.dataBase64);
             if (db.length) perFrameDmaBytes[fi] = db;
             const evtRes = await rpc.sendRpcCommand("getDmaEventsFrame", { frameIdx: fi }, 30000);
-            const eb = u8(evtRes.data);
+            const eb = fromBase64(evtRes.dataBase64);
             if (eb.length) perFrameEvtBytes[fi] = eb;
             try {
               const copperRes = await rpc.sendRpcCommand("getCopperFrame", { frameIdx: fi }, 30000);
-              const cb = u8(copperRes.data);
+              const cb = fromBase64(copperRes.dataBase64);
               if (cb.length) perFrameCopperBytes[fi] = cb;
             } catch {
               // unsupported backend or no copper tracking — copper trace just won't appear
@@ -1050,7 +1082,14 @@ export class ProfilerManager {
         try {
           if (perFrameDmaBytes[numFrames - 1]) {
             const snap = await rpc.sendRpcCommand("getDmaSnapshot", undefined, 30000);
-            snapshotRaw = { chip: u8(snap.chip), slow: u8(snap.slow), fast: snap.fast && u8(snap.fast), fastAddr: snap.fastAddr, custom: u8(snap.custom), agaColors: snap.agaColors && u8(snap.agaColors) };
+            snapshotRaw = {
+              chip: fromBase64(snap.chipBase64),
+              slow: fromBase64(snap.slowBase64),
+              fast: snap.fastBase64 ? fromBase64(snap.fastBase64) : undefined,
+              fastAddr: snap.fastAddr,
+              custom: fromBase64(snap.customBase64),
+              agaColors: fromBase64(snap.agaColorsBase64),
+            };
           }
         } catch (e) {
           console.warn("[profiler] snapshot fetch failed:", e);
