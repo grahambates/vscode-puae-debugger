@@ -420,7 +420,112 @@ export async function main(config: MainConfig = {}): Promise<void> {
 
   // ---------- render loop ----------
   const canvas = document.getElementById("screen") as HTMLCanvasElement;
-  const ctx = canvas.getContext("2d")!;
+
+  // WebGL, not a 2D context: putImageData needs a JS-owned ImageData (Chrome 117+
+  // rejects one backed directly by wasm memory — see getFbView's comment below), so
+  // getting a wasm-composited RGBA frame on screen via the 2D canvas costs two
+  // full-framebuffer copies every tick: wasm heap -> ImageData, then ImageData ->
+  // the canvas's own backing store inside putImageData. texSubImage2D instead
+  // uploads straight from a view into wasm memory (the same pattern Emscripten's own
+  // GL bindings use — the source ArrayBufferView isn't required to be JS-owned the
+  // way ImageData's constructor requires) directly into the GPU texture, then a
+  // single draw call blits it: one copy instead of two.
+  const gl = canvas.getContext("webgl", {
+    alpha: false, antialias: false, depth: false, stencil: false,
+  })!;
+  let glProgram: WebGLProgram;
+  let aPos = -1, aUv = -1;
+  let glTex: WebGLTexture | null = null;
+  // The texture's currently-allocated size (-1 = not yet allocated) — texImage2D
+  // (re)allocates storage and is only needed on the first upload or a resize;
+  // every other frame reuses the same storage via the cheaper texSubImage2D.
+  let glTexW = -1, glTexH = -1;
+  // Whether uploadAndDraw has painted at least one frame yet — mirrors the old
+  // ImageData-based "imgData !== null" check the paused-frame path below used.
+  let hasDrawnFrame = false;
+  // True from 'webglcontextlost' until 'webglcontextrestored' fires — a context
+  // loss (driver reset, GPU memory pressure; more reachable on the weak/software-
+  // rendered GPUs this project also has to run on) invalidates every WebGL object
+  // created below, so uploadAndDraw must not touch them until initGl() has
+  // rebuilt everything.
+  let glContextLost = false;
+
+  // (Re)compiles the shader program, uploads the static quad, and (re)creates the
+  // texture. Called once at startup and again from 'webglcontextrestored' below.
+  function initGl(): void {
+    glProgram = gl.createProgram()!;
+    const vs = gl.createShader(gl.VERTEX_SHADER)!;
+    gl.shaderSource(vs, `
+      attribute vec2 aPos;
+      attribute vec2 aUv;
+      varying vec2 vUv;
+      void main() {
+        vUv = aUv;
+        gl_Position = vec4(aPos, 0.0, 1.0);
+      }
+    `);
+    gl.compileShader(vs);
+    const fs = gl.createShader(gl.FRAGMENT_SHADER)!;
+    gl.shaderSource(fs, `
+      precision mediump float;
+      varying vec2 vUv;
+      uniform sampler2D uTex;
+      void main() {
+        gl_FragColor = texture2D(uTex, vUv);
+      }
+    `);
+    gl.compileShader(fs);
+    gl.attachShader(glProgram, vs);
+    gl.attachShader(glProgram, fs);
+    gl.linkProgram(glProgram);
+    gl.useProgram(glProgram);
+
+    // One static quad covering the whole clip space, with the screen-top vertices
+    // sampling v=0 — confirmed by a pixel-for-pixel comparison against the boot
+    // screen the old 2D-canvas putImageData path rendered (both show row 0 of the
+    // RGBA buffer as the texture's v=0 row); don't "fix" this into a flip without
+    // re-running that comparison, it looked wrong at a glance but wasn't.
+    gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer());
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([
+      /* x   y   u  v */
+      -1, -1,  0, 1,
+       1, -1,  1, 1,
+      -1,  1,  0, 0,
+       1,  1,  1, 0,
+    ]), gl.STATIC_DRAW);
+    aPos = gl.getAttribLocation(glProgram, "aPos");
+    aUv = gl.getAttribLocation(glProgram, "aUv");
+    gl.enableVertexAttribArray(aPos);
+    gl.vertexAttribPointer(aPos, 2, gl.FLOAT, false, 16, 0);
+    gl.enableVertexAttribArray(aUv);
+    gl.vertexAttribPointer(aUv, 2, gl.FLOAT, false, 16, 8);
+
+    glTex = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, glTex);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    glTexW = -1; // force the next uploadAndDraw to reallocate storage
+    glTexH = -1;
+  }
+  initGl();
+
+  // preventDefault() is required for the browser to ever attempt restoration —
+  // without it, a lost context stays lost for the rest of the session. Once
+  // 'webglcontextrestored' fires, initGl() rebuilds the program/buffer/texture
+  // from scratch (everything from before the loss is invalid) and hasDrawnFrame
+  // is cleared so the paused-frame path below doesn't skip redrawing the first
+  // frame after restoration.
+  canvas.addEventListener("webglcontextlost", (event) => {
+    event.preventDefault();
+    glContextLost = true;
+  });
+  canvas.addEventListener("webglcontextrestored", () => {
+    initGl();
+    glContextLost = false;
+    hasDrawnFrame = false;
+  });
 
   // Drive at exactly 50 Hz PAL using a cumulative due-frames counter so the tick
   // fires at the right wall-clock time regardless of the display refresh rate.
@@ -439,7 +544,6 @@ export async function main(config: MainConfig = {}): Promise<void> {
   let lastCheckpointFrame = 0; // emuFrames at the last periodic rpc.pushSnapshot()
   let fpsTime = 0;
   let fpsCnt = 0;
-  let imgData: ImageData | null = null; // cached ImageData — owns its own ArrayBuffer
   // wasm_get_frame_count() as of the last canvas redraw — lets us notice the
   // framebuffer changed while paused (e.g. stepBack/continueReverse/
   // stepBackFrame's landing replay renders a frame via
@@ -466,18 +570,39 @@ export async function main(config: MainConfig = {}): Promise<void> {
     return fbView;
   }
 
+  // Uploads an RGBA frame straight from wasm memory into the GL texture and draws
+  // it to fill the canvas — shared by frame()'s normal tick draw below and
+  // drawCurrentFrame (paused/replay redraw).
+  function uploadAndDraw(rgba: Uint8ClampedArray, w: number, h: number): void {
+    if (canvas.width !== w || canvas.height !== h) {
+      canvas.width = w;
+      canvas.height = h;
+    }
+    // Wait for 'webglcontextrestored' (see above) to rebuild GL state before
+    // drawing again — canvas.width/height above still gets updated either way, so
+    // hover/mouse-capture pixel mapping (which reads those, not GL state) stays
+    // correct even while nothing is actually being painted.
+    if (glContextLost) return;
+    gl.viewport(0, 0, w, h);
+    gl.bindTexture(gl.TEXTURE_2D, glTex);
+    if (glTexW !== w || glTexH !== h) {
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, w, h, 0, gl.RGBA, gl.UNSIGNED_BYTE, rgba);
+      glTexW = w;
+      glTexH = h;
+    } else {
+      gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, rgba);
+    }
+    gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+    hasDrawnFrame = true;
+  }
+
   // Called by rpc.ts's async continueReverse to paint the current wasm
   // framebuffer to the canvas between checkpoint intervals.
   globalThis.drawCurrentFrame = () => {
     const w = M._wasm_get_fb_width();
     const h = M._wasm_get_fb_height();
     if (!w || !h) return;
-    if (canvas.width !== w || canvas.height !== h) {
-      canvas.width = w; canvas.height = h; imgData = null;
-    }
-    if (!imgData) imgData = ctx.createImageData(w, h);
-    imgData.data.set(getFbView(M._wasm_get_fb_rgba(), w * h * 4));
-    ctx.putImageData(imgData, 0, 0);
+    uploadAndDraw(getFbView(M._wasm_get_fb_rgba(), w * h * 4), w, h);
     lastFbFrameCount = M._wasm_get_frame_count();
   };
 
@@ -1011,7 +1136,7 @@ export async function main(config: MainConfig = {}): Promise<void> {
       // debugger is stopped. But if a reverse-stepping command (stepBack/
       // continueReverse/stepBackFrame) landed on a different point in time,
       // its replay re-renders the framebuffer (fbDirty) and we must redraw.
-      if (imgData && !fbDirty) return;
+      if (hasDrawnFrame && !fbDirty) return;
     } else if (!effectiveWarp && dueFrames <= emuFrames) {
       return; // display is faster than 50 Hz — nothing to do yet
     }
@@ -1125,23 +1250,11 @@ export async function main(config: MainConfig = {}): Promise<void> {
     const h = M._wasm_get_fb_height();
     if (!w || !h) return;
 
-    // Resize canvas if the core reported a new geometry.
-    if (canvas.width !== w || canvas.height !== h) {
-      canvas.width = w;
-      canvas.height = h;
-      imgData = null; // invalidate cached ImageData on resize
-    }
-
-    // Chrome 117+ rejects new ImageData(wasmBackedView, w, h) with a TypeError,
-    // so we own the ImageData's buffer and copy from wasm memory each frame.
-    if (!imgData) imgData = ctx.createImageData(w, h);
     const ptr = M._wasm_get_fb_rgba();
-    const tSetStart = performance.now();
-    imgData.data.set(getFbView(ptr, w * h * 4));
-    const tBlitStart = performance.now();
-    ctx.putImageData(imgData, 0, 0);
+    const tGpuStart = performance.now();
+    uploadAndDraw(getFbView(ptr, w * h * 4), w, h);
     if (blitTrackingEnabled) updateBlitVis();
-    const tBlitEnd = performance.now();
+    const tGpuEnd = performance.now();
     // Re-read rather than reuse fbFrameCount (captured before this frame()
     // call's own tick loop, if any) so the comparison next time is accurate.
     lastFbFrameCount = M._wasm_get_frame_count();
@@ -1151,9 +1264,8 @@ export async function main(config: MainConfig = {}): Promise<void> {
       if (ts - fpsTime >= 1000) {
         const fps = (fpsCnt * 1000 / (ts - fpsTime)).toFixed(1);
         const msWasm = ((tTickEnd - tTickStart) / ranCount).toFixed(1);
-        const msSet = (tBlitStart - tSetStart).toFixed(1);
-        const msBlit = (tBlitEnd - tBlitStart).toFixed(1);
-        if (status) status.textContent = `${fps} fps | wasm=${msWasm}ms set=${msSet}ms blit=${msBlit}ms`;
+        const msGpu = (tGpuEnd - tGpuStart).toFixed(1);
+        if (status) status.textContent = `${fps} fps | wasm=${msWasm}ms gpu=${msGpu}ms`;
         fpsCnt = 0;
         fpsTime = ts;
       }
