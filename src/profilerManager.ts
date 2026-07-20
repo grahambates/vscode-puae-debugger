@@ -391,6 +391,13 @@ export interface RawCapture {
   thumbnail?: { data: Uint8Array; width: number; height: number };
   // Full-resolution JPEG of the framebuffer, for hover-to-enlarge in the filmstrip.
   fullFrame?: { data: Uint8Array; width: number; height: number };
+  // True iff this frame's pixels are byte-identical to the previous frame's — see
+  // wasm_profile_get_dup_ptr's comment in frontend_shim.c. Always false/absent for frame 0 and
+  // for single-frame captures (no previous frame to compare against). Lives on RawCapture (not
+  // just FrameCapture) specifically so it round-trips through profileFormat.ts for free — a
+  // loaded .puaeprofile's frames carry their raw capture unchanged, so anything read off `raw`
+  // survives save/load without needing separate persistence wiring.
+  duplicateOfPrevious?: boolean;
 }
 
 // One captured frame: the decoded model + the raw bytes it was built from.
@@ -402,10 +409,6 @@ export interface FrameCapture {
   model: IProfileModel;
   raw: RawCapture;
   combined?: IProfileModel;
-  // True iff this frame's pixels are byte-identical to the previous frame's — see
-  // wasm_profile_get_dup_ptr's comment in frontend_shim.c. Always false for frame 0 and for
-  // single-frame captures (no previous frame to compare against).
-  duplicateOfPrevious?: boolean;
 }
 
 // Pure transform: RawCapture + SourceMap → IProfileModel (+ the decoded samples, retained
@@ -1124,6 +1127,7 @@ export class ProfilerManager {
             registers: fi === 0 && allRegsBytes.length > 0 ? allRegsBytes : undefined,
             thumbnail,
             fullFrame,
+            duplicateOfPrevious: dupBytes[fi] === 1,
           };
 
           const model = buildProfileModel(samples, sourceMap, cyclesPerMicroSecond);
@@ -1165,7 +1169,7 @@ export class ProfilerManager {
             model.disassembly = attachDisassembly(raw.disassembly, sourceMap);
           }
 
-          frames.push({ model, raw, duplicateOfPrevious: dupBytes[fi] === 1 });
+          frames.push({ model, raw });
         }
       }
     } finally {

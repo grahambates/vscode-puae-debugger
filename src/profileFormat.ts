@@ -58,9 +58,12 @@ export interface ProfileManifest {
   disassembly?: RawDisassembledFunction[];
   // Number of captured frames.
   frameCount: number;
-  // Per-frame thumbnail/full-frame JPEG dimensions, parallel to frameCount — byte lengths already
-  // live in `sections`, but width/height aren't recoverable from a JPEG's length alone.
-  frameImages: { thumbWidth?: number; thumbHeight?: number; fullWidth?: number; fullHeight?: number }[];
+  // Per-frame metadata too small to warrant its own binary section, parallel to frameCount.
+  // Thumbnail/full-frame JPEG byte lengths already live in `sections`, but width/height aren't
+  // recoverable from a JPEG's length alone. duplicateOfPrevious mirrors RawCapture's field of the
+  // same name (see its comment) — round-tripped here since it's plain per-frame boolean data,
+  // not something re-derivable from the other sections on load.
+  frameMeta: { thumbWidth?: number; thumbHeight?: number; fullWidth?: number; fullHeight?: number; duplicateOfPrevious?: boolean }[];
 }
 
 export interface DecodedCapture {
@@ -106,14 +109,15 @@ export function encodeCapture(raws: RawCapture[], opts: EncodeOptions = {}): Buf
   if (raws.length === 0) throw new Error("encodeCapture: at least one frame is required");
 
   const sections: { name: string; bytes: Uint8Array }[] = [];
-  const frameImages: ProfileManifest["frameImages"] = [];
+  const frameMeta: ProfileManifest["frameMeta"] = [];
   raws.forEach((raw, i) => {
     sections.push(...frameSections(raw, `f${i}:`));
-    frameImages.push({
+    frameMeta.push({
       thumbWidth: raw.thumbnail?.width,
       thumbHeight: raw.thumbnail?.height,
       fullWidth: raw.fullFrame?.width,
       fullHeight: raw.fullFrame?.height,
+      duplicateOfPrevious: raw.duplicateOfPrevious,
     });
   });
   if (opts.elf) sections.push({ name: "elf", bytes: opts.elf });
@@ -147,7 +151,7 @@ export function encodeCapture(raws: RawCapture[], opts: EncodeOptions = {}): Buf
     sections: index,
     disassembly: first.disassembly,
     frameCount: raws.length,
-    frameImages,
+    frameMeta,
   };
 
   const manifestJson = Buffer.from(JSON.stringify(manifest), "utf8");
@@ -205,7 +209,7 @@ export function decodeCapture(file: Uint8Array): DecodedCapture {
     if (!profile) throw new Error(`.puaeprofile is missing the required '${prefix}profile' section`);
     const chip = get(`${prefix}chip`);
     const slow = get(`${prefix}slow`);
-    const images = manifest.frameImages[i];
+    const fm = manifest.frameMeta[i];
     const thumbBytes = get(`${prefix}thumbnail`);
     const fullBytes = get(`${prefix}fullFrame`);
 
@@ -229,12 +233,13 @@ export function decodeCapture(file: Uint8Array): DecodedCapture {
       // buildFramesFromCaptures reweights it onto frames 1..N-1 the same way a live capture does.
       disassembly: i === 0 ? manifest.disassembly : undefined,
       registers: get(`${prefix}registers`), // absent in pre-register-trace documents, or frames 1..N-1
-      thumbnail: thumbBytes && images?.thumbWidth && images?.thumbHeight
-        ? { data: thumbBytes, width: images.thumbWidth, height: images.thumbHeight }
+      thumbnail: thumbBytes && fm?.thumbWidth && fm?.thumbHeight
+        ? { data: thumbBytes, width: fm.thumbWidth, height: fm.thumbHeight }
         : undefined,
-      fullFrame: fullBytes && images?.fullWidth && images?.fullHeight
-        ? { data: fullBytes, width: images.fullWidth, height: images.fullHeight }
+      fullFrame: fullBytes && fm?.fullWidth && fm?.fullHeight
+        ? { data: fullBytes, width: fm.fullWidth, height: fm.fullHeight }
         : undefined,
+      duplicateOfPrevious: fm?.duplicateOfPrevious,
     });
   }
 

@@ -117,6 +117,7 @@ describe("profileFormat codec: multi-frame captures", () => {
       },
       dma: new Uint8Array([9, 9, 9, 9, 9, 9, 9, 9]),
       thumbnail: { data: new Uint8Array([4, 5, 6]), width: 4, height: 5 },
+      duplicateOfPrevious: true,
     };
 
     const { raws, manifest } = decodeCapture(encodeCapture([raw0, raw1]));
@@ -143,6 +144,11 @@ describe("profileFormat codec: multi-frame captures", () => {
 
     eq(raws[0].fullFrame!.data, raw0.fullFrame!.data);
     expect(raws[1].fullFrame).toBeUndefined(); // frame 1 never had one
+
+    // duplicateOfPrevious round-trips per frame — this is the actual bug report: it must survive
+    // save/load, not just live capture (it lives on RawCapture specifically so it does, for free).
+    expect(raws[0].duplicateOfPrevious).toBeFalsy();
+    expect(raws[1].duplicateOfPrevious).toBe(true);
 
     // meta is shared across every frame — matches how a live multi-frame capture actually
     // populates it (one getProfileData fetch, copied onto every frame's raw.profile).

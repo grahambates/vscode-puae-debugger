@@ -204,7 +204,7 @@ describe("Kickstart symbols", () => {
         kickstart: { sha1, name: "" },
         sections: [],
         frameCount: 1,
-        frameImages: [{}],
+        frameMeta: [{}],
       };
     }
 

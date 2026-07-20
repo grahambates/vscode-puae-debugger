@@ -282,7 +282,7 @@ export function stripFramesForPost(
     } else {
       stripped.symbols = undefined;
     }
-    return { model: stripped, bulkUri: bulkUris[i] || undefined, duplicateOfPrevious: f.duplicateOfPrevious };
+    return { model: stripped, bulkUri: bulkUris[i] || undefined, duplicateOfPrevious: f.raw.duplicateOfPrevious };
   });
   // Include the combined model when present (multi-frame captures only).
   // Strip per-frame data (DMA/copper/registers) — combined view shows CPU/time data only.
