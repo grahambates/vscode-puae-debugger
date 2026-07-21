@@ -46,8 +46,12 @@ cd "$SCRIPT_DIR"
 
 # Shared compiler flags — use libretro-uae headers (no USE_LIBRETRO_VFS,
 # which would redefine FILE→RFILE and clash with emscripten's emscripten.h).
+# -flto=thin: matches Stage 1's libretro-uae Makefile (see its own comment on this
+# same flag) — must be set consistently on every object that ends up in the Stage 4
+# final link for cross-module inlining (e.g. puae_debug_instructionHook into
+# newcpu.c's dispatch loop) to actually happen there.
 GRAFT_FLAGS=(
-    -DHAVE_MEMALIGN -DHAVE_ASPRINTF -O2
+    -DHAVE_MEMALIGN -DHAVE_ASPRINTF -O3 -flto=thin
     -std=gnu99 -DINLINE=inline -D__LIBRETRO__
     -I "$LUAE/sources/src"
     -I "$LUAE/sources/src/include"
@@ -141,7 +145,7 @@ EXPORTED_FUNCTIONS='["_main","_wasm_boot","_wasm_tick","_wasm_get_frame_count","
     -include emscripten/emscripten.h \
     -I "$LUAE/libretro-common/include" \
     -I "$LUAE/sources/src/include" \
-    -O2 \
+    -O3 -flto=thin \
     -s MODULARIZE=1 \
     -s EXPORT_NAME=createPuaeModule \
     -s "EXPORTED_FUNCTIONS=$EXPORTED_FUNCTIONS" \
