@@ -83,6 +83,16 @@ export abstract class WebviewEmulator implements Emulator {
   // hover tooltip) without round-tripping through the adapter.
   protected sourceMap?: SourceMap;
 
+  // Lazily created by getPerfLog() below, on first use from handlePanelMessage's
+  // "perf-overrun"/"perf-checkpoint" handling.
+  private perfLog?: vscode.OutputChannel;
+
+  // Previous "perf-checkpoint" heap sample (see handlePanelMessage below), so each new
+  // sample can log a delta rather than just an absolute size — undefined until the first
+  // sample arrives (or forever, on a non-Chromium engine where performance.memory doesn't
+  // exist and rpc.ts's pushSnapshot always sends heapUsedBytes: null).
+  private lastHeapUsedMB?: number;
+
   constructor(protected readonly extensionUri: vscode.Uri) {}
 
   public setSourceMap(sourceMap: SourceMap | undefined): void {
@@ -210,6 +220,20 @@ export abstract class WebviewEmulator implements Emulator {
   public dispose(): void {
     this.rejectPendingRpcs(new Error("Webview disposed"));
     this.panel?.dispose();
+    this.perfLog?.dispose();
+  }
+
+  /**
+   * Lazily creates (or returns the existing) "PUAE Performance" output channel —
+   * shared by the perf-overrun and perf-checkpoint handling below, both jerky-
+   * playback diagnostics. Most sessions never trigger either, so there's no
+   * reason to create (and show up in) VS Code's Output dropdown for every session.
+   */
+  private getPerfLog(): vscode.OutputChannel {
+    if (!this.perfLog) {
+      this.perfLog = vscode.window.createOutputChannel("PUAE Performance");
+    }
+    return this.perfLog;
   }
 
   /**
@@ -258,6 +282,56 @@ export abstract class WebviewEmulator implements Emulator {
       });
     } else if (message.type === "openSource") {
       void openSourceLocation(message.path, message.line);
+    } else if (message.type === "perf-overrun") {
+      // app.ts's frame() aggregates frame-budget overruns (jerky-playback triage) and
+      // reports them at most once a second, here as well as via the webview's own
+      // console.warn. Routing a copy here matters specifically because the webview's
+      // DevTools (needed to see console.warn at all) measurably slows down JS/wasm
+      // execution on its own — confirmed directly, overruns were far more frequent and
+      // severe with DevTools attached — so console.warn alone can't give a clean read on
+      // how often this happens in ordinary use. An Output channel has no such cost.
+      const m = message as {
+        budgetMs: number;
+        callbackGapOverruns: number;
+        callbackGapOverrunMaxMs: number;
+        frameOverruns: number;
+        frameOverrunMaxMs: number;
+        avgWasmMs: number;
+        avgGpuMs: number;
+      };
+      this.getPerfLog().appendLine(
+        `[${new Date().toLocaleTimeString()}] budget overruns in the last ~1s (budget ${m.budgetMs.toFixed(1)}ms): ` +
+        `${m.callbackGapOverruns} late tick callback(s) (max ${m.callbackGapOverrunMaxMs.toFixed(1)}ms since previous), ` +
+        `${m.frameOverruns} slow frame() call(s) (max ${m.frameOverrunMaxMs.toFixed(1)}ms, ` +
+        `avg wasm=${m.avgWasmMs.toFixed(1)}ms avg gpu=${m.avgGpuMs.toFixed(1)}ms of that)`,
+      );
+    } else if (message.type === "perf-checkpoint") {
+      // rpc.ts's pushSnapshot reports every stepBack/continueReverse checkpoint capture —
+      // a fresh multi-MB buffer allocated roughly once a second during a free-run, retained
+      // in a rolling history. Logged to the same channel as "perf-overrun" above (not
+      // aggregated — this only fires ~once/sec, never at frame rate) specifically so the two
+      // can be correlated by eye: a periodic burst of slow frame() calls lining up with
+      // checkpoint captures would point at checkpoint-driven GC pressure, not the wasm CPU
+      // core itself, as the actual cause of a jerky-playback report.
+      const m = message as {
+        bytes: number;
+        captureMs: number;
+        historyLength: number;
+        historyCap: number;
+        heapUsedBytes: number | null;
+      };
+      let heapPart = "";
+      if (m.heapUsedBytes !== null) {
+        const heapMB = m.heapUsedBytes / (1024 * 1024);
+        const deltaMB = this.lastHeapUsedMB !== undefined ? heapMB - this.lastHeapUsedMB : undefined;
+        const deltaPart = deltaMB !== undefined ? ` (Δ ${deltaMB >= 0 ? "+" : ""}${deltaMB.toFixed(1)}MB)` : "";
+        heapPart = `, heap: ${heapMB.toFixed(1)}MB${deltaPart}`;
+        this.lastHeapUsedMB = heapMB;
+      }
+      this.getPerfLog().appendLine(
+        `[${new Date().toLocaleTimeString()}] checkpoint: captured ${(m.bytes / (1024 * 1024)).toFixed(2)}MB ` +
+        `in ${m.captureMs.toFixed(1)}ms (history: ${m.historyLength}/${m.historyCap})${heapPart}`,
+      );
     }
 
     // Notify all registered listeners about this message

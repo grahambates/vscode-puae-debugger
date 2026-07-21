@@ -23,6 +23,12 @@ import type { PuaeModule } from "./types";
 // until it overflowed (an audible click), no matter how big the buffer was.
 const PAL_FPS = 49.92041015625;
 
+// The nominal wall-clock interval between tick-worker callbacks at 1x speed
+// (~20.03ms) — both the interval startTickWorker is started with below and the
+// budget frame()'s overrun diagnostics (see FRAME_BUDGET_MS's uses) compare
+// against.
+const FRAME_BUDGET_MS = 1000 / PAL_FPS;
+
 // In warp mode, run as many ticks as fit in this time budget per tick-worker
 // callback (which itself fires every 1000/PAL_FPS ms), leaving headroom in
 // each callback for rendering/audio/RPC handling.
@@ -526,6 +532,60 @@ export async function main(config: MainConfig = {}): Promise<void> {
     glContextLost = false;
     hasDrawnFrame = false;
   });
+
+  // Frame-budget overrun diagnostics (jerky-playback triage): counts + peak lateness for
+  // both signals frame() below checks, flushed to the console at most once a second — and
+  // only when something actually overran, so a healthy session stays silent. Logging each
+  // overrun individually was tried first and made things WORSE: console output while devtools
+  // is open is itself expensive enough to visibly stutter playback, and once overruns start
+  // (each slow tick logging more) that cost compounds. Aggregating keeps this useful without
+  // it becoming part of the jank it's meant to diagnose.
+  let overrunLogWindowStart = 0;
+  let callbackGapOverruns = 0, callbackGapOverrunMaxMs = 0;
+  let frameOverruns = 0, frameOverrunMaxMs = 0;
+  // Summed (not maxed) wasm-tick and GPU-draw time across just the overrun frames, so the
+  // flush below can report an average breakdown of where an overrun frame's time actually
+  // went — cheap running sums, no per-frame allocation.
+  let frameOverrunWasmSumMs = 0, frameOverrunGpuSumMs = 0;
+  function flushOverrunLogIfDue(ts: number): void {
+    if (ts - overrunLogWindowStart < 1000) return;
+    if (callbackGapOverruns > 0 || frameOverruns > 0) {
+      const avgWasmMs = frameOverruns > 0 ? frameOverrunWasmSumMs / frameOverruns : 0;
+      const avgGpuMs = frameOverruns > 0 ? frameOverrunGpuSumMs / frameOverruns : 0;
+      console.warn(
+        `[puae] budget overruns in the last ~1s (budget ${FRAME_BUDGET_MS.toFixed(1)}ms): ` +
+        `${callbackGapOverruns} late tick callback(s) (max ${callbackGapOverrunMaxMs.toFixed(1)}ms since previous), ` +
+        `${frameOverruns} slow frame() call(s) (max ${frameOverrunMaxMs.toFixed(1)}ms, ` +
+        `avg wasm=${avgWasmMs.toFixed(1)}ms avg gpu=${avgGpuMs.toFixed(1)}ms of that)`,
+      );
+      // Also report to the extension host's "PUAE Performance" output channel (see
+      // webviewEmulator.ts's handlePanelMessage) — unlike the console.warn above, this is
+      // visible WITHOUT opening the webview's DevTools, which itself measurably slows down
+      // JS/wasm execution (confirmed directly: overruns are far more frequent and severe with
+      // DevTools attached than without), confounding exactly the measurement this diagnostic
+      // exists to take. Only available inside the real VS Code webview — vscode is undefined
+      // in debug.html standalone.
+      if (vscode) {
+        vscode.postMessage({
+          type: "perf-overrun",
+          budgetMs: FRAME_BUDGET_MS,
+          callbackGapOverruns,
+          callbackGapOverrunMaxMs,
+          frameOverruns,
+          frameOverrunMaxMs,
+          avgWasmMs,
+          avgGpuMs,
+        });
+      }
+    }
+    overrunLogWindowStart = ts;
+    callbackGapOverruns = 0;
+    callbackGapOverrunMaxMs = 0;
+    frameOverruns = 0;
+    frameOverrunMaxMs = 0;
+    frameOverrunWasmSumMs = 0;
+    frameOverrunGpuSumMs = 0;
+  }
 
   // Drive at exactly 50 Hz PAL using a cumulative due-frames counter so the tick
   // fires at the right wall-clock time regardless of the display refresh rate.
@@ -1092,6 +1152,23 @@ export async function main(config: MainConfig = {}): Promise<void> {
       M._wasm_set_cycle_exact(effectiveWarp ? 0 : 1);
     }
 
+    // Diagnostic: did this tick-worker callback itself arrive late — i.e. was the
+    // main thread busy elsewhere (GC, another webview task, VS Code's own UI
+    // thread) between the previous frame() call and this one? Distinct from
+    // frame() itself running long (checked near the end of this function, after
+    // the tick/draw work) — this instead flags a stall that happened BEFORE
+    // frame() even started. Skipped in warp mode, which intentionally uses most/
+    // all of each callback's interval by design (see WARP_TICK_BUDGET_MS) —
+    // logging there would just be noise. Threshold is 150% of FRAME_BUDGET_MS to
+    // allow for ordinary timer jitter. See flushOverrunLogIfDue's comment above
+    // for why this aggregates instead of logging immediately.
+    const callbackGapMs = ts - lastTs;
+    if (!effectiveWarp && callbackGapMs > FRAME_BUDGET_MS * 1.5) {
+      callbackGapOverruns++;
+      if (callbackGapMs > callbackGapOverrunMaxMs) callbackGapOverrunMaxMs = callbackGapMs;
+    }
+    flushOverrunLogIfDue(ts);
+
     // Accumulate emulated time scaled by speedFactor, so changing speed
     // mid-session doesn't cause a discontinuous jump in dueFrames. Use the
     // AudioContext clock as the source while it's actually driving audio
@@ -1259,6 +1336,24 @@ export async function main(config: MainConfig = {}): Promise<void> {
     // call's own tick loop, if any) so the comparison next time is accurate.
     lastFbFrameCount = M._wasm_get_frame_count();
 
+    // Diagnostic: how long did frame() itself take this callback (tick loop +
+    // breakpoint/attach handling + GPU upload/draw + bookkeeping above)? Distinct
+    // from the callback-gap check above (which flags a stall BEFORE frame()
+    // started) — this instead flags frame()'s own work eating into (or past) the
+    // next callback's budget, which is what actually causes a skipped/late tick.
+    // Skipped in warp mode, same reasoning as the callback-gap check. NOT skipped
+    // while catching up a backlog (ranCount > 1) — that's a real, useful signal
+    // ("overran while paying back frames dropped during an earlier stall"), not
+    // noise to suppress.
+    const frameWallMs = performance.now() - ts;
+    if (!effectiveWarp && frameWallMs > FRAME_BUDGET_MS) {
+      frameOverruns++;
+      if (frameWallMs > frameOverrunMaxMs) frameOverrunMaxMs = frameWallMs;
+      frameOverrunWasmSumMs += tTickEnd - tTickStart;
+      frameOverrunGpuSumMs += tGpuEnd - tGpuStart;
+    }
+    flushOverrunLogIfDue(ts);
+
     if (ranCount > 0) {
       fpsCnt += ranCount;
       if (ts - fpsTime >= 1000) {
@@ -1281,5 +1376,5 @@ export async function main(config: MainConfig = {}): Promise<void> {
   // wall-clock timestamps, so it doesn't care that ticks now come from a
   // timer instead of the display's refresh rate — tying the tick rate to
   // PAL_FPS just means one tick is due per call in the steady state.
-  startTickWorker(frame, 1000 / PAL_FPS);
+  startTickWorker(frame, FRAME_BUDGET_MS);
 }

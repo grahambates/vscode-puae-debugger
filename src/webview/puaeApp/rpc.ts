@@ -20,6 +20,18 @@ import type {
   PuaeRpcResultValue,
 } from "../../shared/puaeRpcProtocol";
 
+// Chrome/Electron-only, non-standard API (not in lib.dom.d.ts, hence this ad-hoc
+// augmentation) — used only for pushSnapshot's heap-size sample below (jerky-playback
+// GC-pressure triage). undefined on non-Chromium engines; read with ?. everywhere.
+interface PerformanceMemory {
+  usedJSHeapSize: number;
+}
+declare global {
+  interface Performance {
+    memory?: PerformanceMemory;
+  }
+}
+
 // Must match frontend_shim.c's `#define MEM_BUF_CAP 4096` â€” wasm_read_memory
 // clamps to this per call, so larger reads are chunked below.
 const MEM_BUF_CAP = 4096;
@@ -400,8 +412,32 @@ export function setupRpcDispatcher(
     ) {
       snapshotHistory.pop();
     }
-    snapshotHistory.push({ bytes: captureSnapshot(M), pc, instrCount });
+    // Timed (jerky-playback triage — see webviewEmulator.ts's "perf-checkpoint" handling):
+    // this allocates a fresh multi-MB buffer roughly once a second during a free-run (see
+    // this function's own doc comment above) and retains up to MAX_SNAPSHOT_HISTORY of them
+    // — a sustained allocation rate that's a plausible source of periodic GC pauses. Reporting
+    // every call (not aggregated) is fine here, unlike frame()'s per-tick diagnostics: this
+    // only runs ~once/sec during a free-run (or once per discrete step command otherwise),
+    // never at frame rate.
+    const tCaptureStart = performance.now();
+    const bytes = captureSnapshot(M);
+    const captureMs = performance.now() - tCaptureStart;
+    snapshotHistory.push({ bytes, pc, instrCount });
     if (snapshotHistory.length > MAX_SNAPSHOT_HISTORY) snapshotHistory.shift();
+    postMessage({
+      type: "perf-checkpoint",
+      bytes: bytes.length,
+      captureMs,
+      historyLength: snapshotHistory.length,
+      historyCap: MAX_SNAPSHOT_HISTORY,
+      // Piggybacks on this same ~once/sec cadence to sample overall JS heap usage — a
+      // sawtooth that drops right around a "slow frame()" burst (see webviewEmulator.ts's
+      // perf-checkpoint handling) would point at general GC pressure from the render loop's
+      // cumulative small allocations (audio resampling, postMessage payloads, ...) as the
+      // actual mechanism, distinct from — and not something this checkpoint capture's own
+      // small, constant ~5ms cost could explain on its own. null on non-Chromium engines.
+      heapUsedBytes: performance.memory?.usedJSHeapSize ?? null,
+    });
   }
 
   function getCpuInfo(): PuaeRpcResult<"getCpuInfo"> {
