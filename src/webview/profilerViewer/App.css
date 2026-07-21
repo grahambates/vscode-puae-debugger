@@ -36,20 +36,24 @@ body {
 /* Fixed width so the capture button doesn't resize when its label toggles between
    "Capture frame" and "Capturing…" (sized for the wider label). */
 .toolbar .capture-btn {
-  min-width: 9em;
   text-align: center;
+}
+
+.toolbar .capture-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 
 /* Frames input (number of frames to capture) in the toolbar */
 .toolbar .frames-label {
-  margin-left: 6px;
   color: var(--vscode-foreground);
   font-size: 12px;
   opacity: 0.8;
   white-space: nowrap;
 }
 .toolbar .frames-input {
-  width: 4em;
+  width: 3em;
   background: var(--vscode-input-background);
   color: var(--vscode-input-foreground);
   border: 1px solid var(--vscode-input-border, transparent);
@@ -156,7 +160,7 @@ body {
 .filmstrip-fullframe-popup img {
   display: block;
   max-width: calc(100vw - 8px); /* 4px left offset + 4px right margin */
-  max-height: 568px;
+  max-height: 284px;
   image-rendering: pixelated;
 }
 
@@ -609,6 +613,17 @@ body {
 
 .tip-val > .bt-eh:first-child {
   margin-left: 0;
+}
+
+/* A channel's pointer address in the Blitter view's detail pane — jumps the Memory tab to that
+   address in visual mode (see BlitDetail.tsx's onOpenMemory). */
+.bt-addr-link {
+  color: var(--vscode-terminal-foreground);
+  text-decoration: none;
+}
+
+.bt-addr-link:hover {
+  text-decoration: underline;
 }
 
 /* Flag / minterm / channel chip (used in the value column). UI font, not monospace (matches the

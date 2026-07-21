@@ -134,10 +134,16 @@ export function MemoryView({
   selectedSlot,
   onSelectSlot,
   onOpenSource,
+  jumpRequest,
 }: {
   selectedSlot: number | undefined;
   onSelectSlot: (slot: number) => void;
   onOpenSource: (file: string, line: number, toSide: boolean) => void;
+  // A one-shot "jump to this address in visual mode" request (e.g. a channel pointer clicked in
+  // the Blitter view) — a fresh object every time, even for a repeat address, so the effect below
+  // re-fires. undefined = no pending request. `bytesPerRow`, if given, also sets the visual view's
+  // row width (e.g. that channel's blit width + modulo) so the image lines up with its actual stride.
+  jumpRequest?: { address: number; bytesPerRow?: number };
 }) {
   const model = getProfileModel();
   const dma = model?.dma;
@@ -145,20 +151,32 @@ export function MemoryView({
   // Captured once, on this instance's first render, before any of its own effects can touch
   // `savedView` — the stable "what to restore on mount" snapshot (see the restore effect below).
   const initialSavedViewRef = useRef(savedView);
-  const [region, setRegion] = useState<Region>(savedView?.region ?? "chip");
+  // Same idea for an incoming jumpRequest: captured once so the region/viewMode initializers
+  // below can start in the RIGHT place directly (no flash of hex/wrong-region before the jump
+  // effect corrects it), and so the ordinary mount-restore effect below knows to stay out of the
+  // way when a jump is already pending at mount.
+  const initialJumpRef = useRef(jumpRequest);
+  const initialJumpResolved = initialJumpRef.current && snapshot
+    ? resolveMemoryRegion(initialJumpRef.current.address, snapshot)
+    : undefined;
+  const [region, setRegion] = useState<Region>(initialJumpResolved?.region ?? savedView?.region ?? "chip");
   const [follow, setFollow] = useState(savedView?.follow ?? true);
   const [colorCode, setColorCode] = useState(savedView?.colorCode ?? true); // live memory viewer's default
-  const [viewMode, setViewMode] = useState<"hex" | "visual">("hex");
+  const [viewMode, setViewMode] = useState<"hex" | "visual">(initialJumpRef.current ? "visual" : "hex");
   const visualRef = useRef<MemoryVisualAPI>(null);
   // Keep a ref so scrollToByteOffset stays stable (no viewMode dep → no callback cascade).
   const viewModeRef = useRef(viewMode);
   useEffect(() => { viewModeRef.current = viewMode; }, [viewMode]);
 
   // Unified scroller: routes to the hex List or visual canvas depending on current view mode.
+  // `widthBytes` (visual mode only — e.g. a blit channel's width+modulo) also sets the row width.
+  // `align` "smart" (Follow Writes) only scrolls if the target isn't already visible, matching
+  // react-window's own "smart" semantics for the hex List — MemoryVisual implements the same for
+  // the visual canvas, which has no such built-in behaviour of its own.
   // Declared early (before any effects that call it) so it's in scope throughout.
-  const scrollToByteOffset = useCallback((off: number, align: "start" | "smart" = "start", alignOff?: number) => {
+  const scrollToByteOffset = useCallback((off: number, align: "start" | "smart" = "start", alignOff?: number, widthBytes?: number) => {
     if (viewModeRef.current === "visual") {
-      visualRef.current?.scrollToOffset(off, alignOff);
+      visualRef.current?.scrollToOffset(off, alignOff, widthBytes, align);
     } else {
       listRef.current?.scrollToRow({ index: Math.floor(off / BYTES_PER_ROW), align });
     }
@@ -300,6 +318,7 @@ export function MemoryView({
   // not an already-stable one) — whereas the identical scrollToRow call from a user-initiated
   // combo-box jump (after the List has been live for a while) works fine.
   useEffect(() => {
+    if (initialJumpRef.current) return; // the jumpRequest effect below owns the initial scroll instead
     if (currentWrite) return; // existing effect already handles the "is a write" case
     const saved = initialSavedViewRef.current;
     if (saved?.topAddress !== undefined && saved.region === region) {
@@ -427,6 +446,24 @@ export function MemoryView({
     },
     [snapshot, scrollToByteOffset, model],
   );
+
+  // External jump requests (e.g. a blit's channel pointer, clicked in the Blitter view): switch to
+  // visual mode and scroll to the address, same resolve-and-align logic as jumpToAddress. A fresh
+  // jumpRequest object (even for a repeat address) re-fires this. On mount with a request already
+  // pending, region/viewMode were already set correctly by the state initializers above, so
+  // setRegion/setViewMode below are no-ops there — only the (rAF-deferred, for the same reason as
+  // the mount-restore effect above) scroll itself does new work.
+  useEffect(() => {
+    if (!jumpRequest || !snapshot) return;
+    const resolved = resolveMemoryRegion(jumpRequest.address, snapshot);
+    if (!resolved) return;
+    setViewMode("visual");
+    setRegion(resolved.region);
+    const base = resolved.region === "chip" ? 0 : SLOW_BASE;
+    const alignOff = symAlignOff(jumpRequest.address, base, model?.symbols);
+    const raf = requestAnimationFrame(() => scrollToByteOffset(resolved.offset, "start", alignOff, jumpRequest.bytesPerRow));
+    return () => cancelAnimationFrame(raf);
+  }, [jumpRequest, snapshot, scrollToByteOffset, model]);
 
   const jumpToRegion = useCallback((r: Region) => {
     setRegion(r);
@@ -585,6 +622,7 @@ export function MemoryView({
           onByteClick={onByteClick}
           onByteHover={onByteHover}
           onByteLeave={onByteLeave}
+          initialBytesPerRow={initialJumpRef.current?.bytesPerRow}
         />
       )}
       {hover && hoverInfo && (

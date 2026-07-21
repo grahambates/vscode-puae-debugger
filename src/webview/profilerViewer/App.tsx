@@ -114,6 +114,14 @@ export function App() {
   // Symbols are session-constant, so the host sends them only on the first capture; cache
   // them here and merge into every model so the rest of the webview always sees model.symbols.
   const symbolsRef = useRef<ISymbol[] | undefined>(undefined);
+  // The workspace folder's fsPath (sent with every captureResult), for displaying source paths
+  // relative to it in the flame graph hover — see FlameGraph's `workspaceRoot` prop.
+  const [workspaceRoot, setWorkspaceRoot] = useState<string | undefined>(undefined);
+  // One-shot "jump to this address in the Memory tab's visual mode" request, set by clicking a
+  // channel pointer in the Blitter view's detail pane. A fresh object every time (even a repeat
+  // address) so MemoryView's effect re-fires — see its `jumpRequest` prop. `bytesPerRow` is that
+  // channel's actual row stride (BlitDetail.tsx's channelStrideBytes), for aligning visual mode.
+  const [memoryJumpRequest, setMemoryJumpRequest] = useState<{ address: number; bytesPerRow?: number } | undefined>(undefined);
 
   // Multi-frame filmstrip state.
   const [frames, setFrames] = useState<FrameInfo[]>([]);
@@ -217,6 +225,7 @@ export function App() {
       const m = event.data as ProfilerOutboundMessage;
       if (m.command === "captureResult") {
         setSelectedSlot(0);
+        setWorkspaceRoot(m.workspaceRoot);
         // Symbols are sent only in frames[0] on the first post; cache and merge into all frames.
         const firstModel = m.frames[0]?.model;
         if (firstModel?.symbols) symbolsRef.current = firstModel.symbols;
@@ -487,8 +496,19 @@ export function App() {
       };
       return <CopperView selectedSlot={copperSlot} onSelectSlot={onCopperSelectSlot} onOpenSource={openSource} />;
     }
-    if (tab === "blitter") return <BlitterView selectedSlot={selectedSlot} onSelectSlot={setSelectedSlot} displayUnit={unit} timing={timing} />;
-    if (tab === "memory") return <MemoryView selectedSlot={selectedSlot} onSelectSlot={setSelectedSlot} onOpenSource={openSource} />;
+    if (tab === "blitter") return (
+      <BlitterView
+        selectedSlot={selectedSlot}
+        onSelectSlot={setSelectedSlot}
+        displayUnit={unit}
+        timing={timing}
+        onOpenMemory={(address, bytesPerRow) => {
+          setMemoryJumpRequest({ address, bytesPerRow });
+          setTab("memory");
+        }}
+      />
+    );
+    if (tab === "memory") return <MemoryView selectedSlot={selectedSlot} onSelectSlot={setSelectedSlot} onOpenSource={openSource} jumpRequest={memoryJumpRequest} />;
     if (tab === "screen") return <ResourcesView selectedSlot={selectedSlot} model={screenModel} />;
     return <DisassemblyView selectedSlot={selectedSlot} onSelectSlot={setSelectedSlot} onOpenSource={openSource} sourceFiles={sourceFiles} onRequestSourceFile={requestSourceFile} />;
   };
@@ -531,39 +551,34 @@ export function App() {
     </div>
   );
 
-  const captureLabel = numFrames === 1
-    ? (busy ? "Capturing…" : "Capture frame")
-    : (busy ? `Capturing ${numFrames} frames…` : `Capture ${numFrames} frames`);
-
   return (
     <div className="profiler">
       <div className="toolbar">
         {mode === "live" && (
           <>
-            <button className="capture-btn" onClick={capture} disabled={busy}>
-              {captureLabel}
-            </button>
-            <button onClick={save} disabled={busy || !model} title="Save this capture to a .puaeprofile file">
-              Save
-            </button>
-            <label className="frames-label" title="Number of frames to capture per click">Frames</label>
-            <input
-              className="frames-input"
-              type="number"
-              min={1}
-              max={500}
-              value={numFramesText}
-              disabled={busy}
-              onChange={(e) => {
-                setNumFramesText(e.target.value);
-                const n = parseInt(e.target.value, 10);
-                if (!Number.isNaN(n) && n >= 1 && n <= 500) {
-                  setNumFrames(n);
-                  vscode.postMessage({ command: "setNumFrames", numFrames: n });
-                }
-              }}
-              onBlur={() => setNumFramesText(String(numFrames))}
-            />
+            <div className="capture-group">
+              <button className="capture-btn" onClick={capture} disabled={busy}>
+                Capture
+              </button>
+              <input
+                className="frames-input"
+                type="number"
+                min={1}
+                max={500}
+                value={numFramesText}
+                disabled={busy}
+                onChange={(e) => {
+                  setNumFramesText(e.target.value);
+                  const n = parseInt(e.target.value, 10);
+                  if (!Number.isNaN(n) && n >= 1 && n <= 500) {
+                    setNumFrames(n);
+                    vscode.postMessage({ command: "setNumFrames", numFrames: n });
+                  }
+                }}
+                onBlur={() => setNumFramesText(String(numFrames))}
+              />
+              <label className="frames-label" title="Number of frames to capture per click">frame(s)</label>
+            </div>
           </>
         )}
         {model && (
@@ -602,6 +617,11 @@ export function App() {
                 </option>
               ))}
             </select>
+            {mode === "live" && (
+              <button onClick={save} disabled={busy || !model} title="Save this capture to a .puaeprofile file">
+                Save profile
+              </button>
+            )}
           </>
         )}
       </div>
@@ -675,7 +695,7 @@ export function App() {
         </div>
       )}
       {error && <div className="error">{error}</div>}
-      {model ? (
+      {(model && !busy) ? (
         <div className="split-pane" ref={splitPaneRef}>
           <FlameGraph
             displayUnit={unit}
@@ -683,7 +703,9 @@ export function App() {
             onOpenSource={openSource}
             selectedSlot={selectedSlot}
             onSelectSlot={setSelectedSlot}
+            onOpenBlitterTab={() => setLeftTab("blitter")}
             heightOverridePx={flameHeightPx}
+            workspaceRoot={workspaceRoot}
           />
           <div className="split-divider" onMouseDown={onFlameDividerMouseDown} />
           <div

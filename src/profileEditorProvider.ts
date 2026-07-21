@@ -85,7 +85,12 @@ export class ProfileEditorProvider implements vscode.CustomReadonlyEditorProvide
         if (frames) {
           const { frames: result, combinedModel, symbolsNowSent } = stripFramesForPost(frames, symbolsSent, bulkUris);
           symbolsSent = symbolsNowSent;
-          webviewPanel.webview.postMessage({ command: "captureResult", frames: result, combinedModel });
+          webviewPanel.webview.postMessage({
+            command: "captureResult",
+            frames: result,
+            combinedModel,
+            workspaceRoot: vscode.workspace.workspaceFolders?.[0]?.uri.fsPath,
+          });
         } else {
           webviewPanel.webview.postMessage({ command: "showError", error: loadError ?? "Failed to load profile" });
         }

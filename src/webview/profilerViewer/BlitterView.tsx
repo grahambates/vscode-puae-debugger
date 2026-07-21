@@ -17,11 +17,15 @@ export function BlitterView({
   onSelectSlot,
   displayUnit,
   timing,
+  onOpenMemory,
 }: {
   selectedSlot: number | undefined;
   onSelectSlot: (slot: number) => void;
   displayUnit: DisplayUnit;
   timing: Timing;
+  // Jumps the Memory tab to a channel's pointer address in visual mode, at that channel's actual
+  // row stride — see BlitDetail.tsx's channelStrideBytes.
+  onOpenMemory: (address: number, bytesPerRow?: number) => void;
 }) {
   const model = getProfileModel();
   const dma = model?.dma;
@@ -83,7 +87,7 @@ export function BlitterView({
       </div>
       {current && currentInfo && (
         <div className="bv-detail">
-          <BlitDetailGrid blit={current} info={currentInfo} symbolize={symbolize} displayUnit={displayUnit} timing={timing} />
+          <BlitDetailGrid blit={current} info={currentInfo} symbolize={symbolize} displayUnit={displayUnit} timing={timing} onOpenMemory={onOpenMemory} />
         </div>
       )}
     </div>

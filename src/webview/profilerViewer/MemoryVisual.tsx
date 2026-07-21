@@ -12,7 +12,15 @@ const PIXELS_PER_BYTE = 8;  // each byte → 8 horizontal pixels (one per bit, M
 const BUFFER_ROWS = 20;     // extra rows rendered beyond the visible viewport
 
 export interface MemoryVisualAPI {
-  scrollToOffset(off: number, alignOff?: number): void;
+  // `widthBytes`, if given (and in range), also sets the row width — e.g. a blit's channel
+  // width+modulo, so the image lines up with that buffer's actual stride instead of whatever
+  // width happened to be set before. Applied atomically with the alignment phase (see
+  // skipNextPhaseResetRef below) so the two don't fight across renders.
+  // `align`: "start" (default) always (re)centres the target row, for a deliberate jump (combo
+  // box, blit link, ...). "smart" — mirroring react-window's List align mode, for Follow Writes —
+  // only scrolls if the target row isn't already fully visible, so scrubbing through consecutive
+  // writes to the same on-screen buffer doesn't re-centre on every single one.
+  scrollToOffset(off: number, alignOff?: number, widthBytes?: number, align?: "start" | "smart"): void;
 }
 
 interface Props {
@@ -26,14 +34,20 @@ interface Props {
   onByteClick: (addr: number, jumpToSource: boolean, toSide: boolean, forward: boolean) => void;
   onByteHover: (addr: number, x: number, y: number) => void;
   onByteLeave: () => void;
+  // Initial row width (1..512), e.g. from a blit jump request that arrived before this component
+  // ever mounted — lets the very first render already use it instead of the 40-byte default.
+  initialBytesPerRow?: number;
 }
 
 export const MemoryVisual = forwardRef<MemoryVisualAPI, Props>(function MemoryVisual({
   getByte, getFadeOpacity, bufLength, bufVersion, fadeTick, baseAddr, highlightOffset,
-  onByteClick, onByteHover, onByteLeave,
+  onByteClick, onByteHover, onByteLeave, initialBytesPerRow,
 }, ref) {
-  const [bytesPerRow, setBytesPerRow] = useState(40); // 40 bytes = 320px lores bitplane row
-  const [bytesPerRowInput, setBytesPerRowInput] = useState("40");
+  const validInitialWidth = initialBytesPerRow && initialBytesPerRow >= 1 && initialBytesPerRow <= 512
+    ? initialBytesPerRow
+    : undefined;
+  const [bytesPerRow, setBytesPerRow] = useState(validInitialWidth ?? 40); // 40 bytes = 320px lores bitplane row
+  const [bytesPerRowInput, setBytesPerRowInput] = useState(String(validInitialWidth ?? 40));
   const [scale, setScale] = useState(2);
   // rowPhase: number of leading "empty" columns before byte 0. When set to
   // (bytesPerRow - addr%bytesPerRow) % bytesPerRow, the selected address lands
@@ -43,6 +57,11 @@ export const MemoryVisual = forwardRef<MemoryVisualAPI, Props>(function MemoryVi
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const [visibleRange, setVisibleRange] = useState({ first: 0, last: 0 });
+  // Tracks the previous bytesPerRow (for the phase-reset effect below) and whether the next
+  // bytesPerRow change came from scrollToOffset itself (which already set the correct phase for
+  // the new width, so that effect should leave rowPhase alone instead of zeroing it).
+  const prevBprRef = useRef(bytesPerRow);
+  const skipNextPhaseResetRef = useRef(false);
 
   const totalRows = bufLength > 0 ? Math.ceil((bufLength + rowPhase) / bytesPerRow) : 0;
   const rowH = scale;
@@ -61,19 +80,34 @@ export const MemoryVisual = forwardRef<MemoryVisualAPI, Props>(function MemoryVi
   useEffect(() => { recalcVisible(); }, [recalcVisible]);
 
   useImperativeHandle(ref, () => ({
-    scrollToOffset(off: number, alignOff = off) {
+    scrollToOffset(off: number, alignOff = off, widthBytes?: number, align: "start" | "smart" = "start") {
+      const widthChanging = widthBytes !== undefined && widthBytes >= 1 && widthBytes <= 512 && widthBytes !== bytesPerRow;
+      const bpr = widthChanging ? widthBytes : bytesPerRow;
       // Compute phase so that `alignOff` (default: same as off) lands at column 0 of its row.
       // Pass a symbol's base offset as alignOff to keep the whole image aligned to that label.
-      const newPhase = (bytesPerRow - alignOff % bytesPerRow) % bytesPerRow;
+      const newPhase = (bpr - alignOff % bpr) % bpr;
       pendingScrollRef.current = { off, phase: newPhase };
-      if (newPhase !== rowPhase) {
+      if (widthChanging) {
+        // Set width and phase together (same tick — React batches this into one render) so the
+        // phase-reset effect below sees skipNextPhaseResetRef and leaves our phase alone instead
+        // of zeroing it out from under us.
+        skipNextPhaseResetRef.current = true;
+        setBytesPerRow(bpr);
+        setRowPhase(newPhase);
+      } else if (newPhase !== rowPhase) {
         setRowPhase(newPhase); // triggers re-render; useLayoutEffect below applies the scroll
       } else {
-        // Phase unchanged: React skips re-render, so apply scroll directly now.
+        // Phase and width unchanged: React skips re-render, so decide/apply the scroll directly
+        // now. "smart" (Follow Writes) only recentres if the row isn't already fully on screen —
+        // otherwise every write to an already-visible buffer would re-centre the view on each one.
         const el = containerRef.current;
         if (el) {
-          const row = Math.floor((off + newPhase) / bytesPerRow);
-          el.scrollTop = Math.max(0, row * rowH - el.clientHeight / 2);
+          const row = Math.floor((off + newPhase) / bpr);
+          const rowTop = row * rowH;
+          const alreadyVisible = rowTop >= el.scrollTop && rowTop + rowH <= el.scrollTop + el.clientHeight;
+          if (align !== "smart" || !alreadyVisible) {
+            el.scrollTop = Math.max(0, rowTop - el.clientHeight / 2);
+          }
         }
         pendingScrollRef.current = null;
       }
@@ -96,12 +130,14 @@ export const MemoryVisual = forwardRef<MemoryVisualAPI, Props>(function MemoryVi
   useEffect(() => { setBytesPerRowInput(String(bytesPerRow)); }, [bytesPerRow]);
 
   // Reset row phase when bytesPerRow changes — the old phase may be >= new width, which
-  // would produce invalid (negative or out-of-bounds) byte offsets in the canvas loop.
-  const prevBprRef = useRef(bytesPerRow);
+  // would produce invalid (negative or out-of-bounds) byte offsets in the canvas loop. Skipped
+  // when scrollToOffset just set width+phase together (skipNextPhaseResetRef) — that phase was
+  // computed FOR the new width and would otherwise get clobbered back to 0 right after.
   useEffect(() => {
     if (bytesPerRow !== prevBprRef.current) {
       prevBprRef.current = bytesPerRow;
-      setRowPhase(0);
+      if (skipNextPhaseResetRef.current) skipNextPhaseResetRef.current = false;
+      else setRowPhase(0);
     }
   }, [bytesPerRow]);
 

@@ -291,6 +291,11 @@ export interface CaptureResultMessage {
   // concatenated (correct aggregate times + combined flame-graph timeline). DMA/copper/registers
   // are omitted (per-frame only). The webview uses this for the "All" filmstrip button.
   combinedModel?: IProfileModel;
+  // The first workspace folder's fsPath, if any (vscode.workspace.workspaceFolders?.[0]). Lets the
+  // webview display source paths (e.g. the flame graph hover) relative to it instead of the full
+  // absolute path baked into the model by the DWARF/stabs symbolizer. Display-only — "open source"
+  // / line-matching still use the model's own (absolute) callFrame.url unchanged.
+  workspaceRoot?: string;
 }
 export interface ProfilerErrorMessage {
   command: "showError";

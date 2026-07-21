@@ -17,6 +17,7 @@ export function BlitDetailGrid({
   displayUnit,
   timing,
   header = true,
+  onOpenMemory,
 }: {
   blit: Blit;
   info: BlitTooltip;
@@ -24,12 +25,26 @@ export function BlitDetailGrid({
   displayUnit: DisplayUnit;
   timing: Timing;
   header?: boolean;
+  // Present only in the Blitter view's own detail pane (not the flame graph's transient hover
+  // tooltip): makes every channel's pointer address (Source A/B/C and Destination) a link that
+  // jumps the Memory tab to that address in visual mode, matching TimeView/DisassemblyView's
+  // "jump to another tab" convention. `bytesPerRow` is that channel's actual memory row stride
+  // (see channelStrideBytes below), so the visual view lines up with the buffer instead of
+  // whatever width happened to be set before.
+  onOpenMemory?: (address: number, bytesPerRow?: number) => void;
 }) {
   const blitAddr = (a: number) => {
     const hex = `$${(a >>> 0).toString(16).padStart(6, "0")}`;
     const sym = symbolize(a);
     return sym ? `${sym} (${hex})` : hex;
   };
+
+  // The blitter advances a channel's pointer by (width*2 + modulo) bytes after each row (width is
+  // in words) — that IS the buffer's real row stride, regardless of the blit's own width in
+  // pixels. abs() because a negative modulo (upward/overlapping blits) still means the same
+  // physical stride; clamped to MemoryVisual's supported row-width range.
+  const channelStrideBytes = (modulo: number): number =>
+    Math.min(512, Math.max(1, Math.abs(blit.width * 2 + modulo)));
 
   return (
     <>
@@ -76,7 +91,17 @@ export function BlitDetailGrid({
                 bin16(ch.literal)
               ) : (
                 <>
-                  <span>{blitAddr(ch.ptr!)}</span>
+                  {onOpenMemory ? (
+                    <a
+                      href="#"
+                      className="bt-addr-link"
+                      onClick={(e) => { e.preventDefault(); onOpenMemory(ch.ptr!, channelStrideBytes(ch.modulo)); }}
+                    >
+                      {blitAddr(ch.ptr!)}
+                    </a>
+                  ) : (
+                    <span>{blitAddr(ch.ptr!)}</span>
+                  )}
                   {ch.shift !== undefined && <><span className="bt-eh">Shift</span> {ch.shift}</>}
                   <span className="bt-eh">Modulo</span> {ch.modulo}
                 </>

@@ -167,9 +167,22 @@ const buildBoxes = (columns: readonly IColumn[], yOffset: number) => {
 
 const QuadEaseInOut = (p: number) => (p < 0.5 ? 2 * p * p : -2 * p * p + 4 * p - 1);
 
-const locText = (loc: ILocation): string | undefined =>
+// Display-only: if `file` sits under `root`, show it relative to root instead of the full
+// absolute path baked into the model by the DWARF/stabs symbolizer. Falls back to the absolute
+// path when there's no workspace root or `file` isn't under it (e.g. a profile loaded on a
+// different machine than it was captured on). Purely cosmetic — onOpenSource/line-matching
+// still use the model's own (unmodified) callFrame.url.
+function relativeToRoot(file: string, root: string | undefined): string {
+  if (!root) return file;
+  const norm = (p: string) => p.replace(/\\/g, "/").toLowerCase();
+  const rootSlash = norm(root).replace(/\/$/, "") + "/";
+  const nFile = norm(file);
+  return nFile.startsWith(rootSlash) ? file.replace(/\\/g, "/").slice(rootSlash.length) : file;
+}
+
+const locText = (loc: ILocation, workspaceRoot: string | undefined): string | undefined =>
   loc.callFrame.url
-    ? `${loc.callFrame.url}${loc.callFrame.lineNumber >= 0 ? `:${loc.callFrame.lineNumber}` : ""}`
+    ? `${relativeToRoot(loc.callFrame.url, workspaceRoot)}${loc.callFrame.lineNumber >= 0 ? `:${loc.callFrame.lineNumber}` : ""}`
     : undefined;
 
 export function FlameGraph({
@@ -178,7 +191,9 @@ export function FlameGraph({
   onOpenSource,
   selectedSlot,
   onSelectSlot,
+  onOpenBlitterTab,
   heightOverridePx,
+  workspaceRoot,
 }: {
   displayUnit: DisplayUnit;
   filter: IRichFilter;
@@ -187,9 +202,18 @@ export function FlameGraph({
   // DMA band. Persists across hover, unlike `dmaHover` — drawn as a vertical marker line.
   selectedSlot?: number;
   onSelectSlot?: (slot: number) => void;
+  // Clicking a blit box jumps the playhead to its start (like a CPU box) AND switches to the
+  // Blitter tab (always the left panel, matching jumpToExecutionAtLine's convention — the flame
+  // graph sits above both panels, so there's no "whichever panel it was clicked from" to reuse).
+  // BlitterView picks up the new selectedSlot itself and highlights/scrolls to that blit.
+  onOpenBlitterTab?: () => void;
   // Manual override for the flame area's height (px), set by dragging the split divider in
   // App.tsx. undefined = auto-size to the (capped) call-stack depth, capped at 70% (default).
   heightOverridePx?: number;
+  // The workspace folder's fsPath (from the captureResult message), for showing the hover
+  // tooltip's source path relative to it rather than the full absolute path. undefined = no
+  // workspace open (or not sent yet) — falls back to the absolute path.
+  workspaceRoot?: string;
 }) {
   // The model is read from the external store (not a prop) so its large arrays never go through
   // React's serializer. FlameGraph is only rendered when a model exists (App guards it), and it
@@ -763,6 +787,11 @@ export function FlameGraph({
         // matching what openProfilerSource expects. Normalize unknown (-1) to 1.
         onOpenSource(loc.callFrame.url, loc.callFrame.lineNumber >= 0 ? loc.callFrame.lineNumber : 1, e.altKey);
       }
+    } else if (isClick && blitHover && onSelectSlot) {
+      // Jump the playhead to the blit's start, same as a CPU box, and switch to the Blitter tab —
+      // BlitterView highlights/scrolls to whichever blit covers selectedSlot on its own.
+      onSelectSlot(blitHover.blit.startSlot);
+      onOpenBlitterTab?.();
     } else if (isClick && dmaHover && onSelectSlot) {
       onSelectSlot(dmaHover.slot);
     }
@@ -816,7 +845,7 @@ export function FlameGraph({
   }, [columns, boxById, focused, bounds, zoomTo]);
 
   const hoverLoc = hovered?.box.loc;
-  const hoverText = hoverLoc ? locText(hoverLoc) : undefined;
+  const hoverText = hoverLoc ? locText(hoverLoc, workspaceRoot) : undefined;
   // Keep the whole filename visible in the middle-ellipsis; only the directory truncates.
   const fileEndChars = hoverText
     ? hoverText.length - (Math.max(hoverText.lastIndexOf("/"), hoverText.lastIndexOf("\\")) + 1)
@@ -895,7 +924,7 @@ export function FlameGraph({
       <div className="canvas-wrap" ref={canvasWrapRef}>
         <canvas
           ref={canvasRef}
-          style={{ cursor: drag ? "grabbing" : hovered ? "pointer" : "default" }}
+          style={{ cursor: drag ? "grabbing" : hovered || blitHover ? "pointer" : "default" }}
           onPointerDown={onPointerDown}
           onPointerMove={onPointerMove}
           onPointerUp={onPointerUp}

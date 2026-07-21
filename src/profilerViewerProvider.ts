@@ -131,7 +131,7 @@ export class ProfilerViewerProvider {
   private postResult(frames: FrameCapture[], bulkUris: string[]): void {
     const { frames: result, combinedModel, symbolsNowSent } = stripFramesForPost(frames, this.symbolsSent, bulkUris);
     this.symbolsSent = symbolsNowSent;
-    this.post({ command: "captureResult", frames: result, combinedModel });
+    this.post({ command: "captureResult", frames: result, combinedModel, workspaceRoot: vscode.workspace.workspaceFolders?.[0]?.uri.fsPath });
   }
 
   private computeRange(message: ComputeRangeMessage): void {
