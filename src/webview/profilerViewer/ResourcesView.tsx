@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { IProfileModel } from "../../shared/profilerTypes";
 import { disassembleCopperInstruction } from "../../shared/copperDisassembler";
 import {
-  buildScreenFromModel, computeBeamPosition, computeHoverExtra, decodeScreenPixels, PixelSnapshot,
+  buildScreenFromModel, computeBeamPosition, computeHoverExtra, computeLineMode, decodeScreenPixels, PixelSnapshot,
 } from "./gfxResources";
 
 interface ResourcesViewProps {
@@ -151,11 +151,20 @@ export function ResourcesView({ model, selectedSlot }: ResourcesViewProps) {
     return <div className="resources-empty">No bitplane display detected in this capture.</div>;
   }
 
-  const { width, height, numPlanes, hires, shres, ham, dpf, staticPlanes, modeChanges } = screen;
-  const modeStr = modeChanges
-    ? "variable mode"
-    : `${numPlanes}-plane${shres ? " super-hires" : hires ? " hires" : " lores"}${ham ? " HAM" : ""}${dpf ? " DPF" : ""}${staticPlanes ? " (7-plane trick)" : ""}`;
-  const info = `${width}×${height} · ${modeStr}`;
+  const { numPlanes, hires, shres, ham, dpf, staticPlanes, modeChanges, diwLeft, diwRight, diwTop, diwBottom } = screen;
+  // The info line used to report the canvas's fixed border size (screen.width/height — a standard
+  // PAL preset, not what was actually displayed) and one frame-wide mode label. Width + mode now
+  // track whatever's in effect at the current playhead position (computeLineMode) instead, so a
+  // copper split that changes plane count/resolution/DIW partway down the frame shows correctly as
+  // you scrub — falling back to the display-start values (same as before) when nothing's selected
+  // yet. Height stays the whole-frame DIW vertical extent: unlike width, "at this line" isn't a
+  // meaningful way to describe a single scanline's height.
+  const lineMode = selectedSlot !== undefined ? computeLineMode(model!, selectedSlot) : undefined;
+  const m = lineMode ?? { numPlanes, hires, shres, ham, dpf, staticPlanes, width: diwRight - diwLeft };
+  const modeStr = `${m.numPlanes}-plane${m.shres ? " super-hires" : m.hires ? " hires" : " lores"}${m.ham ? " HAM" : ""}${m.dpf ? " DPF" : ""}${m.staticPlanes ? " (7-plane trick)" : ""}`;
+  // modeChanges only tracks BPLCON0 (plane count/resolution/HAM/DPF) splits, not a DIW-only
+  // resize — a known gap, same honesty as IScreen.modeChanges's own doc comment.
+  const info = `${m.width}×${diwBottom - diwTop} · ${modeStr}${modeChanges ? " (varies elsewhere in frame)" : ""}`;
 
   // "All" buttons' state is derived (not stored) — same pattern as the emulator webview's
   // channel-visibility toggles: active iff every item currently shown for this group is on.
@@ -196,31 +205,33 @@ export function ResourcesView({ model, selectedSlot }: ResourcesViewProps) {
           <option value="2">2×</option>
           <option value="3">3×</option>
         </select>
-        <span className="resources-bpl-label">BPL</span>
-        {numPlanes > 1 && (
-          <button
-            className={"resources-bpl-btn resources-bpl-all" + (allPlanesOn ? " active" : "")}
-            onClick={() => {
-              const on = !allPlanesOn;
-              setPlaneVis(v => v.map((b, j) => (j < numPlanes ? on : b)));
-            }}
-            title="Toggle all bitplanes"
-          >
-            All
-          </button>
-        )}
-        {Array.from({ length: numPlanes }, (_, i) => (
-          <button
-            key={i}
-            className={"resources-bpl-btn" + (planeVis[i] ? " active" : "")}
-            onClick={(e) => togglePlane(i, e.shiftKey)}
-            title={`${planeVis[i] ? "Hide" : "Show"} bitplane ${i + 1}${numPlanes > 1 ? " (Shift-click to isolate)" : ""}`}
-          >
-            {i + 1}
-          </button>
-        ))}
+        <div className="resources-btn-group">
+          <span className="resources-bpl-label">BPL</span>
+          {numPlanes > 1 && (
+            <button
+              className={"resources-bpl-btn resources-bpl-all" + (allPlanesOn ? " active" : "")}
+              onClick={() => {
+                const on = !allPlanesOn;
+                setPlaneVis(v => v.map((b, j) => (j < numPlanes ? on : b)));
+              }}
+              title="Toggle all bitplanes"
+            >
+              All
+            </button>
+          )}
+          {Array.from({ length: numPlanes }, (_, i) => (
+            <button
+              key={i}
+              className={"resources-bpl-btn" + (planeVis[i] ? " active" : "")}
+              onClick={(e) => togglePlane(i, e.shiftKey)}
+              title={`${planeVis[i] ? "Hide" : "Show"} bitplane ${i + 1}${numPlanes > 1 ? " (Shift-click to isolate)" : ""}`}
+            >
+              {i + 1}
+            </button>
+          ))}
+        </div>
         {activeSpritesMask !== 0 && (
-          <>
+          <div className="resources-btn-group">
             <span className="resources-bpl-label">SPR</span>
             {activeSpriteIndices.length > 1 && (
               <button
@@ -244,7 +255,7 @@ export function ResourcesView({ model, selectedSlot }: ResourcesViewProps) {
                 {i}
               </button>
             ))}
-          </>
+          </div>
         )}
       </div>
       <div className="resources-canvas-wrap">

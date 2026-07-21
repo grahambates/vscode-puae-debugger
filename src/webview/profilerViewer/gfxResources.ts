@@ -359,6 +359,54 @@ export function buildLineRegister(
   });
 }
 
+export interface ILineMode {
+  numPlanes: number;
+  hires: boolean;
+  shres: boolean;
+  ham: boolean;
+  dpf: boolean;
+  staticPlanes: boolean;
+  width: number; // real displayed pixels (DIW HSTART..HSTOP, doubled if hires) — not the canvas width
+}
+
+// The bitplane mode + display-window width actually in effect at a given DMA slot's scanline —
+// for the Screen tab's info line, which used to report the *canvas's* fixed border size and a
+// single frame-wide mode label, misleading whenever a copper split changes plane count/resolution/
+// DIW partway down the frame (see IScreen.modeChanges's doc comment). Reuses buildLineRegister with
+// a 1-line window: `firstLine=vpos, height=1` resolves to "baseline + every write strictly before
+// vpos" then applies vpos's own writes on top — the exact same "a mid-line write affects that
+// write's whole line" convention already used for the full-frame per-line arrays (lineBplcon0Raw
+// etc. in decodeScreenPixels), just evaluated at one line instead of building an array for all of
+// them (this is only ever needed for one line at a time, to back a label).
+//
+// DIWSTRT/DIWSTOP pack HSTART/HSTOP *and* VSTART/VSTOP into the same two registers, so a mid-frame
+// write to them (a real, if uncommon, demo trick for resizing the display window mid-frame) also
+// carries new vertical fields — but re-deriving "vertical extent" doesn't make sense per scanline
+// (a single line has no height), so height is deliberately NOT recomputed here: callers should keep
+// using the whole-frame screen.diwBottom-diwTop for that, and only substitute this width/mode.
+export function computeLineMode(model: IProfileModel, slot: number): ILineMode | undefined {
+  const custom = model.dmaSnapshot?.custom;
+  const copper = model.copper;
+  if (!custom || !copper) return undefined;
+
+  const frameSlots = DMA_HPOS * DMA_VPOS;
+  const vpos = Math.floor((slot % frameSlots) / DMA_HPOS);
+  const isAga = !!model.dmaSnapshot?.agaColors;
+
+  // Same "ignore a transient zero-BPU (blanking) write" convention as buildScreenFromModel's
+  // initial-state scan and decodeScreenPixels' lineBplcon0Raw.
+  const bplcon0 = buildLineRegister(custom, copper, vpos, 1, R.BPLCON0, v => ((v >>> 12) & 7) !== 0)[0];
+  const { numPlanes, hires, shres, ham, dpf, staticPlanes } = decodeBplcon0(bplcon0, isAga);
+
+  const diwstrt = buildLineRegister(custom, copper, vpos, 1, R.DIWSTRT)[0];
+  const diwstop = buildLineRegister(custom, copper, vpos, 1, R.DIWSTOP)[0];
+  const hstart = diwstrt & 0xff;
+  const hstop  = (diwstop & 0xff) + 256; // HSTOP's own hardware-documented wraparound, see buildScreenFromModel
+  const width  = Math.max(0, hstop - hstart) * (hires ? 2 : 1);
+
+  return { numPlanes, hires, shres, ham, dpf, staticPlanes, width };
+}
+
 // Tracks a single custom register's value with *sub-scanline* precision: `start[y]` is the value
 // in effect at the very beginning of line y (hpos=0, i.e. excluding that line's own writes), and
 // `events[y]` is that line's own writes, each carrying the hpos (color clock) it executed at —
