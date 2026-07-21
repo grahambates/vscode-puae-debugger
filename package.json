@@ -515,6 +515,12 @@
                     "boolean"
                   ]
                 }
+              },
+              "bufferFrames": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 128,
+                "description": "Runs the emulator this many frames ahead of what's displayed, smoothing occasional slow-tick jank at the cost of added latency. Unset/0 disables it (the default) — most content only needs a small value (e.g. 10) for smooth playback. Automatically suspended during breakpoints/stepping/pause and while warp mode is on — intended for passively watching a demo/game, not interactive debugging. Each buffered frame is a full RGBA copy (~1.58MB at 720x574), so memory cost is roughly bufferFrames x 1.58MB; keep below ~148 to stay under the audio ring buffer's own capacity or audio will desync ahead of video."
               }
             }
           }

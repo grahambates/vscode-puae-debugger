@@ -54,6 +54,25 @@ const WARP_TICK_BUDGET_MS = 15;
 // a handful of skipped video frames after a long stall is imperceptible.
 const MAX_CATCHUP_FRAMES = 10;
 
+// A "due" backlog at or below this many frames is treated as ordinary tick-worker
+// timer/clock jitter, not a genuine stall (see the jitterMultiTickCallbacks
+// diagnostic that identified this: real captures consistently showed exactly a
+// 2-frame backlog, at a per-tick cost well under budget — i.e. individual ticks
+// were fine, but dueFrames occasionally read one whole frame further ahead than
+// emuFrames purely from accumulated ~20.03ms-callback-interval imprecision, not
+// from anything actually running slow). Within this tolerance, frame()'s normal-
+// mode catch-up loop below runs at most ONE tick this callback and lets the
+// remainder carry over to a later one, instead of immediately running a second
+// tick back-to-back — which both costs ~2x a single tick (a real, avoidable
+// overrun) and silently drops a frame of displayed motion, since only the last
+// tick's framebuffer ever gets drawn. A backlog ABOVE this — a genuine stall,
+// e.g. real main-thread contention or a GC pause — still gets the existing fast,
+// uncapped catch-up via MAX_CATCHUP_FRAMES below: falling further behind there
+// would shrink the audio cushion and risk an audible underrun, which matters far
+// more than the few imperceptible milliseconds of extra display lag this
+// tolerance introduces for routine jitter.
+const JITTER_TOLERANT_BACKLOG_FRAMES = 2;
+
 // How often to take a periodic full-state checkpoint (rpc.pushSnapshot())
 // during a free-run, for stepBack/continueReverse — one per second of
 // emulated time. Rounded; doesn't need PAL_FPS's precision.
@@ -116,6 +135,13 @@ export interface MainConfig {
   // debug.html and any other caller that doesn't pass it.
   expectedProcessName?: string;
   audioWorkletUrl?: string;
+  // Launch-config-only "smooth/buffered playback" mode (no runtime UI toggle — see
+  // bufferedPlaybackEnabled's declaration below for why): runs the emulator this
+  // many frames ahead of what's displayed. Unset/0 disables it (the default) — see
+  // videoQueueCapacity's declaration below for the memory/audio-sync tradeoffs of a
+  // larger value. puaeEmulator.ts's getHtmlForWebview already clamps this to a sane
+  // range before it reaches here.
+  bufferedPlaybackFrames?: number;
   // Called once with the wasm module after boot+warm-up, before the RPC
   // bridge is wired up — debug.html uses this to install its debug UI.
   onModuleReady?: (M: PuaeModule) => void;
@@ -139,9 +165,15 @@ export async function main(config: MainConfig = {}): Promise<void> {
     hardDriveManifestB64 = "",
     expectedProcessName = "file",
     audioWorkletUrl = "./puae_audioprocessor.js",
+    bufferedPlaybackFrames = 0,
     onModuleReady,
     onBreakpoint,
   } = config;
+
+  // Derived once from the single bufferedPlaybackFrames config value — kept as
+  // separate names below since they're each checked/used for a different reason
+  // (a plain boolean gate vs. the actual queue size).
+  const bufferedPlaybackEnabled = bufferedPlaybackFrames > 0;
 
   // True for any non-fastLoad boot that mounts DH0: — either the single-exe disk
   // (programB64) or a mounted host directory (hardDriveManifestB64), whichever
@@ -379,6 +411,10 @@ export async function main(config: MainConfig = {}): Promise<void> {
         M._wasm_reset_audio_accum();
         resetResampler();
         workletNode?.port.postMessage({ reset: true });
+        // Otherwise buffered playback (if active) would be left up to videoQueueCapacity
+        // frames ahead of a freshly-reset (empty) audio stream — a second AV-desync
+        // source distinct from the one flushBuffered() itself guards against.
+        flushVideoQueue();
       }
       audioWasRunning = running;
       if (!running && !audioMuted) audioCtx!.resume();
@@ -547,16 +583,38 @@ export async function main(config: MainConfig = {}): Promise<void> {
   // flush below can report an average breakdown of where an overrun frame's time actually
   // went — cheap running sums, no per-frame allocation.
   let frameOverrunWasmSumMs = 0, frameOverrunGpuSumMs = 0;
+  // Total ticks (ranCount, could be >1 per overrun callback) across just the overrun
+  // frames — lets the flush below report cost PER TICK, not just per overrun callback.
+  // These are different numbers whenever an overrun callback ran more than one tick
+  // (see jitterMultiTickCallbacks below): a callback that ran 2 fast ~14ms ticks back to
+  // back totals ~28ms (over budget, counted as one overrun) despite no single tick ever
+  // being slow — dividing frameOverrunWasmSumMs by frameOverruns alone can't tell that
+  // apart from a callback that ran one genuinely ~28ms tick, which is exactly the
+  // ambiguity that made the earlier "avg wasm=27-29ms" readings potentially misleading.
+  let frameOverrunTicksSum = 0;
+  // Normal mode's dueFrames-driven catch-up is capped to one tick per callback for
+  // small backlogs (see JITTER_TOLERANT_BACKLOG_FRAMES) specifically so ordinary
+  // timer/clock jitter can't force a back-to-back multi-tick catch-up. If this ever
+  // fires now, it means the backlog exceeded that tolerance — a genuine stall, not
+  // routine jitter — which is worth surfacing distinctly from a single slow tick
+  // (frameOverruns above already covers that case).
+  let jitterMultiTickCallbacks = 0, jitterMultiTickMaxRan = 0;
   function flushOverrunLogIfDue(ts: number): void {
     if (ts - overrunLogWindowStart < 1000) return;
-    if (callbackGapOverruns > 0 || frameOverruns > 0) {
+    if (callbackGapOverruns > 0 || frameOverruns > 0 || jitterMultiTickCallbacks > 0) {
       const avgWasmMs = frameOverruns > 0 ? frameOverrunWasmSumMs / frameOverruns : 0;
       const avgGpuMs = frameOverruns > 0 ? frameOverrunGpuSumMs / frameOverruns : 0;
+      const avgWasmPerTickMs = frameOverrunTicksSum > 0 ? frameOverrunWasmSumMs / frameOverrunTicksSum : 0;
       console.warn(
         `[puae] budget overruns in the last ~1s (budget ${FRAME_BUDGET_MS.toFixed(1)}ms): ` +
         `${callbackGapOverruns} late tick callback(s) (max ${callbackGapOverrunMaxMs.toFixed(1)}ms since previous), ` +
         `${frameOverruns} slow frame() call(s) (max ${frameOverrunMaxMs.toFixed(1)}ms, ` +
-        `avg wasm=${avgWasmMs.toFixed(1)}ms avg gpu=${avgGpuMs.toFixed(1)}ms of that)`,
+        `avg wasm=${avgWasmMs.toFixed(1)}ms [${avgWasmPerTickMs.toFixed(1)}ms/tick x ${(frameOverruns > 0 ? frameOverrunTicksSum / frameOverruns : 0).toFixed(1)} ticks avg] ` +
+        `avg gpu=${avgGpuMs.toFixed(1)}ms of that)` +
+        (jitterMultiTickCallbacks > 0
+          ? `, ${jitterMultiTickCallbacks} multi-tick callback(s) despite on-time arrival ` +
+            `(max ${jitterMultiTickMaxRan} ticks — backlog exceeded the jitter tolerance)`
+          : ""),
       );
       // Also report to the extension host's "PUAE Performance" output channel (see
       // webviewEmulator.ts's handlePanelMessage) — unlike the console.warn above, this is
@@ -575,6 +633,10 @@ export async function main(config: MainConfig = {}): Promise<void> {
           frameOverrunMaxMs,
           avgWasmMs,
           avgGpuMs,
+          avgWasmPerTickMs,
+          frameOverrunTicksSum,
+          jitterMultiTickCallbacks,
+          jitterMultiTickMaxRan,
         });
       }
     }
@@ -583,6 +645,9 @@ export async function main(config: MainConfig = {}): Promise<void> {
     callbackGapOverrunMaxMs = 0;
     frameOverruns = 0;
     frameOverrunMaxMs = 0;
+    frameOverrunTicksSum = 0;
+    jitterMultiTickCallbacks = 0;
+    jitterMultiTickMaxRan = 0;
     frameOverrunWasmSumMs = 0;
     frameOverrunGpuSumMs = 0;
   }
@@ -654,6 +719,86 @@ export async function main(config: MainConfig = {}): Promise<void> {
     }
     gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
     hasDrawnFrame = true;
+  }
+
+  // ---------- buffered/smooth playback (launch-config only — see MainConfig's
+  // bufferedPlaybackEnabled doc comment; no runtime UI toggle) ----------
+  // While active, frame()'s tick loop runs flat-out (like warp) but capped by this
+  // queue instead of by dueFrames, capturing EVERY tick's framebuffer (not just
+  // the last one, unlike the warp/normal branches) so a later slow-tick burst can
+  // be smoothed over by draining already-computed frames instead of stalling on a
+  // slow one. Forced off (see effectiveBuffered in frame()) the instant the
+  // debugger pauses, hits a breakpoint, or warp mode engages — interactive
+  // debugging must never show stale buffered frames.
+  const videoQueueCapacity = Math.max(1, Math.min(128, Math.floor(bufferedPlaybackFrames)));
+  interface VideoQueueSlot { data: Uint8ClampedArray; w: number; h: number; }
+  const videoQueue: (VideoQueueSlot | null)[] = bufferedPlaybackEnabled
+    ? new Array(videoQueueCapacity).fill(null)
+    : [];
+  let vqHead = 0; // index of the oldest queued frame
+  let vqCount = 0;
+  // False from startup (and after any flush) until the queue has filled to capacity
+  // at least once. While false, effectiveBuffered (in frame()) stays false too and the
+  // consumer draws the live framebuffer instead of dequeuing — otherwise the consumer
+  // would start dequeuing from callback #1, draining each frame about as fast as the
+  // producer can add it (given a callback only fits ~1-2 ticks in its time budget),
+  // so the queue would never actually build a cushion — the exact "jerky while
+  // filling" symptom this flag exists to fix. Once primed, playback is smooth for the
+  // reason bufferedPlaybackFrames exists at all: the queue was given a chance to
+  // build a real lead before anything started draining it.
+  let bufferedPrimed = false;
+
+  // Captures the CURRENT wasm framebuffer into the next free queue slot, reusing
+  // a slot's buffer across calls when the size hasn't changed (canvas geometry is
+  // stable almost all the time) instead of allocating fresh every tick.
+  function enqueueVideoFrame(): void {
+    const w = M._wasm_get_fb_width();
+    const h = M._wasm_get_fb_height();
+    if (!w || !h) return;
+    const len = w * h * 4;
+    const tail = (vqHead + vqCount) % videoQueueCapacity;
+    let slot = videoQueue[tail];
+    if (!slot || slot.data.length !== len) {
+      slot = { data: new Uint8ClampedArray(len), w, h };
+      videoQueue[tail] = slot;
+    } else {
+      slot.w = w;
+      slot.h = h;
+    }
+    slot.data.set(getFbView(M._wasm_get_fb_rgba(), len));
+    vqCount++; // caller (frame()'s producer loop) already checked vqCount < videoQueueCapacity
+    if (vqCount >= videoQueueCapacity) bufferedPrimed = true;
+  }
+
+  // Pops the oldest queued frame, or null if the queue is empty (startup
+  // ramp-up, or a burst deeper than videoQueueCapacity).
+  function dequeueVideoFrame(): VideoQueueSlot | null {
+    if (vqCount === 0) return null;
+    const slot = videoQueue[vqHead];
+    vqHead = (vqHead + 1) % videoQueueCapacity;
+    vqCount--;
+    return slot;
+  }
+
+  function flushVideoQueue(): void {
+    vqHead = 0;
+    vqCount = 0;
+    // Re-prime from scratch next time buffered playback resumes — otherwise the very
+    // first frame after a pause/breakpoint/warp interruption would immediately start
+    // dequeuing from an empty queue, reintroducing the same jerky-while-filling
+    // symptom bufferedPrimed exists to avoid.
+    bufferedPrimed = false;
+  }
+
+  // Discards any queued-but-undisplayed video, and the audio worklet's own
+  // backlog with it — called whenever buffered playback is interrupted (pause,
+  // breakpoint, warp engaging) so leftover buffered content never delays or
+  // outlives the interactive state the user actually cares about.
+  function flushBuffered(): void {
+    flushVideoQueue();
+    workletNode?.port.postMessage({ reset: true });
+    resetResampler();
+    M._wasm_reset_audio_accum();
   }
 
   // Called by rpc.ts's async continueReverse to paint the current wasm
@@ -1159,9 +1304,15 @@ export async function main(config: MainConfig = {}): Promise<void> {
     // the tick/draw work) — this instead flags a stall that happened BEFORE
     // frame() even started. Skipped in warp mode, which intentionally uses most/
     // all of each callback's interval by design (see WARP_TICK_BUDGET_MS) —
-    // logging there would just be noise. Threshold is 150% of FRAME_BUDGET_MS to
-    // allow for ordinary timer jitter. See flushOverrunLogIfDue's comment above
-    // for why this aggregates instead of logging immediately.
+    // logging there would just be noise. NOT skipped when bufferedPlaybackEnabled:
+    // unlike warp, its producer branch below only eats extra budget while topping
+    // the queue back up, not as standing behavior — so this staying live is exactly
+    // what lets us see whether the underlying per-tick cost is still a problem while
+    // buffered mode is masking it from the user (the whole reason it can mask it is
+    // that the queue absorbs an occasional slow tick without ever visibly stalling).
+    // Threshold is 150% of FRAME_BUDGET_MS to allow for ordinary timer jitter. See
+    // flushOverrunLogIfDue's comment above for why this aggregates instead of
+    // logging immediately.
     const callbackGapMs = ts - lastTs;
     if (!effectiveWarp && callbackGapMs > FRAME_BUDGET_MS * 1.5) {
       callbackGapOverruns++;
@@ -1175,13 +1326,19 @@ export async function main(config: MainConfig = {}): Promise<void> {
     // (see lastAudioClockS above) so production can't drift from consumption;
     // otherwise fall back to the system clock.
     const useAudioClock = !!audioCtx && audioCtx.state === "running" && speedFactor === 1 && !effectiveWarp;
+    // Recorded (not just added to emuClockMs) so jitterMultiTickCallbacks below can report
+    // which clock source and how large a delta was actually behind a flagged event, rather
+    // than just how many ticks it produced — see that diagnostic's own comment for why.
+    let emuClockDeltaMs: number;
     if (useAudioClock) {
       const audioNowS = audioCtx!.currentTime;
       if (lastAudioClockS === null) lastAudioClockS = audioNowS; // avoid a jump when (re-)entering this mode
-      emuClockMs += (audioNowS - lastAudioClockS) * 1000;
+      emuClockDeltaMs = (audioNowS - lastAudioClockS) * 1000;
+      emuClockMs += emuClockDeltaMs;
       lastAudioClockS = audioNowS;
     } else {
-      emuClockMs += (ts - lastTs) * speedFactor;
+      emuClockDeltaMs = (ts - lastTs) * speedFactor;
+      emuClockMs += emuClockDeltaMs;
       lastAudioClockS = null; // re-sync without a jump next time we enter audio-clock mode
     }
     lastTs = ts;
@@ -1199,6 +1356,13 @@ export async function main(config: MainConfig = {}): Promise<void> {
     if (wasPaused && !wasPausedPrev) {
       M._wasm_dma_tracking_enable(1);
       M._wasm_copper_tracking_enable(1);
+    } else if (!wasPaused && wasPausedPrev) {
+      // Just resumed: fpsCnt/fpsTime's window (below) would otherwise still include
+      // however long the debugger sat paused with zero ticks running, understating
+      // achieved fps for one bogus window right after any breakpoint/step/pause —
+      // restart the window here instead of carrying that stall into a real measurement.
+      fpsCnt = 0;
+      fpsTime = ts;
     }
     wasPausedPrev = wasPaused;
     const fbFrameCount = M._wasm_get_frame_count();
@@ -1214,7 +1378,7 @@ export async function main(config: MainConfig = {}): Promise<void> {
       // continueReverse/stepBackFrame) landed on a different point in time,
       // its replay re-renders the framebuffer (fbDirty) and we must redraw.
       if (hasDrawnFrame && !fbDirty) return;
-    } else if (!effectiveWarp && dueFrames <= emuFrames) {
+    } else if (!effectiveWarp && !bufferedPlaybackEnabled && dueFrames <= emuFrames) {
       return; // display is faster than 50 Hz — nothing to do yet
     }
 
@@ -1230,6 +1394,21 @@ export async function main(config: MainConfig = {}): Promise<void> {
         ranCount++;
         if (M._wasm_is_paused()) { hitBreakpoint = true; break; }
       }
+    } else if (bufferedPlaybackEnabled) {
+      // Run flat-out like warp, but capped by the video queue's free space instead
+      // of a bare time budget — production races ahead of dueFrames up to
+      // videoQueueCapacity frames, then waits here for the consumer (frame()'s draw
+      // section below) to free a slot on a later callback. Captures EVERY tick's
+      // frame (enqueueVideoFrame), not just whichever one is current when the loop
+      // ends like the warp/normal branches do — that's what lets a later slow-tick
+      // burst draw from already-computed frames instead of stalling on one.
+      while (vqCount < videoQueueCapacity &&
+             performance.now() - tTickStart < WARP_TICK_BUDGET_MS) {
+        M._wasm_tick();
+        ranCount++;
+        if (M._wasm_is_paused()) { hitBreakpoint = true; break; }
+        enqueueVideoFrame();
+      }
     } else {
       // Run ticks until caught up to dueFrames, within a time budget. A flat
       // cap on ticks-per-callback (the previous approach) limits how fast a
@@ -1240,7 +1419,15 @@ export async function main(config: MainConfig = {}): Promise<void> {
       // callback fully repay an arbitrarily large debt, at the cost of an
       // occasional dropped video frame while catching up, which is
       // imperceptible.
-      while (emuFrames + ranCount < dueFrames &&
+      //
+      // catchUpLimit (not dueFrames directly): see JITTER_TOLERANT_BACKLOG_FRAMES —
+      // a small backlog only ever runs one tick this callback regardless of how
+      // many are nominally "due", so ordinary timer/clock jitter can't force an
+      // immediate back-to-back multi-tick catch-up; a genuinely larger backlog
+      // still catches up in full, same as always.
+      const backlog = dueFrames - emuFrames;
+      const catchUpLimit = backlog <= JITTER_TOLERANT_BACKLOG_FRAMES ? emuFrames + 1 : dueFrames;
+      while (emuFrames + ranCount < catchUpLimit &&
              performance.now() - tTickStart < WARP_TICK_BUDGET_MS) {
         M._wasm_tick();
         ranCount++;
@@ -1248,6 +1435,12 @@ export async function main(config: MainConfig = {}): Promise<void> {
       }
     }
     const tTickEnd = performance.now();
+    // See jitterMultiTickCallbacks's declaration above. callbackGapMs was computed
+    // earlier in this same call, before the tick loop ran.
+    if (!effectiveWarp && !bufferedPlaybackEnabled && ranCount > 1 && callbackGapMs <= FRAME_BUDGET_MS * 1.5) {
+      jitterMultiTickCallbacks++;
+      jitterMultiTickMaxRan = Math.max(jitterMultiTickMaxRan, ranCount);
+    }
     emuFrames += ranCount;
     // Warp mode can run emuFrames ahead of the wall-clock schedule — pull
     // emuClockMs forward to match so playback doesn't "freeze" waiting for
@@ -1323,13 +1516,36 @@ export async function main(config: MainConfig = {}): Promise<void> {
 
     if (ranCount > 0) pushAccumToWorklet(); // push this tick's samples to the ring-buffer worklet
 
-    const w = M._wasm_get_fb_width();
-    const h = M._wasm_get_fb_height();
-    if (!w || !h) return;
+    // Buffered/smooth playback consumer: draw the OLDEST queued frame instead of the
+    // live wasm framebuffer, decoupled from this callback's own tick timing — see the
+    // producer branch above and MainConfig's bufferedPlaybackEnabled doc comment.
+    // Flushed (discarding any queued video and the audio worklet's backlog) the
+    // instant warp engages or the debugger pauses/hits a breakpoint, so buffered
+    // content can never delay interactive feedback — but NOT just because the queue
+    // hasn't finished priming yet (see bufferedPrimed's declaration): that's a normal,
+    // temporary condition, not an interruption, and flushing on it would just re-empty
+    // the queue every callback and prevent it from ever finishing.
+    const bufferedInterrupted = bufferedPlaybackEnabled && (effectiveWarp || wasPaused || hitBreakpoint);
+    if (bufferedInterrupted && vqCount > 0) flushBuffered();
+    const effectiveBuffered = bufferedPlaybackEnabled && !effectiveWarp && !wasPaused && !hitBreakpoint && bufferedPrimed;
 
-    const ptr = M._wasm_get_fb_rgba();
     const tGpuStart = performance.now();
-    uploadAndDraw(getFbView(ptr, w * h * 4), w, h);
+    if (effectiveBuffered) {
+      const slot = dequeueVideoFrame();
+      // null in principle means a burst deep enough to drain the already-primed queue
+      // entirely (startup ramp-up is handled separately, by bufferedPrimed gating
+      // effectiveBuffered above) — in practice this shouldn't happen: the producer
+      // above always completes at least one tick per callback (even a slow one) before
+      // its own time budget can stop it, so production can't actually fall behind
+      // consumption's fixed one-frame-per-callback rate. Left as a defensive no-op
+      // (skip the draw, canvas keeps its last frame) rather than assumed impossible.
+      if (slot) uploadAndDraw(slot.data, slot.w, slot.h);
+    } else {
+      const w = M._wasm_get_fb_width();
+      const h = M._wasm_get_fb_height();
+      if (!w || !h) return;
+      uploadAndDraw(getFbView(M._wasm_get_fb_rgba(), w * h * 4), w, h);
+    }
     if (blitTrackingEnabled) updateBlitVis();
     const tGpuEnd = performance.now();
     // Re-read rather than reuse fbFrameCount (captured before this frame()
@@ -1342,25 +1558,42 @@ export async function main(config: MainConfig = {}): Promise<void> {
     // started) — this instead flags frame()'s own work eating into (or past) the
     // next callback's budget, which is what actually causes a skipped/late tick.
     // Skipped in warp mode, same reasoning as the callback-gap check. NOT skipped
-    // while catching up a backlog (ranCount > 1) — that's a real, useful signal
-    // ("overran while paying back frames dropped during an earlier stall"), not
-    // noise to suppress.
+    // for bufferedPlaybackEnabled (see that check's own comment for why), nor while
+    // catching up a backlog (ranCount > 1) — that's a real, useful signal ("overran
+    // while paying back frames dropped during an earlier stall"), not noise to
+    // suppress.
     const frameWallMs = performance.now() - ts;
     if (!effectiveWarp && frameWallMs > FRAME_BUDGET_MS) {
       frameOverruns++;
       if (frameWallMs > frameOverrunMaxMs) frameOverrunMaxMs = frameWallMs;
       frameOverrunWasmSumMs += tTickEnd - tTickStart;
       frameOverrunGpuSumMs += tGpuEnd - tGpuStart;
+      frameOverrunTicksSum += ranCount;
     }
     flushOverrunLogIfDue(ts);
 
     if (ranCount > 0) {
       fpsCnt += ranCount;
       if (ts - fpsTime >= 1000) {
-        const fps = (fpsCnt * 1000 / (ts - fpsTime)).toFixed(1);
+        const fps = fpsCnt * 1000 / (ts - fpsTime);
         const msWasm = ((tTickEnd - tTickStart) / ranCount).toFixed(1);
         const msGpu = (tGpuEnd - tGpuStart).toFixed(1);
-        if (status) status.textContent = `${fps} fps | wasm=${msWasm}ms gpu=${msGpu}ms`;
+        if (status) status.textContent = `${fps.toFixed(1)} fps | wasm=${msWasm}ms gpu=${msGpu}ms`;
+        // Diagnostic: is the emulator actually falling behind real time in aggregate —
+        // producing fewer than PAL_FPS ticks per real second — regardless of whether any
+        // single tick/callback looked fine on its own? Distinct from the overrun checks
+        // above (which flag individual slow ticks/callbacks): a system that's only
+        // slightly slow on average could still pass those, and — this is the case that
+        // actually motivated adding this — bufferedPlaybackEnabled's queue can keep every
+        // individual callback looking clean by design while still not producing PAL_FPS
+        // worth of frames per second overall, if the underlying per-tick cost is
+        // consistently (not just occasionally) too high for the queue to keep pulling
+        // ahead. Skipped in warp mode, which is expected to run faster OR slower than
+        // PAL_FPS by design, not a "falling behind" signal there. ~5% tolerance for
+        // ordinary timer jitter; already a once/sec figure, no further aggregation needed.
+        if (!effectiveWarp && vscode && fps < PAL_FPS * 0.95) {
+          vscode.postMessage({ type: "perf-fps", fps, targetFps: PAL_FPS });
+        }
         fpsCnt = 0;
         fpsTime = ts;
       }

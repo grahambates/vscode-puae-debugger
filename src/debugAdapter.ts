@@ -95,6 +95,12 @@ interface LaunchRequestArguments extends DebugProtocol.LaunchRequestArguments {
   emulatorConfigFile?: string;
   /** Options to pass when opening the emulator */
   emulatorOptions?: Record<string, unknown>;
+  /** Runs the emulator this many frames ahead of what's displayed, so occasional
+   * slow ticks don't cause visible/audible jank — at the cost of added latency.
+   * Unset/0 disables it (the default). Automatically suspended during active
+   * debugging (breakpoints, stepping, pause) and while warp mode is engaged.
+   * Intended for passively watching a demo/game, not interactive debugging. */
+  bufferFrames?: number;
 }
 
 /**
@@ -425,6 +431,7 @@ export class DebugAdapter extends LoggingDebugSession {
         this.emulator.open({
           kickstartRom,
           emulatorConfigFile: args.emulatorConfigFile,
+          bufferFrames: args.bufferFrames,
           ...args.emulatorOptions,
         });
       } else {
@@ -433,6 +440,7 @@ export class DebugAdapter extends LoggingDebugSession {
           hardDrivePath: args.hardDrivePath,
           kickstartRom,
           emulatorConfigFile: args.emulatorConfigFile,
+          bufferFrames: args.bufferFrames,
           ...args.emulatorOptions,
         });
       }

@@ -84,14 +84,8 @@ export abstract class WebviewEmulator implements Emulator {
   protected sourceMap?: SourceMap;
 
   // Lazily created by getPerfLog() below, on first use from handlePanelMessage's
-  // "perf-overrun"/"perf-checkpoint" handling.
+  // "perf-overrun" handling.
   private perfLog?: vscode.OutputChannel;
-
-  // Previous "perf-checkpoint" heap sample (see handlePanelMessage below), so each new
-  // sample can log a delta rather than just an absolute size — undefined until the first
-  // sample arrives (or forever, on a non-Chromium engine where performance.memory doesn't
-  // exist and rpc.ts's pushSnapshot always sends heapUsedBytes: null).
-  private lastHeapUsedMB?: number;
 
   constructor(protected readonly extensionUri: vscode.Uri) {}
 
@@ -225,9 +219,9 @@ export abstract class WebviewEmulator implements Emulator {
 
   /**
    * Lazily creates (or returns the existing) "PUAE Performance" output channel —
-   * shared by the perf-overrun and perf-checkpoint handling below, both jerky-
-   * playback diagnostics. Most sessions never trigger either, so there's no
-   * reason to create (and show up in) VS Code's Output dropdown for every session.
+   * used by the perf-overrun handling below, a jerky-playback diagnostic. Most
+   * sessions never trigger it, so there's no reason to create (and show up in)
+   * VS Code's Output dropdown for every session.
    */
   private getPerfLog(): vscode.OutputChannel {
     if (!this.perfLog) {
@@ -298,39 +292,33 @@ export abstract class WebviewEmulator implements Emulator {
         frameOverrunMaxMs: number;
         avgWasmMs: number;
         avgGpuMs: number;
+        avgWasmPerTickMs?: number;
+        frameOverrunTicksSum?: number;
+        jitterMultiTickCallbacks?: number;
+        jitterMultiTickMaxRan?: number;
       };
+      const avgTicksPerOverrun = m.frameOverruns > 0 ? (m.frameOverrunTicksSum ?? 0) / m.frameOverruns : 0;
       this.getPerfLog().appendLine(
         `[${new Date().toLocaleTimeString()}] budget overruns in the last ~1s (budget ${m.budgetMs.toFixed(1)}ms): ` +
         `${m.callbackGapOverruns} late tick callback(s) (max ${m.callbackGapOverrunMaxMs.toFixed(1)}ms since previous), ` +
         `${m.frameOverruns} slow frame() call(s) (max ${m.frameOverrunMaxMs.toFixed(1)}ms, ` +
-        `avg wasm=${m.avgWasmMs.toFixed(1)}ms avg gpu=${m.avgGpuMs.toFixed(1)}ms of that)`,
+        `avg wasm=${m.avgWasmMs.toFixed(1)}ms [${(m.avgWasmPerTickMs ?? 0).toFixed(1)}ms/tick x ${avgTicksPerOverrun.toFixed(1)} ticks avg] ` +
+        `avg gpu=${m.avgGpuMs.toFixed(1)}ms of that)` +
+        (m.jitterMultiTickCallbacks
+          ? `, ${m.jitterMultiTickCallbacks} multi-tick callback(s) despite on-time arrival ` +
+            `(max ${m.jitterMultiTickMaxRan} ticks — backlog exceeded the jitter tolerance)`
+          : ""),
       );
-    } else if (message.type === "perf-checkpoint") {
-      // rpc.ts's pushSnapshot reports every stepBack/continueReverse checkpoint capture —
-      // a fresh multi-MB buffer allocated roughly once a second during a free-run, retained
-      // in a rolling history. Logged to the same channel as "perf-overrun" above (not
-      // aggregated — this only fires ~once/sec, never at frame rate) specifically so the two
-      // can be correlated by eye: a periodic burst of slow frame() calls lining up with
-      // checkpoint captures would point at checkpoint-driven GC pressure, not the wasm CPU
-      // core itself, as the actual cause of a jerky-playback report.
-      const m = message as {
-        bytes: number;
-        captureMs: number;
-        historyLength: number;
-        historyCap: number;
-        heapUsedBytes: number | null;
-      };
-      let heapPart = "";
-      if (m.heapUsedBytes !== null) {
-        const heapMB = m.heapUsedBytes / (1024 * 1024);
-        const deltaMB = this.lastHeapUsedMB !== undefined ? heapMB - this.lastHeapUsedMB : undefined;
-        const deltaPart = deltaMB !== undefined ? ` (Δ ${deltaMB >= 0 ? "+" : ""}${deltaMB.toFixed(1)}MB)` : "";
-        heapPart = `, heap: ${heapMB.toFixed(1)}MB${deltaPart}`;
-        this.lastHeapUsedMB = heapMB;
-      }
+    } else if (message.type === "perf-fps") {
+      // app.ts's frame() reports this at most once a second, only when achieved
+      // throughput falls meaningfully short of PAL's ~49.92fps — the "is the emulator
+      // actually falling behind in aggregate" signal, distinct from perf-overrun's
+      // per-tick/per-callback checks: it stays meaningful even when buffered playback
+      // is successfully smoothing over individual slow ticks, since a real, sustained
+      // throughput shortfall still shows up here regardless.
+      const m = message as { fps: number; targetFps: number };
       this.getPerfLog().appendLine(
-        `[${new Date().toLocaleTimeString()}] checkpoint: captured ${(m.bytes / (1024 * 1024)).toFixed(2)}MB ` +
-        `in ${m.captureMs.toFixed(1)}ms (history: ${m.historyLength}/${m.historyCap})${heapPart}`,
+        `[${new Date().toLocaleTimeString()}] achieved ${m.fps.toFixed(1)}fps, below the ${m.targetFps.toFixed(1)}fps PAL target`,
       );
     }
 

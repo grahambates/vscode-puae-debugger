@@ -211,7 +211,10 @@ export class PuaeEmulator extends WebviewEmulator {
     }
 
     for (const [key, value] of Object.entries(options ?? {})) {
-      if (key === "programPath" || key === "kickstartRom" || key === "emulatorConfigFile" || key === "hardDrivePath") {
+      if (
+        key === "programPath" || key === "kickstartRom" || key === "emulatorConfigFile" ||
+        key === "hardDrivePath" || key === "bufferFrames"
+      ) {
         continue;
       }
       lines.push(`${key}=${value}`);
@@ -384,6 +387,21 @@ export class PuaeEmulator extends WebviewEmulator {
     html = html.replace(
       "audioWorkletUrl: './puae_audioprocessor.js',",
       `audioWorkletUrl: '${workletUri}',`,
+    );
+
+    // Buffered/smooth playback (OpenOptions.bufferFrames) — launch-config-only, no
+    // runtime UI toggle (see app.ts's bufferedPlaybackEnabled). Unset/0 disables it.
+    // Clamped here, not just trusted from launch.json, since going much past the
+    // audio worklet ring's own ~148-frame capacity (audioProcessor.ts's CAP) would
+    // let production run further ahead of playback than the audio ring can hold,
+    // silently desyncing audio ahead of the still-buffering video.
+    const bufferFrames = Math.max(
+      0,
+      Math.min(128, Math.floor((this.openOptions?.bufferFrames as number | undefined) ?? 0)),
+    );
+    html = html.replace(
+      "bufferedPlaybackFrames: 0,",
+      `bufferedPlaybackFrames: ${bufferFrames},`,
     );
 
     return html;
