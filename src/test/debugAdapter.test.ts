@@ -4,7 +4,7 @@ import * as sinon from "sinon";
 import { DebugAdapter } from "../debugAdapter";
 import { EvaluateManager, EvaluateResultType } from "../evaluateManager";
 import { CpuInfo } from "../emulatorProtocol";
-import { PuaeEmulator } from "../puaeEmulator";
+import { VscodePuaeEmulator } from "../vscodePuaeEmulator";
 import { DebugProtocol } from "@vscode/debugprotocol";
 import * as registerParsers from "../amigaRegisterParsers";
 import { VariablesManager } from "../variablesManager";
@@ -31,10 +31,10 @@ class TestableDebugAdapter extends DebugAdapter {
  */
 describe("DebugAdapter - Simplified Tests", () => {
   let adapter: TestableDebugAdapter;
-  let mockEmulator: sinon.SinonStubbedInstance<PuaeEmulator>;
+  let mockEmulator: sinon.SinonStubbedInstance<VscodePuaeEmulator>;
 
   beforeEach(() => {
-    mockEmulator = sinon.createStubInstance(PuaeEmulator);
+    mockEmulator = sinon.createStubInstance(VscodePuaeEmulator);
 
     // Use constructor injection to provide mock
     adapter = new TestableDebugAdapter(mockEmulator);

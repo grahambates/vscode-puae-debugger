@@ -3,7 +3,7 @@ import * as assert from "assert";
 import * as sinon from "sinon";
 import { DebugAdapter } from "../debugAdapter";
 import { CpuInfo } from "../emulatorProtocol";
-import { PuaeEmulator } from "../puaeEmulator";
+import { VscodePuaeEmulator } from "../vscodePuaeEmulator";
 import { DebugProtocol } from "@vscode/debugprotocol";
 import { VariablesManager } from "../variablesManager";
 import { BreakpointManager } from "../breakpointManager";
@@ -65,10 +65,10 @@ function createMockSourceMap(overrides: any = {}) {
  */
 describe("DebugAdapter Integration Tests", () => {
   let adapter: DebugAdapter;
-  let mockEmulator: sinon.SinonStubbedInstance<PuaeEmulator>;
+  let mockEmulator: sinon.SinonStubbedInstance<VscodePuaeEmulator>;
 
   beforeEach(() => {
-    mockEmulator = sinon.createStubInstance(PuaeEmulator);
+    mockEmulator = sinon.createStubInstance(VscodePuaeEmulator);
     adapter = new DebugAdapter(mockEmulator);
   });
 

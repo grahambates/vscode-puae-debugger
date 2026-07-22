@@ -13,6 +13,7 @@
 
 import type { PuaeModule } from "./types";
 import { srFlags } from "../shared/cpuFlags";
+import { uint8ToBase64 } from "../../shared/base64";
 import type {
   PuaeDispatcherArgs,
   PuaeInboundCommand,
@@ -33,16 +34,8 @@ const MEM_BUF_CAP = 4096;
 // profiled frame than chip-RAM code, ballooning these buffers towards their
 // multi-MB caps) â€” see the CPU profiler "purely fast RAM" hang investigation.
 // A base64 string crosses that same bridge as a single primitive value instead of
-// per-element, which is dramatically cheaper. Chunked to avoid blowing the call
-// stack on String.fromCharCode(...bytes) for large buffers.
-function uint8ToBase64(bytes: Uint8Array): string {
-  let binary = "";
-  const chunkSize = 0x8000;
-  for (let i = 0; i < bytes.length; i += chunkSize) {
-    binary += String.fromCharCode(...bytes.subarray(i, i + chunkSize));
-  }
-  return btoa(binary);
-}
+// per-element, which is dramatically cheaper. uint8ToBase64 lives in shared/base64.ts
+// (also used by wsRpcCodec.ts, for the standalone server's WebSocket bridge).
 
 // Max number of full-state snapshots retained for stepBack/continueReverse
 // (see captureSnapshot/restoreSnapshot below). Snapshot size is roughly

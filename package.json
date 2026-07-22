@@ -590,6 +590,7 @@
     "watch": "npm run check-types && node esbuild.js --watch",
     "package": "npm run check-types && node esbuild.js --production",
     "check-types": "tsc --noEmit && tsc --noEmit -p src/webview/tsconfig.json",
+    "standalone": "node out/standalone.js",
     "pretest": "npm run compile && npm run lint",
     "lint": "eslint src --ext ts,tsx",
     "test": "npm run test:unit && npm run test:wasm",
@@ -610,7 +611,8 @@
     "markdown-to-jsx": "^9.8.2",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
-    "react-window": "^2.2.7"
+    "react-window": "^2.2.7",
+    "ws": "^8.21.1"
   },
   "devDependencies": {
     "@eslint/js": "^9.36.0",
@@ -621,6 +623,7 @@
     "@types/sinon": "^17.0.4",
     "@types/vscode": "^1.104.0",
     "@types/vscode-webview": "^1.57.5",
+    "@types/ws": "^8.18.1",
     "@typescript-eslint/eslint-plugin": "^8.43.0",
     "@typescript-eslint/parser": "^8.43.0",
     "@vscode-elements/elements": "^2.3.1",

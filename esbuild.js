@@ -64,6 +64,28 @@ async function main() {
     ],
   });
 
+  // Standalone DAP server (`npm run standalone` / `node out/standalone.js`)
+  // — nvim-dap (or any other DAP client) talks DAP to it over TCP; the PUAE
+  // emulator screen is served to a plain browser tab instead of a vscode
+  // webview. No `vscode` import anywhere in its dependency graph, so unlike
+  // extensionCtx above it needs no `external: ['vscode']`.
+  const standaloneCtx = await esbuild.context({
+    entryPoints: [
+      'src/standalone/server.ts'
+    ],
+    bundle: true,
+    format: 'cjs',
+    minify: production,
+    sourcemap: !production,
+    sourcesContent: false,
+    platform: 'node',
+    outfile: 'out/standalone.js',
+    logLevel: 'silent',
+    plugins: [
+      esbuildProblemMatcherPlugin,
+    ],
+  });
+
   // Build webviews
   const webviewCtx = await esbuild.context({
     entryPoints: [
@@ -138,17 +160,20 @@ async function main() {
 
   if (watch) {
     await extensionCtx.watch();
+    await standaloneCtx.watch();
     await webviewCtx.watch();
     await puaeAppCtx.watch();
     await puaeAudioCtx.watch();
     await puaeRpcCtx.watch();
   } else {
     await extensionCtx.rebuild();
+    await standaloneCtx.rebuild();
     await webviewCtx.rebuild();
     await puaeAppCtx.rebuild();
     await puaeAudioCtx.rebuild();
     await puaeRpcCtx.rebuild();
     await extensionCtx.dispose();
+    await standaloneCtx.dispose();
     await webviewCtx.dispose();
     await puaeAppCtx.dispose();
     await puaeAudioCtx.dispose();

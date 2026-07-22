@@ -2,7 +2,7 @@ import * as vscode from "vscode";
 import { DebugAdapter } from "./debugAdapter";
 import { MemoryViewerProvider } from "./memoryViewerProvider";
 import { StateViewerProvider } from "./stateViewerProvider";
-import { PuaeEmulator } from "./puaeEmulator";
+import { VscodePuaeEmulator } from "./vscodePuaeEmulator";
 import { ProfilerViewerProvider } from "./profilerViewerProvider";
 import { ProfileEditorProvider } from "./profileEditorProvider";
 import { ProfilerCodeLensProvider } from "./profilerCodeLensProvider";
@@ -10,7 +10,7 @@ import { ProfilerLineDecorationProvider } from "./profilerLineDecorationProvider
 import { expressionRangeAt } from "./cExpressionEvaluator";
 
 export function activate(context: vscode.ExtensionContext) {
-  const puaeEmulator = new PuaeEmulator(context.extensionUri);
+  const puaeEmulator = new VscodePuaeEmulator(context.extensionUri);
   const memoryViewer = new MemoryViewerProvider(
     context.extensionUri,
     puaeEmulator,
@@ -40,33 +40,27 @@ export function activate(context: vscode.ExtensionContext) {
     }),
   );
 
+  // stepBackFrame/eof/eol go through customRequest (DebugAdapter's
+  // handling — see debugAdapter.ts) rather than reaching into
+  // DebugAdapter.getActiveAdapter()/getEmulator() directly, so the same
+  // DAP-level commands work identically for a non-vscode client (e.g.
+  // nvim-dap talking to the standalone server) — there's no in-process
+  // adapter reference to reach for there.
   context.subscriptions.push(
     vscode.commands.registerCommand("puae-debugger.stepBackFrame", async () => {
-      const adapter = DebugAdapter.getActiveAdapter();
-      const emulator = adapter?.getEmulator() ?? puaeEmulator;
-      const moved = await emulator.stepBackFrame();
-      if (!moved) {
-        vscode.window.setStatusBarMessage(
-          "Cannot step back further: reached start of rewind history",
-          3000,
-        );
-      } else {
-        adapter?.notifySteppedBack();
-      }
+      await vscode.debug.activeDebugSession?.customRequest("stepBackFrame");
     }),
   );
 
   context.subscriptions.push(
     vscode.commands.registerCommand("puae-debugger.eof", async () => {
-      const emulator = DebugAdapter.getActiveAdapter()?.getEmulator() ?? puaeEmulator;
-      await emulator.eof();
+      await vscode.debug.activeDebugSession?.customRequest("eof");
     }),
   );
 
   context.subscriptions.push(
     vscode.commands.registerCommand("puae-debugger.eol", async () => {
-      const emulator = DebugAdapter.getActiveAdapter()?.getEmulator() ?? puaeEmulator;
-      await emulator.eol();
+      await vscode.debug.activeDebugSession?.customRequest("eol");
     }),
   );
 

@@ -1,10 +1,10 @@
-import * as vscode from "vscode";
 import { existsSync, readFileSync, readdirSync, statSync } from "fs";
 import { join, relative, sep, basename } from "path";
 import { WebviewEmulator } from "./webviewEmulator";
+import { WebviewHost } from "./webviewHost";
 
 // One entry per file/directory under a `hardDrivePath` tree, relative to its root
-// (forward-slash separated regardless of host OS) — see getHtmlForWebview's
+// (forward-slash separated regardless of host OS) — see buildHtml's
 // hardDriveManifestB64 and app.ts's reconstruction of it under /uae_system/dh0.
 export interface HardDriveEntry {
   path: string;
@@ -43,14 +43,28 @@ export function walkHardDrive(rootDir: string): HardDriveEntry[] {
 }
 
 /**
+ * A concrete host's UI surface for one open()/reinit — supplies how `buildHtml`
+ * should resolve `puae/`/`out/`/`node_modules/@vscode/codicons` file references
+ * into loadable URLs, an optional CSP `<meta>` tag (empty string to omit), the
+ * `WebviewHost` transport to attach once HTML is ready, and how to actually
+ * deliver the built HTML to that surface (`panel.webview.html = html` for
+ * vscode; stashing it for the standalone HTTP server to serve otherwise).
+ */
+export interface PuaeSurface {
+  resolveUri(file: string): string;
+  cspMeta: string;
+  host: WebviewHost;
+  setHtml(html: string): void;
+}
+
+/**
  * PUAE/ami9000 wasm backend, implementing the `Emulator` interface. Backed by
  * `puae/`'s `index.html` (boot/render loop logic shared
  * via `src/webview/puaeApp/app.ts`, bundled by esbuild.js to
  * `out/puaeApp.js`) + `src/webview/puaeApp/rpc.ts`, which expose the
  * `e9k_debug` debugging layer grafted onto libretro-uae. `puae/debug.html` is
  * a standalone variant with manual breakpoint/memory/watchpoint/disassembly
- * test UI, for development outside the extension — not used by
- * `getHtmlForWebview`.
+ * test UI, for development outside the extension — not used by `buildHtml`.
  *
  * `emulatorOptions` is a flat object of raw WinUAE-format `.uae` key=value
  * pairs (e.g. `chipmem_size`, `cpu_model`, `chipset`). Two keys are handled
@@ -102,89 +116,70 @@ export function walkHardDrive(rootDir: string): HardDriveEntry[] {
  *    (`supportsHitCounts` is false) - BreakpointManager emulates hit
  *    counting in TS instead.
  *
- * Session restart / panel reuse: `open()` while a panel is already open sends
+ * Session restart / UI reuse: `open()` while a UI is already attached sends
  * a "load" command (hard reset + warm-up) rather than re-instantiating the
  * wasm module. ROM/config options from the FIRST session remain in effect for
- * reused panels — changing them requires closing the panel first.
+ * a reused UI — changing them requires closing it first.
+ *
+ * Host-agnostic: creating/attaching the actual `WebviewHost` (a
+ * `vscode.WebviewPanel`, or a browser tab connected over the standalone
+ * server's WebSocket) is delegated to `createSurface()`, implemented per
+ * host (see `VscodePuaeEmulator`, `StandalonePuaeEmulator`).
  */
-export class PuaeEmulator extends WebviewEmulator {
-  public static readonly viewType = "puae-debugger.puaeWebview";
+export abstract class PuaeEmulator extends WebviewEmulator {
   public readonly supportsHitCounts = false;
-  private openOptions?: Record<string, unknown>;
-  // Options that were used to generate the current panel's HTML — used to
-  // detect when a config change requires a full panel reinitialisation.
-  private panelOptions?: Record<string, unknown>;
+  protected openOptions?: Record<string, unknown>;
+  // Options that were used to generate the current UI's HTML — used to
+  // detect when a config change requires full reinitialisation.
+  protected panelOptions?: Record<string, unknown>;
 
   /**
-   * Opens the PUAE emulator webview panel.
+   * Opens the PUAE emulator UI.
    *
    * If `kickstartRom` is not set, AROS is used as the default ROM for
    * non-fastLoad launches; fastLoad without an explicit ROM throws.
    */
   public open(options?: Record<string, unknown>): void {
     this.openOptions = options;
-    if (this.panel) {
+    if (this.host) {
       if (this.optionsMatch(options, this.panelOptions)) {
-        // Same config as the running panel: fast path — hard-reset the emulated
-        // machine and re-run the boot warm-up without reloading the webview.
-        this.panel.reveal();
+        // Same config as the running UI: fast path — hard-reset the emulated
+        // machine and re-run the boot warm-up without reloading the page.
+        this.host.reveal();
         this.invalidateCache();
         this.memoryInfo = undefined;
         void this.sendRpcCommand("load").catch((error) => {
-          console.error("Failed to reload emulator panel:", error);
+          console.error("Failed to reload emulator UI:", error);
         });
       } else {
-        // Config changed: dispose the old panel and create a fresh one so the
+        // Config changed: dispose the old UI and create a fresh one so the
         // new ROM / UAE config / program is picked up from the updated HTML.
-        this.panel.dispose();
-        this.initPanel();
+        this.host.dispose();
+        this.host = undefined;
+        this.initHost();
       }
       return;
     }
-    this.initPanel();
+    this.initHost();
   }
-
 
   // --- Helper methods ---
 
-  private initPanel(): void {
-    const column = this.getConfiguredViewColumn();
-    const puaeDir = vscode.Uri.joinPath(this.extensionUri, "puae");
-
-    this.panel = vscode.window.createWebviewPanel(
-      PuaeEmulator.viewType,
-      "PUAE",
-      {
-        viewColumn: column,
-        preserveFocus: true,
-      },
-      {
-        enableScripts: true,
-        retainContextWhenHidden: true,
-        localResourceRoots: [
-          puaeDir,
-          vscode.Uri.joinPath(this.extensionUri, "out"),
-          vscode.Uri.joinPath(this.extensionUri, "node_modules", "@vscode/codicons"),
-        ],
-      },
-    );
-
-    this.panel.webview.html = this.getHtmlForWebview(this.panel.webview, puaeDir);
+  private initHost(): void {
+    const surface = this.createSurface();
+    const html = this.buildHtml(surface.resolveUri, surface.cspMeta);
+    surface.setHtml(html);
     this.panelOptions = this.openOptions;
-
-    const panel = this.panel;
-    panel.onDidDispose(() => {
-      this.rejectPendingRpcs(new Error("Emulator panel disposed"));
-      if (this.panel === panel) {
-        this.panel = undefined;
-        this.panelOptions = undefined;
-      }
-    });
-
-    panel.webview.onDidReceiveMessage((message) =>
-      this.handlePanelMessage(message),
-    );
+    this.attachHost(surface.host);
   }
+
+  /**
+   * Host-specific: create (or start creating) the underlying UI surface —
+   * a `vscode.WebviewPanel`, or a placeholder for a not-yet-connected
+   * browser tab — and return the URI-resolution/CSP context `buildHtml`
+   * needs plus how to deliver the finished HTML to it.
+   */
+  protected abstract createSurface(): PuaeSurface;
 
   /**
    * Builds the `.uae`-format config text to inject before boot.
@@ -227,30 +222,23 @@ export class PuaeEmulator extends WebviewEmulator {
     return lines.join("\n") + "\n";
   }
 
-  private getHtmlForWebview(webview: vscode.Webview, puaeDir: vscode.Uri): string {
-    const puaeFsPath = join(this.extensionUri.fsPath, "puae");
-    const uri = (file: string) =>
-      webview.asWebviewUri(vscode.Uri.joinPath(puaeDir, file)).toString();
-
-    const puaeJsUri = uri("puae.js");
-    const puaeWasmUri = uri("puae.wasm");
+  /**
+   * Pure HTML templating: `resolveUri` maps a path relative to the
+   * repo/extension root (e.g. `"puae/puae.js"`, `"out/puaeApp.js"`,
+   * `"node_modules/@vscode/codicons/dist/codicon.css"`) to a loadable URL —
+   * a `webview.asWebviewUri()` result in the vscode host, or a plain
+   * server-relative path (`"/puae/puae.js"`) in the standalone host.
+   * `cspMeta` is a complete `<meta http-equiv="Content-Security-Policy" ...>`
+   * tag, or `""` to omit one entirely.
+   */
+  private buildHtml(resolveUri: (file: string) => string, cspMeta: string): string {
+    const puaeJsUri = resolveUri("puae/puae.js");
+    const puaeWasmUri = resolveUri("puae/puae.wasm");
     // Bundled from src/webview/puaeApp/ (TypeScript) by esbuild.js, not
     // shipped from puae/ itself — see esbuild.js's puaeAppCtx/puaeAudioCtx.
-    const workletUri = webview
-      .asWebviewUri(vscode.Uri.joinPath(this.extensionUri, "out", "puaeAudioProcessor.js"))
-      .toString();
-    const appUri = webview
-      .asWebviewUri(vscode.Uri.joinPath(this.extensionUri, "out", "puaeApp.js"))
-      .toString();
-    const codiconsUri = webview.asWebviewUri(
-      vscode.Uri.joinPath(
-        this.extensionUri,
-        "node_modules",
-        "@vscode/codicons",
-        "dist",
-        "codicon.css",
-      ),
-    );
+    const workletUri = resolveUri("out/puaeAudioProcessor.js");
+    const appUri = resolveUri("out/puaeApp.js");
+    const codiconsUri = resolveUri("node_modules/@vscode/codicons/dist/codicon.css");
 
     const kickstartPath = this.openOptions?.kickstartRom as string | undefined;
     let romDataUri = "";
@@ -302,33 +290,20 @@ export class PuaeEmulator extends WebviewEmulator {
     }
     const expectedProcessName = programPath ? basename(programPath) : "";
 
-    // CSP: scripts from webview resource scheme, inline JS (incl. the page's
-    // inline module), wasm-unsafe-eval for wasm execution, workers for
-    // AudioWorklet, connect for fetches, inline <style> in the page head.
-    const src = webview.cspSource;
-    const csp = [
-      `default-src 'none'`,
-      `script-src ${src} 'unsafe-inline' 'wasm-unsafe-eval'`,
-      `style-src ${src} 'unsafe-inline'`,
-      `font-src ${src}`,
-      `worker-src ${src} blob:`,
-      `connect-src ${src} data:`,
-      `img-src data:`,
-    ].join("; ");
+    let html = readFileSync(join(this.rootDir, "puae", "index.html"), "utf8");
 
-    let html = readFileSync(join(puaeFsPath, "index.html"), "utf8");
-
-    // Inject CSP meta tag + the codicon webfont stylesheet (gives the page
-    // access to VS Code's built-in icon set via <i class="codicon codicon-*">).
+    // Inject the CSP meta tag (vscode host only, empty string elsewhere) +
+    // the codicon webfont stylesheet (gives the page access to VS Code's
+    // built-in icon set via <i class="codicon codicon-*">).
     html = html.replace(
       '<meta charset="utf-8">',
-      `<meta charset="utf-8">\n<meta http-equiv="Content-Security-Policy" content="${csp}">\n<link href="${codiconsUri}" rel="stylesheet">`,
+      `<meta charset="utf-8">\n${cspMeta}<link href="${codiconsUri}" rel="stylesheet">`,
     );
 
-    // Patch external script src to webview URI.
+    // Patch external script src to a loadable URI.
     html = html.replace('src="puae.js"', `src="${puaeJsUri}"`);
 
-    // Patch the bundled app module's import to a webview URI. The bundle
+    // Patch the bundled app module's import to a loadable URI. The bundle
     // (out/puaeApp.js, see esbuild.js) already inlines rpc.ts/copperHover.ts/
     // shared code — no further import patching needed.
     html = html.replace(
@@ -336,14 +311,14 @@ export class PuaeEmulator extends WebviewEmulator {
       `from '${appUri}';`,
     );
 
-    // Override locateFile so emscripten finds puae.wasm via webview URI,
-    // not relative to window.location (which has no meaning in the webview).
+    // Override locateFile so emscripten finds puae.wasm via a loadable URI,
+    // not relative to window.location (which has no meaning in a webview).
     html = html.replace(
       "wasmLocateFile: undefined,",
       `wasmLocateFile: (p) => p.endsWith('.wasm') ? '${puaeWasmUri}' : p,`,
     );
 
-    // Patch ROM fetch path to a webview-accessible URI.
+    // Patch ROM fetch path to a directly-loadable URI.
     // ROM is a symlink — use the already-resolved data URI.
     html = html.replace("romUrl: '[ROMPATH]',", `romUrl: '${romDataUri}',`);
 

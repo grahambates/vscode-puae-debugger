@@ -1,5 +1,5 @@
+import { readFileSync } from "fs";
 import { basename } from "path";
-import * as vscode from "vscode";
 import { DebugProtocol } from "@vscode/debugprotocol";
 import { logger } from "@vscode/debugadapter";
 import { StopMessage } from "./emulatorProtocol";
@@ -224,15 +224,15 @@ export class BreakpointManager {
     }
 
     try {
-      const document = await vscode.workspace.openTextDocument(loc.path);
-      const size = symbolDeclaredSize(document.lineAt(loc.line - 1).text);
+      const lines = readFileSync(loc.path, "utf-8").split(/\r\n|\r|\n/);
+      const size = symbolDeclaredSize(lines[loc.line - 1] ?? "");
       if (size !== undefined) {
         return size;
       }
       // A bare label line (directive on the next physical line) parses
       // with no mnemonic at all — check there too before giving up.
-      if (loc.line < document.lineCount) {
-        return symbolDeclaredSize(document.lineAt(loc.line).text);
+      if (loc.line < lines.length) {
+        return symbolDeclaredSize(lines[loc.line] ?? "");
       }
     } catch {
       // Source file not available — fall back to no length.

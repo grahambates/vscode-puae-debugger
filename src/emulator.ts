@@ -1,4 +1,3 @@
-import * as vscode from "vscode";
 import {
   CpuInfo,
   CpuTraceItem,
@@ -8,6 +7,16 @@ import {
   RegisterSetStatus,
 } from "./emulatorProtocol";
 import { SourceMap } from "./sourceMap";
+
+/**
+ * Structurally identical to `vscode.Disposable` (and satisfied by it) but
+ * with no `vscode` dependency, so this file — and anything that only needs
+ * this shape, like `DebugAdapter` — can run outside the vscode extension
+ * host (e.g. the standalone DAP server).
+ */
+export interface Disposable {
+  dispose(): void;
+}
 
 /**
  * Access-type filter and watched-region length for setWatchpoint. `length`
@@ -50,9 +59,9 @@ export interface Emulator {
    */
   onDidReceiveMessage(
     callback: (message: EmulatorMessage) => void,
-  ): vscode.Disposable;
+  ): Disposable;
 
-  onDidDispose(callback: () => void): vscode.Disposable | undefined;
+  onDidDispose(callback: () => void): Disposable;
 
   dispose(): void;
 
@@ -69,9 +78,12 @@ export interface Emulator {
   // --- Execution control ---
 
   /**
-   * Pause the emulator
+   * Pause the emulator. `silent` (default false) suppresses the resulting
+   * "paused" state notification/StoppedEvent — for internal housekeeping
+   * pauses (e.g. DebugAdapter's fastLoad program injection) that shouldn't
+   * be visible to the DAP client as a real stop.
    */
-  pause(): Promise<void>;
+  pause(silent?: boolean): Promise<void>;
 
   /**
    * Resume running the emulator

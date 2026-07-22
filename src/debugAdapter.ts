@@ -20,12 +20,12 @@ import {
   StoppedEvent,
   ContinuedEvent,
   OutputEvent,
+  ThreadEvent,
   Thread,
   Source,
 } from "@vscode/debugadapter";
 import { LogLevel } from "@vscode/debugadapter/lib/logger";
 import { DebugProtocol } from "@vscode/debugprotocol";
-import * as vscode from "vscode";
 import * as path from "path";
 import { readFile } from "fs/promises";
 
@@ -38,7 +38,7 @@ import {
   StopMessage,
   isExecReadyMessage,
 } from "./emulatorProtocol";
-import { Emulator } from "./emulator";
+import { Disposable, Emulator } from "./emulator";
 import { Hunk, parseHunks, StabData } from "./amigaHunkParser";
 import { DWARFData, parseDwarf } from "./dwarfParser";
 import { loadAmigaProgram } from "./amigaHunkLoader";
@@ -228,7 +228,7 @@ export class DebugAdapter extends LoggingDebugSession {
   } | null = null;
   private frameIdToPc = new Map<number, number>();
 
-  private disposables: (vscode.Disposable | undefined)[] = [];
+  private disposables: Disposable[] = [];
 
   /**
    * Gets the currently active debug adapter instance.
@@ -826,9 +826,11 @@ export class DebugAdapter extends LoggingDebugSession {
     try {
       const moved = await this.emulator.stepBack();
       if (!moved) {
-        vscode.window.setStatusBarMessage(
-          "Cannot step back further: reached start of rewind history",
-          3000,
+        this.sendEvent(
+          new OutputEvent(
+            "Cannot step back further: reached start of rewind history\n",
+            "important",
+          ),
         );
       }
       this.sendEvent(new StoppedEvent("step", DebugAdapter.THREAD_ID));
@@ -849,9 +851,11 @@ export class DebugAdapter extends LoggingDebugSession {
     try {
       const moved = await this.emulator.continueReverse();
       if (!moved) {
-        vscode.window.setStatusBarMessage(
-          "Cannot continue reverse: reached start of rewind history",
-          3000,
+        this.sendEvent(
+          new OutputEvent(
+            "Cannot continue reverse: reached start of rewind history\n",
+            "important",
+          ),
         );
       }
       this.sendEvent(new StoppedEvent("step", DebugAdapter.THREAD_ID));
@@ -995,21 +999,25 @@ export class DebugAdapter extends LoggingDebugSession {
   }
 
   /**
-   * Handles custom (non-DAP-standard) requests from the extension host.
-   * "setWatchpointLength"/"getWatchpointLength" back the "Set Watchpoint
-   * Length..." variable context-menu command (extension.ts) — DAP has no
-   * native field for an editable watchpoint length, so this is a side
-   * channel for it.
+   * Handles custom (non-DAP-standard) requests. "setWatchpointLength"/
+   * "getWatchpointLength" back the "Set Watchpoint Length..." variable
+   * context-menu command (extension.ts) — DAP has no native field for an
+   * editable watchpoint length, so this is a side channel for it.
+   * "stepBackFrame"/"eof"/"eol" back the corresponding debug-toolbar
+   * commands (extension.ts) and are also how a non-vscode DAP client (e.g.
+   * nvim-dap, talking to the standalone server) drives the same actions —
+   * there's no in-process `DebugAdapter.getActiveAdapter()` shortcut to
+   * reach for outside the vscode extension host.
    */
   protected async customRequest(
     command: string,
     response: DebugProtocol.Response,
-    args: { dataId: string; length?: number },
+    args: { dataId?: string; length?: number },
   ): Promise<void> {
     try {
       if (command === "setWatchpointLength") {
         await this.getBreakpointManager().setWatchpointLengthOverride(
-          args.dataId,
+          args.dataId as string,
           args.length,
         );
         this.sendResponse(response);
@@ -1017,8 +1025,33 @@ export class DebugAdapter extends LoggingDebugSession {
       }
       if (command === "getWatchpointLength") {
         response.body = await this.getBreakpointManager().getWatchpointLengthInfo(
-          args.dataId,
+          args.dataId as string,
         );
+        this.sendResponse(response);
+        return;
+      }
+      if (command === "stepBackFrame") {
+        const moved = await this.emulator.stepBackFrame();
+        if (!moved) {
+          this.sendEvent(
+            new OutputEvent(
+              "Cannot step back further: reached start of rewind history\n",
+              "important",
+            ),
+          );
+        } else {
+          this.notifySteppedBack();
+        }
+        this.sendResponse(response);
+        return;
+      }
+      if (command === "eof") {
+        await this.emulator.eof();
+        this.sendResponse(response);
+        return;
+      }
+      if (command === "eol") {
+        await this.emulator.eol();
         this.sendResponse(response);
         return;
       }
@@ -1340,8 +1373,17 @@ export class DebugAdapter extends LoggingDebugSession {
     logger.log("Injecting program into memory");
     try {
       // Ensure the CPU is halted before poking memory/registers — the emulator is
-      // still running freely at this point (right after exec-ready).
-      await this.emulator.pause();
+      // still running freely at this point (right after exec-ready). Silent:
+      // this is internal housekeeping, not a real user-visible stop — a
+      // non-silent pause here races a StoppedEvent (and the client's
+      // resulting stackTrace/scopes/variables requests) against the rest of
+      // this method and attach() below, which haven't set up stackManager
+      // etc. yet. Reproduced end-to-end against the standalone server: a
+      // real WebSocket round-trip apparently batches the "paused" state
+      // message and this pause() call's own RPC response differently than
+      // vscode's postMessage bridge does, timing-wise, making the race fire
+      // reliably instead of rarely.
+      await this.emulator.pause(true);
       // Clear any watchpoints/register watches left armed from a previous
       // debug session — the webview (and its emulator state) can be reused
       // across sessions, but this session's BreakpointManager starts fresh
@@ -1469,6 +1511,13 @@ export class DebugAdapter extends LoggingDebugSession {
       if (this.stopOnEntry && !this.fastLoad) {
         await this.breakpointManager.setTmpBreakpoint(offsets[0], "entry");
       }
+      // Announces the (single, fixed) thread before any stop happens. DAP
+      // clients commonly only populate their local thread list in response
+      // to a `stopped` event — without this, a client that hasn't seen one
+      // yet (e.g. launched with stopOnEntry: false, still freely running)
+      // has no known threadId to pause, and refuses to send the request at
+      // all (nvim-dap: "No thread to stop. Not pausing...").
+      this.sendEvent(new ThreadEvent("started", DebugAdapter.THREAD_ID));
       this.sendEvent(new InitializedEvent());
     } catch (error) {
       this.sendEvent(
@@ -1495,7 +1544,19 @@ export class DebugAdapter extends LoggingDebugSession {
     if (state === "paused") {
       if (this.isRunning) {
         this.isRunning = false;
-        const evt = new StoppedEvent("pause", DebugAdapter.THREAD_ID);
+        const evt: DebugProtocol.StoppedEvent = new StoppedEvent(
+          "pause",
+          DebugAdapter.THREAD_ID,
+        );
+        // There's only ever one (real) thread here, and pausing genuinely
+        // does stop it — but nvim-dap's own stopped-event handler treats
+        // reason:"pause" specially: it skips the frame jump *and* the
+        // resulting scopes/variables fetch entirely unless
+        // allThreadsStopped is set (`should_jump = reason ~= 'pause' or
+        // allThreadsStopped`, session.lua). handleStop()'s breakpoint path
+        // and the fastLoad entry-stop already set this; this was the one
+        // stop reason that didn't.
+        evt.body.allThreadsStopped = true;
         await this.applyNoSourceReasonHint(evt);
         this.sendEvent(evt);
       }

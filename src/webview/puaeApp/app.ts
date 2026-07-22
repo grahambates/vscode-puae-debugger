@@ -10,6 +10,7 @@ import { installScreenHoverTooltip } from "./screenHover";
 import { installMouseCapture } from "./mouseCapture";
 import { installKeyboardCapture } from "./keyboardCapture";
 import { DmaRecordType } from "../../shared/profilerTypes";
+import { decodeWsMessage, encodeWsMessage } from "../../shared/wsRpcCodec";
 import type { PuaeModule } from "./types";
 
 // The Amiga's PAL frame rate — both the render loop's due-frames accounting
@@ -456,6 +457,38 @@ export async function main(config: MainConfig = {}): Promise<void> {
     // Tells PuaeEmulator the wasm module is ready, so it can fetch and cache
     // getMemoryInfo() — mirrors the vAmiga emulator project's own webview-ready handshake.
     vscode.postMessage({ type: "exec-ready" });
+  } else if (typeof WebSocket !== "undefined" && location.protocol.startsWith("http")) {
+    // Same RPC bridge as above, but for a plain browser tab talking to the
+    // standalone server's WebSocket endpoint instead of a vscode webview —
+    // see src/standalone/server.ts and StandalonePuaeEmulator. Guarded on
+    // http(s): so this stays inert for puae/debug.html opened directly off
+    // disk (file://), which has no server behind it to connect to.
+    try {
+      const ws = new WebSocket(`ws://${location.host}/rpc`);
+      // encodeWsMessage/decodeWsMessage (not raw JSON.stringify/parse) — see
+      // that module's comment: plain JSON silently drops a Uint8Array's
+      // length, which turned writeMemory's program-injection bytes into a
+      // zero-length no-op over this transport.
+      const send = (msg: unknown) => {
+        if (ws.readyState === WebSocket.OPEN) {
+          ws.send(encodeWsMessage(msg));
+        } else {
+          ws.addEventListener("open", () => ws.send(encodeWsMessage(msg)), { once: true });
+        }
+      };
+      vscode = { postMessage: send };
+      rpc = setupRpcDispatcher(M, send);
+      ws.addEventListener("message", (event) => {
+        // Matches JSON.parse's own implicit `any` return, which this replaces.
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const message = decodeWsMessage(event.data) as any;
+        rpc!.handleMessage(message);
+        handleDmaHoverMessage(message);
+      });
+      ws.addEventListener("open", () => send({ type: "exec-ready" }));
+    } catch (error) {
+      console.error("Failed to connect standalone RPC WebSocket:", error);
+    }
   }
 
   log("Boot OK — starting render loop");

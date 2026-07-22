@@ -1,5 +1,5 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
-import * as vscode from "vscode";
+import { readFileSync } from "fs";
 import { DebugProtocol } from "@vscode/debugprotocol";
 import { Parser } from "expr-eval";
 import { instructionAttrs } from "./sourceParsing";
@@ -319,9 +319,8 @@ export class EvaluateManager {
 
     // For hover context we can look at the source to determine how the value is used and get length/sign
     if (context === "hover" && source?.path && line) {
-      const document = await vscode.workspace.openTextDocument(source.path);
-      const docLine = document.lineAt(line - 1);
-      const attrs = instructionAttrs(docLine.text);
+      const lines = readFileSync(source.path, "utf-8").split(/\r\n|\r|\n/);
+      const attrs = instructionAttrs(lines[line - 1] ?? "");
       signed = attrs.signed;
       byteLength = attrs.byteLength;
     }

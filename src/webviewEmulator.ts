@@ -1,7 +1,6 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
-import * as vscode from "vscode";
 import { u32, u16, u8 } from "./numbers";
-import { Emulator, WatchpointOptions } from "./emulator";
+import { Disposable, Emulator, WatchpointOptions } from "./emulator";
 import {
   CpuInfo,
   CpuTraceItem,
@@ -13,13 +12,13 @@ import {
   getMemoryRegionForAddress,
 } from "./emulatorProtocol";
 import { SourceMap } from "./sourceMap";
-import { openSourceLocation } from "./sourceNav";
 import { decodeAgaColors } from "./shared/dma";
 import type {
   PuaeRpcArgs,
   PuaeRpcCommand,
   PuaeRpcResult,
 } from "./shared/puaeRpcProtocol";
+import { WebviewHost } from "./webviewHost";
 
 /**
  * A pending request/response RPC awaiting its reply from the webview.
@@ -55,18 +54,22 @@ export function stableStringify(value: unknown): string | undefined {
  * Holds the generic plumbing: the postMessage RPC layer (request/response
  * correlation, timeouts, disposal), message-listener fan-out, the
  * register/memory-info caches, and all of the `Emulator` command/query
- * wrappers that simply forward to the webview.
+ * wrappers that simply forward to the webview. Deliberately has no
+ * dependency on `vscode` — how the UI is actually hosted (a
+ * `vscode.WebviewPanel`, or a browser tab talking over a WebSocket to the
+ * standalone server) is abstracted behind `WebviewHost`, attached via
+ * `attachHost()`.
  *
- * A subclass (`PuaeEmulator`) supplies only the backend-specific pieces:
- * `open()` (panel creation/reuse policy) and the panel/HTML wiring. A
- * subclass's `initPanel` implementation should call `handlePanelMessage` for
- * each received message to get the shared RPC-response / exec-ready /
- * listener handling.
+ * A subclass (`PuaeEmulator`) supplies the backend-specific pieces: `open()`
+ * (panel/tab creation-or-reuse policy) and the HTML/config templating. A
+ * further per-host subclass (e.g. `VscodePuaeEmulator`) supplies how a
+ * `WebviewHost` actually gets created and attached.
  */
 export abstract class WebviewEmulator implements Emulator {
-  protected panel?: vscode.WebviewPanel;
+  protected host?: WebviewHost;
   protected pendingRpcs = new Map<string, PendingRpc>();
   protected messageListeners = new Set<(message: EmulatorMessage) => void>();
+  protected disposeListeners = new Set<() => void>();
 
   memoryInfo?: MemoryInfo;
   cpuInfo?: CpuInfo;
@@ -83,11 +86,10 @@ export abstract class WebviewEmulator implements Emulator {
   // hover tooltip) without round-tripping through the adapter.
   protected sourceMap?: SourceMap;
 
-  // Lazily created by getPerfLog() below, on first use from handlePanelMessage's
-  // "perf-overrun" handling.
-  private perfLog?: vscode.OutputChannel;
-
-  constructor(protected readonly extensionUri: vscode.Uri) {}
+  // extensionUri/context.extensionUri's filesystem path in the vscode host;
+  // the repo/package root in the standalone host. Used by subclasses to
+  // locate `puae/index.html`, `out/puaeApp.js`, etc.
+  constructor(protected readonly rootDir: string) {}
 
   public setSourceMap(sourceMap: SourceMap | undefined): void {
     this.sourceMap = sourceMap;
@@ -96,29 +98,28 @@ export abstract class WebviewEmulator implements Emulator {
   // --- Lifecycle ---
 
   /**
-   * Opens (or reuses) the emulator webview panel. Backend-specific: each
-   * concrete emulator decides how a panel is created and when an existing
-   * panel can be reused vs. recreated.
+   * Opens (or reuses) the emulator UI. Backend-specific: each concrete
+   * emulator decides how/when a host is (re)created.
    */
   public abstract open(options?: Record<string, unknown>): void;
 
   /**
-   * Brings the webview panel to the foreground.
+   * Brings the emulator UI to the foreground.
    */
   public reveal(): void {
-    this.panel?.reveal();
+    this.host?.reveal();
   }
 
   /**
    * Registers a listener for emulator messages.
-   * Unlike the panel's onDidReceiveMessage, this works even when the panel is
-   * not yet open.
+   * Unlike the host's own message event, this works even when no host is
+   * attached yet.
    * @param callback Function to call when messages are received
    * @returns Disposable to unregister the listener
    */
   public onDidReceiveMessage(
     callback: (message: EmulatorMessage) => void,
-  ): vscode.Disposable {
+  ): Disposable {
     this.messageListeners.add(callback);
     return {
       dispose: () => {
@@ -141,8 +142,49 @@ export abstract class WebviewEmulator implements Emulator {
     }
   }
 
-  public onDidDispose(callback: () => void): vscode.Disposable | undefined {
-    return this.panel?.onDidDispose(callback);
+  /**
+   * Registers a listener fired whenever the *current* host is disposed —
+   * unlike delegating straight to a host's own dispose event, this also
+   * fires for hosts attached *after* this call (e.g. a standalone-mode
+   * browser tab that hasn't connected yet at registration time), matching
+   * `onDidReceiveMessage`'s "works even when no host is attached yet"
+   * contract.
+   */
+  public onDidDispose(callback: () => void): Disposable {
+    this.disposeListeners.add(callback);
+    return {
+      dispose: () => {
+        this.disposeListeners.delete(callback);
+      },
+    };
+  }
+
+  protected notifyDisposeListeners(): void {
+    for (const listener of this.disposeListeners) {
+      try {
+        listener();
+      } catch (error) {
+        console.error("Error in dispose listener:", error);
+      }
+    }
+  }
+
+  /**
+   * Wires a freshly created/connected `WebviewHost` up to this emulator's
+   * shared RPC/message-listener plumbing. Concrete subclasses call this once
+   * they have a host to attach — synchronously for vscode's WebviewPanel;
+   * later, once a browser tab actually connects, for the standalone server.
+   */
+  protected attachHost(host: WebviewHost): void {
+    this.host = host;
+    host.onDidDispose(() => {
+      this.rejectPendingRpcs(new Error("Emulator UI disposed"));
+      if (this.host === host) {
+        this.host = undefined;
+      }
+      this.notifyDisposeListeners();
+    });
+    host.onDidReceiveMessage((message) => this.handlePanelMessage(message));
   }
 
   // --- RPC plumbing ---
@@ -162,7 +204,7 @@ export abstract class WebviewEmulator implements Emulator {
     return pending;
   }
 
-  /** Rejects and removes every RPC associated with the current panel. */
+  /** Rejects and removes every RPC associated with the current host. */
   protected rejectPendingRpcs(reason: Error): void {
     for (const [, pending] of this.pendingRpcs) {
       clearTimeout(pending.timeout);
@@ -177,7 +219,7 @@ export abstract class WebviewEmulator implements Emulator {
    * @param args Optional command arguments
    * @param timeoutMs Timeout in milliseconds (default: 5000)
    * @returns Promise that resolves with the command response
-   * @throws Error on timeout or if webview is not open
+   * @throws Error on timeout or if no host is attached
    */
   public async sendRpcCommand<K extends PuaeRpcCommand>(
     command: K,
@@ -188,8 +230,8 @@ export abstract class WebviewEmulator implements Emulator {
     const args = params[0];
     const timeoutMs = params[1] ?? 5000;
     return new Promise<PuaeRpcResult<K>>((resolve, reject) => {
-      if (!this.panel) {
-        reject(new Error("Emulator panel is not open"));
+      if (!this.host) {
+        reject(new Error("Emulator UI is not open"));
         return;
       }
 
@@ -204,7 +246,7 @@ export abstract class WebviewEmulator implements Emulator {
       }, timeoutMs);
 
       this.pendingRpcs.set(id, { resolve, reject, timeout });
-      this.panel.webview.postMessage({
+      this.host.postMessage({
         command,
         args: { ...(args ?? {}), _rpcId: id },
       });
@@ -213,28 +255,41 @@ export abstract class WebviewEmulator implements Emulator {
 
   public dispose(): void {
     this.rejectPendingRpcs(new Error("Webview disposed"));
-    this.panel?.dispose();
-    this.perfLog?.dispose();
+    this.host?.dispose();
   }
 
   /**
-   * Lazily creates (or returns the existing) "PUAE Performance" output channel —
-   * used by the perf-overrun handling below, a jerky-playback diagnostic. Most
-   * sessions never trigger it, so there's no reason to create (and show up in)
-   * VS Code's Output dropdown for every session.
+   * Best-effort shortening of an absolute path for display in the
+   * `symbolizeAddress` tooltip reply below (e.g. relative to a workspace
+   * root). Identity by default; the vscode host overrides this via
+   * `vscode.workspace.asRelativePath`.
    */
-  private getPerfLog(): vscode.OutputChannel {
-    if (!this.perfLog) {
-      this.perfLog = vscode.window.createOutputChannel("PUAE Performance");
-    }
-    return this.perfLog;
+  protected shortenPath(path: string): string {
+    return path;
   }
 
   /**
-   * Shared handler for messages posted from the webview. Subclass `initPanel`
-   * implementations should wire `panel.webview.onDidReceiveMessage` to this.
-   * Resolves/rejects pending RPCs, refreshes the memory map on exec-ready, and
-   * fans the message out to registered listeners.
+   * Opens a source location in whatever the host's "editor" concept is, in
+   * response to an `openSource` message from the webview (e.g. clicking a
+   * source link in the DMA hover tooltip). No-op by default; the vscode
+   * host overrides this via `openSourceLocation`.
+   */
+  protected openSource(_path: string, _line?: number): void {}
+
+  /**
+   * Diagnostic logging for the perf-overrun/perf-fps handling below.
+   * Defaults to stderr; the vscode host overrides this to route to an
+   * Output channel instead.
+   */
+  protected log(line: string): void {
+    console.error(line);
+  }
+
+  /**
+   * Shared handler for messages posted from the webview. Subclasses attach
+   * a `WebviewHost` via `attachHost()`, which wires the host's message
+   * event to this. Resolves/rejects pending RPCs, refreshes the memory map
+   * on exec-ready, and fans the message out to registered listeners.
    */
   protected handlePanelMessage(message: any): void {
     if (message.type === "rpcResponse") {
@@ -260,22 +315,21 @@ export abstract class WebviewEmulator implements Emulator {
       // blitter tooltip's channel pointers) for the source location and/or
       // enclosing-symbol label of an address — answered directly here
       // rather than bounced through the debug adapter, since setSourceMap
-      // already gave us what we need. Path is relativized to the workspace
-      // folder (when one is open) so the tooltip can stay short —
-      // openSource resolves a relative path against the workspace folder
-      // too, so the round trip still works.
+      // already gave us what we need. Path is shortened via shortenPath()
+      // (workspace-relative in the vscode host) so the tooltip can stay
+      // short — openSource resolves a relative path the same way.
       const loc = this.sourceMap?.lookupAddress(message.address);
       const symbolOffset = this.sourceMap?.findSymbolOffset(message.address);
-      this.panel?.webview.postMessage({
+      this.host?.postMessage({
         type: "symbolizeResult",
         requestId: message.requestId,
         location: loc
-          ? { path: vscode.workspace.asRelativePath(loc.path, false), line: loc.line }
+          ? { path: this.shortenPath(loc.path), line: loc.line }
           : undefined,
         symbol: symbolOffset ? { name: symbolOffset.symbol, offset: symbolOffset.offset } : undefined,
       });
     } else if (message.type === "openSource") {
-      void openSourceLocation(message.path, message.line);
+      this.openSource(message.path, message.line);
     } else if (message.type === "perf-overrun") {
       // app.ts's frame() aggregates frame-budget overruns (jerky-playback triage) and
       // reports them at most once a second, here as well as via the webview's own
@@ -283,7 +337,7 @@ export abstract class WebviewEmulator implements Emulator {
       // DevTools (needed to see console.warn at all) measurably slows down JS/wasm
       // execution on its own — confirmed directly, overruns were far more frequent and
       // severe with DevTools attached — so console.warn alone can't give a clean read on
-      // how often this happens in ordinary use. An Output channel has no such cost.
+      // how often this happens in ordinary use. log() has no such cost.
       const m = message as {
         budgetMs: number;
         callbackGapOverruns: number;
@@ -298,7 +352,7 @@ export abstract class WebviewEmulator implements Emulator {
         jitterMultiTickMaxRan?: number;
       };
       const avgTicksPerOverrun = m.frameOverruns > 0 ? (m.frameOverrunTicksSum ?? 0) / m.frameOverruns : 0;
-      this.getPerfLog().appendLine(
+      this.log(
         `[${new Date().toLocaleTimeString()}] budget overruns in the last ~1s (budget ${m.budgetMs.toFixed(1)}ms): ` +
         `${m.callbackGapOverruns} late tick callback(s) (max ${m.callbackGapOverrunMaxMs.toFixed(1)}ms since previous), ` +
         `${m.frameOverruns} slow frame() call(s) (max ${m.frameOverrunMaxMs.toFixed(1)}ms, ` +
@@ -317,7 +371,7 @@ export abstract class WebviewEmulator implements Emulator {
       // is successfully smoothing over individual slow ticks, since a real, sustained
       // throughput shortfall still shows up here regardless.
       const m = message as { fps: number; targetFps: number };
-      this.getPerfLog().appendLine(
+      this.log(
         `[${new Date().toLocaleTimeString()}] achieved ${m.fps.toFixed(1)}fps, below the ${m.targetFps.toFixed(1)}fps PAL target`,
       );
     }
@@ -327,34 +381,8 @@ export abstract class WebviewEmulator implements Emulator {
   }
 
   /**
-   * Resolves the configured `defaultViewColumn` setting to a ViewColumn for
-   * newly created panels.
-   */
-  protected getConfiguredViewColumn(): vscode.ViewColumn {
-    const config = vscode.workspace.getConfiguration("puae-debugger");
-    const setting = config.get<string>("defaultViewColumn", "beside");
-
-    switch (setting) {
-      case "one":
-        return vscode.ViewColumn.One;
-      case "two":
-        return vscode.ViewColumn.Two;
-      case "three":
-        return vscode.ViewColumn.Three;
-      case "beside":
-        return vscode.ViewColumn.Beside;
-      case "active":
-        return (
-          vscode.window.activeTextEditor?.viewColumn || vscode.ViewColumn.One
-        );
-      default:
-        return vscode.ViewColumn.Beside;
-    }
-  }
-
-  /**
    * Order-independent structural comparison of two option records, used to
-   * decide whether an already-open panel can be reused for new open options.
+   * decide whether an already-open host can be reused for new open options.
    */
   protected optionsMatch(a?: object, b?: object): boolean {
     return stableStringify(a) === stableStringify(b);
@@ -362,10 +390,10 @@ export abstract class WebviewEmulator implements Emulator {
 
   // --- Execution control ---
 
-  public async pause(): Promise<void> {
+  public async pause(silent?: boolean): Promise<void> {
     this.invalidateCache();
     try {
-      await this.sendRpcCommand("pause");
+      await this.sendRpcCommand("pause", { silent });
     } finally {
       this.invalidateCache();
     }
