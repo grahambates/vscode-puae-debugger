@@ -511,6 +511,59 @@ export async function main(config: MainConfig = {}): Promise<void> {
         window.open("/profiler", "_blank");
       });
     }
+
+    // A tab left open across debug sessions otherwise just goes silently
+    // stale once its --stdio server process exits — this makes that state
+    // visible. On reconnect (as opposed to the initial connect) this
+    // reloads the page rather than resuming in place: the already-booted
+    // wasm module in this tab has no idea a *different* debug session is
+    // now running, and would otherwise just keep rendering whatever the
+    // previous session left on screen while silently receiving RPC calls
+    // meant for the new one. A reload re-fetches "/" for the current
+    // session's HTML/config and boots wasm fresh against it. See also
+    // standalonePuaeEmulator.ts's REOPEN_GRACE_MS, which holds off opening a
+    // *second* tab for a new session long enough for this reconnect to
+    // reclaim this one first.
+    const disconnectedOverlay = document.getElementById("disconnected-overlay");
+    if (disconnectedOverlay && bridge) {
+      // onConnectionChange fires synchronously at subscription time with
+      // whatever the state is *right now* — always false here, since the
+      // WebSocket handshake is inherently async and hasn't resolved yet even
+      // on localhost. hasEverConnected distinguishes that normal "still
+      // connecting for the first time" false from a *real* drop (a previous
+      // true having flipped back to false), so the overlay/reload logic
+      // below doesn't misfire on every ordinary page load.
+      let hasEverConnected = false;
+      // A brief drop-and-reconnect (e.g. the WebSocket's heartbeat briefly
+      // starved by a long synchronous stretch of wasm/CPU emulation work,
+      // not the server actually dying) shouldn't reload the page — only a
+      // disconnect that's still down after this debounce is treated as
+      // real. Without this, a transient blip during heavy emulation would
+      // immediately satisfy the "was connected, now reconnecting" check
+      // below and force an unwanted reload.
+      const DISCONNECT_DEBOUNCE_MS = 1000;
+      let disconnectTimer: ReturnType<typeof setTimeout> | undefined;
+      bridge.onConnectionChange((connected) => {
+        if (connected) {
+          if (disconnectTimer !== undefined) {
+            clearTimeout(disconnectTimer);
+            disconnectTimer = undefined;
+            return; // reconnected before the debounce fired — treat as a non-event
+          }
+          if (hasEverConnected) {
+            location.reload();
+          } else {
+            hasEverConnected = true;
+            disconnectedOverlay.style.display = "none";
+          }
+        } else if (hasEverConnected && disconnectTimer === undefined) {
+          disconnectTimer = setTimeout(() => {
+            disconnectTimer = undefined;
+            disconnectedOverlay.style.display = "flex";
+          }, DISCONNECT_DEBOUNCE_MS);
+        }
+      });
+    }
   }
 
   log("Boot OK — starting render loop");

@@ -6,6 +6,25 @@
 <style>
   body { margin: 0; padding: 0; }
   #screen { display: block; width: 100%; }
+  #screen-wrap { position: relative; }
+  /* Standalone only (see app.ts) — shown while the WebSocket bridge is
+     reconnecting, e.g. after the --stdio server process behind this tab has
+     exited and a later debug session's process hasn't come back up yet. */
+  #disconnected-overlay {
+    display: none;
+    position: absolute;
+    inset: 0;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+    padding: 12px;
+    box-sizing: border-box;
+    background: rgba(0, 0, 0, 0.75);
+    color: #fff;
+    font-family: var(--vscode-font-family, sans-serif);
+    font-size: 14px;
+    pointer-events: none;
+  }
   /* Click-to-focus keyboard capture (keyboardCapture.ts) — a subtle cue that
      the canvas, not the page, currently receives key events. Plain :focus
      (not :focus-visible): focus is acquired via a mouse click here, which
@@ -100,7 +119,10 @@
 </style>
 </head>
 <body>
-<canvas id="screen" width="720" height="574"></canvas>
+<div id="screen-wrap">
+  <canvas id="screen" width="720" height="574"></canvas>
+  <div id="disconnected-overlay">Session ended — waiting to reconnect…</div>
+</div>
 <div id="controls">
   <label for="speed">Speed:</label>
   <select id="speed">

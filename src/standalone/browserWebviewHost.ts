@@ -17,13 +17,39 @@ import { WebviewHost } from "../webviewHost";
  * === socket` check below) so that doesn't look like the user closing the
  * tab. An unreplaced socket closing — the actual "tab closed" signal — does
  * dispose this host, mirroring `vscode.WebviewPanel`'s `onDidDispose` when
- * its tab is closed.
+ * its tab is closed — but only after CLOSE_GRACE_MS with nothing having
+ * superseded it: a `location.reload()` (app.ts's reconnect handling) closes
+ * *this* socket itself as part of the page's own navigation, and the
+ * replacement socket only arrives once the reloaded page reboots wasm and
+ * reconnects — which can take many seconds — so disposing immediately on
+ * close would permanently reject that page's own reconnection attempt via
+ * the `disposed` check below, breaking the RPC channel for good.
  */
+// Generous on purpose: covers a full wasm reboot (loading puae.js/puae.wasm,
+// booting the emulated machine) on the reloading page before its fresh
+// WebSocket reconnects — observed to take anywhere from a couple of seconds
+// up to 20+ under real system load, not just the network round-trip.
+const CLOSE_GRACE_MS = 30000;
+
 export class BrowserWebviewHost implements WebviewHost {
   private socket?: WebSocket;
   private readonly messageListeners = new Set<(message: unknown) => void>();
   private readonly disposeListeners = new Set<() => void>();
+  private readonly attachListeners = new Set<() => void>();
   private disposed = false;
+
+  /**
+   * Fires every time a browser tab attaches, including a reconnect — an
+   * event rather than a point-in-time `isAttached` getter deliberately: a
+   * reconnecting tab reloads itself once attached (see app.ts), which tears
+   * this same socket back down as part of the reload's own navigation, so a
+   * snapshot check taken slightly later could see "not attached" even
+   * though a tab genuinely did reclaim this session moments before.
+   */
+  onAttach(callback: () => void): Disposable {
+    this.attachListeners.add(callback);
+    return { dispose: () => this.attachListeners.delete(callback) };
+  }
 
   attachSocket(socket: WebSocket): void {
     if (this.disposed) {
@@ -33,6 +59,7 @@ export class BrowserWebviewHost implements WebviewHost {
     const previous = this.socket;
     this.socket = socket;
     previous?.close();
+    for (const listener of this.attachListeners) listener();
 
     socket.on("message", (data) => {
       let message: unknown;
@@ -47,9 +74,13 @@ export class BrowserWebviewHost implements WebviewHost {
       }
     });
     socket.on("close", () => {
-      if (this.socket === socket) {
-        this.dispose();
-      }
+      if (this.socket !== socket) return; // already superseded by a newer attach
+      setTimeout(() => {
+        // Re-check rather than unconditionally disposing: if a replacement
+        // attached during the grace window, this.socket now points to it,
+        // not the closed socket captured above.
+        if (this.socket === socket) this.dispose();
+      }, CLOSE_GRACE_MS);
     });
   }
 
