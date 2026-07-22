@@ -1,7 +1,7 @@
 import { createServer as createHttpServer } from "http";
 import { createServer as createNetServer } from "net";
 import { tmpdir } from "os";
-import { join } from "path";
+import { dirname, join } from "path";
 import { WebSocketServer } from "ws";
 import { DebugAdapter } from "../debugAdapter";
 import { ProfilerRpcClient } from "../profilerManager";
@@ -43,6 +43,12 @@ function main(): void {
   const options = parseArgs(process.argv.slice(2));
   // out/standalone.js -> repo/package root (contains puae/, out/, node_modules/).
   const rootDir = join(__dirname, "..");
+  // Resolved separately from rootDir: npm hoists dependencies to the
+  // *installing* project's top-level node_modules, which isn't necessarily
+  // `rootDir/node_modules` once this is a real installed/npx'd package
+  // (only true by coincidence in this repo's own dev checkout). require.resolve
+  // finds wherever npm/node's module resolution actually put it.
+  const codiconsDir = dirname(require.resolve("@vscode/codicons/package.json"));
   const url = `http://127.0.0.1:${options.httpPort}/`;
   const profilerUrl = `http://127.0.0.1:${options.httpPort}/profiler`;
   const stateViewerUrl = `http://127.0.0.1:${options.httpPort}/state`;
@@ -146,6 +152,14 @@ function main(): void {
       }
       res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
       res.end(html);
+      return;
+    }
+    if (req.url?.startsWith("/node_modules/@vscode/codicons/")) {
+      // resolveUri emits "node_modules/@vscode/codicons/..." URLs unchanged,
+      // but they're served from codiconsDir (see above), not rootDir.
+      if (!serveStaticFile(codiconsDir, req.url.slice("/node_modules/@vscode/codicons".length), res)) {
+        notFound(res);
+      }
       return;
     }
     if (!serveStaticFile(rootDir, req.url ?? "/", res)) {

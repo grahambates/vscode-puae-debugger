@@ -81,6 +81,11 @@ async function main() {
     platform: 'node',
     outfile: 'out/standalone.js',
     logLevel: 'silent',
+    // Makes the bundle directly executable (`./out/standalone.js` or via the
+    // package's "bin" entry / `npx`) without touching server.ts itself.
+    banner: {
+      js: '#!/usr/bin/env node',
+    },
     plugins: [
       esbuildProblemMatcherPlugin,
     ],

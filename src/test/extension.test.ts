@@ -11,7 +11,7 @@ describe("Extension Test Suite", () => {
     // Note: Extension ID should match package.json publisher.name format
     // For now, test that the extension can be found (even with undefined publisher)
     const extension = vscode.extensions.getExtension(
-      "undefined_publisher.vscode-puae-debugger",
+      "undefined_publisher.puae-debugger",
     );
     assert.ok(extension, "Extension should be installed");
 

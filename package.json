@@ -1,5 +1,5 @@
 {
-  "name": "vscode-puae-debugger",
+  "name": "puae-debugger",
   "displayName": "PUAE Amiga Debugger and Profiler",
   "description": "Debug and profile Amiga programs with an integrated PUAE (WinUAE-derived) emulator",
   "version": "1.0.0",
@@ -26,6 +26,24 @@
     "onDebugResolve:puae"
   ],
   "main": "./out/extension.js",
+  "bin": {
+    "puae-debugger": "./out/standalone.js"
+  },
+  "files": [
+    "out/standalone.js",
+    "out/puaeApp.js",
+    "out/puaeAudioProcessor.js",
+    "out/memoryViewer.js",
+    "out/memoryViewer.css",
+    "out/profilerViewer.js",
+    "out/profilerViewer.css",
+    "out/stateViewer.js",
+    "out/stateViewer.css",
+    "puae/index.html",
+    "puae/puae.js",
+    "puae/puae.wasm",
+    "puae/vscodeDefaultTheme.css"
+  ],
   "contributes": {
     "customEditors": [
       {
@@ -586,6 +604,7 @@
   },
   "scripts": {
     "vscode:prepublish": "npm run package",
+    "prepublishOnly": "npm run package",
     "compile": "npm run check-types && node esbuild.js",
     "watch": "npm run check-types && node esbuild.js --watch",
     "package": "npm run check-types && node esbuild.js --production",
