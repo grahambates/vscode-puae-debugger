@@ -281,10 +281,16 @@ export class DebugAdapter extends LoggingDebugSession {
   }
 
   /**
-   * Shuts down the debug adapter and cleans up resources.
+   * Shuts down the debug adapter and cleans up resources. Also exits the
+   * process via the base class's shutdown() — but only when this session
+   * owns the process: it's a no-op when setRunAsServer(true) was called
+   * (the standalone TCP server, shared across sessions) or when running as
+   * vscode's inline adapter (auto-detected by the base class), and only
+   * actually exits for the standalone --stdio path.
    */
   public shutdown(): void {
     this.dispose();
+    super.shutdown();
   }
 
   /**
@@ -550,7 +556,7 @@ export class DebugAdapter extends LoggingDebugSession {
   protected disconnectRequest(
     response: DebugProtocol.DisconnectResponse,
   ): void {
-    this.dispose();
+    this.shutdown();
     this.sendEvent(new TerminatedEvent());
     this.sendResponse(response);
   }

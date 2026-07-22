@@ -16,10 +16,11 @@ interface Options {
   dapPort: number;
   httpPort: number;
   openBrowser: boolean;
+  stdio: boolean;
 }
 
 function parseArgs(argv: string[]): Options {
-  const options: Options = { dapPort: 4711, httpPort: 5321, openBrowser: true };
+  const options: Options = { dapPort: 4711, httpPort: 5321, openBrowser: true, stdio: false };
   for (let i = 0; i < argv.length; i++) {
     switch (argv[i]) {
       case "--port":
@@ -31,6 +32,9 @@ function parseArgs(argv: string[]): Options {
       case "--no-open":
         options.openBrowser = false;
         break;
+      case "--stdio":
+        options.stdio = true;
+        break;
       default:
         console.error(`Unknown argument: ${argv[i]}`);
         process.exit(1);
@@ -41,6 +45,12 @@ function parseArgs(argv: string[]): Options {
 
 function main(): void {
   const options = parseArgs(process.argv.slice(2));
+  // Every status/announcement log below uses console.error (stderr), never
+  // console.log — in --stdio mode, stdout *is* the DAP protocol stream
+  // (Content-Length-framed JSON), so anything else written to it would
+  // corrupt the client's parser. Using stderr unconditionally, rather than
+  // branching on options.stdio, keeps this correct in both modes with no
+  // risk of an accidentally-missed console.log resurfacing the bug later.
   // out/standalone.js -> repo/package root (contains puae/, out/, node_modules/).
   const rootDir = join(__dirname, "..");
   // Resolved separately from rootDir: npm hoists dependencies to the
@@ -54,7 +64,7 @@ function main(): void {
   const stateViewerUrl = `http://127.0.0.1:${options.httpPort}/state`;
 
   const emulator = new StandalonePuaeEmulator(rootDir, url, (sessionUrl) => {
-    console.log(`PUAE emulator: ${sessionUrl}`);
+    console.error(`PUAE emulator: ${sessionUrl}`);
     if (options.openBrowser) openInBrowser(sessionUrl);
   });
 
@@ -78,7 +88,7 @@ function main(): void {
     emulator,
     options.httpPort,
     (panelUrl) => {
-      console.log(`Memory viewer: ${panelUrl}`);
+      console.error(`Memory viewer: ${panelUrl}`);
       openInBrowser(panelUrl);
     },
   );
@@ -212,33 +222,50 @@ function main(): void {
   });
 
   httpServer.listen(options.httpPort, "127.0.0.1", () => {
-    console.log(`HTTP/WebSocket server listening on http://127.0.0.1:${options.httpPort}`);
-    console.log(`Profiler: ${profilerUrl}`);
-    console.log(`State viewer: ${stateViewerUrl}`);
+    console.error(`HTTP/WebSocket server listening on http://127.0.0.1:${options.httpPort}`);
+    console.error(`Profiler: ${profilerUrl}`);
+    console.error(`State viewer: ${stateViewerUrl}`);
   });
 
-  // Hand-rolled DAP-over-TCP server, mirroring @vscode/debugadapter's own
-  // (~15-line) runDebugAdapter.js server branch — not reusable directly
-  // since DebugAdapter's constructor takes a shared PuaeEmulator instance
-  // rather than matching that helper's fixed (noDebug, isServer) signature.
-  // One `emulator` (and its browser tab) is shared across every DAP session
-  // that connects here, so the wasm engine doesn't reboot and the browser
-  // tab doesn't need to reconnect between debug sessions.
-  const dapServer = createNetServer((socket) => {
-    console.log("nvim-dap (or another DAP client) connected");
-    const session = new DebugAdapter(
+  const createSession = () =>
+    new DebugAdapter(
       emulator,
       () => openInBrowser(profilerUrl),
       (address) => void memoryViewerProvider.show(address ?? ""),
       () => openInBrowser(stateViewerUrl),
     );
-    session.setRunAsServer(true);
-    session.start(socket, socket);
-    socket.on("close", () => console.log("DAP client disconnected"));
-  });
-  dapServer.listen(options.dapPort, "127.0.0.1", () => {
-    console.log(`DAP server listening on 127.0.0.1:${options.dapPort}`);
-  });
+
+  if (options.stdio) {
+    // One-shot mode: the client (e.g. nvim-dap's "executable" adapter type)
+    // spawns this process itself and talks DAP directly over its stdio,
+    // instead of pre-starting a long-lived server and pointing a "server"
+    // adapter type at it. Trades away the TCP server's cross-session
+    // `emulator` reuse (a fresh process here means a fresh wasm boot + browser
+    // tab every debug session) for not needing that separate start-up step.
+    // No setRunAsServer(true): unlike the per-connection TCP sessions below,
+    // this *is* the whole process, so the default behavior — exit when the
+    // client disconnects — is what we want.
+    console.error("DAP client connected via stdio");
+    createSession().start(process.stdin, process.stdout);
+  } else {
+    // Hand-rolled DAP-over-TCP server, mirroring @vscode/debugadapter's own
+    // (~15-line) runDebugAdapter.js server branch — not reusable directly
+    // since DebugAdapter's constructor takes a shared PuaeEmulator instance
+    // rather than matching that helper's fixed (noDebug, isServer) signature.
+    // One `emulator` (and its browser tab) is shared across every DAP session
+    // that connects here, so the wasm engine doesn't reboot and the browser
+    // tab doesn't need to reconnect between debug sessions.
+    const dapServer = createNetServer((socket) => {
+      console.error("nvim-dap (or another DAP client) connected");
+      const session = createSession();
+      session.setRunAsServer(true);
+      session.start(socket, socket);
+      socket.on("close", () => console.error("DAP client disconnected"));
+    });
+    dapServer.listen(options.dapPort, "127.0.0.1", () => {
+      console.error(`DAP server listening on 127.0.0.1:${options.dapPort}`);
+    });
+  }
 }
 
 main();
