@@ -3,7 +3,7 @@ import { DebugAdapter } from "./debugAdapter";
 import { MemoryViewerProvider } from "./memoryViewerProvider";
 import { StateViewerProvider } from "./stateViewerProvider";
 import { VscodePuaeEmulator } from "./vscodePuaeEmulator";
-import { ProfilerViewerProvider } from "./profilerViewerProvider";
+import { VscodeProfilerViewerProvider } from "./vscodeProfilerViewerProvider";
 import { ProfileEditorProvider } from "./profileEditorProvider";
 import { ProfilerCodeLensProvider } from "./profilerCodeLensProvider";
 import { ProfilerLineDecorationProvider } from "./profilerLineDecorationProvider";
@@ -22,7 +22,7 @@ export function activate(context: vscode.ExtensionContext) {
   const profilerStorage = context.globalStorageUri;
   const profilerCodeLens = new ProfilerCodeLensProvider();
   const profilerLineDecorations = new ProfilerLineDecorationProvider();
-  const profilerViewer = new ProfilerViewerProvider(
+  const profilerViewer = new VscodeProfilerViewerProvider(
     context.extensionUri,
     profilerStorage,
     () => DebugAdapter.getActiveAdapter()?.getProfilerClient(),
@@ -34,7 +34,13 @@ export function activate(context: vscode.ExtensionContext) {
     vscode.debug.registerDebugAdapterDescriptorFactory("puae", {
       createDebugAdapterDescriptor(): vscode.ProviderResult<vscode.DebugAdapterDescriptor> {
         return new vscode.DebugAdapterInlineImplementation(
-          new DebugAdapter(puaeEmulator),
+          new DebugAdapter(puaeEmulator, () => {
+            void profilerViewer.show().catch((error) => {
+              vscode.window.showErrorMessage(
+                `Failed to open CPU profiler: ${error instanceof Error ? error.message : String(error)}`,
+              );
+            });
+          }),
         );
       },
     }),

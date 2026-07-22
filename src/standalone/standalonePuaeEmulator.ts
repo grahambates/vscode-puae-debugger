@@ -29,9 +29,11 @@ export class StandalonePuaeEmulator extends PuaeEmulator {
     const host = new BrowserWebviewHost();
     this.currentHost = host;
     this.onSessionStart(this.url);
+    const resolveUri = (file: string) => `/${file}`;
     return {
-      resolveUri: (file) => `/${file}`,
+      resolveUri,
       cspMeta: "",
+      extraHeadHtml: `<link href="${resolveUri("puae/vscodeDefaultTheme.css")}" rel="stylesheet">`,
       host,
       setHtml: (html) => {
         this.currentHtml = html;

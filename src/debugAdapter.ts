@@ -259,8 +259,16 @@ export class DebugAdapter extends LoggingDebugSession {
    * - Manager classes for evaluation, variables, breakpoints, etc.
    *
    * @param emulator Emulator instance for dependency injection (primarily for testing)
+   * @param openProfiler Backs the "openProfiler" customRequest (see customRequest below) — the
+   * standalone server binds this to opening the profiler's URL in a browser (there's no vscode
+   * command palette outside vscode to put an "openProfiler" command in); the vscode extension
+   * binds it to `ProfilerViewerProvider.show()` for parity, though it also already has a debug
+   * toolbar button for the same thing.
    */
-  public constructor(private emulator: Emulator) {
+  public constructor(
+    private emulator: Emulator,
+    private readonly openProfiler?: () => void,
+  ) {
     super();
     this.setDebuggerLinesStartAt1(false);
     this.setDebuggerColumnsStartAt1(false);
@@ -1007,7 +1015,9 @@ export class DebugAdapter extends LoggingDebugSession {
    * commands (extension.ts) and are also how a non-vscode DAP client (e.g.
    * nvim-dap, talking to the standalone server) drives the same actions —
    * there's no in-process `DebugAdapter.getActiveAdapter()` shortcut to
-   * reach for outside the vscode extension host.
+   * reach for outside the vscode extension host. "openProfiler" is the same
+   * idea for opening the profiler — see the `openProfiler` constructor
+   * param's doc comment.
    */
   protected async customRequest(
     command: string,
@@ -1052,6 +1062,11 @@ export class DebugAdapter extends LoggingDebugSession {
       }
       if (command === "eol") {
         await this.emulator.eol();
+        this.sendResponse(response);
+        return;
+      }
+      if (command === "openProfiler") {
+        this.openProfiler?.();
         this.sendResponse(response);
         return;
       }

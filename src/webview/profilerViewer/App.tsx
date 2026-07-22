@@ -2,6 +2,7 @@ import { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import "./App.css";
 import { ProfilerOutboundMessage, ISymbol, IProfileModel, IDmaModel, ComputeRangeMessage, DMA_HPOS, DMA_VPOS, ReadSourceFileMessage, BusOwner } from "../../shared/profilerTypes";
 import { unpackBulk } from "../../profilerBulk";
+import { createHostBridge, HostBridge } from "../shared/hostBridge";
 import { setProfileModel, getProfileModel, useModelVersion } from "./modelStore";
 import { FlameGraph } from "./FlameGraph";
 import { TimeView } from "./TimeView";
@@ -17,7 +18,11 @@ import { DisplayUnit, unitOptions, Timing } from "./display";
 import { IRichFilter } from "./filter";
 import { findLineExecutionSlot } from "./columns";
 
-const vscode = acquireVsCodeApi();
+const bridge: HostBridge =
+  createHostBridge("/profiler/rpc") ??
+  (() => {
+    throw new Error("Profiler webview requires a vscode or standalone host bridge");
+  })();
 
 type TabId = "time" | "customregs" | "copper" | "blitter" | "memory" | "disasm" | "screen";
 const TAB_LABELS: Record<TabId, string> = {
@@ -213,16 +218,16 @@ export function App() {
     const [a, b] = selectedRange;
     if (a === 0 && b === frames.length - 1) return; // all-frames: use combinedModel
     setRangeModel(null); // eslint-disable-line react-hooks/set-state-in-effect
-    vscode.postMessage({ command: "computeRange", range: [a, b] } as ComputeRangeMessage);
+    bridge.postMessage({ command: "computeRange", range: [a, b] } as ComputeRangeMessage);
   }, [selectedRange, frames.length]);
 
   useEffect(() => {
-    vscode.postMessage({ command: "ready" });
+    bridge.postMessage({ command: "ready" });
   }, []);
 
   useEffect(() => {
-    const handle = (event: MessageEvent) => {
-      const m = event.data as ProfilerOutboundMessage;
+    const handle = (message: unknown) => {
+      const m = message as ProfilerOutboundMessage;
       if (m.command === "captureResult") {
         setSelectedSlot(0);
         setWorkspaceRoot(m.workspaceRoot);
@@ -327,10 +332,19 @@ export function App() {
           setSelectedSlot(slot);
           setLeftTab("disasm");
         }
+      } else if (m.command === "downloadProfile") {
+        // Standalone host only (StandaloneProfilerViewerProvider) — there's no native save
+        // dialog outside vscode, so trigger a normal browser download instead.
+        const bytes = Uint8Array.from(atob(m.dataBase64), (c) => c.charCodeAt(0));
+        const url = URL.createObjectURL(new Blob([bytes], { type: "application/octet-stream" }));
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = m.fileName;
+        a.click();
+        URL.revokeObjectURL(url);
       }
     };
-    window.addEventListener("message", handle);
-    return () => window.removeEventListener("message", handle);
+    return bridge.onMessage(handle);
   }, []);
 
   // Revoke thumbnail blob URLs on unmount.
@@ -342,14 +356,14 @@ export function App() {
 
   const capture = () => {
     setBusy(true);
-    vscode.postMessage({ command: "capture" });
+    bridge.postMessage({ command: "capture" });
   };
 
-  const save = () => vscode.postMessage({ command: "saveProfile" });
+  const save = () => bridge.postMessage({ command: "saveProfile" });
 
   const openSource = useCallback(
     (file: string, line: number, toSide: boolean) =>
-      vscode.postMessage({ command: "openDocument", file, line, toSide }),
+      bridge.postMessage({ command: "openDocument", file, line, toSide }),
     [],
   );
 
@@ -358,7 +372,7 @@ export function App() {
   const requestSourceFile = useCallback((file: string) => {
     setSourceFiles(prev => {
       if (prev.has(file)) return prev; // already requested or loaded
-      vscode.postMessage({ command: "readSourceFile", file } as ReadSourceFileMessage);
+      bridge.postMessage({ command: "readSourceFile", file } as ReadSourceFileMessage);
       return new Map(prev).set(file, null);
     });
   }, []);
@@ -572,7 +586,7 @@ export function App() {
                   const n = parseInt(e.target.value, 10);
                   if (!Number.isNaN(n) && n >= 1 && n <= 500) {
                     setNumFrames(n);
-                    vscode.postMessage({ command: "setNumFrames", numFrames: n });
+                    bridge.postMessage({ command: "setNumFrames", numFrames: n });
                   }
                 }}
                 onBlur={() => setNumFramesText(String(numFrames))}

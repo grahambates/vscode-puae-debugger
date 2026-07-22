@@ -53,6 +53,10 @@ export function walkHardDrive(rootDir: string): HardDriveEntry[] {
 export interface PuaeSurface {
   resolveUri(file: string): string;
   cspMeta: string;
+  /** Extra <head> content — the standalone host uses it to link puae/vscodeDefaultTheme.css
+   * (vscode injects the user's real theme as --vscode-* CSS variables into every webview
+   * automatically; nothing does that for a plain browser tab), "" elsewhere. */
+  extraHeadHtml: string;
   host: WebviewHost;
   setHtml(html: string): void;
 }
@@ -167,7 +171,7 @@ export abstract class PuaeEmulator extends WebviewEmulator {
 
   private initHost(): void {
     const surface = this.createSurface();
-    const html = this.buildHtml(surface.resolveUri, surface.cspMeta);
+    const html = this.buildHtml(surface.resolveUri, surface.cspMeta, surface.extraHeadHtml);
     surface.setHtml(html);
     this.panelOptions = this.openOptions;
     this.attachHost(surface.host);
@@ -229,9 +233,10 @@ export abstract class PuaeEmulator extends WebviewEmulator {
    * a `webview.asWebviewUri()` result in the vscode host, or a plain
    * server-relative path (`"/puae/puae.js"`) in the standalone host.
    * `cspMeta` is a complete `<meta http-equiv="Content-Security-Policy" ...>`
-   * tag, or `""` to omit one entirely.
+   * tag, or `""` to omit one entirely. `extraHeadHtml` — see PuaeSurface's
+   * doc comment.
    */
-  private buildHtml(resolveUri: (file: string) => string, cspMeta: string): string {
+  private buildHtml(resolveUri: (file: string) => string, cspMeta: string, extraHeadHtml: string): string {
     const puaeJsUri = resolveUri("puae/puae.js");
     const puaeWasmUri = resolveUri("puae/puae.wasm");
     // Bundled from src/webview/puaeApp/ (TypeScript) by esbuild.js, not
@@ -293,11 +298,13 @@ export abstract class PuaeEmulator extends WebviewEmulator {
     let html = readFileSync(join(this.rootDir, "puae", "index.html"), "utf8");
 
     // Inject the CSP meta tag (vscode host only, empty string elsewhere) +
-    // the codicon webfont stylesheet (gives the page access to VS Code's
-    // built-in icon set via <i class="codicon codicon-*">).
+    // the default-theme stylesheet (standalone host only — see
+    // PuaeSurface's doc comment) + the codicon webfont stylesheet (gives
+    // the page access to VS Code's built-in icon set via
+    // <i class="codicon codicon-*">).
     html = html.replace(
       '<meta charset="utf-8">',
-      `<meta charset="utf-8">\n${cspMeta}<link href="${codiconsUri}" rel="stylesheet">`,
+      `<meta charset="utf-8">\n${cspMeta}${extraHeadHtml}<link href="${codiconsUri}" rel="stylesheet">`,
     );
 
     // Patch external script src to a loadable URI.

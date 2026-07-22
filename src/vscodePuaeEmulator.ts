@@ -1,33 +1,7 @@
 import * as vscode from "vscode";
-import { Disposable } from "./emulator";
 import { PuaeEmulator, PuaeSurface } from "./puaeEmulator";
 import { openSourceLocation } from "./sourceNav";
-import { WebviewHost } from "./webviewHost";
-
-/** Wraps a `vscode.WebviewPanel` to satisfy `WebviewHost`. */
-class VscodeWebviewHost implements WebviewHost {
-  constructor(private readonly panel: vscode.WebviewPanel) {}
-
-  postMessage(message: unknown): void {
-    this.panel.webview.postMessage(message);
-  }
-
-  onDidReceiveMessage(callback: (message: unknown) => void): Disposable {
-    return this.panel.webview.onDidReceiveMessage(callback);
-  }
-
-  onDidDispose(callback: () => void): Disposable {
-    return this.panel.onDidDispose(callback);
-  }
-
-  reveal(): void {
-    this.panel.reveal();
-  }
-
-  dispose(): void {
-    this.panel.dispose();
-  }
-}
+import { VscodeWebviewHost } from "./vscodeWebviewHost";
 
 /**
  * The vscode-hosted `PuaeEmulator`: UI lives in a `vscode.WebviewPanel`,
@@ -89,6 +63,7 @@ export class VscodePuaeEmulator extends PuaeEmulator {
     return {
       resolveUri,
       cspMeta: `<meta http-equiv="Content-Security-Policy" content="${csp}">\n`,
+      extraHeadHtml: "",
       host: new VscodeWebviewHost(panel),
       setHtml: (html: string) => {
         panel.webview.html = html;

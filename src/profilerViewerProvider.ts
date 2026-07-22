@@ -1,40 +1,53 @@
-import * as vscode from "vscode";
-import * as path from "path";
+import { readFileSync } from "fs";
+import { basename, isAbsolute } from "path";
 import { DebugAdapter } from "./debugAdapter";
 import { ProfilerManager, ProfilerRpcClient, FrameCapture } from "./profilerManager";
 import { encodeCapture } from "./profileFormat";
-import { packBulk } from "./profilerBulk";
-import { ProfileEditorProvider } from "./profileEditorProvider";
 import { ProfilerCodeLensProvider } from "./profilerCodeLensProvider";
 import { ProfilerLineDecorationProvider } from "./profilerLineDecorationProvider";
 import { ProfilerInboundMessage, ProfilerOutboundMessage, IProfileModel, CaptureFrameInfo, ComputeRangeMessage } from "./shared/profilerTypes";
+import { WebviewHost } from "./webviewHost";
+
+/** A concrete host's UI surface for one `show()` — mirrors `PuaeSurface` (puaeEmulator.ts). */
+export interface ProfilerSurface {
+  resolveUri(file: string): string;
+  cspMeta: string;
+  /** See buildProfilerHtml's extraHeadHtml param. "" for vscode. */
+  extraHeadHtml: string;
+  host: WebviewHost;
+  setHtml(html: string): void;
+}
 
 /**
  * Webview panel for the CPU profiler: captures N frames of CPU execution, builds
  * symbolicated call trees, and renders a flame graph with a per-frame filmstrip.
  * Capture is user-triggered (it advances the emulator), not automatic.
+ *
+ * Host-agnostic: creating/attaching the actual `WebviewHost`, writing the
+ * per-frame "bulk" binary blobs (DMA grid/snapshot/JPEGs — shipped via a
+ * fetched URL rather than postMessage, which is slow for large binary — see
+ * `uint8ToBase64`'s comment in `shared/base64.ts`), saving a captured profile,
+ * and opening source/showing notifications are all delegated to a concrete
+ * subclass (`VscodeProfilerViewerProvider`, `StandaloneProfilerViewerProvider`).
  */
-export class ProfilerViewerProvider {
-  public static readonly viewType = "puae-debugger.profilerViewer";
-
-  private panel?: vscode.WebviewPanel;
-  private readonly manager: ProfilerManager;
-  // Last successful capture, kept extension-side so a webview reload re-shows it
-  // without advancing the emulator (a reload resets webview state, not the extension host).
-  private lastFrames: FrameCapture[] = [];
-  private lastBulkUris: string[] = [];
-  private lastBulkFileUris: vscode.Uri[] = []; // parallel to lastBulkUris, for cleanup on reset
+export abstract class ProfilerViewerProvider {
+  protected host?: WebviewHost;
+  protected readonly manager: ProfilerManager;
+  // Last successful capture, kept here so a webview reload re-shows it
+  // without advancing the emulator (a reload resets webview state, not this).
+  protected lastFrames: FrameCapture[] = [];
+  protected lastBulkUris: string[] = [];
+  // Opaque per-host handles for cleanup (e.g. a file path) — parallel to lastBulkUris.
+  protected lastBulkCleanupHandles: string[] = [];
   // Everything Save needs, grabbed at capture time while the debug session is live.
   private lastSaveData?: { elf: Uint8Array; programName: string; segmentOffsets: number[]; baseDir: string; kickstart: { sha1: string; name: string } };
   private lastSaveAdapter?: DebugAdapter;
-  private symbolsSent = false; // symbols are session-constant — send them only once per webview mount
-  private capturing = false;   // a frame capture is in flight (drops re-entrant requests)
-  private numFrames = 1;       // updated by "setNumFrames" from the webview toolbar
+  protected symbolsSent = false; // symbols are session-constant — send them only once per webview mount
+  private capturing = false;     // a frame capture is in flight (drops re-entrant requests)
+  private numFrames = 1;         // updated by "setNumFrames" from the webview toolbar
 
   constructor(
-    private readonly extensionUri: vscode.Uri,
-    private readonly storageUri: vscode.Uri,
-    private readonly getClient: () => ProfilerRpcClient | undefined,
+    getClient: () => ProfilerRpcClient | undefined,
     private readonly codeLens?: ProfilerCodeLensProvider,
     private readonly lineDecorations?: ProfilerLineDecorationProvider,
   ) {
@@ -48,16 +61,14 @@ export class ProfilerViewerProvider {
   }
 
   public dispose(): void {
-    this.panel?.dispose();
+    this.host?.dispose();
   }
 
   private resetCapture(): void {
-    for (const fileUri of this.lastBulkFileUris) {
-      void vscode.workspace.fs.delete(fileUri).then(undefined, () => undefined);
-    }
+    for (const handle of this.lastBulkCleanupHandles) this.deleteBulkFile(handle);
     this.lastFrames = [];
     this.lastBulkUris = [];
-    this.lastBulkFileUris = [];
+    this.lastBulkCleanupHandles = [];
     this.symbolsSent = false;
     this.lastSaveData = undefined;
     this.lastSaveAdapter = undefined;
@@ -65,73 +76,76 @@ export class ProfilerViewerProvider {
     this.lineDecorations?.clear();
   }
 
-  // Reveals the panel and asks the webview to jump to the next execution of a source line,
-  // opening the CPU tab — see puae-debugger.jumpToProfilerExecution in extension.ts. Unlike
-  // show(), this deliberately does NOT trigger a fresh capture: the line decorations the command
-  // originates from reflect whatever model is ALREADY loaded, and starting a new capture would
-  // jump into different (unrelated) execution data. Returns false if the panel isn't currently
-  // open, so the caller can tell the user to open it first rather than the jump silently no-oping.
+  // Reveals the panel/tab and asks the webview to jump to the next execution of a source
+  // line, opening the CPU tab — see puae-debugger.jumpToProfilerExecution in extension.ts.
+  // Unlike show(), this deliberately does NOT trigger a fresh capture: the line decorations
+  // the command originates from reflect whatever model is ALREADY loaded, and starting a new
+  // capture would jump into different (unrelated) execution data. Returns false if no host is
+  // attached yet, so the caller can tell the user to open it first rather than the jump
+  // silently no-oping.
   public jumpToLine(file: string, line: number): boolean {
-    if (!this.panel) return false;
-    this.panel.reveal();
+    if (!this.host) return false;
+    this.host.reveal();
     this.post({ command: "jumpToExecutionAtLine", file, line });
     return true;
   }
 
   public async show(): Promise<void> {
-    if (this.panel) {
-      this.panel.reveal();
+    if (this.host) {
+      this.host.reveal();
       await this.capture();
       return;
     }
 
     this.resetCapture();
 
-    this.panel = vscode.window.createWebviewPanel(
-      ProfilerViewerProvider.viewType,
-      "Profiler",
-      vscode.ViewColumn.Beside,
-      { enableScripts: true, retainContextWhenHidden: true, localResourceRoots: [this.extensionUri, this.storageUri] },
-    );
+    const surface = this.createSurface();
+    surface.setHtml(buildProfilerHtml(surface.resolveUri, surface.cspMeta, "live", surface.extraHeadHtml));
+    this.attachHost(surface.host);
+  }
 
-    this.panel.webview.html = getProfilerHtml(this.panel.webview, this.extensionUri, "live");
-    this.panel.onDidDispose(() => {
-      this.panel = undefined;
+  private attachHost(host: WebviewHost): void {
+    this.host = host;
+    host.onDidDispose(() => {
+      if (this.host === host) {
+        this.host = undefined;
+      }
       this.resetCapture();
     });
+    host.onDidReceiveMessage((message) => void this.handleMessage(message as ProfilerInboundMessage));
+  }
 
-    this.panel.webview.onDidReceiveMessage(async (message: ProfilerInboundMessage) => {
-      if (message.command === "ready") {
-        this.symbolsSent = false;
-        this.numFrames = 1; // webview always resets its UI to 1 on mount — keep provider in sync
-        if (this.lastFrames.length > 0) this.postResult(this.lastFrames, this.lastBulkUris);
-        else await this.capture();
-      } else if (message.command === "capture") {
-        await this.capture();
-      } else if (message.command === "setNumFrames") {
-        const n = message.numFrames;
-        if (Number.isInteger(n) && n >= 1 && n <= 500) this.numFrames = n;
-      } else if (message.command === "computeRange") {
-        this.computeRange(message as ComputeRangeMessage);
-      } else if (message.command === "saveProfile") {
-        await this.saveProfile();
-      } else if (message.command === "openDocument") {
-        await openProfilerSource(message.file, message.line, message.toSide);
-      } else if (message.command === "readSourceFile") {
-        const lines = await readProfilerSourceFile(message.file);
-        this.post({ command: "sourceFile", file: message.file, lines });
-      }
-    });
+  private async handleMessage(message: ProfilerInboundMessage): Promise<void> {
+    if (message.command === "ready") {
+      this.symbolsSent = false;
+      this.numFrames = 1; // webview always resets its UI to 1 on mount — keep provider in sync
+      if (this.lastFrames.length > 0) this.postResult(this.lastFrames, this.lastBulkUris);
+      else await this.capture();
+    } else if (message.command === "capture") {
+      await this.capture();
+    } else if (message.command === "setNumFrames") {
+      const n = message.numFrames;
+      if (Number.isInteger(n) && n >= 1 && n <= 500) this.numFrames = n;
+    } else if (message.command === "computeRange") {
+      this.computeRange(message as ComputeRangeMessage);
+    } else if (message.command === "saveProfile") {
+      await this.saveProfileRequest();
+    } else if (message.command === "openDocument") {
+      this.openSource(message.file, message.line, message.toSide);
+    } else if (message.command === "readSourceFile") {
+      const lines = await this.readSourceFile(message.file);
+      this.post({ command: "sourceFile", file: message.file, lines });
+    }
   }
 
   private post(message: ProfilerOutboundMessage): void {
-    this.panel?.webview.postMessage(message);
+    this.host?.postMessage(message);
   }
 
   private postResult(frames: FrameCapture[], bulkUris: string[]): void {
     const { frames: result, combinedModel, symbolsNowSent } = stripFramesForPost(frames, this.symbolsSent, bulkUris);
     this.symbolsSent = symbolsNowSent;
-    this.post({ command: "captureResult", frames: result, combinedModel, workspaceRoot: vscode.workspace.workspaceFolders?.[0]?.uri.fsPath });
+    this.post({ command: "captureResult", frames: result, combinedModel, workspaceRoot: this.workspaceRoot() });
   }
 
   private computeRange(message: ComputeRangeMessage): void {
@@ -151,14 +165,14 @@ export class ProfilerViewerProvider {
       this.lastFrames = frames;
       this.codeLens?.update(frames[0].model);
       this.lineDecorations?.update(frames[0].model);
-      await this.cacheSaveData();
-      if (this.panel) {
-        const { uris, fileUris } = await writeBulkFiles(this.storageUri, this.panel.webview, frames, (i) => `profiler-live-bulk-${i}.bin`);
+      this.cacheSaveData();
+      if (this.host) {
+        const { uris, cleanupHandles } = await this.writeBulkFiles(frames);
         this.lastBulkUris = uris;
-        this.lastBulkFileUris = fileUris;
+        this.lastBulkCleanupHandles = cleanupHandles;
       } else {
         this.lastBulkUris = [];
-        this.lastBulkFileUris = [];
+        this.lastBulkCleanupHandles = [];
       }
       this.postResult(frames, this.lastBulkUris);
     } catch (error) {
@@ -171,17 +185,17 @@ export class ProfilerViewerProvider {
     }
   }
 
-  private async cacheSaveData(): Promise<void> {
+  private cacheSaveData(): void {
     const adapter = DebugAdapter.getActiveAdapter();
     const elfPath = adapter?.getDebugProgramPath();
     if (!adapter || !elfPath) return;
     if (adapter === this.lastSaveAdapter && this.lastSaveData) return;
     try {
-      const elf = await vscode.workspace.fs.readFile(vscode.Uri.file(elfPath));
+      const elf = readFileSync(elfPath);
       const reloc = adapter.getRelocation();
       this.lastSaveData = {
         elf,
-        programName: path.basename(elfPath),
+        programName: basename(elfPath),
         segmentOffsets: reloc.segmentOffsets,
         baseDir: reloc.baseDir,
         kickstart: adapter.getKickstartInfo(),
@@ -192,29 +206,19 @@ export class ProfilerViewerProvider {
     }
   }
 
-  private async saveProfile(): Promise<void> {
+  private async saveProfileRequest(): Promise<void> {
     const raws = this.manager.getAllRaw();
     if (!raws) {
-      vscode.window.showWarningMessage("Profiler: nothing to save yet — capture a frame first.");
+      this.notifyWarning("Profiler: nothing to save yet — capture a frame first.");
       return;
     }
     const save = this.lastSaveData;
     if (!save) {
-      vscode.window.showErrorMessage(
+      this.notifyError(
         "Profiler: can't save — the program couldn't be read when this frame was captured. Re-capture with the debug session active.",
       );
       return;
     }
-
-    const folder = vscode.workspace.workspaceFolders?.[0];
-    const base = save.programName.replace(/\.[^.]+$/, "") + ".puaeprofile";
-    const target = await vscode.window.showSaveDialog({
-      defaultUri: folder ? vscode.Uri.joinPath(folder.uri, base) : undefined,
-      filters: { "PUAE Profile": ["puaeprofile"] },
-      saveLabel: "Save Profile",
-    });
-    if (!target) return;
-
     try {
       const buf = encodeCapture(raws, {
         elf: save.elf,
@@ -224,43 +228,43 @@ export class ProfilerViewerProvider {
         baseDir: save.baseDir,
         kickstart: save.kickstart,
       });
-      await vscode.workspace.fs.writeFile(target, buf);
-      await vscode.commands.executeCommand("vscode.openWith", target, ProfileEditorProvider.viewType);
-      this.dispose();
+      const suggestedFileName = save.programName.replace(/\.[^.]+$/, "") + ".puaeprofile";
+      await this.saveProfile(buf, suggestedFileName);
     } catch (error) {
-      vscode.window.showErrorMessage(
-        `Profiler: couldn't save profile: ${error instanceof Error ? error.message : String(error)}`,
-      );
+      this.notifyError(`Profiler: couldn't save profile: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
 
-}
+  // --- Host-specific hooks ---
 
-// Writes one bulk blob (DMA grid + snapshot + JPEGs, see profilerBulk.ts) per frame to
-// `storageUri`, named by the caller-supplied `fileName` (so the live panel and the .puaeprofile
-// editor — which can have several tabs open at once — don't collide with each other's files).
-// Returns both the webview-fetchable URIs (for the captureResult/ready postMessage) and the
-// underlying file URIs (so the caller can delete them later, e.g. on panel/tab dispose).
-// Shared by the live panel and the .puaeprofile editor.
-export async function writeBulkFiles(
-  storageUri: vscode.Uri,
-  webview: vscode.Webview,
-  frames: FrameCapture[],
-  fileName: (frameIndex: number) => string,
-): Promise<{ uris: string[]; fileUris: vscode.Uri[] }> {
-  await vscode.workspace.fs.createDirectory(storageUri);
-  const v = Date.now();
-  const uris: string[] = [];
-  const fileUris: vscode.Uri[] = [];
-  for (let i = 0; i < frames.length; i++) {
-    const bytes = packBulk(frames[i].raw);
-    if (!bytes) { uris.push(""); continue; }
-    const fileUri = vscode.Uri.joinPath(storageUri, fileName(i));
-    await vscode.workspace.fs.writeFile(fileUri, bytes);
-    fileUris.push(fileUri);
-    uris.push(`${webview.asWebviewUri(fileUri)}?v=${v}`);
+  protected abstract createSurface(): ProfilerSurface;
+  protected abstract writeBulkFiles(frames: FrameCapture[]): Promise<{ uris: string[]; cleanupHandles: string[] }>;
+  protected abstract deleteBulkFile(handle: string): void;
+  /** Persist `bytes` (an encoded .puaeprofile) somewhere the user can get it — a native save
+   * dialog + "open in the profile editor" (vscode), or a browser download (standalone). */
+  protected abstract saveProfile(bytes: Uint8Array, suggestedFileName: string): Promise<void>;
+  protected abstract notifyWarning(message: string): void;
+  protected abstract notifyError(message: string): void;
+
+  /** Opens a source location in whatever the host's "editor" concept is. No-op by default. */
+  protected openSource(_file: string, _line: number, _toSide?: boolean): void {}
+
+  /** A workspace/project root for shortening displayed paths. None by default. */
+  protected workspaceRoot(): string | undefined {
+    return undefined;
   }
-  return { uris, fileUris };
+
+  /** Literal line-by-line text for `file`, for the DisassemblyView "Show source" preview.
+   * Absolute paths only by default (no workspace-folder concept) — an empty array (rather
+   * than throwing) means "not found", which the webview renders as a placeholder. */
+  protected async readSourceFile(file: string): Promise<string[]> {
+    try {
+      if (!isAbsolute(file)) return [];
+      return readFileSync(file, "utf8").split(/\r?\n/);
+    } catch {
+      return [];
+    }
+  }
 }
 
 // Strips per-frame data (DMA/copper/registers — fetched separately via bulkUri instead) from
@@ -297,78 +301,30 @@ export function stripFramesForPost(
   return { frames: result, combinedModel, symbolsNowSent };
 }
 
-// Resolve a model-carried `file` path (as seen in ins.file / node.callFrame.url) to a URI:
-// absolute paths open directly; relative paths (e.g. a loaded .puaeprofile whose SourceMap was
-// rebuilt against a baseDir that isn't this machine's absolute layout) resolve against the first
-// workspace folder. Shared by jump-to-source and the "Show source" preview text fetch below, and
-// by both the live panel and the .puaeprofile editor.
-function resolveSourceUri(file: string): vscode.Uri | undefined {
-  if (path.isAbsolute(file)) return vscode.Uri.file(file);
-  const folder = vscode.workspace.workspaceFolders?.[0];
-  return folder ? vscode.Uri.joinPath(folder.uri, file) : undefined;
-}
-
-// Ctrl/Cmd+click in the flame graph: open the function's source at `line` (1-based, as
-// carried in the model). Shared by the live panel and the .puaeprofile editor.
-export async function openProfilerSource(file: string, line: number, toSide?: boolean): Promise<void> {
-  try {
-    const uri = resolveSourceUri(file);
-    if (!uri) return;
-    const doc = await vscode.workspace.openTextDocument(uri);
-    const l = Math.max(0, line - 1);
-    const existing = findOpenColumn(uri);
-    await vscode.window.showTextDocument(doc, {
-      selection: new vscode.Range(l, 0, l + 1, 0),
-      viewColumn: existing ?? (toSide ? vscode.ViewColumn.Beside : undefined),
-      preserveFocus: true,
-    });
-  } catch (error) {
-    vscode.window.showWarningMessage(
-      `Profiler: couldn't open ${file}: ${error instanceof Error ? error.message : String(error)}`,
-    );
-  }
-}
-
-// Backs the DisassemblyView "Show source" preview's readSourceFile RPC: literal line-by-line
-// text for `file`, resolved the same way jump-to-source is (see resolveSourceUri) — an empty
-// array (rather than throwing) means "not found", which the webview renders as a placeholder.
-// Shared by the live panel and the .puaeprofile editor.
-export async function readProfilerSourceFile(file: string): Promise<string[]> {
-  try {
-    const uri = resolveSourceUri(file);
-    if (!uri) return [];
-    const data = await vscode.workspace.fs.readFile(uri);
-    return Buffer.from(data).toString("utf8").split(/\r?\n/);
-  } catch {
-    return [];
-  }
-}
-
-function findOpenColumn(uri: vscode.Uri): vscode.ViewColumn | undefined {
-  const target = uri.toString();
-  for (const group of vscode.window.tabGroups.all) {
-    for (const tab of group.tabs) {
-      if (tab.input instanceof vscode.TabInputText && tab.input.uri.toString() === target) {
-        return group.viewColumn;
-      }
-    }
-  }
-  return undefined;
-}
-
-export function getProfilerHtml(webview: vscode.Webview, extensionUri: vscode.Uri, mode: "live" | "file"): string {
-  const scriptUri = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, "out", "profilerViewer.js"));
-  const styleUri = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, "out", "profilerViewer.css"));
-  const codiconsUri = webview.asWebviewUri(
-    vscode.Uri.joinPath(extensionUri, "node_modules", "@vscode/codicons", "dist", "codicon.css"),
-  );
+// Pure HTML templating, parameterized the same way PuaeEmulator.buildHtml is: `resolveUri` maps
+// a path relative to the repo/extension root to a loadable URL (a webview.asWebviewUri() result
+// in the vscode host, or a plain server-relative path in the standalone host); `cspMeta` is a
+// complete <meta http-equiv="Content-Security-Policy" ...> tag, or "" to omit one entirely.
+// `extraHeadHtml` is arbitrary extra <head> content — the standalone host uses it to link
+// puae/vscodeDefaultTheme.css (vscode injects the user's real theme as --vscode-* CSS variables
+// into every webview automatically; nothing does that for a plain browser tab), "" elsewhere.
+export function buildProfilerHtml(
+  resolveUri: (file: string) => string,
+  cspMeta: string,
+  mode: "live" | "file",
+  extraHeadHtml: string = "",
+): string {
+  const scriptUri = resolveUri("out/profilerViewer.js");
+  const styleUri = resolveUri("out/profilerViewer.css");
+  const codiconsUri = resolveUri("node_modules/@vscode/codicons/dist/codicon.css");
 
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${webview.cspSource} 'unsafe-inline'; font-src ${webview.cspSource}; script-src ${webview.cspSource}; connect-src ${webview.cspSource}; img-src blob:;">
+  ${cspMeta}
+  ${extraHeadHtml}
   <link href="${codiconsUri}" rel="stylesheet" id="vscode-codicon-stylesheet" />
   <link href="${styleUri}" rel="stylesheet" />
   <title>Profiler</title>

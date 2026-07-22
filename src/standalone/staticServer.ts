@@ -1,5 +1,5 @@
 import { createReadStream, existsSync, statSync } from "fs";
-import { IncomingMessage, ServerResponse } from "http";
+import { ServerResponse } from "http";
 import { extname, resolve, sep } from "path";
 
 const CONTENT_TYPES: Record<string, string> = {
@@ -16,21 +16,23 @@ const CONTENT_TYPES: Record<string, string> = {
 };
 
 /**
- * Serves a single file under `rootDir` at `req.url`'s path (used for
- * `puae/`, `out/`, and `node_modules/@vscode/codicons/dist/` — the same
- * files `VscodePuaeEmulator` serves via `webview.asWebviewUri` in the
- * vscode host). Rejects any resolved path escaping `rootDir` (`..`
- * traversal, encoded or otherwise) with 403 rather than serving it.
- * Returns `false` (having sent a 404) if `req.url` doesn't map to a file
- * under `rootDir` at all, so the caller can fall through to other routes.
+ * Serves a single file under `rootDir` at `urlPath` (used for `puae/`,
+ * `out/`, and `node_modules/@vscode/codicons/dist/` — the same files
+ * `VscodePuaeEmulator` serves via `webview.asWebviewUri` in the vscode host
+ * — and, with a stripped prefix, the profiler's per-capture bulk blobs, see
+ * `StandaloneProfilerViewerProvider`). Rejects any resolved path escaping
+ * `rootDir` (`..` traversal, encoded or otherwise) with 403 rather than
+ * serving it. Returns `false` (having sent a 404) if `urlPath` doesn't map
+ * to a file under `rootDir` at all, so the caller can fall through to other
+ * routes.
  */
 export function serveStaticFile(
   rootDir: string,
-  req: IncomingMessage,
+  urlPath: string,
   res: ServerResponse,
 ): boolean {
-  const urlPath = decodeURIComponent((req.url ?? "/").split("?")[0]);
-  const relativePath = urlPath.replace(/^\/+/, "");
+  const decodedPath = decodeURIComponent(urlPath.split("?")[0]);
+  const relativePath = decodedPath.replace(/^\/+/, "");
   const resolvedRoot = resolve(rootDir) + sep;
   const resolvedPath = resolve(rootDir, relativePath);
 

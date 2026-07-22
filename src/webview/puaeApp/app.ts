@@ -10,7 +10,7 @@ import { installScreenHoverTooltip } from "./screenHover";
 import { installMouseCapture } from "./mouseCapture";
 import { installKeyboardCapture } from "./keyboardCapture";
 import { DmaRecordType } from "../../shared/profilerTypes";
-import { decodeWsMessage, encodeWsMessage } from "../../shared/wsRpcCodec";
+import { createHostBridge } from "../shared/hostBridge";
 import type { PuaeModule } from "./types";
 
 // The Amiga's PAL frame rate — both the render loop's due-frames accounting
@@ -444,50 +444,44 @@ export async function main(config: MainConfig = {}): Promise<void> {
 
   if (onModuleReady) onModuleReady(M);
 
-  // RPC bridge (Stage G3) — only present inside the VS Code webview.
-  if (typeof acquireVsCodeApi === "function") {
-    vscode = acquireVsCodeApi();
-    rpc = setupRpcDispatcher(M, (msg) => vscode!.postMessage(msg));
-    window.addEventListener("message", (event) => rpc!.handleMessage(event.data));
-    // Handles symbolizeAddress replies for the DMA hover tooltip's
-    // source-location lookup (see installDmaHoverTooltip below) — a
-    // separate listener since these aren't {command,args}-shaped RPC
-    // messages, just ignored by rpc.handleMessage.
-    window.addEventListener("message", (event) => handleDmaHoverMessage(event.data));
+  // RPC bridge (Stage G3) — present inside the VS Code webview, or a plain
+  // browser tab talking to the standalone server's WebSocket endpoint (see
+  // src/standalone/server.ts and StandalonePuaeEmulator). undefined for
+  // neither (e.g. puae/debug.html opened directly off disk, file://, with no
+  // server behind it to connect to).
+  const bridge = createHostBridge("/rpc");
+  if (bridge) {
+    vscode = bridge;
+    rpc = setupRpcDispatcher(M, (msg) => bridge.postMessage(msg));
+    bridge.onMessage((message) => {
+      // Matches the old raw JSON.parse's implicit `any` return.
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const anyMessage = message as any;
+      rpc!.handleMessage(anyMessage);
+      // Handles symbolizeAddress replies for the DMA hover tooltip's
+      // source-location lookup (see installDmaHoverTooltip below) — not a
+      // {command,args}-shaped RPC message, just ignored by rpc.handleMessage.
+      handleDmaHoverMessage(anyMessage);
+    });
     // Tells PuaeEmulator the wasm module is ready, so it can fetch and cache
-    // getMemoryInfo() — mirrors the vAmiga emulator project's own webview-ready handshake.
-    vscode.postMessage({ type: "exec-ready" });
-  } else if (typeof WebSocket !== "undefined" && location.protocol.startsWith("http")) {
-    // Same RPC bridge as above, but for a plain browser tab talking to the
-    // standalone server's WebSocket endpoint instead of a vscode webview —
-    // see src/standalone/server.ts and StandalonePuaeEmulator. Guarded on
-    // http(s): so this stays inert for puae/debug.html opened directly off
-    // disk (file://), which has no server behind it to connect to.
-    try {
-      const ws = new WebSocket(`ws://${location.host}/rpc`);
-      // encodeWsMessage/decodeWsMessage (not raw JSON.stringify/parse) — see
-      // that module's comment: plain JSON silently drops a Uint8Array's
-      // length, which turned writeMemory's program-injection bytes into a
-      // zero-length no-op over this transport.
-      const send = (msg: unknown) => {
-        if (ws.readyState === WebSocket.OPEN) {
-          ws.send(encodeWsMessage(msg));
-        } else {
-          ws.addEventListener("open", () => ws.send(encodeWsMessage(msg)), { once: true });
-        }
-      };
-      vscode = { postMessage: send };
-      rpc = setupRpcDispatcher(M, send);
-      ws.addEventListener("message", (event) => {
-        // Matches JSON.parse's own implicit `any` return, which this replaces.
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const message = decodeWsMessage(event.data) as any;
-        rpc!.handleMessage(message);
-        handleDmaHoverMessage(message);
+    // getMemoryInfo() — mirrors the vAmiga emulator project's own webview-ready
+    // handshake. Safe to call immediately even before a WebSocket bridge's
+    // socket has finished connecting — postMessage queues until open.
+    bridge.postMessage({ type: "exec-ready" });
+  }
+
+  // "Open CPU Profiler" toolbar button — standalone (non-vscode) host only.
+  // vscode already has this as a debug toolbar command
+  // (puae-debugger.openProfiler); outside vscode there's no command palette
+  // to put it in, so it lives here instead. Same origin as this page, so a
+  // plain window.open is enough — no server round-trip needed.
+  if (typeof acquireVsCodeApi !== "function") {
+    const openProfilerBtn = document.getElementById("open-profiler");
+    if (openProfilerBtn) {
+      openProfilerBtn.style.display = "";
+      openProfilerBtn.addEventListener("click", () => {
+        window.open("/profiler", "_blank");
       });
-      ws.addEventListener("open", () => send({ type: "exec-ready" }));
-    } catch (error) {
-      console.error("Failed to connect standalone RPC WebSocket:", error);
     }
   }
 

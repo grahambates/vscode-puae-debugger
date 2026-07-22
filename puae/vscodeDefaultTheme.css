@@ -1,0 +1,174 @@
+/* Default values for the `--vscode-*` CSS custom properties this project's
+ * webviews (puaeApp, profilerViewer, and eventually memoryViewer/stateViewer)
+ * reference. Inside vscode, the host injects the user's actual active theme
+ * as these same variable names automatically — nothing does that for a
+ * plain browser tab (the standalone server's host), so without this file
+ * every themed color/font falls back to CSS's unstyled initial value
+ * (default black-on-white, serif body text, no borders).
+ *
+ * Only ever linked from the standalone host's HTML — never from vscode's,
+ * so there's no risk of these defaults competing with a real injected theme.
+ * Values approximate vscode's built-in Dark Modern / Light Modern themes;
+ * exact accuracy doesn't matter here, just a reasonable, legible baseline.
+ */
+
+:root {
+  --vscode-font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Ubuntu, "Droid Sans", sans-serif;
+  --vscode-font-size: 13px;
+  --vscode-editor-font-family: Menlo, Monaco, "Courier New", monospace;
+  --vscode-editor-font-size: 12px;
+
+  --vscode-foreground: #cccccc;
+  --vscode-editor-foreground: #d4d4d4;
+  --vscode-editor-background: #1e1e1e;
+  --vscode-descriptionForeground: #9d9d9d;
+  --vscode-errorForeground: #f48771;
+  --vscode-focusBorder: #007fd4;
+  --vscode-widget-border: #454545;
+  --vscode-widget-shadow: rgba(0, 0, 0, 0.36);
+  --vscode-panel-border: #454545;
+
+  --vscode-textLink-foreground: #3794ff;
+  --vscode-textLink-activeForeground: #4daafc;
+
+  --vscode-button-background: #0e639c;
+  --vscode-button-foreground: #ffffff;
+
+  --vscode-badge-background: #4d4d4d;
+  --vscode-badge-foreground: #ffffff;
+
+  --vscode-dropdown-background: #3c3c3c;
+  --vscode-dropdown-border: #3c3c3c;
+  --vscode-dropdown-foreground: #f0f0f0;
+
+  --vscode-input-background: #3c3c3c;
+  --vscode-input-foreground: #cccccc;
+  --vscode-input-border: #3c3c3c;
+  --vscode-input-placeholderForeground: #a6a6a6;
+  --vscode-inputOption-activeBackground: rgba(0, 127, 212, 0.4);
+  --vscode-inputOption-activeBorder: #007acc;
+  --vscode-inputOption-activeForeground: #ffffff;
+  --vscode-inputValidation-errorBackground: #5a1d1d;
+  --vscode-inputValidation-errorBorder: #be1100;
+
+  --vscode-list-activeSelectionBackground: #04395e;
+  --vscode-list-activeSelectionForeground: #ffffff;
+  --vscode-list-focusBackground: #062f4a;
+  --vscode-list-focusForeground: #cccccc;
+  --vscode-list-hoverBackground: #2a2d2e;
+
+  --vscode-menu-background: #252526;
+  --vscode-menu-border: #454545;
+  --vscode-menu-foreground: #cccccc;
+  --vscode-menu-selectionBackground: #04395e;
+  --vscode-menu-selectionForeground: #ffffff;
+  --vscode-menu-separatorBackground: #454545;
+
+  --vscode-editor-selectionBackground: #264f78;
+  --vscode-editor-inactiveSelectionBackground: rgba(58, 61, 65, 0.5);
+  --vscode-editorGroupHeader-tabsBackground: #252526;
+  --vscode-editorHoverWidget-background: #252526;
+  --vscode-editorHoverWidget-border: #454545;
+  --vscode-editorHoverWidget-foreground: #cccccc;
+  --vscode-editorLineNumber-foreground: #858585;
+  --vscode-editorRuler-foreground: #5a5a5a;
+  --vscode-diffEditor-insertedTextBackground: rgba(155, 185, 85, 0.2);
+  --vscode-tab-inactiveBackground: #2d2d2d;
+  --vscode-toolbar-hoverBackground: rgba(90, 93, 94, 0.31);
+
+  --vscode-charts-blue: #3794ff;
+  --vscode-charts-green: #89d185;
+
+  --vscode-debugIcon-breakpointForeground: #e51400;
+  --vscode-debugTokenExpression-name: #c586c0;
+  --vscode-debugTokenExpression-number: #b5cea8;
+  --vscode-debugTokenExpression-type: #4ec9b0;
+  --vscode-symbolIcon-classForeground: #ee9d28;
+
+  --vscode-terminal-ansiYellow: #e5e510;
+  --vscode-terminal-foreground: #cccccc;
+}
+
+@media (prefers-color-scheme: light) {
+  :root {
+    --vscode-foreground: #3b3b3b;
+    --vscode-editor-foreground: #000000;
+    --vscode-editor-background: #ffffff;
+    --vscode-descriptionForeground: #717171;
+    --vscode-errorForeground: #a1260d;
+    --vscode-focusBorder: #0090f1;
+    --vscode-widget-border: #d4d4d4;
+    --vscode-widget-shadow: rgba(0, 0, 0, 0.16);
+    --vscode-panel-border: #d4d4d4;
+
+    --vscode-textLink-foreground: #006ab1;
+    --vscode-textLink-activeForeground: #006ab1;
+
+    --vscode-button-background: #007acc;
+    --vscode-button-foreground: #ffffff;
+
+    --vscode-badge-background: #c4c4c4;
+    --vscode-badge-foreground: #333333;
+
+    --vscode-dropdown-background: #ffffff;
+    --vscode-dropdown-border: #cecece;
+    --vscode-dropdown-foreground: #3b3b3b;
+
+    --vscode-input-background: #ffffff;
+    --vscode-input-foreground: #3b3b3b;
+    --vscode-input-border: #cecece;
+    --vscode-input-placeholderForeground: #767676;
+    --vscode-inputOption-activeBackground: rgba(0, 144, 241, 0.2);
+    --vscode-inputOption-activeBorder: #007acc;
+    --vscode-inputOption-activeForeground: #000000;
+    --vscode-inputValidation-errorBackground: #f2dede;
+    --vscode-inputValidation-errorBorder: #be1100;
+
+    --vscode-list-activeSelectionBackground: #0060c0;
+    --vscode-list-activeSelectionForeground: #ffffff;
+    --vscode-list-focusBackground: #d6ebff;
+    --vscode-list-focusForeground: #3b3b3b;
+    --vscode-list-hoverBackground: #e8e8e8;
+
+    --vscode-menu-background: #ffffff;
+    --vscode-menu-border: #d4d4d4;
+    --vscode-menu-foreground: #3b3b3b;
+    --vscode-menu-selectionBackground: #0060c0;
+    --vscode-menu-selectionForeground: #ffffff;
+    --vscode-menu-separatorBackground: #d4d4d4;
+
+    --vscode-editor-selectionBackground: #add6ff;
+    --vscode-editor-inactiveSelectionBackground: rgba(173, 214, 255, 0.5);
+    --vscode-editorGroupHeader-tabsBackground: #f3f3f3;
+    --vscode-editorHoverWidget-background: #f3f3f3;
+    --vscode-editorHoverWidget-border: #c8c8c8;
+    --vscode-editorHoverWidget-foreground: #3b3b3b;
+    --vscode-editorLineNumber-foreground: #237893;
+    --vscode-editorRuler-foreground: #d4d4d4;
+    --vscode-diffEditor-insertedTextBackground: rgba(155, 185, 85, 0.2);
+    --vscode-tab-inactiveBackground: #ececec;
+    --vscode-toolbar-hoverBackground: rgba(184, 184, 184, 0.31);
+
+    --vscode-charts-blue: #1a85ff;
+    --vscode-charts-green: #388a34;
+
+    --vscode-debugIcon-breakpointForeground: #e51400;
+    --vscode-debugTokenExpression-name: #9b46b0;
+    --vscode-debugTokenExpression-number: #098658;
+    --vscode-debugTokenExpression-type: #4ec9b0;
+    --vscode-symbolIcon-classForeground: #d67e00;
+
+    --vscode-terminal-ansiYellow: #949800;
+    --vscode-terminal-foreground: #3b3b3b;
+  }
+}
+
+/* vscode's own webview base stylesheet applies these at the page level too —
+ * nothing does that for a plain browser tab, so every element would
+ * otherwise start from the browser's own default background/color/font. */
+html, body {
+  background: var(--vscode-editor-background);
+  color: var(--vscode-foreground);
+  font-family: var(--vscode-font-family);
+  font-size: var(--vscode-font-size);
+}

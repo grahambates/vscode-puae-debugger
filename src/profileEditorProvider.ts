@@ -1,6 +1,7 @@
 import * as vscode from "vscode";
 import { loadProfile } from "./profileLoader";
-import { getProfilerHtml, openProfilerSource, readProfilerSourceFile, writeBulkFiles, stripFramesForPost } from "./profilerViewerProvider";
+import { stripFramesForPost } from "./profilerViewerProvider";
+import { getProfilerHtml, openProfilerSource, readProfilerSourceFile, writeBulkFiles } from "./vscodeProfilerViewerProvider";
 import { ProfilerCodeLensProvider } from "./profilerCodeLensProvider";
 import { ProfilerLineDecorationProvider } from "./profilerLineDecorationProvider";
 import { ProfilerInboundMessage, IProfileModel, ComputeRangeMessage } from "./shared/profilerTypes";

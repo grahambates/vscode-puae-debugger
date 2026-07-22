@@ -77,7 +77,7 @@
   .blit-decay input[type=range] { width: 56px; vertical-align: middle; }
   .blit-decay #blit-decay-val { opacity: 0.65; min-width: 3ch; }
   .blit-decay.disabled { opacity: 0.4; pointer-events: none; }
-  #audio-toggle {
+  #open-profiler, #audio-toggle {
     margin-left: auto;
     width: 22px;
     height: 22px;
@@ -92,8 +92,11 @@
     cursor: pointer;
     opacity: 0.75;
   }
-  #audio-toggle .codicon { font-size: 16px; }
-  #audio-toggle:hover { opacity: 1; background: var(--vscode-toolbar-hoverBackground, rgba(128,128,128,0.2)); }
+  /* Only #audio-toggle needs to push itself (and, when present, #open-profiler right
+     before it) to the far right of the toolbar. */
+  #open-profiler { margin-left: 0; }
+  #open-profiler .codicon, #audio-toggle .codicon { font-size: 16px; }
+  #open-profiler:hover, #audio-toggle:hover { opacity: 1; background: var(--vscode-toolbar-hoverBackground, rgba(128,128,128,0.2)); }
 </style>
 </head>
 <body>
@@ -112,6 +115,10 @@
     <input id="blit-decay" type="range" min="1" max="60" value="8">
     <span id="blit-decay-val">8f</span>
   </span>
+  <!-- Standalone (non-vscode) host only — vscode already has this as a debug
+       toolbar command (puae-debugger.openProfiler). Hidden here by default;
+       shown by app.ts once it knows it's not running inside a vscode webview. -->
+  <button id="open-profiler" type="button" title="Open CPU Profiler" style="display:none"><i class="codicon codicon-dashboard"></i></button>
   <button id="audio-toggle" type="button" title="Unmute audio"><i class="codicon codicon-mute"></i></button>
 </div>
 <div id="dma-overlay"></div>

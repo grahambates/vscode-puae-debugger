@@ -324,13 +324,22 @@ export interface JumpToLineMessage {
   file: string;
   line: number;
 }
+// Standalone host only (StandaloneProfilerViewerProvider) — there's no native save dialog
+// outside vscode, so "Save Profile" sends the encoded bytes here and the webview triggers a
+// normal browser download instead.
+export interface DownloadProfileMessage {
+  command: "downloadProfile";
+  dataBase64: string;
+  fileName: string;
+}
 export type ProfilerOutboundMessage =
   | CaptureResultMessage
   | RangeResultMessage
   | ProfilerErrorMessage
   | CaptureBusyMessage
   | SourceFileMessage
-  | JumpToLineMessage;
+  | JumpToLineMessage
+  | DownloadProfileMessage;
 
 // --- messages: webview -> extension ---
 export interface ReadyMessage {
