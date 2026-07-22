@@ -470,12 +470,40 @@ export async function main(config: MainConfig = {}): Promise<void> {
     bridge.postMessage({ type: "exec-ready" });
   }
 
-  // "Open CPU Profiler" toolbar button — standalone (non-vscode) host only.
-  // vscode already has this as a debug toolbar command
-  // (puae-debugger.openProfiler); outside vscode there's no command palette
-  // to put it in, so it lives here instead. Same origin as this page, so a
-  // plain window.open is enough — no server round-trip needed.
+  // "Open Amiga State" / "Open Memory Viewer" / "Open CPU Profiler" toolbar
+  // buttons — standalone (non-vscode) host only. vscode already has these as
+  // debug toolbar commands (puae-debugger.openStateViewer/openMemoryViewer/
+  // openProfiler); outside vscode there's no command palette to put them in,
+  // so they live here instead.
   if (typeof acquireVsCodeApi !== "function") {
+    // Same origin as this page, so a plain window.open is enough for the
+    // state viewer — no server round-trip needed (its panel always exists
+    // at the same fixed URL, same as the profiler's).
+    const openStateViewerBtn = document.getElementById("open-state-viewer");
+    if (openStateViewerBtn) {
+      openStateViewerBtn.style.display = "";
+      openStateViewerBtn.addEventListener("click", () => {
+        window.open("/state", "_blank");
+      });
+    }
+
+    const openMemoryViewerBtn = document.getElementById("open-memory-viewer");
+    if (openMemoryViewerBtn) {
+      openMemoryViewerBtn.style.display = "";
+      openMemoryViewerBtn.addEventListener("click", () => {
+        // Unlike the profiler's fixed /profiler URL, a memory viewer panel
+        // doesn't exist until the server creates one — this asks it to (it
+        // opens the resulting tab itself), rather than routing the request
+        // through this page's own emulator RPC/WebSocket channel.
+        fetch("/open-memory-viewer").catch((error) => {
+          console.error("Failed to open memory viewer:", error);
+        });
+      });
+    }
+
+    // Same origin as this page, so a plain window.open is enough for the
+    // profiler — no server round-trip needed (unlike the memory viewer,
+    // its panel always exists at the same fixed URL).
     const openProfilerBtn = document.getElementById("open-profiler");
     if (openProfilerBtn) {
       openProfilerBtn.style.display = "";

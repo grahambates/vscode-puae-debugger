@@ -8,6 +8,7 @@ import { CopperView } from "./CopperView";
 import { DisassemblyView } from "./DisassemblyView";
 import "./App.css";
 import {
+  DownloadMemoryMessage,
   GetSuggestionsMessage,
   MemoryDataMessage,
   MemoryRange,
@@ -17,8 +18,13 @@ import {
   UpdateStateMessage,
   ViewMode,
 } from "../../shared/memoryViewerTypes";
+import { createHostBridge, HostBridge } from "../shared/hostBridge";
 
-const vscode = acquireVsCodeApi();
+const bridge: HostBridge =
+  createHostBridge(`${location.pathname.replace(/\/$/, "")}/rpc`) ??
+  (() => {
+    throw new Error("Memory viewer webview requires a vscode or standalone host bridge");
+  })();
 
 function formatHex(value: number): string {
   return "0x" + value.toString(16).toUpperCase().padStart(8, "0");
@@ -54,7 +60,7 @@ export function App() {
 
   // Send ready message on mount
   useEffect(() => {
-    vscode.postMessage({ command: "ready" });
+    bridge.postMessage({ command: "ready" });
   }, []);
 
   // Listen for messages from extension
@@ -92,6 +98,12 @@ export function App() {
       if (pendingUpdate.error !== undefined) {
         setError(pendingUpdate.error);
       }
+      if (pendingUpdate.windowTitle !== undefined) {
+        // No-op inside vscode (its webview tab label comes from the
+        // WebviewPanel.title API, not this) — the standalone host's only
+        // way to distinguish several simultaneous memory-viewer tabs.
+        document.title = pendingUpdate.windowTitle;
+      }
       if (pendingUpdate.target !== undefined) {
         const targetAddress = pendingUpdate.target.address;
         const targetEnd = targetAddress + pendingUpdate.target.size;
@@ -125,8 +137,9 @@ export function App() {
       }
     };
 
-    const handleMessage = (event: MessageEvent) => {
-      const message = event.data;
+    const handleMessage = (rawMessage: unknown) => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const message = rawMessage as any;
 
       if (message.command === "updateState") {
         // Store latest update and schedule (combining with any previous to handle optional props) to render on next frame
@@ -145,12 +158,23 @@ export function App() {
           next.set(memData.address, memData.data);
           return next;
         });
+      } else if (message.command === "downloadMemory") {
+        // Standalone host only — there's no native save dialog outside
+        // vscode, so trigger a normal browser download instead.
+        const downloadMsg = message as DownloadMemoryMessage;
+        const bytes = Uint8Array.from(atob(downloadMsg.dataBase64), (c) => c.charCodeAt(0));
+        const url = URL.createObjectURL(new Blob([bytes], { type: "application/octet-stream" }));
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = downloadMsg.fileName;
+        a.click();
+        URL.revokeObjectURL(url);
       }
     };
 
-    window.addEventListener("message", handleMessage);
+    const unsubscribe = bridge.onMessage(handleMessage);
     return () => {
-      window.removeEventListener("message", handleMessage);
+      unsubscribe();
     };
   }, [target, availableRegions]);
 
@@ -172,7 +196,7 @@ export function App() {
 
       // Request suggestions as user types (limited)
       if (inputValue && inputValue.length > 0) {
-        vscode.postMessage({
+        bridge.postMessage({
           command: "getSuggestions",
           query: inputValue,
           showAll: false, // Use limit for autocomplete
@@ -185,7 +209,7 @@ export function App() {
       if (selectedItem) {
         const addressInput = selectedItem.label;
         setAddressInput(addressInput);
-        vscode.postMessage({
+        bridge.postMessage({
           command: "changeAddress",
           addressInput,
           dereferencePointer,
@@ -198,7 +222,7 @@ export function App() {
   const handleToggleButton = () => {
     if (!isOpen) {
       // Request all symbols with showAll flag when opening
-      vscode.postMessage({
+      bridge.postMessage({
         command: "getSuggestions",
         query: "", // Empty query to get all symbols
         showAll: true, // Bypass limit
@@ -207,7 +231,7 @@ export function App() {
   };
 
   const goToAddress = () => {
-    vscode.postMessage({
+    bridge.postMessage({
       command: "changeAddress",
       addressInput,
       dereferencePointer,
@@ -225,7 +249,7 @@ export function App() {
         );
         if (exactMatch) {
           setAddressInput(exactMatch.label);
-          vscode.postMessage({
+          bridge.postMessage({
             command: "changeAddress",
             addressInput: exactMatch.label,
             dereferencePointer,
@@ -240,7 +264,7 @@ export function App() {
   const toggleLiveUpdate: React.FormEventHandler<VscodeCheckbox> = (e) => {
     const enabled = (e.target as HTMLInputElement).checked || false;
     setLiveUpdate(enabled);
-    vscode.postMessage({
+    bridge.postMessage({
       command: "toggleLiveUpdate",
       enabled,
       dereferencePointer,
@@ -248,7 +272,7 @@ export function App() {
   };
 
   const requestMemory = useCallback(({ address, size }: MemoryRange) => {
-    vscode.postMessage({
+    bridge.postMessage({
       command: "requestMemory",
       address,
       size,
@@ -256,14 +280,14 @@ export function App() {
   }, []);
 
   const goToSource = useCallback((address: number) => {
-    vscode.postMessage({
+    bridge.postMessage({
       command: "goToSource",
       address,
     });
   }, []);
 
   const exportMemory = useCallback(({ address, size }: MemoryRange) => {
-    vscode.postMessage({
+    bridge.postMessage({
       command: "exportMemory",
       address,
       size,
@@ -271,7 +295,7 @@ export function App() {
   }, []);
 
   const toggleWatchpoint = useCallback((address: number) => {
-    vscode.postMessage({
+    bridge.postMessage({
       command: "toggleWatchpoint",
       address,
     });
@@ -285,7 +309,7 @@ export function App() {
     }
     const addressInput = formatHex(addressValue);
     setAddressInput(addressInput);
-    vscode.postMessage({
+    bridge.postMessage({
       command: "changeAddress",
       addressInput,
       dereferencePointer,
@@ -357,7 +381,7 @@ export function App() {
             const checked = (e.target as HTMLInputElement).checked;
             setDereferencePointer(checked);
             // Trigger update when checkbox changes
-            vscode.postMessage({
+            bridge.postMessage({
               command: "changeAddress",
               addressInput,
               dereferencePointer: checked,

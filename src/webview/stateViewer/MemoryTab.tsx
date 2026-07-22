@@ -1,9 +1,10 @@
 import { MemoryInfo } from "../../shared/stateViewerTypes";
+import { HostBridge } from "../shared/hostBridge";
 import "./MemoryTab.css";
 
 interface MemoryTabProps {
   memoryInfo: MemoryInfo;
-  vscode: ReturnType<typeof acquireVsCodeApi>;
+  bridge: HostBridge;
 }
 
 function formatBytes(bytes: number): string {
@@ -20,9 +21,9 @@ function formatAddress(address: number): string {
   return `0x${address.toString(16).toUpperCase().padStart(6, "0")}`;
 }
 
-export function MemoryTab({ memoryInfo, vscode }: MemoryTabProps) {
+export function MemoryTab({ memoryInfo, bridge }: MemoryTabProps) {
   const openMemoryViewer = (address: number) => {
-    vscode.postMessage({
+    bridge.postMessage({
       command: "openMemoryViewer",
       address,
     });

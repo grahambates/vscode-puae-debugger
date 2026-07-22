@@ -1,6 +1,7 @@
-import * as vscode from "vscode";
+import { readFileSync } from "fs";
+import { isAbsolute } from "path";
 import { EmulatorMessage, isEmulatorStateMessage, MemSrc } from "./emulatorProtocol";
-import { Emulator } from "./emulator";
+import { Disposable, Emulator } from "./emulator";
 import { DebugAdapter } from "./debugAdapter";
 import { formatHex } from "./numbers";
 import { EvaluateResultType } from "./evaluateManager";
@@ -22,10 +23,12 @@ import {
   ViewMode,
 } from "./shared/memoryViewerTypes";
 import { parseLine } from "./sourceParsing";
+import { WebviewHost } from "./webviewHost";
 
 interface MemoryViewerPanel {
+  id: string;
   target?: MemoryRange;
-  webviewPanel: vscode.WebviewPanel;
+  host: WebviewHost;
   addressInput: string;
   liveUpdate: boolean;
   dereferencePointer: boolean;
@@ -33,6 +36,15 @@ interface MemoryViewerPanel {
   liveUpdateRefresh?: Promise<void>;
   fetchedChunks: Set<number>;
   watchedAddress?: number;
+}
+
+/** A concrete host's UI surface for one `show()` — mirrors `ProfilerSurface` (profilerViewerProvider.ts). */
+export interface MemoryPanelSurface {
+  resolveUri(file: string): string;
+  cspMeta: string;
+  extraHeadHtml: string;
+  host: WebviewHost;
+  setHtml(html: string): void;
 }
 
 const LIVE_UPDATE_RATE_MS = 1000 / 25;
@@ -61,21 +73,22 @@ const memTypeLabels: Record<MemSrc, string> = {
 
 /**
  * Provides a webview for viewing emulator memory in different formats.
- * Supports multiple instances for viewing different memory regions simultaneously.
+ * Supports multiple instances (multiple simultaneous panels/tabs) for
+ * viewing different memory regions at once.
+ *
+ * Host-agnostic: creating/attaching each panel's actual `WebviewHost`,
+ * setting its native window title, "go to source", the
+ * `memoryViewer.colorCodeHexBytes` setting, and exporting memory to disk are
+ * all delegated to a concrete subclass (`VscodeMemoryViewerProvider`,
+ * `StandaloneMemoryViewerProvider`).
  */
-export class MemoryViewerProvider {
-  public static readonly viewType = "puae-debugger.memoryViewer";
-
-  private panels = new Map<string, MemoryViewerPanel>();
-  private emulatorMessageListeners: vscode.Disposable[] = [];
-  private configurationListener?: vscode.Disposable;
+export abstract class MemoryViewerProvider {
+  protected panels = new Map<string, MemoryViewerPanel>();
+  private readonly emulatorMessageListeners: Disposable[];
   private isEmulatorRunning = false;
   private panelCounter = 0;
 
-  constructor(
-    private readonly extensionUri: vscode.Uri,
-    private readonly puaeEmulator: Emulator,
-  ) {
+  constructor(private readonly puaeEmulator: Emulator) {
     const onMessage = (message: EmulatorMessage) => {
       if (!isEmulatorStateMessage(message)) {
         return;
@@ -103,35 +116,10 @@ export class MemoryViewerProvider {
     this.emulatorMessageListeners = [
       this.puaeEmulator.onDidReceiveMessage(onMessage),
     ];
-
-    // Push the new value to all open panels when the user changes the setting
-    this.configurationListener = vscode.workspace.onDidChangeConfiguration(
-      (e) => {
-        if (
-          e.affectsConfiguration(
-            "puae-debugger.memoryViewer.colorCodeHexBytes",
-          )
-        ) {
-          const colorCodeHexBytes = this.getColorCodeHexBytes();
-          for (const panel of this.panels.values()) {
-            this.sendStateToWebview(panel.webviewPanel, { colorCodeHexBytes });
-          }
-        }
-      },
-    );
   }
 
-  private get emulator(): Emulator {
+  protected get emulator(): Emulator {
     return DebugAdapter.getActiveAdapter()?.getEmulator() ?? this.puaeEmulator;
-  }
-
-  /**
-   * Reads the configured "color-code hex bytes" preference for the memory viewer
-   */
-  private getColorCodeHexBytes(): boolean {
-    return vscode.workspace
-      .getConfiguration("puae-debugger")
-      .get<boolean>("memoryViewer.colorCodeHexBytes", true);
   }
 
   /**
@@ -141,13 +129,12 @@ export class MemoryViewerProvider {
     for (const panel of this.panels.values()) {
       this.stopLiveUpdate(panel);
       this.removeWatchpoint(panel);
-      panel.webviewPanel.dispose();
+      panel.host.dispose();
     }
     this.panels.clear();
     for (const listener of this.emulatorMessageListeners) {
       listener.dispose();
     }
-    this.configurationListener?.dispose();
   }
 
   /**
@@ -156,19 +143,12 @@ export class MemoryViewerProvider {
    */
   public async show(addressInput: string): Promise<void> {
     const panelId = `memory-viewer-${this.panelCounter++}`;
-
-    const webviewPanel = vscode.window.createWebviewPanel(
-      MemoryViewerProvider.viewType,
-      "Memory Viewer",
-      vscode.ViewColumn.Active,
-      {
-        enableScripts: true,
-        retainContextWhenHidden: true,
-      },
-    );
+    const surface = this.createPanelSurface(panelId);
+    surface.setHtml(buildMemoryViewerHtml(surface.resolveUri, surface.cspMeta, surface.extraHeadHtml));
 
     const panel: MemoryViewerPanel = {
-      webviewPanel: webviewPanel,
+      id: panelId,
+      host: surface.host,
       addressInput,
       liveUpdate: false,
       dereferencePointer: false,
@@ -176,113 +156,102 @@ export class MemoryViewerProvider {
     };
     this.panels.set(panelId, panel);
 
-    webviewPanel.webview.html = this.getHtmlContent(webviewPanel.webview);
-
-    webviewPanel.onDidDispose(() => {
+    surface.host.onDidDispose(() => {
       this.stopLiveUpdate(panel);
       this.removeWatchpoint(panel);
       this.panels.delete(panelId);
     });
 
-    webviewPanel.webview.onDidReceiveMessage(async (message) => {
-      switch (message.command) {
-        case "ready": {
-          const adapter = DebugAdapter.getActiveAdapter();
-          if (!adapter) {
-            return;
-          }
-          const msg: UpdateStateMessage = {
-            command: "updateState",
-            addressInput,
-            availableRegions: this.getAvailableRegions(adapter),
-            symbols: adapter.getSourceMap().getSymbols(),
-            symbolLengths: adapter.getSourceMap().getSymbolLengths(),
-            colorCodeHexBytes: this.getColorCodeHexBytes(),
-          };
-          // Send initial state once
-          panel.webviewPanel.webview.postMessage(msg);
-
-          // Update initial content
-          await this.updateContent(panel);
-          break;
-        }
-
-        case "changeAddress": {
-          const changeAddressMsg = message as ChangeAddressMessage;
-          panel.addressInput = changeAddressMsg.addressInput;
-          panel.dereferencePointer =
-            changeAddressMsg.dereferencePointer ?? false;
-          await this.updateContent(panel);
-          break;
-        }
-        case "requestMemory": {
-          const requestMemoryMsg = message as RequeestMemoryMessage;
-          await this.fetchMemoryChunk(
-            panel,
-            requestMemoryMsg.address,
-            requestMemoryMsg.size,
-          );
-          break;
-        }
-        case "toggleLiveUpdate":
-          panel.liveUpdate = (message as ToggleLiveUpdateMessage).enabled;
-          if (panel.liveUpdate && this.isEmulatorRunning) {
-            this.startLiveUpdate(panel);
-          } else {
-            this.stopLiveUpdate(panel);
-          }
-          break;
-        case "goToSource": {
-          const goToSourceMsg = message as GoToSourceMessage;
-          const sourceMap = DebugAdapter.getActiveAdapter()?.getSourceMap();
-          const location = sourceMap?.lookupAddress(goToSourceMsg.address);
-          if (location) {
-            const document = await vscode.workspace.openTextDocument(
-              location.path,
-            );
-            const editor = await vscode.window.showTextDocument(document, {
-              preview: false,
-            });
-            const position = new vscode.Position(location.line - 1, 0);
-            editor.selection = new vscode.Selection(position, position);
-            editor.revealRange(
-              new vscode.Range(position, position),
-              vscode.TextEditorRevealType.InCenter,
-            );
-          }
-          break;
-        }
-        case "toggleWatchpoint": {
-          const toggleWatchpointMsg = message as ToggleWatchpointMessage;
-          await this.toggleWatchpoint(panel, toggleWatchpointMsg.address);
-          break;
-        }
-        case "exportMemory": {
-          const exportMemoryMsg = message as ExportMemoryMessage;
-          await this.exportMemory(
-            exportMemoryMsg.address,
-            exportMemoryMsg.size,
-          );
-          break;
-        }
-        case "getSuggestions": {
-          const getSuggestionsMsg = message as GetSuggestionsMessage;
-          const adapter = DebugAdapter.getActiveAdapter();
-          if (adapter) {
-            const suggestions = this.getSymbolSuggestions(
-              adapter,
-              getSuggestionsMsg.query || "",
-              getSuggestionsMsg.showAll || false,
-            );
-            panel.webviewPanel.webview.postMessage({
-              command: "suggestionsData",
-              suggestions,
-            } as SuggestionsDataMessage);
-          }
-          break;
-        }
-      }
+    surface.host.onDidReceiveMessage((rawMessage) => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      void this.handlePanelMessage(panel, rawMessage as any);
     });
+  }
+
+  private async handlePanelMessage(panel: MemoryViewerPanel, message: { command: string }): Promise<void> {
+    switch (message.command) {
+      case "ready": {
+        const adapter = DebugAdapter.getActiveAdapter();
+        if (!adapter) {
+          return;
+        }
+        const msg: UpdateStateMessage = {
+          command: "updateState",
+          addressInput: panel.addressInput,
+          availableRegions: this.getAvailableRegions(adapter),
+          symbols: adapter.getSourceMap().getSymbols(),
+          symbolLengths: adapter.getSourceMap().getSymbolLengths(),
+          colorCodeHexBytes: this.getColorCodeHexBytes(),
+        };
+        // Send initial state once
+        panel.host.postMessage(msg);
+
+        // Update initial content
+        await this.updateContent(panel);
+        break;
+      }
+
+      case "changeAddress": {
+        const changeAddressMsg = message as ChangeAddressMessage;
+        panel.addressInput = changeAddressMsg.addressInput;
+        panel.dereferencePointer =
+          changeAddressMsg.dereferencePointer ?? false;
+        await this.updateContent(panel);
+        break;
+      }
+      case "requestMemory": {
+        const requestMemoryMsg = message as RequeestMemoryMessage;
+        await this.fetchMemoryChunk(
+          panel,
+          requestMemoryMsg.address,
+          requestMemoryMsg.size,
+        );
+        break;
+      }
+      case "toggleLiveUpdate":
+        panel.liveUpdate = (message as ToggleLiveUpdateMessage).enabled;
+        if (panel.liveUpdate && this.isEmulatorRunning) {
+          this.startLiveUpdate(panel);
+        } else {
+          this.stopLiveUpdate(panel);
+        }
+        break;
+      case "goToSource": {
+        const goToSourceMsg = message as GoToSourceMessage;
+        this.openSource(goToSourceMsg.address);
+        break;
+      }
+      case "toggleWatchpoint": {
+        const toggleWatchpointMsg = message as ToggleWatchpointMessage;
+        await this.toggleWatchpoint(panel, toggleWatchpointMsg.address);
+        break;
+      }
+      case "exportMemory": {
+        const exportMemoryMsg = message as ExportMemoryMessage;
+        await this.exportMemory(
+          panel.id,
+          exportMemoryMsg.address,
+          exportMemoryMsg.size,
+        );
+        break;
+      }
+      case "getSuggestions": {
+        const getSuggestionsMsg = message as GetSuggestionsMessage;
+        const adapter = DebugAdapter.getActiveAdapter();
+        if (adapter) {
+          const suggestions = this.getSymbolSuggestions(
+            adapter,
+            getSuggestionsMsg.query || "",
+            getSuggestionsMsg.showAll || false,
+          );
+          panel.host.postMessage({
+            command: "suggestionsData",
+            suggestions,
+          } as SuggestionsDataMessage);
+        }
+        break;
+      }
+    }
   }
 
   private async guessViewMode(
@@ -312,11 +281,10 @@ export class MemoryViewerProvider {
     if (!location) {
       return;
     }
-    // get source line at location
-    const document = await vscode.workspace.openTextDocument(location.path);
     // Read lines until we find a mnemonic
-    for (let i = location.line - 1; i < location.line + 2; i++) {
-      const { mnemonic, operands } = parseLine(document.lineAt(i).text);
+    const lines = await this.readSourceLines(location.path);
+    for (let i = location.line - 1; i < location.line + 2 && i < lines.length; i++) {
+      const { mnemonic, operands } = parseLine(lines[i] ?? "");
       if (!mnemonic) {
         continue;
       }
@@ -337,11 +305,11 @@ export class MemoryViewerProvider {
   /**
    * Sends state update to webview
    */
-  private sendStateToWebview(
-    panel: vscode.WebviewPanel,
+  protected sendStateToWebview(
+    panel: MemoryViewerPanel,
     params: UpdateStateMessageProps,
   ): void {
-    panel.webview.postMessage({
+    panel.host.postMessage({
       command: "updateState",
       ...params,
       error: null,
@@ -351,9 +319,9 @@ export class MemoryViewerProvider {
   /**
    * Sends error message to webview
    */
-  private sendErrorToWebview(panel: vscode.WebviewPanel, error: unknown): void {
+  private sendErrorToWebview(panel: MemoryViewerPanel, error: unknown): void {
     const errorMessage = error instanceof Error ? error.message : String(error);
-    panel.webview.postMessage({
+    panel.host.postMessage({
       command: "updateState",
       error: errorMessage,
     } as UpdateStateMessage);
@@ -427,15 +395,16 @@ export class MemoryViewerProvider {
     try {
       // Evaluate address input
       const target = await this.evaluateAddressInput(panel);
+      const title = target?.address !== undefined ? `Memory: ${panel.addressInput}` : "Memory Viewer";
+      this.setPanelTitle(panel.id, title);
+      const stateProps: UpdateStateMessageProps = { windowTitle: title };
       if (target?.address !== undefined) {
         const addressChanged = target.address !== panel.target?.address;
         if (sendUnchanged || addressChanged) {
-          this.sendStateToWebview(panel.webviewPanel, { target });
+          stateProps.target = target;
         }
-        panel.webviewPanel.title = `Memory: ${panel.addressInput}`;
-      } else {
-        panel.webviewPanel.title = "Memory Viewer";
       }
+      this.sendStateToWebview(panel, stateProps);
 
       // Clear fetched map on target change
       // This should match what App does
@@ -443,7 +412,7 @@ export class MemoryViewerProvider {
         panel.fetchedChunks.clear();
         const viewMode = await this.guessViewMode(panel);
         if (viewMode) {
-          this.sendStateToWebview(panel.webviewPanel, { viewMode });
+          this.sendStateToWebview(panel, { viewMode });
         }
 
         // A memory-viewer watchpoint only lives as long as the current view -
@@ -451,12 +420,12 @@ export class MemoryViewerProvider {
         if (panel.watchedAddress !== undefined) {
           await this.emulator.removeWatchpoint(panel.watchedAddress);
           panel.watchedAddress = undefined;
-          this.sendStateToWebview(panel.webviewPanel, { watchedAddress: null });
+          this.sendStateToWebview(panel, { watchedAddress: null });
         }
       }
       panel.target = target;
     } catch (err) {
-      this.sendErrorToWebview(panel.webviewPanel, err);
+      this.sendErrorToWebview(panel, err);
     }
   }
 
@@ -473,7 +442,7 @@ export class MemoryViewerProvider {
       panel.fetchedChunks.add(address);
 
       // Send to webview
-      panel.webviewPanel.webview.postMessage({
+      panel.host.postMessage({
         command: "memoryData",
         address,
         data,
@@ -482,44 +451,6 @@ export class MemoryViewerProvider {
       console.error(
         `Failed to fetch memory chunk at ${address.toString(16)}:`,
         err,
-      );
-    }
-  }
-
-  private async exportMemory(address: number, size: number): Promise<void> {
-    const sizeInput = await vscode.window.showInputBox({
-      title: "Save Memory to Disk",
-      prompt: "Number of bytes to export",
-      value: String(size > 0 ? size : 256),
-      validateInput: (value) => {
-        const parsed = Number(value);
-        return Number.isInteger(parsed) && parsed > 0
-          ? undefined
-          : "Enter a positive integer";
-      },
-    });
-    if (sizeInput === undefined) {
-      return;
-    }
-    const byteCount = Number(sizeInput);
-
-    const uri = await vscode.window.showSaveDialog({
-      defaultUri: vscode.Uri.file(`memory_${formatHex(address)}.bin`),
-      filters: { "Binary files": ["bin"], "All files": ["*"] },
-    });
-    if (!uri) {
-      return;
-    }
-
-    try {
-      const data = await this.emulator.readMemory(address, byteCount);
-      await vscode.workspace.fs.writeFile(uri, data);
-      vscode.window.showInformationMessage(
-        `Saved ${byteCount} bytes from ${formatHex(address)} to ${uri.fsPath}`,
-      );
-    } catch (err) {
-      vscode.window.showErrorMessage(
-        `Failed to save memory: ${err instanceof Error ? err.message : err}`,
       );
     }
   }
@@ -541,19 +472,17 @@ export class MemoryViewerProvider {
       if (panel.watchedAddress === address) {
         await this.emulator.removeWatchpoint(address);
         panel.watchedAddress = undefined;
-        this.sendStateToWebview(panel.webviewPanel, { watchedAddress: null });
+        this.sendStateToWebview(panel, { watchedAddress: null });
       } else {
         if (panel.watchedAddress !== undefined) {
           await this.emulator.removeWatchpoint(panel.watchedAddress);
         }
         await this.emulator.setWatchpoint(address);
         panel.watchedAddress = address;
-        this.sendStateToWebview(panel.webviewPanel, { watchedAddress: address });
+        this.sendStateToWebview(panel, { watchedAddress: address });
       }
     } catch (err) {
-      vscode.window.showErrorMessage(
-        `Failed to set watchpoint: ${err instanceof Error ? err.message : err}`,
-      );
+      this.notifyError(`Failed to set watchpoint: ${err instanceof Error ? err.message : err}`);
     }
   }
 
@@ -621,7 +550,7 @@ export class MemoryViewerProvider {
         const result = await this.emulator.readMemory(address, CHUNK_SIZE);
 
         // Send updated chunk to webview
-        panel.webviewPanel.webview.postMessage({
+        panel.host.postMessage({
           command: "memoryData",
           address,
           data: new Uint8Array(result),
@@ -746,32 +675,53 @@ export class MemoryViewerProvider {
     return regions;
   }
 
-  private getHtmlContent(webview: vscode.Webview): string {
-    // Get URIs for bundled resources
-    const scriptUri = webview.asWebviewUri(
-      vscode.Uri.joinPath(this.extensionUri, "out", "memoryViewer.js"),
-    );
-    const styleUri = webview.asWebviewUri(
-      vscode.Uri.joinPath(this.extensionUri, "out", "memoryViewer.css"),
-    );
-    const codiconsUri = webview.asWebviewUri(
-      vscode.Uri.joinPath(
-        this.extensionUri,
-        "node_modules",
-        "@vscode",
-        "codicons",
-        "dist",
-        "codicon.css",
-      ),
-    );
-    const cspSource = webview.cspSource;
+  // --- Host-specific hooks ---
 
-    return `<!DOCTYPE html>
+  protected abstract createPanelSurface(panelId: string): MemoryPanelSurface;
+  protected abstract setPanelTitle(panelId: string, title: string): void;
+  /** `panelId` — which panel's postMessage channel to reply to (e.g. to trigger a download
+   * in the standalone host); vscode's implementation ignores it, since a native save dialog
+   * isn't tied to any particular panel. */
+  protected abstract exportMemory(panelId: string, address: number, size: number): Promise<void>;
+  protected abstract notifyError(message: string): void;
+
+  /** Opens a source location in whatever the host's "editor" concept is. No-op by default. */
+  protected openSource(_address: number): void {}
+
+  /** Reads `path`'s lines for guessViewMode's mnemonic sniffing. Absolute paths only by
+   * default (no workspace-folder concept); empty array means "not found". */
+  protected async readSourceLines(path: string): Promise<string[]> {
+    try {
+      if (!isAbsolute(path)) return [];
+      return readFileSync(path, "utf8").split(/\r?\n/);
+    } catch {
+      return [];
+    }
+  }
+
+  /** Reads the configured "color-code hex bytes" preference. `true` by default (vscode
+   * overrides via its own setting, defaulting to the same value). */
+  protected getColorCodeHexBytes(): boolean {
+    return true;
+  }
+}
+
+export function buildMemoryViewerHtml(
+  resolveUri: (file: string) => string,
+  cspMeta: string,
+  extraHeadHtml: string = "",
+): string {
+  const scriptUri = resolveUri("out/memoryViewer.js");
+  const styleUri = resolveUri("out/memoryViewer.css");
+  const codiconsUri = resolveUri("node_modules/@vscode/codicons/dist/codicon.css");
+
+  return `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${cspSource} 'unsafe-inline'; font-src ${cspSource}; script-src ${cspSource};">
+  ${cspMeta}
+  ${extraHeadHtml}
   <title>Memory Viewer</title>
   <link rel="stylesheet" href="${codiconsUri}">
   <link rel="stylesheet" href="${styleUri}">
@@ -781,5 +731,4 @@ export class MemoryViewerProvider {
   <script src="${scriptUri}"></script>
 </body>
 </html>`;
-  }
 }

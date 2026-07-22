@@ -6,8 +6,10 @@ import { WebSocketServer } from "ws";
 import { DebugAdapter } from "../debugAdapter";
 import { ProfilerRpcClient } from "../profilerManager";
 import { openInBrowser } from "./openInBrowser";
+import { StandaloneMemoryViewerProvider } from "./standaloneMemoryViewerProvider";
 import { StandalonePuaeEmulator } from "./standalonePuaeEmulator";
 import { StandaloneProfilerViewerProvider } from "./standaloneProfilerViewerProvider";
+import { StandaloneStateViewerProvider } from "./standaloneStateViewerProvider";
 import { notFound, serveStaticFile } from "./staticServer";
 
 interface Options {
@@ -43,6 +45,7 @@ function main(): void {
   const rootDir = join(__dirname, "..");
   const url = `http://127.0.0.1:${options.httpPort}/`;
   const profilerUrl = `http://127.0.0.1:${options.httpPort}/profiler`;
+  const stateViewerUrl = `http://127.0.0.1:${options.httpPort}/state`;
 
   const emulator = new StandalonePuaeEmulator(rootDir, url, (sessionUrl) => {
     console.log(`PUAE emulator: ${sessionUrl}`);
@@ -61,6 +64,21 @@ function main(): void {
     () => emulator as unknown as ProfilerRpcClient,
   );
 
+  // Every panel this opens is itself the result of an explicit user action
+  // (the "openMemoryViewer" DAP custom request below) — unlike the emulator
+  // screen's own auto-open on launch, --no-open doesn't gate this, same as
+  // "openProfiler" below.
+  const memoryViewerProvider = new StandaloneMemoryViewerProvider(
+    emulator,
+    options.httpPort,
+    (panelUrl) => {
+      console.log(`Memory viewer: ${panelUrl}`);
+      openInBrowser(panelUrl);
+    },
+  );
+
+  const stateViewerProvider = new StandaloneStateViewerProvider(emulator, memoryViewerProvider);
+
   const httpServer = createHttpServer((req, res) => {
     if (req.url === "/" || req.url === "/index.html") {
       const html = emulator.getHtml();
@@ -71,6 +89,22 @@ function main(): void {
       }
       res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
       res.end(html);
+      return;
+    }
+    if (req.url === "/open-memory-viewer" || req.url?.startsWith("/open-memory-viewer?")) {
+      // Backs the emulator screen's "Open Memory Viewer" toolbar button
+      // (app.ts) — a plain same-origin fetch() is simpler than routing this
+      // through the emulator's own RPC/WebSocket channel. show() opens a
+      // new browser tab itself via the onPanelOpened callback above, same
+      // as the "openMemoryViewer" DAP custom request below.
+      const address = new URL(req.url, "http://localhost").searchParams.get("address") ?? "";
+      void memoryViewerProvider.show(address).then(
+        () => res.writeHead(204).end(),
+        (error) => {
+          res.writeHead(500, { "Content-Type": "text/plain; charset=utf-8" });
+          res.end(error instanceof Error ? error.message : String(error));
+        },
+      );
       return;
     }
     if (req.url === "/profiler") {
@@ -84,10 +118,34 @@ function main(): void {
       });
       return;
     }
+    if (req.url === "/state") {
+      // Same lazy-open pattern as /profiler.
+      void stateViewerProvider.show().then(() => {
+        res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+        res.end(stateViewerProvider.getHtml());
+      });
+      return;
+    }
     if (req.url?.startsWith("/profiler-bulk/")) {
       if (!serveStaticFile(bulkDir, req.url.slice("/profiler-bulk".length), res)) {
         notFound(res);
       }
+      return;
+    }
+    // Unlike /profiler, a panel's HTML is only ever created by the
+    // "openMemoryViewer" DAP custom request below (it needs an address to
+    // evaluate, which this route has no source for) — this just serves
+    // whatever that already produced.
+    const memoryMatch = req.url?.match(/^\/memory\/([^/]+)$/);
+    if (memoryMatch) {
+      const html = memoryViewerProvider.getHtml(memoryMatch[1]);
+      if (!html) {
+        res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
+        res.end("No memory viewer panel with this ID (it may have been closed, or the server restarted).");
+        return;
+      }
+      res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+      res.end(html);
       return;
     }
     if (!serveStaticFile(rootDir, req.url ?? "/", res)) {
@@ -108,11 +166,32 @@ function main(): void {
   const profilerWss = new WebSocketServer({ noServer: true });
   profilerWss.on("connection", (socket) => profilerProvider.attachBrowser(socket));
 
+  const stateWss = new WebSocketServer({ noServer: true });
+  stateWss.on("connection", (socket) => stateViewerProvider.attachBrowser(socket));
+
+  // One WebSocketServer for every memory-viewer panel (not one per panel —
+  // that'd be unbounded); the panelId is pulled out of the URL and handed
+  // to StandaloneMemoryViewerProvider, which looks up that panel's own
+  // BrowserWebviewHost internally.
+  const memoryWss = new WebSocketServer({ noServer: true });
+  memoryWss.on("connection", (socket, req) => {
+    const match = req.url?.match(/^\/memory\/([^/]+)\/rpc$/);
+    if (!match) {
+      socket.close();
+      return;
+    }
+    memoryViewerProvider.attachBrowser(match[1], socket);
+  });
+
   httpServer.on("upgrade", (req, socket, head) => {
     if (req.url === "/rpc") {
       emulatorWss.handleUpgrade(req, socket, head, (ws) => emulatorWss.emit("connection", ws, req));
     } else if (req.url === "/profiler/rpc") {
       profilerWss.handleUpgrade(req, socket, head, (ws) => profilerWss.emit("connection", ws, req));
+    } else if (req.url === "/state/rpc") {
+      stateWss.handleUpgrade(req, socket, head, (ws) => stateWss.emit("connection", ws, req));
+    } else if (req.url?.match(/^\/memory\/[^/]+\/rpc$/)) {
+      memoryWss.handleUpgrade(req, socket, head, (ws) => memoryWss.emit("connection", ws, req));
     } else {
       socket.destroy();
     }
@@ -121,6 +200,7 @@ function main(): void {
   httpServer.listen(options.httpPort, "127.0.0.1", () => {
     console.log(`HTTP/WebSocket server listening on http://127.0.0.1:${options.httpPort}`);
     console.log(`Profiler: ${profilerUrl}`);
+    console.log(`State viewer: ${stateViewerUrl}`);
   });
 
   // Hand-rolled DAP-over-TCP server, mirroring @vscode/debugadapter's own
@@ -132,7 +212,12 @@ function main(): void {
   // tab doesn't need to reconnect between debug sessions.
   const dapServer = createNetServer((socket) => {
     console.log("nvim-dap (or another DAP client) connected");
-    const session = new DebugAdapter(emulator, () => openInBrowser(profilerUrl));
+    const session = new DebugAdapter(
+      emulator,
+      () => openInBrowser(profilerUrl),
+      (address) => void memoryViewerProvider.show(address ?? ""),
+      () => openInBrowser(stateViewerUrl),
+    );
     session.setRunAsServer(true);
     session.start(socket, socket);
     socket.on("close", () => console.log("DAP client disconnected"));

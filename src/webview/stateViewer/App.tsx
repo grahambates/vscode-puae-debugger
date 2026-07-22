@@ -8,10 +8,15 @@ import {
   UpdateDisplayStateMessage,
   UpdateMemoryInfoMessage,
 } from "../../shared/stateViewerTypes";
+import { createHostBridge, HostBridge } from "../shared/hostBridge";
 import { DisplayTab } from "./DisplayTab";
 import { MemoryTab } from "./MemoryTab";
 
-const vscode = acquireVsCodeApi();
+const bridge: HostBridge =
+  createHostBridge("/state/rpc") ??
+  (() => {
+    throw new Error("State viewer webview requires a vscode or standalone host bridge");
+  })();
 
 export function App() {
   const [displayState, setDisplayState] = useState<DisplayState | null>(null);
@@ -20,13 +25,14 @@ export function App() {
 
   // Send ready message on mount
   useEffect(() => {
-    vscode.postMessage({ command: "ready" });
+    bridge.postMessage({ command: "ready" });
   }, []);
 
   // Listen for messages from extension
   useEffect(() => {
-    const handleMessage = (event: MessageEvent) => {
-      const message = event.data;
+    const handleMessage = (rawMessage: unknown) => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const message = rawMessage as any;
 
       if (message.command === "updateDisplayState") {
         const updateMessage = message as UpdateDisplayStateMessage;
@@ -42,10 +48,7 @@ export function App() {
       }
     };
 
-    window.addEventListener("message", handleMessage);
-    return () => {
-      window.removeEventListener("message", handleMessage);
-    };
+    return bridge.onMessage(handleMessage);
   }, []);
 
   return (
@@ -59,7 +62,7 @@ export function App() {
           {displayState && <DisplayTab displayState={displayState} />}
         </vscode-tab-panel>
         <vscode-tab-panel>
-          {memoryInfo && <MemoryTab memoryInfo={memoryInfo} vscode={vscode} />}
+          {memoryInfo && <MemoryTab memoryInfo={memoryInfo} bridge={bridge} />}
         </vscode-tab-panel>
       </vscode-tabs>
     </div>

@@ -28,10 +28,25 @@ export interface UpdateStateMessageProps {
   colorCodeHexBytes?: boolean;
   watchedAddress?: number | null;
   error?: string | null;
+  // Sets document.title — a no-op inside vscode (its webview tab label comes
+  // from the WebviewPanel.title API, not the iframe's own document.title),
+  // but the standalone host's only way to give each of several simultaneous
+  // memory-viewer browser tabs a distinguishing title.
+  windowTitle?: string;
 }
 
 export interface UpdateStateMessage extends UpdateStateMessageProps {
   command: "updateState";
+}
+
+// Standalone host only (StandaloneMemoryViewerProvider) — there's no native
+// save dialog outside vscode, so "Export" sends the encoded bytes here and
+// the webview triggers a normal browser download instead. Mirrors
+// profilerTypes.ts's DownloadProfileMessage.
+export interface DownloadMemoryMessage {
+  command: "downloadMemory";
+  dataBase64: string;
+  fileName: string;
 }
 
 

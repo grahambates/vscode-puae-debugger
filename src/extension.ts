@@ -1,7 +1,7 @@
 import * as vscode from "vscode";
 import { DebugAdapter } from "./debugAdapter";
-import { MemoryViewerProvider } from "./memoryViewerProvider";
-import { StateViewerProvider } from "./stateViewerProvider";
+import { VscodeMemoryViewerProvider } from "./vscodeMemoryViewerProvider";
+import { VscodeStateViewerProvider } from "./vscodeStateViewerProvider";
 import { VscodePuaeEmulator } from "./vscodePuaeEmulator";
 import { VscodeProfilerViewerProvider } from "./vscodeProfilerViewerProvider";
 import { ProfileEditorProvider } from "./profileEditorProvider";
@@ -11,11 +11,11 @@ import { expressionRangeAt } from "./cExpressionEvaluator";
 
 export function activate(context: vscode.ExtensionContext) {
   const puaeEmulator = new VscodePuaeEmulator(context.extensionUri);
-  const memoryViewer = new MemoryViewerProvider(
+  const memoryViewer = new VscodeMemoryViewerProvider(
     context.extensionUri,
     puaeEmulator,
   );
-  const stateViewer = new StateViewerProvider(
+  const stateViewer = new VscodeStateViewerProvider(
     context.extensionUri,
     puaeEmulator,
   );
@@ -34,13 +34,30 @@ export function activate(context: vscode.ExtensionContext) {
     vscode.debug.registerDebugAdapterDescriptorFactory("puae", {
       createDebugAdapterDescriptor(): vscode.ProviderResult<vscode.DebugAdapterDescriptor> {
         return new vscode.DebugAdapterInlineImplementation(
-          new DebugAdapter(puaeEmulator, () => {
-            void profilerViewer.show().catch((error) => {
-              vscode.window.showErrorMessage(
-                `Failed to open CPU profiler: ${error instanceof Error ? error.message : String(error)}`,
-              );
-            });
-          }),
+          new DebugAdapter(
+            puaeEmulator,
+            () => {
+              void profilerViewer.show().catch((error) => {
+                vscode.window.showErrorMessage(
+                  `Failed to open CPU profiler: ${error instanceof Error ? error.message : String(error)}`,
+                );
+              });
+            },
+            (address) => {
+              void memoryViewer.show(address ?? "").catch((error) => {
+                vscode.window.showErrorMessage(
+                  `Failed to open memory viewer: ${error instanceof Error ? error.message : String(error)}`,
+                );
+              });
+            },
+            () => {
+              void stateViewer.show().catch((error) => {
+                vscode.window.showErrorMessage(
+                  `Failed to open Amiga state viewer: ${error instanceof Error ? error.message : String(error)}`,
+                );
+              });
+            },
+          ),
         );
       },
     }),

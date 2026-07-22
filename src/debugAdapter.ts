@@ -264,10 +264,16 @@ export class DebugAdapter extends LoggingDebugSession {
    * command palette outside vscode to put an "openProfiler" command in); the vscode extension
    * binds it to `ProfilerViewerProvider.show()` for parity, though it also already has a debug
    * toolbar button for the same thing.
+   * @param openMemoryViewer Backs the "openMemoryViewer" customRequest — same idea as
+   * `openProfiler`, taking an optional address to view (empty/undefined opens with a blank
+   * address, matching `puae-debugger.openMemoryViewer`'s own vscode behavior).
+   * @param openStateViewer Backs the "openStateViewer" customRequest — same idea as `openProfiler`.
    */
   public constructor(
     private emulator: Emulator,
     private readonly openProfiler?: () => void,
+    private readonly openMemoryViewer?: (address?: string) => void,
+    private readonly openStateViewer?: () => void,
   ) {
     super();
     this.setDebuggerLinesStartAt1(false);
@@ -1015,14 +1021,15 @@ export class DebugAdapter extends LoggingDebugSession {
    * commands (extension.ts) and are also how a non-vscode DAP client (e.g.
    * nvim-dap, talking to the standalone server) drives the same actions —
    * there's no in-process `DebugAdapter.getActiveAdapter()` shortcut to
-   * reach for outside the vscode extension host. "openProfiler" is the same
-   * idea for opening the profiler — see the `openProfiler` constructor
-   * param's doc comment.
+   * reach for outside the vscode extension host. "openProfiler"/
+   * "openMemoryViewer"/"openStateViewer" are the same idea for opening the
+   * profiler/a memory viewer/the state viewer — see their constructor
+   * params' doc comments.
    */
   protected async customRequest(
     command: string,
     response: DebugProtocol.Response,
-    args: { dataId?: string; length?: number },
+    args: { dataId?: string; length?: number; address?: string },
   ): Promise<void> {
     try {
       if (command === "setWatchpointLength") {
@@ -1067,6 +1074,16 @@ export class DebugAdapter extends LoggingDebugSession {
       }
       if (command === "openProfiler") {
         this.openProfiler?.();
+        this.sendResponse(response);
+        return;
+      }
+      if (command === "openMemoryViewer") {
+        this.openMemoryViewer?.(args?.address);
+        this.sendResponse(response);
+        return;
+      }
+      if (command === "openStateViewer") {
+        this.openStateViewer?.();
         this.sendResponse(response);
         return;
       }

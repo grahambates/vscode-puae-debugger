@@ -1,6 +1,5 @@
-import * as vscode from "vscode";
 import { CustomRegisters, EmulatorMessage, isEmulatorStateMessage } from "./emulatorProtocol";
-import { Emulator } from "./emulator";
+import { Disposable, Emulator } from "./emulator";
 import { DebugAdapter } from "./debugAdapter";
 import {
   DisplayState,
@@ -19,22 +18,31 @@ import {
   parseFmodeRegister,
 } from "./amigaRegisterParsers";
 import { AmigaMemoryMapper } from "./amigaMemoryMapper";
+import { WebviewHost } from "./webviewHost";
+
+/** A concrete host's UI surface for one `show()` — mirrors `ProfilerSurface` (profilerViewerProvider.ts). */
+export interface StateViewerSurface {
+  resolveUri(file: string): string;
+  cspMeta: string;
+  extraHeadHtml: string;
+  host: WebviewHost;
+  setHtml(html: string): void;
+}
 
 /**
  * Provides a webview for visualizing Amiga system state including
  * color palette, display configuration, and other chipset information.
+ *
+ * Host-agnostic: creating/attaching the actual `WebviewHost` and opening the
+ * memory viewer at a clicked address are delegated to a concrete subclass
+ * (`VscodeStateViewerProvider`, `StandaloneStateViewerProvider`).
  */
-export class StateViewerProvider {
-  public static readonly viewType = "puae-debugger.stateViewer";
-
-  private panel?: vscode.WebviewPanel;
-  private emulatorMessageListeners: vscode.Disposable[] = [];
+export abstract class StateViewerProvider {
+  protected host?: WebviewHost;
+  private readonly emulatorMessageListeners: Disposable[];
   private isEmulatorRunning = false;
 
-  constructor(
-    private readonly extensionUri: vscode.Uri,
-    private readonly puaeEmulator: Emulator,
-  ) {
+  constructor(private readonly puaeEmulator: Emulator) {
     const onMessage = (message: EmulatorMessage) => {
       if (!isEmulatorStateMessage(message)) {
         return;
@@ -42,11 +50,11 @@ export class StateViewerProvider {
       this.isEmulatorRunning = message.state === "running";
 
       if (
-        this.panel &&
+        this.host &&
         (message.state === "paused" || message.state === "stopped")
       ) {
-        this.refreshDisplayState();
-        this.refreshMemoryInfo();
+        void this.refreshDisplayState();
+        void this.refreshMemoryInfo();
       }
     };
     this.emulatorMessageListeners = [
@@ -62,8 +70,8 @@ export class StateViewerProvider {
    * Disposes the state viewer panel
    */
   public dispose(): void {
-    this.panel?.dispose();
-    this.panel = undefined;
+    this.host?.dispose();
+    this.host = undefined;
     for (const listener of this.emulatorMessageListeners) {
       listener.dispose();
     }
@@ -73,62 +81,52 @@ export class StateViewerProvider {
    * Opens or focuses the state viewer panel
    */
   public async show(): Promise<void> {
-    if (this.panel) {
-      // Panel already exists, just reveal it
-      this.panel.reveal(vscode.ViewColumn.Beside);
+    if (this.host) {
+      this.host.reveal();
       await this.refreshDisplayState();
       return;
     }
 
-    // Create new panel
-    this.panel = vscode.window.createWebviewPanel(
-      StateViewerProvider.viewType,
-      "Amiga State",
-      vscode.ViewColumn.Beside,
-      {
-        enableScripts: true,
-        retainContextWhenHidden: true,
-      },
-    );
+    const surface = this.createSurface();
+    surface.setHtml(buildStateViewerHtml(surface.resolveUri, surface.cspMeta, surface.extraHeadHtml));
+    this.attachHost(surface.host);
+  }
 
-    this.panel.webview.html = this.getHtmlContent(this.panel.webview);
-
-    this.panel.onDidDispose(() => {
-      this.panel = undefined;
+  private attachHost(host: WebviewHost): void {
+    this.host = host;
+    host.onDidDispose(() => {
+      if (this.host === host) this.host = undefined;
     });
+    host.onDidReceiveMessage((rawMessage) => {
+      void this.handleMessage(rawMessage as StateViewerMessage);
+    });
+  }
 
-    this.panel.webview.onDidReceiveMessage(
-      async (message: StateViewerMessage) => {
-        try {
-          switch (message.command) {
-            case "ready":
-              await this.refreshDisplayState();
-              await this.refreshMemoryInfo();
-              break;
-            case "refresh":
-              await this.refreshDisplayState();
-              await this.refreshMemoryInfo();
-              break;
-            case "openMemoryViewer": {
-              // Convert address to hex string format for memory viewer
-              const addressHex = `0x${message.address.toString(16)}`;
-              await vscode.commands.executeCommand(
-                "puae-debugger.openMemoryViewer",
-                undefined,
-                addressHex,
-              );
-              break;
-            }
-          }
-        } catch (error) {
-          const errorMessage = error instanceof Error ? error.message : String(error);
-          this.panel?.webview.postMessage({
-            command: "showError",
-            error: errorMessage,
-          } as ShowErrorMessage);
+  private async handleMessage(message: StateViewerMessage): Promise<void> {
+    try {
+      switch (message.command) {
+        case "ready":
+          await this.refreshDisplayState();
+          await this.refreshMemoryInfo();
+          break;
+        case "refresh":
+          await this.refreshDisplayState();
+          await this.refreshMemoryInfo();
+          break;
+        case "openMemoryViewer": {
+          // Convert address to hex string format for memory viewer
+          const addressHex = `0x${message.address.toString(16)}`;
+          this.openMemoryViewer(addressHex);
+          break;
         }
-      },
-    );
+      }
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      this.host?.postMessage({
+        command: "showError",
+        error: errorMessage,
+      } as ShowErrorMessage);
+    }
   }
 
   /**
@@ -271,7 +269,7 @@ export class StateViewerProvider {
    * Fetches current display state and sends to webview
    */
   private async refreshDisplayState(): Promise<void> {
-    if (!this.panel) {
+    if (!this.host) {
       return;
     }
 
@@ -291,14 +289,14 @@ export class StateViewerProvider {
       displayState,
     };
 
-    this.panel.webview.postMessage(message);
+    this.host.postMessage(message);
   }
 
   /**
    * Fetches current memory info and sends to webview
    */
   private async refreshMemoryInfo(): Promise<void> {
-    if (!this.panel) {
+    if (!this.host) {
       return;
     }
 
@@ -367,35 +365,32 @@ export class StateViewerProvider {
       memoryInfo,
     };
 
-    this.panel.webview.postMessage(message);
+    this.host.postMessage(message);
   }
 
-  /**
-   * Generates the HTML content for the webview
-   */
-  private getHtmlContent(webview: vscode.Webview): string {
-    const scriptUri = webview.asWebviewUri(
-      vscode.Uri.joinPath(this.extensionUri, "out", "stateViewer.js"),
-    );
-    const styleUri = webview.asWebviewUri(
-      vscode.Uri.joinPath(this.extensionUri, "out", "stateViewer.css"),
-    );
-    const codiconsUri = webview.asWebviewUri(
-      vscode.Uri.joinPath(
-        this.extensionUri,
-        "node_modules",
-        "@vscode/codicons",
-        "dist",
-        "codicon.css",
-      ),
-    );
+  // --- Host-specific hooks ---
 
-    return `<!DOCTYPE html>
+  protected abstract createSurface(): StateViewerSurface;
+  /** Opens the memory viewer at `addressHex` (e.g. "0x1234") — clicking a palette color/memory region. */
+  protected abstract openMemoryViewer(addressHex: string): void;
+}
+
+export function buildStateViewerHtml(
+  resolveUri: (file: string) => string,
+  cspMeta: string,
+  extraHeadHtml: string = "",
+): string {
+  const scriptUri = resolveUri("out/stateViewer.js");
+  const styleUri = resolveUri("out/stateViewer.css");
+  const codiconsUri = resolveUri("node_modules/@vscode/codicons/dist/codicon.css");
+
+  return `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${webview.cspSource} 'unsafe-inline'; font-src ${webview.cspSource}; script-src ${webview.cspSource};">
+  ${cspMeta}
+  ${extraHeadHtml}
   <link href="${codiconsUri}" rel="stylesheet" id="vscode-codicon-stylesheet" />
   <link href="${styleUri}" rel="stylesheet" />
   <title>Amiga State</title>
@@ -405,5 +400,4 @@ export class StateViewerProvider {
   <script src="${scriptUri}"></script>
 </body>
 </html>`;
-  }
 }
