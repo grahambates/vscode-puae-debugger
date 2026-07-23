@@ -300,6 +300,22 @@ export async function main(config: MainConfig = {}): Promise<void> {
         memProtectTrackingStarted = !!M._wasm_memprotect_start_tracking();
       }
     }
+    // Pause right here, synchronously, in the same tick that just validated
+    // isExecReady() — not after sending exec-ready and waiting for the
+    // server's own "pause" RPC to round-trip back. That round trip isn't
+    // free: once this function returns, the render loop's frame() starts
+    // calling _wasm_tick() every frame regardless of pause state (there's
+    // no gate there for the fastLoad case), so the CPU keeps advancing
+    // during the round trip and can drift into an interrupt or otherwise
+    // leave the exact state isExecReady() just confirmed — by the time
+    // injectProgram() (debugAdapter.ts) actually writes the program into
+    // memory, the CPU may no longer be where/what it validated. Pausing
+    // immediately here closes that window entirely: no tick can occur
+    // between the check and the freeze because nothing else runs in
+    // between (single-threaded, still the same synchronous call). The
+    // server's own pause(true) call in injectProgram() becomes a harmless,
+    // redundant re-confirmation once its round trip does land.
+    M._wasm_pause();
     if (!memProtectTrackingStarted) {
       memProtectTrackingStarted = !!M._wasm_memprotect_start_tracking();
     }
