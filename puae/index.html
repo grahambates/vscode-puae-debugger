@@ -131,6 +131,14 @@
     <option value="0.25">25%</option>
     <option value="0.1">10%</option>
   </select>
+  <label for="scale">Scale:</label>
+  <select id="scale" title="Auto stretches to fill the available width; the rest show the emulated screen at exact integer multiples of its native resolution, pixel for pixel">
+    <option value="auto" selected>Auto</option>
+    <option value="1">100%</option>
+    <option value="2">200%</option>
+    <option value="3">300%</option>
+    <option value="4">400%</option>
+  </select>
   <button id="warp" type="button" class="chan-btn" title="Toggle warp mode">WARP</button>
   <button id="blit-vis" type="button" class="chan-btn" title="Highlight blit regions" style="--chan-color:#008888">BLIT</button>
   <span id="blit-decay-row" class="blit-decay disabled" title="How many frames a blit stays highlighted — raise it for triple buffering / longer frame rings">

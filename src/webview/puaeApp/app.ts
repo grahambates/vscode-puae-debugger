@@ -587,6 +587,60 @@ export async function main(config: MainConfig = {}): Promise<void> {
   // ---------- render loop ----------
   const canvas = document.getElementById("screen") as HTMLCanvasElement;
 
+  // "Auto" (the pre-existing behavior) stretches the canvas to the
+  // container's width via the #screen CSS rule, letting the browser scale
+  // (and smooth) it to whatever size that ends up being — cleared here by
+  // resetting the inline style, since a fixed scale below sets one. A fixed
+  // multiplier instead sizes it to an exact integer multiple of its
+  // *current* intrinsic pixel dimensions (canvas.width/height — these
+  // change at runtime with the emulated video mode: PAL/NTSC, lores/hires/
+  // AGA), with image-rendering: pixelated so upscaling stays crisp/blocky
+  // instead of CSS's default bilinear blur — the whole point of choosing an
+  // exact multiple over "auto" is pixel-for-pixel fidelity. Called again
+  // from uploadAndDraw() whenever canvas.width/height actually change, so a
+  // mode switch while a fixed scale is selected doesn't leave the CSS size
+  // matching the old resolution.
+  //
+  // CSS pixels aren't device pixels: on a devicePixelRatio=2 (Retina-style)
+  // display, setting the CSS size to exactly canvas.width*multiplier CSS
+  // pixels renders each emulated pixel as a 2x2 block of actual screen
+  // pixels — "100%" would look like 200%. Dividing by devicePixelRatio here
+  // maps a multiplier to that many *physical* pixels per emulated pixel
+  // instead. watchDevicePixelRatio below re-applies this if the ratio
+  // itself changes at runtime (e.g. the window is dragged to a monitor with
+  // different DPI) — nothing else here would otherwise notice that.
+  const scaleSelect = document.getElementById("scale") as HTMLSelectElement | null;
+  function applyScale(): void {
+    const value = scaleSelect?.value ?? "auto";
+    if (value === "auto") {
+      canvas.style.width = "";
+      canvas.style.height = "";
+      canvas.style.imageRendering = "";
+    } else {
+      const multiplier = parseInt(value, 10) || 1;
+      const dpr = window.devicePixelRatio || 1;
+      canvas.style.width = `${(canvas.width * multiplier) / dpr}px`;
+      canvas.style.height = `${(canvas.height * multiplier) / dpr}px`;
+      canvas.style.imageRendering = "pixelated";
+    }
+  }
+  scaleSelect?.addEventListener("change", applyScale);
+
+  // matchMedia's `resolution` query only fires once, for the ratio active
+  // when it was created — re-subscribing on every change is the standard
+  // way to keep tracking devicePixelRatio as it keeps changing.
+  function watchDevicePixelRatio(onChange: () => void): void {
+    const subscribe = () => {
+      matchMedia(`(resolution: ${window.devicePixelRatio}dppx)`).addEventListener(
+        "change",
+        () => { onChange(); subscribe(); },
+        { once: true },
+      );
+    };
+    subscribe();
+  }
+  watchDevicePixelRatio(applyScale);
+
   // WebGL, not a 2D context: putImageData needs a JS-owned ImageData (Chrome 117+
   // rejects one backed directly by wasm memory — see getFbView's comment below), so
   // getting a wasm-composited RGBA frame on screen via the 2D canvas costs two
@@ -826,6 +880,7 @@ export async function main(config: MainConfig = {}): Promise<void> {
     if (canvas.width !== w || canvas.height !== h) {
       canvas.width = w;
       canvas.height = h;
+      applyScale(); // keep a fixed-scale CSS size in sync with the new resolution
     }
     // Wait for 'webglcontextrestored' (see above) to rebuild GL state before
     // drawing again — canvas.width/height above still gets updated either way, so
