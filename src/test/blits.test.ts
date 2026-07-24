@@ -119,7 +119,7 @@ describe("blitTooltip", () => {
 
     expect(blitLabel(blit)).toContain("100px");
     expect(blitLabel(blit)).not.toContain("32px");
-    expect(blitTooltip(blit).size).toBe("100px line");
+    expect(blitTooltip(blit).size).toBe("100px");
   });
 
   it("still shows width x height for an area (Copy/Fill) blit", () => {

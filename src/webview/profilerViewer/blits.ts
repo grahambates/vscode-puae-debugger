@@ -96,7 +96,7 @@ export function blitVerb(blit: Blit): string {
 // regardless of the line actually drawn. The real, only meaningful dimension for a line is its
 // length in pixels, which BLTSIZE's height field (`blit.height`) DOES hold for line mode.
 function blitSize(blit: Blit): string {
-  return blit.mode === BlitMode.Line ? `${blit.height}px line` : `${blit.width * 16}x${blit.height}px`;
+  return blit.mode === BlitMode.Line ? `${blit.height}px` : `${blit.width * 16}x${blit.height}px`;
 }
 
 export function blitLabel(blit: Blit): string {
