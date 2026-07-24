@@ -302,36 +302,28 @@ export class SourceMap {
    */
   public getSymbolLengths(excludeLocal = false): Record<string, number> | undefined {
     const symbols = this.getSymbols(excludeLocal);
+
+    // Must process symbols in address order to compute "distance to the next one" — `symbols`
+    // itself is in whatever order the caller's symbol table happened to store them, which for
+    // ELF-derived symbols is raw .symtab emission order (roughly declaration order), NOT address
+    // order (confirmed against a real hand-assembled ELF: routines appeared completely scrambled
+    // by address). Iterating unsorted computed the distance to some unrelated symbol elsewhere in
+    // the file instead — wildly oversized when that unrelated symbol was much further along, or
+    // even negative when it sat at a lower address, which a negative/zero size then made the
+    // profiler's disassembly silently drop the function entirely (see fetchDisassembly's
+    // `sym.size <= 0` guard in profilerManager.ts).
+    const entries = Object.entries(symbols)
+      .map(([name, address]) => ({ name, address, segment: this.findSegmentForAddress(address) }))
+      .sort((a, b) => a.address - b.address);
+
     const symbolLengths: Record<string, number> = {};
-    let prevSymbolName: string | undefined;
-    let prevSymbolSegment: Segment | undefined;
-    let prevSymbolAddress: number | undefined;
-
-    for (const symbolName in symbols) {
-      const symbolAddress = symbols[symbolName];
-      const symbolSegment = this.findSegmentForAddress(symbolAddress);
-
-      // Calculate length of previous symbol now that we have the current symbol's info
-      if (prevSymbolName && prevSymbolAddress && prevSymbolSegment) {
-        if (symbolSegment === prevSymbolSegment) {
-          // Current symbol is in same segment - use distance between symbols
-          symbolLengths[prevSymbolName] = symbolAddress - prevSymbolAddress;
-        } else {
-          // Current symbol is in different segment - previous symbol extends to end of its segment
-          const segmentEnd = prevSymbolSegment.address + prevSymbolSegment.size;
-          symbolLengths[prevSymbolName] = segmentEnd - prevSymbolAddress;
-        }
-      }
-
-      prevSymbolName = symbolName;
-      prevSymbolAddress = symbolAddress;
-      prevSymbolSegment = symbolSegment;
-    }
-
-    // Handle the last symbol - it extends to the end of its segment
-    if (prevSymbolName && prevSymbolAddress && prevSymbolSegment) {
-      const segmentEnd = prevSymbolSegment.address + prevSymbolSegment.size;
-      symbolLengths[prevSymbolName] = segmentEnd - prevSymbolAddress;
+    for (let i = 0; i < entries.length; i++) {
+      const { name, address, segment } = entries[i];
+      if (!segment) continue;
+      const next = entries[i + 1];
+      symbolLengths[name] = next && next.segment === segment
+        ? next.address - address // same segment - use distance to the next symbol
+        : segment.address + segment.size - address; // last in its segment - extends to its end
     }
 
     return symbolLengths;

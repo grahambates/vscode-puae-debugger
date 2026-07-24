@@ -1354,6 +1354,11 @@ body {
   color: var(--vscode-descriptionForeground);
 }
 
+.disasm-truncated-hint {
+  white-space: nowrap;
+  color: var(--vscode-editorWarning-foreground, var(--vscode-descriptionForeground));
+}
+
 .disasm-body {
   flex: 1;
   display: flex;

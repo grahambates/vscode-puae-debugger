@@ -516,6 +516,16 @@ export function attachDisassembly(raw: RawDisassembledFunction[], sourceMap: Sou
 
 // Bound disassembly work by decoded instructions rather than symbol-defined functions. Assembly
 // labels can create hundreds of tiny function ranges, while a single C function can be huge.
+//
+// No separate per-function cap on top of this: one used to exist (MAX_INSTRUCTIONS_PER_FUNCTION),
+// added when a symbol-table ordering bug (SourceMap.getSymbolLengths iterating in .symtab order
+// instead of address order — fixed in sourceMap.ts) was producing wildly-wrong, sometimes huge
+// symbol sizes. Now that sizes are trustworthy again, a per-function cap only hurts: real Amiga
+// code legitimately has large functions (unrolled loops, big jump/dispatch tables), and capping
+// those produced misleading partial disassembly for no good reason. The one remaining source of an
+// inflated size — the last label before a segment boundary or a genuine gap of unlabeled code/data,
+// which SourceMap.getSymbolLengths extends to the end of that gap/segment since it has no better
+// info — is rare and, when it happens, this global budget alone still bounds the damage.
 export const MAX_DISASSEMBLE_INSTRUCTIONS = 16_384;
 
 // Re-apply per-instruction hit/cycle counts from a new sample set onto an existing

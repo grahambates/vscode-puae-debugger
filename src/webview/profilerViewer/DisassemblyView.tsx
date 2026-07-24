@@ -369,6 +369,16 @@ export function DisassemblyView({
 
   const activeFnIndex = selectedFn !== undefined && selectedFn < functions.length ? selectedFn : 0;
   const active = functions[activeFnIndex];
+  // True if `active`'s decode stopped before reaching its real end — the total-frame decode budget
+  // (MAX_DISASSEMBLE_INSTRUCTIONS, see profilerManager.ts's fetchDisassembly) ran out mid-function.
+  // Surfaced rather than left silent: a truncated function's tail instructions simply don't exist
+  // in `instructions`, so e.g. scrolling/"Follow timeline" past the shown portion won't find them.
+  const activeTruncated = (() => {
+    if (!active) return false;
+    const last = active.instructions[active.instructions.length - 1];
+    const decodedEnd = last ? last.address + last.length : active.address;
+    return decodedEnd < active.end;
+  })();
 
   // Fetch source files for the active function when "Show source" is on.
   useEffect(() => {
@@ -471,6 +481,11 @@ export function DisassemblyView({
           <input type="checkbox" checked={showSource} onChange={(e) => setShowSource(e.target.checked)} />
           Source
         </label>
+        {activeTruncated && (
+          <span className="disasm-truncated-hint" title="This function's decoded range was cut short by the disassembly work budget — its tail instructions aren't shown.">
+            ⚠ disassembly truncated ({active!.instructions.length} instructions shown)
+          </span>
+        )}
         {columns.length > 0 && dmaSlots && (
           <span className="cr-nav">
             <button

@@ -247,8 +247,6 @@ describe("SourceMap Tests", () => {
       // `.\@`) partway through it. Without excludeLocal, sub1's computed length stops at the
       // local label instead of extending to sub2 - the bug that split the flame graph and
       // made the webview symbolizer disagree with it.
-      // getSymbolLengths assumes address-ordered iteration, so insert ".loop" between sub1
-      // and sub2 to match the object's key insertion order.
       const map = new SourceMap(
         testSegments,
         testSources,
@@ -261,6 +259,30 @@ describe("SourceMap Tests", () => {
       const lengthsExcludingLocal = map.getSymbolLengths(true);
       assert.strictEqual(lengthsExcludingLocal?.sub1, 0x100); // spans to sub2, as before
       assert.ok(!lengthsExcludingLocal || !(".loop" in lengthsExcludingLocal));
+    });
+
+    it("computes correct lengths regardless of the symbol table's insertion order", () => {
+      // getSymbolLengths needs each symbol's address-order successor, but a real ELF's .symtab
+      // is emitted in whatever order the assembler/linker produced (declaration order, roughly)
+      // — NOT address order. Confirmed against a real hand-assembled ELF, where routines appeared
+      // completely scrambled by address in the raw symbol table. Iterating unsorted computed the
+      // distance to whatever unrelated symbol happened to be next in that scrambled order instead
+      // — sometimes wildly oversized, sometimes negative (which a real function then got dropped
+      // from the disassembly entirely for, since fetchDisassembly skips size <= 0).
+      const scrambled = new SourceMap(
+        testSegments,
+        testSources,
+        { sub2: 0x1200, main: 0x1000, buffer: 0x2100, sub1: 0x1100, data_start: 0x2000 },
+        testLocations,
+      );
+      const lengths = scrambled.getSymbolLengths();
+      assert.ok(lengths);
+      assert.strictEqual(lengths.main, 0x100); // main -> sub1
+      assert.strictEqual(lengths.sub1, 0x100); // sub1 -> sub2
+      assert.strictEqual(lengths.sub2, 0xe00); // sub2 -> end of CODE segment
+      assert.strictEqual(lengths.data_start, 0x100); // data_start -> buffer
+      assert.strictEqual(lengths.buffer, 0x700); // buffer -> end of DATA segment
+      assert.ok(Object.values(lengths).every((len) => len > 0)); // never negative
     });
 
     it("excludeLocal in findSymbolOffset resolves an address inside a local label's range back to the enclosing routine", () => {

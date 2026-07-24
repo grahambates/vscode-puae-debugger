@@ -165,6 +165,12 @@ describe("fetchDisassembly", () => {
   });
 
   it("caps decoded work by total instruction count rather than function count", () => {
+    // No per-function cap on top of this (one existed briefly — MAX_INSTRUCTIONS_PER_FUNCTION —
+    // added while SourceMap.getSymbolLengths had an ordering bug that produced wildly-wrong sizes;
+    // removed once that bug was fixed, since real Amiga code legitimately has large functions
+    // (unrolled loops, big dispatch tables) that a per-function cap would misleadingly truncate).
+    // A single big/hot function is allowed to consume nearly the whole global budget, same as any
+    // symbol-defined function count would.
     const baseAddress = 0x1000;
     const hotInstructionCount = MAX_DISASSEMBLE_INSTRUCTIONS - 10;
     const coldAddress = baseAddress + hotInstructionCount * 2;
@@ -197,8 +203,7 @@ describe("fetchDisassembly", () => {
     expect(result[1].instructions).toHaveLength(10);
     // `end` is the symbol's real end regardless of truncation, and `totalCycles` is the exact
     // total from the full per-PC hit list — both stay correct even though only 10 of "cold"'s
-    // real instructions got decoded (the bug this data feeds: DisassemblyView's dropdown label
-    // and "Follow timeline" used to rely on `instructions`, which is unreliable once truncated).
+    // real instructions got decoded.
     expect(result[1].end).toBe(coldAddress + 200);
     expect(result[1].totalCycles).toBe(1);
   });
