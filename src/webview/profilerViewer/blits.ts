@@ -93,6 +93,25 @@ export function blitLabel(blit: Blit): string {
   return `${blitVerb(blit)} ${blitChannels(blit.con0)} ${blit.width * 16}x${blit.height}px`;
 }
 
+// A channel's real memory row stride, for lining up the Memory tab's visual view with the
+// buffer a blit channel actually reads/writes (see BlitDetail.tsx / FlameGraph.tsx, the two
+// places that jump there from a channel pointer). For area blits (Copy/Fill) the blitter
+// advances a channel's pointer by (width*2 + modulo) bytes after each row (width is in words) —
+// that IS the buffer's real row stride, regardless of the blit's own width in pixels. abs()
+// because a negative modulo (upward/overlapping blits) still means the same physical stride.
+//
+// Line mode is different: BLTSIZE's width field is hardwired to a fixed constant (2 words),
+// unrelated to the destination bitmap's geometry, so width*2+modulo is meaningless here. For
+// line draw the C/D channel modulo alone already IS the bitmap's row stride (the Bresenham step
+// uses BLTAMOD/BLTBMOD for its error term, not memory addressing).
+//
+// Clamped to MemoryVisual's supported row-width range (1..512 bytes).
+export function channelStrideBytes(blit: Blit, modulo: number): number {
+  return blit.mode === BlitMode.Line
+    ? Math.min(512, Math.max(1, Math.abs(modulo)))
+    : Math.min(512, Math.max(1, Math.abs(blit.width * 2 + modulo)));
+}
+
 // Reconstruct every blit in the captured frame from the DMA grid.
 export function getBlits(dma: IDmaModel): BlitResult {
   const { owner, flags, addr, value } = dma;

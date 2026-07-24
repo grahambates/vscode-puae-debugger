@@ -8,7 +8,8 @@ import { dataName, DisplayUnit, formatValue, scaleValue, Timing } from "./displa
 import { compileFilter, IRichFilter } from "./filter";
 import Markdown from "markdown-to-jsx/react";
 import { channelStyle, blitStyle, dmaconChannels, dmaEventNames, ownerRegister, DMACON_REG_INDEX, ChannelStyle } from "./dma";
-import { getBlits, blitLabel, blitTooltip, Blit } from "./blits";
+import { getBlits, blitLabel, blitTooltip, channelStrideBytes, Blit } from "./blits";
+import { BLTCON0Flags } from "./blitMinterm";
 import { BlitDetailGrid } from "./BlitDetail";
 import { Tooltip } from "./Tooltip";
 import { reconstructCustomRegs } from "./reconstruct";
@@ -192,6 +193,7 @@ export function FlameGraph({
   selectedSlot,
   onSelectSlot,
   onOpenBlitterTab,
+  onOpenMemory,
   heightOverridePx,
   workspaceRoot,
 }: {
@@ -207,6 +209,12 @@ export function FlameGraph({
   // graph sits above both panels, so there's no "whichever panel it was clicked from" to reuse).
   // BlitterView picks up the new selectedSlot itself and highlights/scrolls to that blit.
   onOpenBlitterTab?: () => void;
+  // Ctrl/Cmd+click on a blit box jumps the Memory tab (also always the left panel, same
+  // convention as onOpenBlitterTab) to that blit's destination (channel D) pointer, in visual
+  // mode aligned to the buffer's real row stride — mirrors Ctrl/Cmd+click's "jump to source" on
+  // a CPU box. Only fires when the blit actually writes memory (channel D enabled); a blit with
+  // D disabled has no destination to jump to.
+  onOpenMemory?: (address: number, bytesPerRow?: number) => void;
   // Manual override for the flame area's height (px), set by dragging the split divider in
   // App.tsx. undefined = auto-size to the (capped) call-stack depth, capped at 70% (default).
   heightOverridePx?: number;
@@ -791,7 +799,15 @@ export function FlameGraph({
       // Jump the playhead to the blit's start, same as a CPU box, and switch to the Blitter tab —
       // BlitterView highlights/scrolls to whichever blit covers selectedSlot on its own.
       onSelectSlot(blitHover.blit.startSlot);
-      onOpenBlitterTab?.();
+      const blit = blitHover.blit;
+      // Ctrl/Cmd+click jumps to the destination (channel D) in the Memory tab instead of the
+      // Blitter tab — only meaningful if the blit actually writes memory (D enabled); otherwise
+      // fall back to the normal-click behaviour since there's no destination to jump to.
+      if ((e.ctrlKey || e.metaKey) && onOpenMemory && (blit.con0 & BLTCON0Flags.USED)) {
+        onOpenMemory(blit.ptr[3], channelStrideBytes(blit, blit.mod[3]));
+      } else {
+        onOpenBlitterTab?.();
+      }
     } else if (isClick && dmaHover && onSelectSlot) {
       onSelectSlot(dmaHover.slot);
     }
@@ -1074,6 +1090,9 @@ export function FlameGraph({
       {blitHover && blitInfo && (
         <Tooltip x={blitHover.x} y={blitHover.y} className="blit-tip" width={480}>
           <BlitDetailGrid blit={blitHover.blit} info={blitInfo} symbolize={symbolize} displayUnit={displayUnit} timing={timing} />
+          {onOpenMemory && (blitHover.blit.con0 & BLTCON0Flags.USED) !== 0 && (
+            <div className="tt-hint">{isMac ? "Cmd" : "Ctrl"}+Click to jump to destination</div>
+          )}
         </Tooltip>
       )}
     </div>

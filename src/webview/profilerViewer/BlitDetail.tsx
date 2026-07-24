@@ -1,5 +1,5 @@
 import { Fragment } from "react";
-import { Blit, BlitMode, BlitTooltip, blitLabel } from "./blits";
+import { Blit, BlitTooltip, blitLabel, channelStrideBytes } from "./blits";
 import { blitStyle } from "./dma";
 import { Symbolizer } from "./symbols";
 import { DisplayUnit, Timing, formatValue } from "./display";
@@ -38,20 +38,6 @@ export function BlitDetailGrid({
     const sym = symbolize(a);
     return sym ? `${sym} (${hex})` : hex;
   };
-
-  // The blitter advances a channel's pointer by (width*2 + modulo) bytes after each row (width is
-  // in words) — that IS the buffer's real row stride, regardless of the blit's own width in
-  // pixels. abs() because a negative modulo (upward/overlapping blits) still means the same
-  // physical stride; clamped to MemoryVisual's supported row-width range.
-  //
-  // Line mode is different: BLTSIZE's width field is hardwired to a fixed constant (2 words),
-  // unrelated to the destination bitmap's geometry, so width*2+modulo is meaningless here. For
-  // line draw the C/D channel modulo alone already IS the bitmap's row stride (the Bresenham step
-  // uses BLTAMOD/BLTBMOD for its error term, not memory addressing).
-  const channelStrideBytes = (modulo: number): number =>
-    blit.mode === BlitMode.Line
-      ? Math.min(512, Math.max(1, Math.abs(modulo)))
-      : Math.min(512, Math.max(1, Math.abs(blit.width * 2 + modulo)));
 
   return (
     <>
@@ -102,7 +88,7 @@ export function BlitDetailGrid({
                     <a
                       href="#"
                       className="bt-addr-link"
-                      onClick={(e) => { e.preventDefault(); onOpenMemory(ch.ptr!, channelStrideBytes(ch.modulo)); }}
+                      onClick={(e) => { e.preventDefault(); onOpenMemory(ch.ptr!, channelStrideBytes(blit, ch.modulo)); }}
                     >
                       {blitAddr(ch.ptr!)}
                     </a>

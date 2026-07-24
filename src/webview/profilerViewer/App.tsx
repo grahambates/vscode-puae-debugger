@@ -718,6 +718,10 @@ export function App() {
             selectedSlot={selectedSlot}
             onSelectSlot={setSelectedSlot}
             onOpenBlitterTab={() => setLeftTab("blitter")}
+            onOpenMemory={(address, bytesPerRow) => {
+              setMemoryJumpRequest({ address, bytesPerRow });
+              setLeftTab("memory");
+            }}
             heightOverridePx={flameHeightPx}
             workspaceRoot={workspaceRoot}
           />
