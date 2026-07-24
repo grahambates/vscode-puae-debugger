@@ -282,6 +282,12 @@ function RegistersPanel({
   );
 }
 
+// Persisted toolbar options, across mounts within this webview session (module-level, not React
+// state — a tab switch unmounts/remounts DisassemblyView, which would otherwise reset these
+// checkboxes back to their hardcoded defaults every time). Same pattern as MemoryView's own
+// `savedView`. Reset on a full webview reload, same as everything else in module scope.
+let savedOptions: { follow: boolean; showRegs: boolean; showSource: boolean } | undefined;
+
 // Per-instruction disassembly for every function that executed this frame, annotated with exact
 // per-PC hit/cycle counts (this profiler traces every retired instruction — not statistical
 // sampling), linked to the shared selectedSlot playhead and to source. The vscode-amiga-debug
@@ -304,12 +310,18 @@ export function DisassemblyView({
   const model = getProfileModel();
   const disassembly = model?.disassembly;
   const [selectedFn, setSelectedFn] = useState<number | undefined>(undefined); // index into `functions`
-  const [follow, setFollow] = useState(true);
-  const [showRegs, setShowRegs] = useState(true);
-  const [showSource, setShowSource] = useState(false);
+  const [follow, setFollow] = useState(savedOptions?.follow ?? true);
+  const [showRegs, setShowRegs] = useState(savedOptions?.showRegs ?? true);
+  const [showSource, setShowSource] = useState(savedOptions?.showSource ?? false);
   const [scrollTop, setScrollTop] = useState(0);
   const listRef = useRef<ListImperativeAPI>(null);
   const symbolize = useMemo(() => createSymbolizer(model?.symbols), [model]);
+
+  // Keep savedOptions current as the toolbar toggles change, so the next mount (e.g. switching
+  // back to this tab) restores them instead of resetting to the hardcoded defaults.
+  useEffect(() => {
+    savedOptions = { follow, showRegs, showSource };
+  }, [follow, showRegs, showSource]);
 
   // Functions sorted by total cycles descending (hottest first — matches the old extension's
   // "jump to the hottest function" default). `fn.totalCycles` is exact (from the full per-PC hit
