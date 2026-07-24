@@ -100,6 +100,20 @@ export function App() {
   useEffect(() => { selectedSlotRef.current = selectedSlot; }, [selectedSlot]);
   const [leftTab, setLeftTab] = useState<TabId>("time");
   const [rightTab, setRightTab] = useState<TabId>("memory");
+  // The Time View doesn't follow the playhead the way the CPU tab does (its call-tree is an
+  // aggregate over the whole frame, not per-instant) — so whenever the playhead moves, for ANY
+  // reason (dragging the flame graph's scrubbable playhead, clicking to jump, a source-line jump,
+  // a DMA/blit click, ...), switch whichever panel is showing it to the CPU tab instead, since
+  // that's what actually tracks the new position. Adjusted during render (React's recommended
+  // pattern for state derived from a changing value, same as MemoryView's "Follow writes") rather
+  // than in an effect, by detecting the change against the last-seen selectedSlot. Checks both
+  // panels independently — either could be on Time View in split mode.
+  const [lastSlotForTimeTabSwitch, setLastSlotForTimeTabSwitch] = useState<number | undefined>(undefined);
+  if (selectedSlot !== undefined && selectedSlot !== lastSlotForTimeTabSwitch) {
+    setLastSlotForTimeTabSwitch(selectedSlot);
+    if (leftTab === "time") setLeftTab("disasm");
+    if (rightTab === "time") setRightTab("disasm");
+  }
   // Split mode for the right pane: "none" = single panel, "h" = side-by-side, "v" = stacked.
   const [splitMode, setSplitMode] = useState<"none" | "h" | "v">("none");
   const [splitRatio, setSplitRatio] = useState(0.5); // fraction of first dimension (width or height)
@@ -230,6 +244,10 @@ export function App() {
       const m = message as ProfilerOutboundMessage;
       if (m.command === "captureResult") {
         setSelectedSlot(0);
+        // Seed the Time-View-switch watcher so this automatic reset (a fresh capture, not a user
+        // navigating) doesn't itself trigger switching away from Time View — it should stay the
+        // default landing tab.
+        setLastSlotForTimeTabSwitch(0);
         setWorkspaceRoot(m.workspaceRoot);
         // Symbols are sent only in frames[0] on the first post; cache and merge into all frames.
         const firstModel = m.frames[0]?.model;
