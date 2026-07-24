@@ -197,12 +197,27 @@ export function MemoryView({
 
   // reconstructMemoryAt copies the full chip+slow buffers and replays the whole DMA grid — too
   // heavy to run on every `slot` change while the user is dragging the flame graph's scrubbable
-  // playhead (selectedSlot fires on every pointermove, easily dozens of times/sec). Debounce it
-  // so the expensive recompute only runs once the slot settles, instead of stacking up behind a
-  // fast drag.
+  // playhead (selectedSlot fires on every pointermove, easily dozens of times/sec). Throttled
+  // (not debounced) to a fixed ~80ms cadence: a plain debounce (reset the timer on every change)
+  // never fires until the drag actually stops, since a continuous drag keeps changing `slot`
+  // faster than the timer's delay — which is what made this look frozen/very-delayed rather than
+  // just slightly behind. Tracking the last-run time and only ever shortening the scheduled delay
+  // to (80ms - elapsed) pins the actual fire time at lastRun+80 regardless of how many times this
+  // effect re-runs in between, so the view keeps updating periodically throughout the drag.
   const [debouncedSlot, setDebouncedSlot] = useState(slot);
+  const lastReconRunRef = useRef(0);
   useEffect(() => {
-    const t = setTimeout(() => setDebouncedSlot(slot), 80);
+    const THROTTLE_MS = 80;
+    const elapsed = Date.now() - lastReconRunRef.current;
+    if (elapsed >= THROTTLE_MS) {
+      lastReconRunRef.current = Date.now();
+      setDebouncedSlot(slot);
+      return;
+    }
+    const t = setTimeout(() => {
+      lastReconRunRef.current = Date.now();
+      setDebouncedSlot(slot);
+    }, THROTTLE_MS - elapsed);
     return () => clearTimeout(t);
   }, [slot]);
   const recon = useMemo(
