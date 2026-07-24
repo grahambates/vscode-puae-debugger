@@ -311,6 +311,20 @@ export function computeBeamPosition(screen: IScreen, slot: number): { x: number;
   };
 }
 
+/**
+ * The inverse of computeBeamPosition: maps a clicked canvas pixel back to a (local, within-frame)
+ * DMA slot, so clicking the screen view can jump the shared timeline playhead there — the same
+ * canvas_x = (hpos*2 - displayLeft) * (canvasHires ? 2 : 1) relationship, solved for hpos. Result is
+ * clamped into [0, DMA_HPOS/DMA_VPOS) — a click near the canvas edge (border/centering padding)
+ * still resolves to *some* valid slot in that scan line/column rather than an out-of-range one.
+ */
+export function computeSlotFromBeamPosition(screen: IScreen, canvasX: number, canvasY: number): number {
+  const vpos = Math.max(0, Math.min(DMA_VPOS - 1, canvasY + screen.firstLine));
+  const loresX = canvasX / (screen.canvasHires ? 2 : 1) + screen.displayLeft;
+  const hpos = Math.max(0, Math.min(DMA_HPOS - 1, Math.round(loresX / 2)));
+  return vpos * DMA_HPOS + hpos;
+}
+
 // ── Per-line/per-pixel register tracking ────────────────────────────────────────
 // Pure helpers the render loop (ResourcesView) uses to reconstruct custom-register state at
 // exact copper timing. Kept here (rather than in the .tsx) so they're unit-testable without a

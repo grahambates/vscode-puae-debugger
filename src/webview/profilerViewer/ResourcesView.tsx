@@ -2,12 +2,16 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { IProfileModel } from "../../shared/profilerTypes";
 import { disassembleCopperInstruction } from "../../shared/copperDisassembler";
 import {
-  buildScreenFromModel, computeBeamPosition, computeHoverExtra, computeLineMode, decodeScreenPixels, PixelSnapshot,
+  buildScreenFromModel, computeBeamPosition, computeHoverExtra, computeLineMode, computeSlotFromBeamPosition,
+  decodeScreenPixels, PixelSnapshot,
 } from "./gfxResources";
 
 interface ResourcesViewProps {
   selectedSlot: number | undefined;
   model: IProfileModel | null | undefined;
+  // Jumps the shared timeline playhead to a clicked pixel's DMA slot (computeSlotFromBeamPosition).
+  // Absent in contexts that don't want the screen view driving the playhead.
+  onSelectSlot?: (slot: number) => void;
 }
 
 interface HoverInfo {
@@ -42,7 +46,7 @@ function colorToHex(c: number): string {
 
 // ── Component ─────────────────────────────────────────────────────────────────
 
-export function ResourcesView({ model, selectedSlot }: ResourcesViewProps) {
+export function ResourcesView({ model, selectedSlot, onSelectSlot }: ResourcesViewProps) {
   const canvas   = useRef<HTMLCanvasElement>(null);
   const [scale, setScale]           = useState(2);
   const [planeVis, setPlaneVis]     = useState<boolean[]>(Array(8).fill(true)); // up to 8 planes (AGA)
@@ -135,6 +139,19 @@ export function ResourcesView({ model, selectedSlot }: ResourcesViewProps) {
   }, [scale]);
 
   const onMouseLeave = useCallback(() => setHover(null), []);
+
+  // Jump the shared timeline playhead to whichever DMA slot drew the clicked pixel — the inverse
+  // of the beam-position crosshair (computeBeamPosition), so this is a two-way sync.
+  const onClick = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
+    if (!onSelectSlot) return;
+    const sc = screenRef.current;
+    if (!sc) return;
+    const rect = (e.currentTarget as HTMLCanvasElement).getBoundingClientRect();
+    const logX = Math.floor((e.clientX - rect.left) / scale);
+    const logY = Math.floor((e.clientY - rect.top)  / scale);
+    if (logX < 0 || logX >= sc.width || logY < 0 || logY >= sc.height) return;
+    onSelectSlot(computeSlotFromBeamPosition(sc, logX, logY));
+  }, [scale, onSelectSlot]);
   // `isolate` (shift-click): turn this one on and every other item in the group off, instead
   // of just flipping this one.
   const togglePlane  = useCallback((i: number, isolate = false) => {
@@ -265,6 +282,7 @@ export function ResourcesView({ model, selectedSlot }: ResourcesViewProps) {
             style={{ imageRendering: "pixelated", cursor: "crosshair" }}
             onMouseMove={onMouseMove}
             onMouseLeave={onMouseLeave}
+            onClick={onClick}
           />
           {beamPos && (
             <>

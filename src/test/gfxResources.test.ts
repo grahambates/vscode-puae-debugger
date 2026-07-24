@@ -1,6 +1,6 @@
 import {
-  buildScreenFromModel, computeBeamPosition, decodeBplcon0, DDF_FETCH_DELAY_CCK, DIW_DDF_OFFSET,
-  DMA_HPOS, DMA_VPOS, IScreen,
+  buildScreenFromModel, computeBeamPosition, computeSlotFromBeamPosition, decodeBplcon0, DDF_FETCH_DELAY_CCK,
+  DIW_DDF_OFFSET, DMA_HPOS, DMA_VPOS, IScreen,
 } from "../webview/profilerViewer/gfxResources";
 import { BusOwner, ICopperModel, IDmaModel, IProfileModel } from "../shared/profilerTypes";
 import { CUSTOM_REGISTER_OFFSETS as R } from "../webview/shared/customRegisters";
@@ -56,6 +56,30 @@ describe("computeBeamPosition", () => {
     expect(computeBeamPosition(baseScreen, frameSlots + localSlot)).toEqual(
       computeBeamPosition(baseScreen, localSlot),
     );
+  });
+});
+
+describe("computeSlotFromBeamPosition", () => {
+  it("is the inverse of computeBeamPosition — clicking the crosshair's spot returns to its slot", () => {
+    const localSlot = 60 * DMA_HPOS + 40;
+    const { x, y } = computeBeamPosition(baseScreen, localSlot);
+    expect(computeSlotFromBeamPosition(baseScreen, x, y)).toBe(localSlot);
+  });
+
+  it("accounts for the doubled x scale in hires mode", () => {
+    const screen: IScreen = { ...baseScreen, hires: true, canvasHires: true };
+    const localSlot = 60 * DMA_HPOS + 40;
+    const { x, y } = computeBeamPosition(screen, localSlot);
+    expect(computeSlotFromBeamPosition(screen, x, y)).toBe(localSlot);
+  });
+
+  it("clamps a click above/left of the display area into the first valid line/column", () => {
+    expect(computeSlotFromBeamPosition(baseScreen, -100, -100)).toBe(0 * DMA_HPOS + 0);
+  });
+
+  it("clamps a click below/right of the display area into the last valid line/column", () => {
+    const screen: IScreen = { ...baseScreen, firstLine: 0, displayLeft: 0 };
+    expect(computeSlotFromBeamPosition(screen, 1e6, 1e6)).toBe((DMA_VPOS - 1) * DMA_HPOS + (DMA_HPOS - 1));
   });
 });
 

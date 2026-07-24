@@ -541,7 +541,17 @@ export function App() {
       />
     );
     if (tab === "memory") return <MemoryView selectedSlot={selectedSlot} onSelectSlot={setSelectedSlot} onOpenSource={openSource} jumpRequest={memoryJumpRequest} />;
-    if (tab === "screen") return <ResourcesView selectedSlot={selectedSlot} model={screenModel} />;
+    if (tab === "screen") {
+      // Same combined-multi-frame convention as the copper tab above: screenModel always shows
+      // a single frame (frameIndex), so a click's local slot is placed back at whichever frameSlots
+      // chunk the current playhead was already in, rather than jumping to an unrelated frame.
+      const frameSlots = DMA_HPOS * DMA_VPOS;
+      const onScreenSelectSlot = (slot: number) => {
+        if (!selectedRange || selectedSlot === undefined) { setSelectedSlot(slot); return; }
+        setSelectedSlot(Math.floor(selectedSlot / frameSlots) * frameSlots + slot);
+      };
+      return <ResourcesView selectedSlot={selectedSlot} model={screenModel} onSelectSlot={onScreenSelectSlot} />;
+    }
     return <DisassemblyView selectedSlot={selectedSlot} onSelectSlot={setSelectedSlot} onOpenSource={openSource} sourceFiles={sourceFiles} onRequestSourceFile={requestSourceFile} />;
   };
 
