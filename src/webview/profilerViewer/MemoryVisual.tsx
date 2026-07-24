@@ -244,10 +244,19 @@ export const MemoryVisual = forwardRef<MemoryVisualAPI, Props>(function MemoryVi
     if (guess) setBytesPerRow(guess.widthBytes);
   };
 
-  const commitBytesPerRow = () => {
-    const n = parseInt(bytesPerRowInput, 10);
+  // Applies live as the user types (so the spinner arrows / keystrokes repaint immediately,
+  // not just on blur); out-of-range or non-numeric input is simply ignored until it's valid.
+  const handleWidthChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const raw = e.target.value;
+    setBytesPerRowInput(raw);
+    const n = parseInt(raw, 10);
     if (!Number.isNaN(n) && n >= 1 && n <= 512) setBytesPerRow(n);
-    else setBytesPerRowInput(String(bytesPerRow));
+  };
+
+  // Snap the text back to the last valid width if the field was left invalid/empty.
+  const normalizeWidthInput = () => {
+    const n = parseInt(bytesPerRowInput, 10);
+    if (Number.isNaN(n) || n < 1 || n > 512) setBytesPerRowInput(String(bytesPerRow));
   };
 
   // ── Render ───────────────────────────────────────────────────────────────────
@@ -262,9 +271,9 @@ export const MemoryVisual = forwardRef<MemoryVisualAPI, Props>(function MemoryVi
           min={1}
           max={512}
           value={bytesPerRowInput}
-          onChange={(e) => setBytesPerRowInput(e.target.value)}
-          onBlur={commitBytesPerRow}
-          onKeyDown={(e) => e.key === "Enter" && commitBytesPerRow()}
+          onChange={handleWidthChange}
+          onBlur={normalizeWidthInput}
+          onKeyDown={(e) => e.key === "Enter" && normalizeWidthInput()}
           title="Bytes per row (40 = 320px Amiga low-res bitplane)"
         />
         <button className="memvisual-btn" onClick={handleGuessWidth} title="Auto-detect width from visible data">
