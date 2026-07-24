@@ -129,9 +129,10 @@ describe("ProfilerLineDecorationProvider", () => {
     expect(nonEmptyCall(editor)).toBeUndefined();
   });
 
-  it("computes the per-file max from summed per-line totals, not per-instruction values", () => {
+  it("computes the per-function max from summed per-line totals, not per-instruction values", () => {
     const p = new ProfilerLineDecorationProvider();
     p.setEnabled(true);
+    p.setGlobalHeat(false);
     p.update(
       model([
         fn("a", [
@@ -149,6 +150,69 @@ describe("ProfilerLineDecorationProvider", () => {
     const calls = editor.setDecorations.mock.calls as [unknown, { range: { startLine: number } }[]][];
     const hottestBucketCall = calls[calls.length - 1][1]; // last bucket = hottest
     expect(hottestBucketCall.some((o) => o.range.startLine === 0)).toBe(true); // line 1 -> 0-based 0
+  });
+
+  describe("setGlobalHeat", () => {
+    it("starts on, matching DisassemblyView.tsx's own default", () => {
+      const p = new ProfilerLineDecorationProvider();
+      expect(p.isGlobalHeat()).toBe(true);
+    });
+
+    it("scales every line's heat by the hottest line across the whole capture instead of just its own function's max", () => {
+      const p = new ProfilerLineDecorationProvider();
+      p.setEnabled(true);
+      p.update(
+        model([
+          // Each file here has exactly one function, so its function-max and file-max coincide —
+          // this test isolates the global-vs-per-function distinction specifically (the separate
+          // "per-function, not per-file" test below covers a file with two functions instead).
+          fn("hot", [ins({ file: "C:\\proj\\hot.c", line: 1, cycles: 1000, hits: 1, address: 0x1000 })]),
+          fn("cold", [ins({ file: "C:\\proj\\cold.c", line: 1, cycles: 10, hits: 1, address: 0x2000 })]),
+        ]),
+      );
+      const coldEditor = mockEditor("C:\\proj\\cold.c");
+
+      // Per-function (globalHeat off): cold.c's only line IS its enclosing function's own max ->
+      // hottest bucket.
+      p.setGlobalHeat(false);
+      p.refreshEditor(coldEditor);
+      let calls = coldEditor.setDecorations.mock.calls as [unknown, { range: { startLine: number } }[]][];
+      expect(calls[calls.length - 1][1]).toHaveLength(1);
+
+      coldEditor.setDecorations.mockClear();
+      p.setGlobalHeat(true);
+      expect(p.isGlobalHeat()).toBe(true);
+      p.refreshEditor(coldEditor);
+
+      // Global (the default): cold.c's line is only 10/1000 of the capture's hottest line -> the
+      // coldest bucket, not the hottest.
+      calls = coldEditor.setDecorations.mock.calls as [unknown, { range: { startLine: number } }[]][];
+      expect(calls[calls.length - 1][1]).toHaveLength(0);
+      expect(calls[0][1]).toHaveLength(1);
+    });
+  });
+
+  it("scales each line by its own enclosing function's max when globalHeat is off, not the whole file's max — matching DisassemblyView.tsx's per-function mode", () => {
+    const p = new ProfilerLineDecorationProvider();
+    p.setGlobalHeat(false);
+    p.setEnabled(true);
+    p.update(
+      model([
+        // Same file, two very differently-hot functions.
+        fn("hot_fn", [ins({ file: "C:\\proj\\multi.c", line: 1, cycles: 1000, hits: 1, address: 0x1000 })]),
+        fn("cold_fn", [ins({ file: "C:\\proj\\multi.c", line: 2, cycles: 10, hits: 1, address: 0x2000 })]),
+      ]),
+    );
+    const editor = mockEditor("C:\\proj\\multi.c");
+    p.refreshEditor(editor);
+
+    const calls = editor.setDecorations.mock.calls as [unknown, { range: { startLine: number } }[]][];
+    // Line 1 (hot_fn's only line) is its own function's max -> hottest bucket.
+    expect(calls[calls.length - 1][1].some((o) => o.range.startLine === 0)).toBe(true);
+    // Line 2 (cold_fn's only line) is ALSO its own function's max (10/10 = 1.0), even though the
+    // file's overall max is 1000 — a per-file default would have buried it near the coldest
+    // bucket (10/1000); the per-function default instead also puts it in the hottest bucket.
+    expect(calls[calls.length - 1][1].some((o) => o.range.startLine === 1)).toBe(true);
   });
 
   it("hover returns undefined when disabled", () => {

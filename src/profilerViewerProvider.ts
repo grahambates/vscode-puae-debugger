@@ -135,6 +135,8 @@ export abstract class ProfilerViewerProvider {
     } else if (message.command === "readSourceFile") {
       const lines = await this.readSourceFile(message.file);
       this.post({ command: "sourceFile", file: message.file, lines });
+    } else if (message.command === "setGlobalHeat") {
+      this.lineDecorations?.setGlobalHeat(message.enabled);
     }
   }
 

@@ -286,7 +286,7 @@ function RegistersPanel({
 // state — a tab switch unmounts/remounts DisassemblyView, which would otherwise reset these
 // checkboxes back to their hardcoded defaults every time). Same pattern as MemoryView's own
 // `savedView`. Reset on a full webview reload, same as everything else in module scope.
-let savedOptions: { follow: boolean; showRegs: boolean; showSource: boolean } | undefined;
+let savedOptions: { follow: boolean; showRegs: boolean; showSource: boolean; globalHeat: boolean } | undefined;
 
 // Per-instruction disassembly for every function that executed this frame, annotated with exact
 // per-PC hit/cycle counts (this profiler traces every retired instruction — not statistical
@@ -300,12 +300,18 @@ export function DisassemblyView({
   onOpenSource,
   sourceFiles,
   onRequestSourceFile,
+  onSetGlobalHeat,
 }: {
   selectedSlot: number | undefined;
   onSelectSlot: (slot: number) => void;
   onOpenSource: (file: string, line: number, toSide: boolean) => void;
   sourceFiles: Map<string, string[] | null>;
   onRequestSourceFile: (file: string) => void;
+  // Mirrors the "Global heat" toggle onto the real-editor source line decorations
+  // (ProfilerLineDecorationProvider), which live host-side and are otherwise independent of this
+  // view — so the two heat maps read the same way. Optional: absent in any context that doesn't
+  // want this view driving the real editor's decorations.
+  onSetGlobalHeat?: (enabled: boolean) => void;
 }) {
   const model = getProfileModel();
   const disassembly = model?.disassembly;
@@ -313,6 +319,9 @@ export function DisassemblyView({
   const [follow, setFollow] = useState(savedOptions?.follow ?? true);
   const [showRegs, setShowRegs] = useState(savedOptions?.showRegs ?? true);
   const [showSource, setShowSource] = useState(savedOptions?.showSource ?? false);
+  // Heat map scale: per-function (its own hottest instruction, the default) or global (the
+  // hottest instruction across every executed function this frame) — see maxCycles below.
+  const [globalHeat, setGlobalHeat] = useState(savedOptions?.globalHeat ?? true);
   const [scrollTop, setScrollTop] = useState(0);
   const listRef = useRef<ListImperativeAPI>(null);
   const symbolize = useMemo(() => createSymbolizer(model?.symbols), [model]);
@@ -320,8 +329,14 @@ export function DisassemblyView({
   // Keep savedOptions current as the toolbar toggles change, so the next mount (e.g. switching
   // back to this tab) restores them instead of resetting to the hardcoded defaults.
   useEffect(() => {
-    savedOptions = { follow, showRegs, showSource };
-  }, [follow, showRegs, showSource]);
+    savedOptions = { follow, showRegs, showSource, globalHeat };
+  }, [follow, showRegs, showSource, globalHeat]);
+
+  // Also re-notify on mount (not just when the user toggles it) so a restored `globalHeat` from
+  // savedOptions keeps the real-editor decorations in sync after switching back to this tab.
+  useEffect(() => {
+    onSetGlobalHeat?.(globalHeat);
+  }, [globalHeat, onSetGlobalHeat]);
 
   // Functions sorted by total cycles descending (hottest first — matches the old extension's
   // "jump to the hottest function" default). `fn.totalCycles` is exact (from the full per-PC hit
@@ -456,7 +471,20 @@ export function DisassemblyView({
     return () => { cancelAnimationFrame(raf1); cancelAnimationFrame(raf2); };
   }, [active, currentAddress, rows]);
 
-  const maxCycles = useMemo(() => (active ? Math.max(0, ...active.instructions.map((i) => i.cycles)) : 0), [active]);
+  // Heat map scale. Global (default): the hottest instruction across every executed function this
+  // frame — a manual loop rather than Math.max(0, ...spread) since the total instruction count
+  // here can reach MAX_DISASSEMBLE_INSTRUCTIONS (profilerManager.ts), too many args to safely
+  // spread. Per-function: the active function's own hottest instruction instead, so the gradient
+  // stays meaningful even for a function that's individually cold relative to the rest of the
+  // program — useful when comparing hot spots within one routine rather than across the frame.
+  const maxCycles = useMemo(() => {
+    if (!globalHeat) return active ? Math.max(0, ...active.instructions.map((i) => i.cycles)) : 0;
+    let max = 0;
+    for (const fn of disassembly ?? []) {
+      for (const ins of fn.instructions) if (ins.cycles > max) max = ins.cycles;
+    }
+    return max;
+  }, [globalHeat, disassembly, active]);
   const arrows = useMemo(() => computeArrows(active?.instructions ?? []), [active]);
 
   // Scan model.pcs forward (prev=false) or backward (prev=true) from currentIdx to find the
@@ -506,6 +534,10 @@ export function DisassemblyView({
         <label className="disasm-follow">
           <input type="checkbox" checked={showSource} onChange={(e) => setShowSource(e.target.checked)} />
           Source
+        </label>
+        <label className="disasm-follow" title="Scale the heat map by the hottest instruction across every executed function this frame, instead of just the function currently shown — also applies to the real editor's source line decorations.">
+          <input type="checkbox" checked={globalHeat} onChange={(e) => setGlobalHeat(e.target.checked)} />
+          Global heat
         </label>
         {activeTruncated && (
           <span className="disasm-truncated-hint" title="This function's decoded range was cut short by the disassembly work budget — its tail instructions aren't shown.">

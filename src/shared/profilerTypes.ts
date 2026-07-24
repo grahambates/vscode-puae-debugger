@@ -382,6 +382,13 @@ export interface ReadSourceFileMessage {
   command: "readSourceFile";
   file: string; // absolute path
 }
+// Mirrors the CPU tab's "Global heat" toggle onto the real-editor source line decorations
+// (ProfilerLineDecorationProvider), which live host-side and are otherwise independent of the
+// webview — so the two heat maps read the same way whichever one you're looking at.
+export interface SetGlobalHeatMessage {
+  command: "setGlobalHeat";
+  enabled: boolean;
+}
 export type ProfilerInboundMessage =
   | ReadyMessage
   | CaptureMessage
@@ -389,4 +396,5 @@ export type ProfilerInboundMessage =
   | OpenDocumentMessage
   | SaveProfileMessage
   | SetNumFramesMessage
-  | ReadSourceFileMessage;
+  | ReadSourceFileMessage
+  | SetGlobalHeatMessage;

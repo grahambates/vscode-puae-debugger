@@ -15,6 +15,12 @@ const HEAT_BUCKETS = 8;
 interface LineStats {
   cycles: number;
   hits: number;
+  // The enclosing function's own hottest line total (see update()) — the default (non-global)
+  // heat-scale denominator, matching DisassemblyView.tsx's per-function default. When a line is
+  // shared by more than one function (rare — e.g. a macro reused by several routines), this is
+  // the largest of their maxes, so the line is never under-scaled relative to any function that
+  // legitimately spends significant time there.
+  functionMax: number;
 }
 
 function formatCount(n: number): string {
@@ -37,15 +43,21 @@ function formatCount(n: number): string {
 // labels happen to divide those instructions into functions.
 export class ProfilerLineDecorationProvider implements vscode.HoverProvider, vscode.Disposable {
   private enabled = true;
+  // When true, every line's heat scale is the single hottest line across the WHOLE capture
+  // instead of its own enclosing function's hottest line — mirrors the CPU tab's "Global heat"
+  // toggle (see SetGlobalHeatMessage), so the two heat maps read the same way. On by default,
+  // matching DisassemblyView.tsx's own default (overridden by the webview's persisted
+  // savedOptions once the user has toggled it, same as the other toolbar options).
+  private globalHeat = true;
 
   // Keyed by win32.normalize(path).toUpperCase() — matches SourceMap/ProfilerCodeLensProvider's
   // path-matching convention (see SourceMap's own doc comment for why win32, not the
   // platform-native `path` module). Line numbers are 1-based (as in IDisassembledInstruction.line).
   private byFile = new Map<string, Map<number, LineStats>>();
   // Per-file hottest single LINE's cycle total (the sum for that line, not one instruction's
-  // value) — the heat-tint scale is local to each file, same reasoning DisassemblyView.tsx's
-  // per-function (not per-capture) scaling uses: keeps the gradient meaningful for a file that's
-  // individually cold relative to the rest of the program.
+  // value). Used only to derive the global heat scale (applyToEditor) — NOT the default scale
+  // (that's each line's own LineStats.functionMax now, so the CPU tab and the real editor agree
+  // by default: both scale by "hottest in the current function", not "hottest in the file").
   private maxCyclesByFile = new Map<string, number>();
   // Per-file total cycles across all its lines, for the hover's "% of file" figure.
   private totalCyclesByFile = new Map<string, number>();
@@ -77,6 +89,16 @@ export class ProfilerLineDecorationProvider implements vscode.HoverProvider, vsc
     return this.enabled;
   }
 
+  public setGlobalHeat(on: boolean): void {
+    if (this.globalHeat === on) return;
+    this.globalHeat = on;
+    this.refreshVisibleEditors();
+  }
+
+  public isGlobalHeat(): boolean {
+    return this.globalHeat;
+  }
+
   // Does this line currently carry a decoration? Used to gate the "Jump to Next Execution in
   // Profiler" editor-context-menu command before bothering to reveal the profiler panel — see
   // puae-debugger.jumpToProfilerExecution in extension.ts. `line` is 1-based.
@@ -88,6 +110,20 @@ export class ProfilerLineDecorationProvider implements vscode.HoverProvider, vsc
   public update(model: IProfileModel | undefined): void {
     const byFile = new Map<string, Map<number, LineStats>>();
     for (const fn of model?.disassembly ?? []) {
+      // First pass: this function's OWN per-line cycle totals (a separate, function-scoped tally,
+      // not the merged-across-functions one below) — needed to find its own hottest line, i.e.
+      // the default heat-scale denominator for every line it touches.
+      const fnLineCycles = new Map<number, number>(); // line -> cycles, this function only
+      for (const ins of fn.instructions) {
+        if (!ins.file || ins.line === undefined || ins.line < 0 || ins.cycles <= 0) continue;
+        fnLineCycles.set(ins.line, (fnLineCycles.get(ins.line) ?? 0) + ins.cycles);
+      }
+      let fnMax = 0;
+      for (const cycles of fnLineCycles.values()) if (cycles > fnMax) fnMax = cycles;
+
+      // Second pass: merge into the aggregated-across-functions byFile map (unchanged from
+      // before), folding in fnMax as a candidate functionMax for every line this function
+      // touches — a line shared by more than one function takes the largest of their maxes.
       for (const ins of fn.instructions) {
         if (!ins.file || ins.line === undefined || ins.line < 0) continue;
         if (ins.cycles <= 0 && ins.hits <= 0) continue;
@@ -101,8 +137,9 @@ export class ProfilerLineDecorationProvider implements vscode.HoverProvider, vsc
         if (existing) {
           existing.cycles += ins.cycles;
           existing.hits += ins.hits;
+          if (fnMax > existing.functionMax) existing.functionMax = fnMax;
         } else {
-          lines.set(ins.line, { cycles: ins.cycles, hits: ins.hits });
+          lines.set(ins.line, { cycles: ins.cycles, hits: ins.hits, functionMax: fnMax });
         }
       }
     }
@@ -199,9 +236,16 @@ export class ProfilerLineDecorationProvider implements vscode.HoverProvider, vsc
       this.clearEditorDecorations(editor);
       return;
     }
-    const maxCycles = this.maxCyclesByFile.get(key) ?? 0;
+    // Global max is derived on demand from maxCyclesByFile (the hottest single line among every
+    // file's own hottest line) rather than cached separately — cheap (one file per profiled
+    // source file, never many) and can't drift out of sync with per-file updates.
+    const globalMax = this.globalHeat ? Math.max(0, ...this.maxCyclesByFile.values()) : 0;
     const buckets: vscode.DecorationOptions[][] = this.bucketTypes.map(() => []);
     for (const [line, stats] of lines) {
+      // Default: this line's own enclosing function's hottest line (LineStats.functionMax) —
+      // matches DisassemblyView.tsx's per-function default, so the two heat maps agree without
+      // the toggle. Global: the single hottest line across the whole capture.
+      const maxCycles = this.globalHeat ? globalMax : stats.functionMax;
       const heat = maxCycles > 0 ? stats.cycles / maxCycles : 0;
       const bucketIdx = Math.min(HEAT_BUCKETS - 1, Math.floor(heat * HEAT_BUCKETS));
       const zeroBased = line - 1;

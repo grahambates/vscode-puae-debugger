@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import "./App.css";
-import { ProfilerOutboundMessage, ISymbol, IProfileModel, IDmaModel, ComputeRangeMessage, DMA_HPOS, DMA_VPOS, ReadSourceFileMessage, BusOwner } from "../../shared/profilerTypes";
+import { ProfilerOutboundMessage, ISymbol, IProfileModel, IDmaModel, ComputeRangeMessage, DMA_HPOS, DMA_VPOS, ReadSourceFileMessage, SetGlobalHeatMessage, BusOwner } from "../../shared/profilerTypes";
 import { unpackBulk } from "../../profilerBulk";
 import { createHostBridge, HostBridge } from "../shared/hostBridge";
 import { setProfileModel, getProfileModel, useModelVersion } from "./modelStore";
@@ -395,6 +395,12 @@ export function App() {
     });
   }, []);
 
+  // Mirrors the CPU tab's "Global heat" toggle onto the real-editor source line decorations
+  // (ProfilerLineDecorationProvider), which live host-side — see SetGlobalHeatMessage.
+  const setGlobalHeatOnHost = useCallback((enabled: boolean) => {
+    bridge.postMessage({ command: "setGlobalHeat", enabled } as SetGlobalHeatMessage);
+  }, []);
+
   const filter = useMemo<IRichFilter>(
     () => ({ text: filterText, caseSensitive, regex: useRegex }),
     [filterText, caseSensitive, useRegex],
@@ -552,7 +558,16 @@ export function App() {
       };
       return <ResourcesView selectedSlot={selectedSlot} model={screenModel} onSelectSlot={onScreenSelectSlot} />;
     }
-    return <DisassemblyView selectedSlot={selectedSlot} onSelectSlot={setSelectedSlot} onOpenSource={openSource} sourceFiles={sourceFiles} onRequestSourceFile={requestSourceFile} />;
+    return (
+      <DisassemblyView
+        selectedSlot={selectedSlot}
+        onSelectSlot={setSelectedSlot}
+        onOpenSource={openSource}
+        sourceFiles={sourceFiles}
+        onRequestSourceFile={requestSourceFile}
+        onSetGlobalHeat={setGlobalHeatOnHost}
+      />
+    );
   };
 
   // Render a single tab panel (tab bar + content). `isLeft` controls which panel

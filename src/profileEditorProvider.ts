@@ -108,6 +108,8 @@ export class ProfileEditorProvider implements vscode.CustomReadonlyEditorProvide
         void readProfilerSourceFile(message.file).then((lines) => {
           webviewPanel.webview.postMessage({ command: "sourceFile", file: message.file, lines });
         });
+      } else if (message.command === "setGlobalHeat") {
+        this.lineDecorations?.setGlobalHeat(message.enabled);
       }
       // "capture"/"saveProfile"/"setNumFrames" don't apply to a loaded file and are ignored.
     });
