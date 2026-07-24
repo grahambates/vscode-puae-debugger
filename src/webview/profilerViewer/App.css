@@ -523,7 +523,7 @@ body {
   white-space: nowrap;
 }
 
-.tooltip .tt-func {
+.tt-func {
   font-weight: bold;
 }
 
@@ -631,8 +631,10 @@ body {
 }
 
 /* Flag / minterm / channel chip (used in the value column). UI font, not monospace (matches the
-   old extension and the blitter tooltip). */
-.tooltip .tt-bit {
+   old extension and the blitter tooltip). Also used by BlitDetailGrid's own persistent detail pane
+   in the Blitter view (BlitterView.tsx's .bv-detail), not just the flame graph's hover tooltip —
+   so this must NOT be scoped under .tooltip, or the "on" highlight silently has no effect there. */
+.tt-bit {
   font: 11px var(--vscode-font-family, sans-serif);
   padding: 0 3px;
   background: var(--vscode-toolbar-hoverBackground, rgba(255, 255, 255, 0.08));
@@ -640,7 +642,7 @@ body {
   opacity: 0.5;
 }
 
-.tooltip .tt-bit.on {
+.tt-bit.on {
   background: var(--vscode-inputOption-activeBackground);
   color: var(--vscode-inputOption-activeForeground, var(--vscode-foreground));
   opacity: 1;
