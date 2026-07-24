@@ -610,21 +610,72 @@ export async function main(config: MainConfig = {}): Promise<void> {
   // itself changes at runtime (e.g. the window is dragged to a monitor with
   // different DPI) — nothing else here would otherwise notice that.
   const scaleSelect = document.getElementById("scale") as HTMLSelectElement | null;
+
+  // Combined height of the toolbar rows below the canvas (#controls always present; #dma-overlay/
+  // #channel-visibility optional, present only when those features are wired up) — measured live
+  // rather than assumed, since #controls can wrap to extra rows at a narrow width and
+  // #channel-visibility's content (hence height) is populated asynchronously after boot. "Auto"
+  // scale mode subtracts this from the viewport height so the canvas never grows tall enough to
+  // push these controls out of view (see #screen's max-height in index.html).
+  function toolbarHeight(): number {
+    let sum = 0;
+    for (const id of ["controls", "dma-overlay", "channel-visibility"]) {
+      sum += document.getElementById(id)?.offsetHeight ?? 0;
+    }
+    return sum;
+  }
+
   function applyScale(): void {
     const value = scaleSelect?.value ?? "auto";
     if (value === "auto") {
       canvas.style.width = "";
       canvas.style.height = "";
+      canvas.style.maxWidth = ""; // back to #screen's own max-width: 100% (a fixed mode below may have cancelled it)
       canvas.style.imageRendering = "";
+      // Fits height too, not just width (the #screen CSS rule's job) — without this, a tall
+      // emulated resolution (or a short webview panel) let the width-driven auto-height grow past
+      // the viewport, pushing the toolbar below the canvas out of view. Recomputed whenever the
+      // viewport resizes (#viewport-sentinel below) or the toolbar's own height changes (the other
+      // ResizeObservers below); <= 0 (toolbar alone taller than the viewport) falls back to no
+      // cap, same as before.
+      const available = window.innerHeight - toolbarHeight();
+      canvas.style.maxHeight = available > 0 ? `${available}px` : "";
     } else {
       const multiplier = parseInt(value, 10) || 1;
       const dpr = window.devicePixelRatio || 1;
       canvas.style.width = `${(canvas.width * multiplier) / dpr}px`;
       canvas.style.height = `${(canvas.height * multiplier) / dpr}px`;
+      // #screen's own max-width: 100% (added for auto mode's contain-fit) would otherwise still
+      // clamp this explicit width down to the container's width while leaving the explicit height
+      // untouched — squashing the aspect ratio instead of the intended exact pixel-for-pixel size
+      // that overflows (and lets the page scroll) when it's wider/taller than the viewport, same
+      // as before auto mode grew a max-width rule at all.
+      canvas.style.maxWidth = "none";
+      canvas.style.maxHeight = ""; // exact pixel-for-pixel sizing, not viewport-constrained
       canvas.style.imageRendering = "pixelated";
     }
   }
   scaleSelect?.addEventListener("change", applyScale);
+  // window's own "resize" event is NOT reliable for detecting a VS Code webview panel being
+  // resized (the same reason FlameGraph.tsx's canvas-width tracking uses a ResizeObserver instead
+  // of window.resize, not this event) — kept as a harmless belt-and-suspenders fallback where it
+  // does fire, but #viewport-sentinel below is the mechanism this actually depends on. Observing
+  // document.body/documentElement instead isn't an option either: neither is height:100vh here
+  // (plain document flow, see index.html), so their rendered box tracks CONTENT height, not the
+  // viewport — exactly backwards when content is shorter OR taller than the viewport. The sentinel
+  // is position:fixed, which sizes purely from the viewport regardless of document content.
+  window.addEventListener("resize", applyScale);
+  const viewportSentinel = document.getElementById("viewport-sentinel");
+  if (viewportSentinel) new ResizeObserver(applyScale).observe(viewportSentinel);
+  // Catches toolbar height changes that AREN'T a viewport resize (e.g. #controls wrapping to an
+  // extra row at a width the viewport-sentinel resize already accounts for, or
+  // #channel-visibility's buttons populating after boot) — observing the toolbar elements
+  // themselves (not the canvas or a shared ancestor) means resizing the canvas here can never
+  // feed back into another observed element's size, so there's no observer-loop risk.
+  for (const id of ["controls", "dma-overlay", "channel-visibility"]) {
+    const el = document.getElementById(id);
+    if (el) new ResizeObserver(applyScale).observe(el);
+  }
 
   // matchMedia's `resolution` query only fires once, for the ratio active
   // when it was created — re-subscribing on every change is the standard

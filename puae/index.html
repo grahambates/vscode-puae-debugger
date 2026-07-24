@@ -5,8 +5,21 @@
 <title>PUAE wasm debugger backend</title>
 <style>
   body { margin: 0; padding: 0; }
-  #screen { display: block; width: 100%; }
+  /* width/height:auto + max-width/max-height lets the browser's replaced-element sizing (same
+     algorithm as an img) shrink whichever dimension is the binding constraint, instead of always
+     filling the container's width regardless of how tall that makes it — max-height is computed/
+     kept in sync with the available viewport height by app.ts's "auto" scale mode (see
+     applyScale/recomputeAutoMaxHeight), so the toolbar controls below the canvas stay in view
+     instead of getting pushed off-screen by a very tall canvas. */
+  #screen { display: block; width: auto; max-width: 100%; height: auto; }
   #screen-wrap { position: relative; }
+  /* Invisible, always-viewport-sized element app.ts observes (via ResizeObserver) to detect the
+     webview panel itself being resized — see its comment for why not window's own "resize" event
+     or observing body/html (whose rendered box tracks CONTENT height in normal flow, not the
+     viewport, since nothing here is height:100vh). position:fixed sizes/positions purely from the
+     viewport regardless of document content/overflow, so this is unaffected by anything else on
+     the page. */
+  #viewport-sentinel { position: fixed; inset: 0; visibility: hidden; pointer-events: none; }
   /* Standalone only (see app.ts) — shown while the WebSocket bridge is
      reconnecting, e.g. after the --stdio server process behind this tab has
      exited and a later debug session's process hasn't come back up yet. */
@@ -119,6 +132,7 @@
 </style>
 </head>
 <body>
+<div id="viewport-sentinel" aria-hidden="true"></div>
 <div id="screen-wrap">
   <canvas id="screen" width="720" height="574"></canvas>
   <div id="disconnected-overlay">Session ended — waiting to reconnect…</div>
