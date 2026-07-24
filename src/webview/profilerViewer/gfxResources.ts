@@ -232,20 +232,8 @@ export function buildScreenFromModel(model: IProfileModel): IScreen | undefined 
   const contentWidth       = blocks << (canvasHires ? 5 : 4);
   const contentDisplayLeft = (ddfStart + fetchDelayCck(FMODE)) * 2 + DIW_DDF_OFFSET;
 
-  // ── Canvas sizing: PUAE's standard PAL preset, not a tight crop around the fetched content ──
-  // See STANDARD_FB_WIDTH/HEIGHT's doc comment for the pixel-unit conversion. Centers the fetched
-  // content within the standard-sized canvas by shifting displayLeft/firstLine, so every
-  // hpos/vpos->canvas-x/y formula elsewhere in this file (and in ResourcesView) keeps working
-  // unmodified — they're all already built on `(x - displayLeft) * mult` / `vpos - firstLine`, so
-  // shifting the reference point is equivalent to shifting the content itself.
-  const finalWidth  = STANDARD_FB_WIDTH  / (canvasHires ? 1 : 2);
-  const finalHeight = STANDARD_FB_HEIGHT / 2;
-  const offsetX = Math.floor((finalWidth - contentWidth) / 2);
-  const offsetY = Math.floor((finalHeight - height) / 2);
-  const finalDisplayLeft = contentDisplayLeft - offsetX / (canvasHires ? 2 : 1);
-  const finalFirstLine   = firstLine - offsetY;
-
   // ── DIWSTRT/DIWSTOP: the actual display window, distinct from the DDF fetch window ────────
+  // Read here (ahead of the canvas-centering step below, which now needs it) rather than after.
   // Vertical (VSTART/VSTOP) is in vpos-native units, no conversion needed. VSTOP's
   // hardware-documented wraparound rule: if its top bit is set (128-255) use it directly, else
   // the display extends past line 255, so add 256 (e.g. a typical PAL DIWSTOP byte of 0x2C/44,
@@ -268,8 +256,39 @@ export function buildScreenFromModel(model: IProfileModel): IScreen | undefined 
   const diwVStopByte = (DIWSTOP >> 8) & 0xff;
   const diwVStop = diwVStopByte & 0x80 ? diwVStopByte : diwVStopByte + 256;
 
-  const diwLeft  = Math.max(0, Math.min(finalWidth, (diwHStart - finalDisplayLeft) * (canvasHires ? 2 : 1)));
-  const diwRight = Math.max(0, Math.min(finalWidth, (diwHStop  - finalDisplayLeft) * (canvasHires ? 2 : 1)));
+  // ── Canvas sizing: PUAE's standard PAL preset, not a tight crop around the fetched content ──
+  // See STANDARD_FB_WIDTH/HEIGHT's doc comment for the pixel-unit conversion. Centers the UNION of
+  // the fetched content AND the real display window (DIW) within the standard-sized canvas — NOT
+  // just the content alone. DIW is an independent clip against the same beam-position counter DDF
+  // uses (see the DIW comment above) and can be wider than, narrower than, or off-center relative
+  // to whatever DDF actually fetches. Centering on content alone let DIW's real (correctly
+  // computed) edges land outside [0, finalWidth) whenever DIW extended further than DDF's own
+  // span — silently clamped away by diwLeft/diwRight's Math.max/min below, e.g. a full-width DIW
+  // with a narrower, off-center DDF reported a badly wrong (clamped) DIW extent even though the
+  // content pixels themselves were always positioned correctly. Reduces to the original
+  // content-only centering whenever DIW's span already sits inside content's (the common case,
+  // and every capture this was originally verified against) — see gfxResources.test.ts.
+  const finalWidth  = STANDARD_FB_WIDTH  / (canvasHires ? 1 : 2);
+  const finalHeight = STANDARD_FB_HEIGHT / 2;
+  const mult = canvasHires ? 2 : 1;
+  // DIW's span, in the same "canvas-x units relative to content's own x=0" space as contentWidth
+  // — i.e. through the exact same (x - contentDisplayLeft) * mult step canvas-x always uses, just
+  // anchored at content's (not yet known) final origin instead.
+  const diwStartRelContent = (diwHStart - contentDisplayLeft) * mult;
+  const diwEndRelContent   = (diwHStop  - contentDisplayLeft) * mult;
+  const diwStartRelContentY = diwVStart - firstLine;
+  const diwEndRelContentY   = diwVStop  - firstLine;
+  const unionStartX = Math.min(0, diwStartRelContent);
+  const unionEndX   = Math.max(contentWidth, diwEndRelContent);
+  const unionStartY = Math.min(0, diwStartRelContentY);
+  const unionEndY   = Math.max(height, diwEndRelContentY);
+  const offsetX = Math.floor((finalWidth  - (unionEndX - unionStartX)) / 2) - unionStartX;
+  const offsetY = Math.floor((finalHeight - (unionEndY - unionStartY)) / 2) - unionStartY;
+  const finalDisplayLeft = contentDisplayLeft - offsetX / mult;
+  const finalFirstLine   = firstLine - offsetY;
+
+  const diwLeft  = Math.max(0, Math.min(finalWidth, (diwHStart - finalDisplayLeft) * mult));
+  const diwRight = Math.max(0, Math.min(finalWidth, (diwHStop  - finalDisplayLeft) * mult));
   const diwTop    = Math.max(finalFirstLine, Math.min(finalFirstLine + finalHeight, diwVStart));
   const diwBottom = Math.max(finalFirstLine, Math.min(finalFirstLine + finalHeight, diwVStop));
 

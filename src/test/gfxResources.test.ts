@@ -258,6 +258,14 @@ describe("buildScreenFromModel", () => {
     const base = {
       firstLine: 100, lastLine: 150, planes: 4,
       bplcon0: 4 << 12, ddfstrt: 0x38, ddfstop: 0xd0,
+      // DIW set to exactly match the content span (real hardware always configures DIW before
+      // enabling display — DIWSTRT/DIWSTOP left at their unset default of 0/0 isn't a
+      // configuration any real capture would have, and is exactly the degenerate case the
+      // union-with-DIW centering below would otherwise (correctly) treat very differently — see
+      // the dedicated DIW-wider-than-content test for that). diwstrt=0x6481 (VSTART=100=firstLine,
+      // HSTART=0x81=129=contentDisplayLeft); diwstop=0x97c1 (VSTOP byte=0x97, bit7 set -> used
+      // directly =151=firstLine+height; HSTOP=0xc1=193, +256=449=contentDisplayLeft+contentWidth).
+      diwstrt: 0x6481, diwstop: 0x97c1,
     };
     const screen = buildScreenFromModel(makeModel(base))!;
     expect(screen.width).toBe(360);
@@ -278,5 +286,38 @@ describe("buildScreenFromModel", () => {
     const contentDisplayLeft = (ddfStart + DDF_FETCH_DELAY_CCK) * 2 + DIW_DDF_OFFSET;
     expect(contentDisplayLeft - screen.displayLeft).toBe(offsetX);
     expect(computeBeamPosition(screen, base.firstLine * DMA_HPOS).y).toBe(offsetY);
+  });
+
+  it("reports DIW's true (unclamped) extent when DIW is wider than, and off-center relative to, a narrower DDF", () => {
+    // DDF fetches a narrow 64-canvas-unit-wide strip (blocks=4); DIW is a full 320-wide window
+    // that starts to the LEFT of that strip and extends well past its right edge — i.e. DIW is
+    // neither centered on nor contained within what DDF fetches (the reported bug scenario).
+    // Centering the canvas on content alone (the old behavior) put DIW's real right edge (410, in
+    // "raw canvas-x" units) past the 360-wide canvas, silently clamped down to 360 — losing 85
+    // units of DIW's true extent — and its left edge (90) similarly landed at the wrong offset.
+    const base = {
+      firstLine: 100, lastLine: 150, planes: 4,
+      bplcon0: 4 << 12, ddfstrt: 0x30, ddfstop: 0x48, // ddfStart=48, ddfStop=72 -> blocks=4, contentWidth=64
+      // diwstrt=0x645a (VSTART=100=firstLine, HSTART=0x5a=90); diwstop=0x979a (VSTOP byte=0x97,
+      // bit7 set -> 151=firstLine+height; HSTOP=0x9a=154, +256=410). DIW span: [90, 410) — 320
+      // wide, starting 23 units before content's own start (113) and ending 297 units after it,
+      // nowhere near centered on or contained in content's own [113, 177) span.
+      diwstrt: 0x645a, diwstop: 0x979a,
+    };
+    const screen = buildScreenFromModel(makeModel(base))!;
+    expect(screen.width).toBe(360);
+
+    // DIW's real span, reconstructed independently of the implementation's own internals: 320
+    // wide, and (since the union of content+DIW is exactly DIW-sized here and centered in the
+    // 360-wide canvas) starting (360-320)/2 = 20 in from the left edge.
+    expect(screen.diwRight - screen.diwLeft).toBe(320); // full real DIW width, not clamped down
+    expect(screen.diwLeft).toBe(20);
+    expect(screen.diwRight).toBe(340);
+
+    // Content itself (the narrow DDF-fetched strip) still lands fully on-canvas, unclamped.
+    const contentDisplayLeft = (48 + DDF_FETCH_DELAY_CCK) * 2 + DIW_DDF_OFFSET; // 113
+    const contentCanvasX = contentDisplayLeft - screen.displayLeft;
+    expect(contentCanvasX).toBeGreaterThanOrEqual(0);
+    expect(contentCanvasX + 64).toBeLessThanOrEqual(screen.width);
   });
 });
