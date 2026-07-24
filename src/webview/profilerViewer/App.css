@@ -1348,10 +1348,10 @@ body {
   border-radius: 2px;
 }
 
-.disasm-follow {
+.disasm-option {
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: 3px;
   white-space: nowrap;
   color: var(--vscode-descriptionForeground);
 }

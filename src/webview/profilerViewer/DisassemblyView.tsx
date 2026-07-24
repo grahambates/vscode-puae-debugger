@@ -523,19 +523,19 @@ export function DisassemblyView({
             </option>
           ))}
         </select>
-        <label className="disasm-follow">
+        <label className="disasm-option">
           <input type="checkbox" checked={follow} onChange={(e) => setFollow(e.target.checked)} />
-          Follow timeline
+          Follow
         </label>
-        <label className="disasm-follow">
+        <label className="disasm-option">
           <input type="checkbox" checked={showRegs} onChange={(e) => setShowRegs(e.target.checked)} />
           Registers
         </label>
-        <label className="disasm-follow">
+        <label className="disasm-option">
           <input type="checkbox" checked={showSource} onChange={(e) => setShowSource(e.target.checked)} />
           Source
         </label>
-        <label className="disasm-follow" title="Scale the heat map by the hottest instruction across every executed function this frame, instead of just the function currently shown — also applies to the real editor's source line decorations.">
+        <label className="disasm-option" title="Scale the heat map by the hottest instruction across every executed function this frame, instead of just the function currently shown — also applies to the real editor's source line decorations.">
           <input type="checkbox" checked={globalHeat} onChange={(e) => setGlobalHeat(e.target.checked)} />
           Global heat
         </label>
