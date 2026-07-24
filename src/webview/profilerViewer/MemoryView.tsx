@@ -37,6 +37,11 @@ type RowListProps = {
   baseAddr: number; // address of offset 0 in the buffer (0 for chip, SLOW_BASE for slow)
   highlightOffset: number | undefined; // byte written at the selected cycle, if any, in this region
   colorCode: boolean; // "Color bytes" toggle — one hue per leading hex digit, see .mem-nib-* in App.css
+  // The jumped-to symbol's byte range (absolute addresses, [start, end)), if the last combo-box
+  // navigation resolved to one — bytes inside it get a positive highlight (.mem-in-target).
+  // undefined = no symbol targeted (e.g. jumped to a raw address or a whole region instead), or
+  // navigated away from it — nothing gets highlighted, ordinary browsing looks unaffected.
+  targetRange: { start: number; end: number } | undefined;
   onByteClick: (addr: number, jumpToSource: boolean, toSide: boolean, forward: boolean) => void;
   onByteHover: (addr: number, x: number, y: number) => void;
   onByteLeave: () => void;
@@ -74,7 +79,7 @@ const nibbleClass = (value: number, colorCode: boolean): string | undefined => {
 };
 
 function RowRenderer({
-  index, style, getByte, getFadeOpacity, baseAddr, highlightOffset, colorCode, onByteClick, onByteHover, onByteLeave,
+  index, style, getByte, getFadeOpacity, baseAddr, highlightOffset, colorCode, targetRange, onByteClick, onByteHover, onByteLeave,
 }: RowComponentProps<RowListProps>) {
   const rowOff = index * BYTES_PER_ROW;
   const addr = baseAddr + rowOff;
@@ -101,6 +106,7 @@ function RowRenderer({
             className={[
               "mem-byte",
               c.off === highlightOffset ? "mem-hit" : undefined,
+              targetRange && baseAddr + c.off >= targetRange.start && baseAddr + c.off < targetRange.end ? "mem-in-target" : undefined,
               c.present ? nibbleClass(c.value, colorCode) : undefined,
             ].filter(Boolean).join(" ")}
             style={c.fade > 0 ? { background: `rgba(255,200,0,${c.fade.toFixed(3)})` } : undefined}
@@ -162,6 +168,10 @@ export function MemoryView({
   const [region, setRegion] = useState<Region>(initialJumpResolved?.region ?? savedView?.region ?? "chip");
   const [follow, setFollow] = useState(savedView?.follow ?? true);
   const [colorCode, setColorCode] = useState(savedView?.colorCode ?? true); // live memory viewer's default
+  // The jumped-to symbol's byte range, for RowRenderer's .mem-in-target (see RowListProps.targetRange).
+  // Not persisted across mounts (unlike region/follow/colorCode above) — a fresh mount has no
+  // "last navigation" to highlight anyway.
+  const [targetRange, setTargetRange] = useState<{ start: number; end: number } | undefined>(undefined);
   const [viewMode, setViewMode] = useState<"hex" | "visual">(initialJumpRef.current ? "visual" : "hex");
   const visualRef = useRef<MemoryVisualAPI>(null);
   // Keep a ref so scrollToByteOffset stays stable (no viewMode dep → no callback cascade).
@@ -416,11 +426,12 @@ export function MemoryView({
       baseAddr,
       highlightOffset: currentWrite && currentWrite.region === region ? currentWrite.offset : undefined,
       colorCode,
+      targetRange,
       onByteClick,
       onByteHover,
       onByteLeave,
     }),
-    [getByte, getFadeOpacity, bufLength, chipVersion, fadeTick, baseAddr, currentWrite, region, colorCode, onByteClick, onByteHover, onByteLeave],
+    [getByte, getFadeOpacity, bufLength, chipVersion, fadeTick, baseAddr, currentWrite, region, colorCode, targetRange, onByteClick, onByteHover, onByteLeave],
   );
 
   // Address/symbol + byte/word/long (signed and unsigned) interpretations for the hovered byte,
@@ -497,8 +508,14 @@ export function MemoryView({
 
   const selectSuggestion = useCallback(
     (item: AddressSuggestion) => {
-      if (item.kind === "region") jumpToRegion(item.region);
-      else jumpToAddress(item.address);
+      if (item.kind === "region") {
+        jumpToRegion(item.region);
+        setTargetRange(undefined);
+      } else {
+        jumpToAddress(item.address);
+        // Highlight the symbol's own byte range (.mem-in-target) — only when it has a known size.
+        setTargetRange(item.size > 0 ? { start: item.address, end: item.address + item.size } : undefined);
+      }
     },
     [jumpToRegion, jumpToAddress],
   );
@@ -536,7 +553,10 @@ export function MemoryView({
       return;
     }
     const addr = parseAddressInput(comboQuery);
-    if (addr !== undefined) jumpToAddress(addr);
+    if (addr !== undefined) {
+      jumpToAddress(addr);
+      setTargetRange(undefined); // a raw address has no symbol length to dim around
+    }
   }, [comboSuggestions, comboQuery, selectSuggestion, jumpToAddress]);
 
   if (!model) return null;

@@ -1290,6 +1290,15 @@ body {
   outline: 1px solid var(--vscode-focusBorder);
 }
 
+/* Bytes within the jumped-to symbol's range, when one is selected (targetRange) — a positive
+   highlight rather than dimming everything else: the live memory viewer's HexDump dims outside
+   the target (fine there, its canvas renderer is only ever showing one navigation's worth of
+   view), but here you keep scrolling/browsing well past the original symbol long after selecting
+   it, so dimming the entire rest of the view made ordinary browsing look disabled. */
+.mem-in-target {
+  background: var(--vscode-list-activeSelectionBackground);
+}
+
 .mem-ascii {
   color: var(--vscode-descriptionForeground);
   opacity: 0.8;
