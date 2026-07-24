@@ -981,7 +981,7 @@ export function FlameGraph({
         <div ref={scrollChildRef} />
       </div>
       {hovered && hoverLoc && (
-        <Tooltip x={hovered.x} y={hovered.y} width={440}>
+        <Tooltip x={hovered.x} y={hovered.y}>
           <div className="tt-func">
             <span className="dma-dot" style={{ background: hovered.box.fill }} />
             {hovered.box.text}
