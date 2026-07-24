@@ -1,4 +1,4 @@
-import { getBlits, blitTooltip, blitChannels, BlitMode } from "../webview/profilerViewer/blits";
+import { getBlits, blitTooltip, blitLabel, blitChannels, BlitMode } from "../webview/profilerViewer/blits";
 import { IDmaModel, BusOwner, DMA_WRITE } from "../shared/profilerTypes";
 
 // Build an IDmaModel of `n` idle slots, then let the caller stamp cells.
@@ -105,5 +105,28 @@ describe("blitTooltip", () => {
     expect(tip.mintermBits).toHaveLength(8);
     // ABCD all enabled -> four channel rows (Source A/B/C + Destination).
     expect(tip.channels.map((c) => c.label)).toEqual(["Source A", "Source B", "Source C", "Destination"]);
+  });
+
+  it("shows the real pixel length for a line blit instead of a bogus width x height", () => {
+    // BLTSIZE's width field is hardwired to 2 words for line mode, regardless of the line's
+    // actual geometry — so a naive `width*16 x height` label always reads a constant, meaningless
+    // "32px" wide. The height field is what actually holds the line's pixel length in this mode.
+    const g = grid(8);
+    regWrite(g, 0, BLTCON1, 0x0001); // LINE
+    regWrite(g, 1, BLTSIZE, (100 << 6) | 2); // width=2 (fixed), height=100 (the line's real length)
+    const blit = getBlits(g).blits[0];
+    expect(blit.mode).toBe(BlitMode.Line);
+
+    expect(blitLabel(blit)).toContain("100px");
+    expect(blitLabel(blit)).not.toContain("32px");
+    expect(blitTooltip(blit).size).toBe("100px line");
+  });
+
+  it("still shows width x height for an area (Copy/Fill) blit", () => {
+    const g = grid(8);
+    regWrite(g, 0, BLTCON0, 0x0fca);
+    regWrite(g, 1, BLTSIZE, (3 << 6) | 2); // width=2 words (32px), height=3 rows
+    const blit = getBlits(g).blits[0];
+    expect(blitTooltip(blit).size).toBe("32x3px");
   });
 });

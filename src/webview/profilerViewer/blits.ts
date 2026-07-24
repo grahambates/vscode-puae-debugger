@@ -89,8 +89,18 @@ export function blitVerb(blit: Blit): string {
   return (blit.con0 & 0xff) === 0 ? "Clear" : "Blit";
 }
 
+// "WxH px" (width in words -> pixels, height in rows) only means anything for an area blit
+// (Copy/Fill): BLTSIZE's width field is a per-row pixel count there. Line mode hardwires that
+// field to a fixed constant (2 words) unrelated to the line's geometry — see channelStrideBytes'
+// comment below — so a line blit's width would always read as a nonsensical, constant 32px
+// regardless of the line actually drawn. The real, only meaningful dimension for a line is its
+// length in pixels, which BLTSIZE's height field (`blit.height`) DOES hold for line mode.
+function blitSize(blit: Blit): string {
+  return blit.mode === BlitMode.Line ? `${blit.height}px line` : `${blit.width * 16}x${blit.height}px`;
+}
+
 export function blitLabel(blit: Blit): string {
-  return `${blitVerb(blit)} ${blitChannels(blit.con0)} ${blit.width * 16}x${blit.height}px`;
+  return `${blitVerb(blit)} ${blitChannels(blit.con0)} ${blitSize(blit)}`;
 }
 
 // A channel's real memory row stride, for lining up the Memory tab's visual view with the
@@ -301,7 +311,7 @@ export function blitTooltip(blit: Blit): BlitTooltip {
 
   const at = (slot: number) => ({ line: (slot / DMA_HPOS) | 0, colorClock: slot % DMA_HPOS, slot });
   return {
-    size: `${blit.width * 16}x${blit.height}px`,
+    size: blitSize(blit),
     control,
     mintermHex: `$${minterm.toString(16).padStart(2, "0")}`,
     mintermExpr: overbar(BlitOp[minterm] ?? ""),
