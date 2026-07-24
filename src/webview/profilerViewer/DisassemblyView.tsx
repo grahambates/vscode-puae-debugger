@@ -424,10 +424,24 @@ export function DisassemblyView({
     return { rows: result, instructionRowY: rowY };
   }, [active, showSource, sourceFiles]);
 
+  // Deferred TWO frames (nested requestAnimationFrame): calling List's scrollToRow synchronously
+  // in a mount-time effect is a known failure mode for virtualized lists — the List's own internal
+  // scroll-container sizing isn't always settled at that exact point, even though useEffect runs
+  // after paint (this matters right after a tab switch, when this is a freshly-mounted List, not
+  // an already-stable one — see MemoryView's/CopperView's identical comment on the same issue). A
+  // single rAF wasn't quite enough on its own — the panel's flex-sized container can still take an
+  // extra frame to reach its final height, so "smart" alignment computed against that still-too-
+  // short container left the target row landing partially above the (subsequently taller)
+  // viewport. Waiting a second frame lets that resize settle first.
   useEffect(() => {
     if (!active || currentAddress === undefined) return;
     const listRowIdx = rows.findIndex(r => r.kind === "instruction" && r.ins.address === currentAddress);
-    if (listRowIdx >= 0) listRef.current?.scrollToRow({ index: listRowIdx, align: "smart" });
+    if (listRowIdx < 0) return;
+    let raf2 = 0;
+    const raf1 = requestAnimationFrame(() => {
+      raf2 = requestAnimationFrame(() => listRef.current?.scrollToRow({ index: listRowIdx, align: "smart" }));
+    });
+    return () => { cancelAnimationFrame(raf1); cancelAnimationFrame(raf2); };
   }, [active, currentAddress, rows]);
 
   const maxCycles = useMemo(() => (active ? Math.max(0, ...active.instructions.map((i) => i.cycles)) : 0), [active]);

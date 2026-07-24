@@ -120,8 +120,22 @@ export function CopperView({
     return idx;
   }, [rows, selectedSlot]);
 
+  // Deferred TWO frames (nested requestAnimationFrame): calling List's scrollToRow synchronously
+  // in a mount-time effect is a known failure mode for virtualized lists — the List's own internal
+  // scroll-container sizing isn't always settled at that exact point, even though useEffect runs
+  // after paint (this matters right after a tab switch, when this is a freshly-mounted List, not
+  // an already-stable one — see MemoryView's identical comment on the same issue). A single rAF
+  // wasn't quite enough on its own — the panel's flex-sized container can still take an extra frame
+  // to reach its final height, so "smart" alignment computed against that still-too-short
+  // container left the target row landing partially above the (subsequently taller) viewport.
+  // Waiting a second frame lets that resize settle first.
   useEffect(() => {
-    if (currentIndex >= 0) listRef.current?.scrollToRow({ index: currentIndex, align: "smart" });
+    if (currentIndex < 0) return;
+    let raf2 = 0;
+    const raf1 = requestAnimationFrame(() => {
+      raf2 = requestAnimationFrame(() => listRef.current?.scrollToRow({ index: currentIndex, align: "smart" }));
+    });
+    return () => { cancelAnimationFrame(raf1); cancelAnimationFrame(raf2); };
   }, [currentIndex]);
 
   const rowProps = useMemo<RowListProps>(
