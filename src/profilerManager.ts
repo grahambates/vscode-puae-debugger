@@ -385,7 +385,14 @@ export interface RawDisassembledInstruction {
 }
 export interface RawDisassembledFunction {
   address: number;
+  end: number; // symbol's real end address (address + size) — NOT `instructions`' last decoded
+  // address: MAX_DISASSEMBLE_INSTRUCTIONS can cut `instructions` off mid-function, so `end` is the
+  // only reliable range boundary for "does this address fall inside this function" checks.
   name: string;
+  // Exact total cycles for every sample whose PC resolves into this function's [address, end)
+  // range — computed from the full per-PC hit list, so (unlike summing `instructions[].cycles`)
+  // it stays correct even when `instructions` itself was truncated by the decode budget.
+  totalCycles: number;
   instructions: RawDisassembledInstruction[];
 }
 
@@ -497,7 +504,9 @@ export function buildModelFromCapture(
 export function attachDisassembly(raw: RawDisassembledFunction[], sourceMap: SourceMap): IDisassembledFunction[] {
   return raw.map((fn) => ({
     address: fn.address,
+    end: fn.end,
     name: fn.name,
+    totalCycles: fn.totalCycles,
     instructions: fn.instructions.map((ins) => {
       const loc = sourceMap.lookupAddress(ins.address);
       return { ...ins, file: loc?.path, line: loc?.line };
@@ -513,7 +522,7 @@ export const MAX_DISASSEMBLE_INSTRUCTIONS = 16_384;
 // disassembly template (instruction text + addresses unchanged from the template). Used
 // to give frames 1..N-1 correct per-frame counts without re-running the expensive
 // disassemble RPC, and to produce the combined-all-frames disassembly.
-function reweightDisassembly(
+export function reweightDisassembly(
   template: RawDisassembledFunction[],
   samples: InstructionSample[],
 ): RawDisassembledFunction[] {
@@ -524,8 +533,27 @@ function reweightDisassembly(
     if (e) { e.hits++; e.cycles += s.cycles; }
     else pcStats.set(pc, { hits: 1, cycles: s.cycles });
   }
+
+  // Function-level totals: attribute every sample PC to whichever function's [address, end)
+  // range contains it, not just the PCs the template happened to decode — `instructions` can be
+  // a truncated subset of the function (see MAX_DISASSEMBLE_INSTRUCTIONS), but `end` is still the
+  // symbol's real, full range, so this stays exact regardless of that truncation. Two-pointer
+  // sweep over both lists sorted by address (functions are non-overlapping symbol ranges).
+  const sortedFns = [...template].sort((a, b) => a.address - b.address);
+  const sortedPcs = [...pcStats.keys()].sort((a, b) => a - b);
+  const totalCyclesByAddr = new Map<number, number>();
+  let fi = 0;
+  for (const pc of sortedPcs) {
+    while (fi < sortedFns.length - 1 && pc >= sortedFns[fi].end) fi++;
+    const fn = sortedFns[fi];
+    if (fn && pc >= fn.address && pc < fn.end) {
+      totalCyclesByAddr.set(fn.address, (totalCyclesByAddr.get(fn.address) ?? 0) + pcStats.get(pc)!.cycles);
+    }
+  }
+
   return template.map((fn) => ({
     ...fn,
+    totalCycles: totalCyclesByAddr.get(fn.address) ?? 0,
     instructions: fn.instructions.map((ins) => {
       const stat = pcStats.get(ins.address);
       return { ...ins, hits: stat?.hits ?? 0, cycles: stat?.cycles ?? 0 };
@@ -720,7 +748,7 @@ export function fetchDisassembly(
       const stat = pcStats.get(ins.address);
       return { address: ins.address, hex: ins.hex, text: ins.text, length: ins.length, hits: stat?.hits ?? 0, cycles: stat?.cycles ?? 0, jumpTarget: ins.jumpTarget };
     });
-    out.push({ address: startAddr, name: fn.name, instructions });
+    out.push({ address: startAddr, end: fn.end, name: fn.name, totalCycles: fn.totalCycles, instructions });
   }
   return out;
 }

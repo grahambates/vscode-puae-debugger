@@ -12,11 +12,16 @@ const ins = (overrides: Partial<IDisassembledInstruction>): IDisassembledInstruc
   ...overrides,
 });
 
-const fn = (name: string, instructions: IDisassembledInstruction[]): IDisassembledFunction => ({
-  address: instructions[0]?.address ?? 0,
-  name,
-  instructions,
-});
+const fn = (name: string, instructions: IDisassembledInstruction[]): IDisassembledFunction => {
+  const last = instructions[instructions.length - 1];
+  return {
+    address: instructions[0]?.address ?? 0,
+    end: last ? last.address + last.length : 0,
+    name,
+    totalCycles: instructions.reduce((s, i) => s + i.cycles, 0),
+    instructions,
+  };
+};
 
 const model = (disassembly: IDisassembledFunction[]): IProfileModel => ({
   nodes: [],

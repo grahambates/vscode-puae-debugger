@@ -1,6 +1,7 @@
 import {
   attachDisassembly,
   fetchDisassembly,
+  reweightDisassembly,
   MAX_DISASSEMBLE_INSTRUCTIONS,
   RawDisassembledFunction,
   InstructionSample,
@@ -19,7 +20,9 @@ describe("attachDisassembly", () => {
     const raw: RawDisassembledFunction[] = [
       {
         address: 0x100,
+        end: 0x104,
         name: "foo",
+        totalCycles: 16,
         instructions: [
           { address: 0x100, hex: "4e71", text: "nop", length: 2, hits: 3, cycles: 12 },
           { address: 0x102, hex: "4e75", text: "rts", length: 2, hits: 1, cycles: 4 },
@@ -192,6 +195,56 @@ describe("fetchDisassembly", () => {
     expect(result.map((fn) => fn.name)).toEqual(["hot", "cold"]);
     expect(result.reduce((total, fn) => total + fn.instructions.length, 0)).toBe(MAX_DISASSEMBLE_INSTRUCTIONS);
     expect(result[1].instructions).toHaveLength(10);
+    // `end` is the symbol's real end regardless of truncation, and `totalCycles` is the exact
+    // total from the full per-PC hit list — both stay correct even though only 10 of "cold"'s
+    // real instructions got decoded (the bug this data feeds: DisassemblyView's dropdown label
+    // and "Follow timeline" used to rely on `instructions`, which is unreliable once truncated).
+    expect(result[1].end).toBe(coldAddress + 200);
+    expect(result[1].totalCycles).toBe(1);
+  });
+});
+
+describe("reweightDisassembly", () => {
+  it("attributes a reweighted function's totalCycles to its full [address, end) range, not just its (possibly truncated) decoded instructions", () => {
+    // Mirrors fetchDisassembly's "caps decoded work" case: "cold" is a function whose *decode* was
+    // truncated to 10 instructions by MAX_DISASSEMBLE_INSTRUCTIONS, but whose real end (0x1100) is
+    // far past that. A later frame's samples can still land on an address in that undecoded tail —
+    // summing `instructions[].cycles` would silently drop those cycles; the interval-based
+    // totalCycles must not.
+    const template: RawDisassembledFunction[] = [
+      {
+        address: 0x1000,
+        end: 0x1100,
+        name: "cold",
+        totalCycles: 999, // stale total from the original frame — must be fully replaced, not added to
+        instructions: Array.from({ length: 10 }, (_, i) => ({
+          address: 0x1000 + i * 2, hex: "4e71", text: "nop", length: 2, hits: 0, cycles: 0,
+        })),
+      },
+    ];
+    const samples: InstructionSample[] = [
+      { stack: [0x1012], cycles: 3 }, // last decoded instruction (0x1000 + 9*2)
+      { stack: [0x1050], cycles: 7 }, // inside [address, end) but past the truncated instructions
+    ];
+
+    const [cold] = reweightDisassembly(template, samples);
+
+    expect(cold.totalCycles).toBe(10); // 3 + 7, not just the 3 attributable to a decoded instruction
+    expect(cold.instructions.find((i) => i.address === 0x1012)).toMatchObject({ hits: 1, cycles: 3 });
+    expect(cold.instructions.find((i) => i.address === 0x1050)).toBeUndefined(); // no such decoded row
+  });
+
+  it("doesn't attribute a PC outside any function's [address, end) range (gap between symbols)", () => {
+    const template: RawDisassembledFunction[] = [
+      { address: 0x1000, end: 0x1010, name: "a", totalCycles: 0, instructions: [] },
+      { address: 0x2000, end: 0x2010, name: "b", totalCycles: 0, instructions: [] },
+    ];
+    const samples: InstructionSample[] = [{ stack: [0x1800], cycles: 5 }]; // in the gap between a and b
+
+    const [a, b] = reweightDisassembly(template, samples);
+
+    expect(a.totalCycles).toBe(0);
+    expect(b.totalCycles).toBe(0);
   });
 });
 
@@ -201,7 +254,9 @@ describe("profileFormat codec with disassembly", () => {
     disassembly: [
       {
         address: 0x1000,
+        end: 0x1002,
         name: "foo",
+        totalCycles: 12,
         instructions: [{ address: 0x1000, hex: "4e71", text: "nop", length: 2, hits: 3, cycles: 12 }],
       },
     ],

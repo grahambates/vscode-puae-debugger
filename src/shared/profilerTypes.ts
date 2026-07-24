@@ -211,7 +211,13 @@ export interface IDisassembledInstruction {
 // captured samples) are included — disassembling the whole program isn't useful or necessary.
 export interface IDisassembledFunction {
   address: number;
+  // Symbol's real end address (address + size) — NOT `instructions`' last decoded address, which
+  // can be cut off mid-function by the decode budget (MAX_DISASSEMBLE_INSTRUCTIONS).
+  end: number;
   name: string;
+  // Exact total cycles for this function this frame, from the full per-PC hit list — stays
+  // correct even when `instructions` was truncated.
+  totalCycles: number;
   instructions: IDisassembledInstruction[];
 }
 

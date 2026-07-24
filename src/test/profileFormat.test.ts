@@ -105,7 +105,7 @@ describe("profileFormat codec: multi-frame captures", () => {
     const raw0: RawCapture = {
       ...sampleRaw(true),
       disassembly: [
-        { address: 0x1000, name: "foo", instructions: [{ address: 0x1000, hex: "4e71", text: "nop", length: 2, hits: 1, cycles: 4 }] },
+        { address: 0x1000, end: 0x1002, name: "foo", totalCycles: 4, instructions: [{ address: 0x1000, hex: "4e71", text: "nop", length: 2, hits: 1, cycles: 4 }] },
       ],
       thumbnail: { data: new Uint8Array([1, 2, 3]), width: 4, height: 5 },
       fullFrame: { data: new Uint8Array([9, 9]), width: 10, height: 20 },

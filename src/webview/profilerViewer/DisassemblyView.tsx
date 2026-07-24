@@ -312,12 +312,13 @@ export function DisassemblyView({
   const symbolize = useMemo(() => createSymbolizer(model?.symbols), [model]);
 
   // Functions sorted by total cycles descending (hottest first — matches the old extension's
-  // "jump to the hottest function" default).
+  // "jump to the hottest function" default). `fn.totalCycles` is exact (from the full per-PC hit
+  // list) rather than a sum of `instructions[].cycles`: a function's decoded instructions can be a
+  // truncated subset of its real range (MAX_DISASSEMBLE_INSTRUCTIONS), which would otherwise
+  // silently undercount.
   const functions = useMemo(() => {
     if (!disassembly) return [];
-    return [...disassembly]
-      .map((fn) => ({ fn, totalCycles: fn.instructions.reduce((s, i) => s + i.cycles, 0) }))
-      .sort((a, b) => b.totalCycles - a.totalCycles);
+    return [...disassembly].sort((a, b) => b.totalCycles - a.totalCycles);
   }, [disassembly]);
 
   // The instruction executing at the selected DMA cycle, if any — drives "Follow timeline".
@@ -347,13 +348,14 @@ export function DisassemblyView({
   const currentRegs = regsAt(currentIdx);
   const prevRegs = currentIdx !== undefined ? regsAt(currentIdx - 1) : undefined;
 
-  // Which function (by index into `functions`) currentAddress falls within, if any.
+  // Which function (by index into `functions`) currentAddress falls within, if any. Uses the
+  // function's real end address (`fn.end`, the symbol's full range) rather than its last decoded
+  // instruction: when the decode budget truncates a function (MAX_DISASSEMBLE_INSTRUCTIONS), the
+  // last decoded instruction sits well before the symbol's true end, which would otherwise make
+  // "Follow timeline" silently stop updating once the playhead moved past whatever got decoded.
   const currentFnIndex = useMemo(() => {
     if (currentAddress === undefined) return undefined;
-    return functions.findIndex(({ fn }) => {
-      const last = fn.instructions[fn.instructions.length - 1];
-      return last && currentAddress >= fn.address && currentAddress <= last.address;
-    });
+    return functions.findIndex((fn) => currentAddress >= fn.address && currentAddress < fn.end);
   }, [functions, currentAddress]);
 
   // "Follow execution": jump the selected function to wherever the playhead currently is.
@@ -371,7 +373,7 @@ export function DisassemblyView({
   // Fetch source files for the active function when "Show source" is on.
   useEffect(() => {
     if (!showSource || !active) return;
-    const needed = [...new Set(active.fn.instructions.flatMap(ins => ins.file ? [ins.file] : []))]
+    const needed = [...new Set(active.instructions.flatMap(ins => ins.file ? [ins.file] : []))]
       .filter(f => !sourceFiles.has(f));
     for (const file of needed) onRequestSourceFile(file);
   }, [showSource, active, sourceFiles, onRequestSourceFile]);
@@ -381,7 +383,7 @@ export function DisassemblyView({
   // correct Y positions when source rows are interleaved.
   const { rows, instructionRowY } = useMemo(() => {
     if (!active) return { rows: [] as Row[], instructionRowY: [] as number[] };
-    const instructions = active.fn.instructions;
+    const instructions = active.instructions;
     if (!showSource) {
       return {
         rows: instructions.map(ins => ({ kind: "instruction" as const, ins })),
@@ -418,8 +420,8 @@ export function DisassemblyView({
     if (listRowIdx >= 0) listRef.current?.scrollToRow({ index: listRowIdx, align: "smart" });
   }, [active, currentAddress, rows]);
 
-  const maxCycles = useMemo(() => (active ? Math.max(0, ...active.fn.instructions.map((i) => i.cycles)) : 0), [active]);
-  const arrows = useMemo(() => computeArrows(active?.fn.instructions ?? []), [active]);
+  const maxCycles = useMemo(() => (active ? Math.max(0, ...active.instructions.map((i) => i.cycles)) : 0), [active]);
+  const arrows = useMemo(() => computeArrows(active?.instructions ?? []), [active]);
 
   // Scan model.pcs forward (prev=false) or backward (prev=true) from currentIdx to find the
   // next/previous execution of a specific instruction address, then jump the playhead there.
@@ -451,9 +453,9 @@ export function DisassemblyView({
           value={activeFnIndex}
           onChange={(e) => { setFollow(false); setSelectedFn(Number(e.target.value)); }}
         >
-          {functions.map(({ fn, totalCycles }, i) => (
+          {functions.map((fn, i) => (
             <option key={fn.address} value={i}>
-              {fn.name} ({totalCycles} cy)
+              {fn.name} ({fn.totalCycles} cy)
             </option>
           ))}
         </select>

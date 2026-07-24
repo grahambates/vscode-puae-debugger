@@ -226,7 +226,9 @@ describe("findLineExecutionSlot", () => {
   });
   const fn: IDisassembledFunction = {
     address: 0x1000,
+    end: 0x1006,
     name: "fn",
+    totalCycles: 3,
     instructions: [
       ins(0x1000, "a.c", 10),
       ins(0x1002, "a.c", 10),
