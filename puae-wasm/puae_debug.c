@@ -931,10 +931,12 @@ wasm_dma_overlay_set_opacity(int opacity)
 // Highlights, pixel-accurately, the on-screen areas whose bitplane source was
 // recently written by the blitter. Each blitter D-channel write stamps its
 // chip-RAM word with the current generation (blitter.c blit_chipmem_agnus_wput
-// -> puae_blitvis_stamp_write); as the frame renders, the bitplane fetch
-// (custom.c long_fetch_16 / fetch) checks each fetched word via
-// puae_blitvis_fetch_level and marks the corresponding source pixels; drawing.c
-// projects those to screen pixels and frontend_shim blends a fading tint over
+// -> puae_blitvis_stamp_write). Separately, at draw time, drawing.c's
+// bvis_project computes DIRECTLY which chip-RAM word each displayed pixel came
+// from (custom.c's reset_bpl_vars snapshots each line's starting bplpt/
+// fetchmode/plane-count via bvis_snapshot_line_fetch; no fetch-time marking
+// step is involved), queries puae_blitvis_fetch_level for that address, and
+// marks the resulting screen pixels; frontend_shim blends a fading tint over
 // them. No DMA-grid geometry or display-window reconstruction is involved, and
 // the display size is unchanged (the highlight lives in the normal cropped frame).
 
@@ -1027,8 +1029,9 @@ wasm_blit_set_decay(int frames)
 	g_blitVisDecay = frames;
 }
 
-// Diagnostic: which=0 source marks, 1 native pixels marked, 2 pixels blended,
-// this frame. Lets JS surface where the highlight pipeline breaks if invisible.
+// Diagnostic: which=1 native pixels marked, 2 pixels blended, this frame (0 is
+// unused now that source marking is a direct draw-time lookup, not a separate
+// fetch-time step). Lets JS surface where the highlight pipeline breaks if invisible.
 extern unsigned int bvis_debug_count(int which); /* drawing.c */
 PUAE_DEBUG_EXPORT unsigned int
 wasm_blit_vis_debug(int which)
