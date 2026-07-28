@@ -277,6 +277,40 @@ export abstract class WebviewEmulator implements Emulator {
   protected openSource(_path: string, _line?: number): void {}
 
   /**
+   * Opens the CPU profiler and captures `numFrames` frames (undefined ⇒ the
+   * profiler's own default of 1), in response to an `openProfiler` message
+   * from the webview's own toolbar button/frame-count field. Only sent by
+   * app.ts inside a vscode webview — a standalone host's toolbar button
+   * instead opens `/profiler?numFrames=N` directly via `window.open`,
+   * bypassing this message entirely. No-op by default; the vscode host
+   * overrides this to run the `puae-debugger.openProfiler` command, the same
+   * one the debug toolbar and command palette already use.
+   */
+  protected openProfiler(_numFrames?: number): void {}
+
+  /**
+   * Opens the Amiga state viewer, in response to an `openStateViewer`
+   * message from the webview's own toolbar button. Only sent by app.ts
+   * inside a vscode webview — a standalone host's toolbar button instead
+   * opens `/state` directly via `window.open`, bypassing this message
+   * entirely. No-op by default; the vscode host overrides this to run the
+   * `puae-debugger.openStateViewer` command, the same one the debug toolbar
+   * and command palette already use.
+   */
+  protected openStateViewer(): void {}
+
+  /**
+   * Opens the memory viewer (with no specific address), in response to an
+   * `openMemoryViewer` message from the webview's own toolbar button. Only
+   * sent by app.ts inside a vscode webview — a standalone host's toolbar
+   * button instead fetches `/open-memory-viewer` directly, bypassing this
+   * message entirely. No-op by default; the vscode host overrides this to
+   * run the `puae-debugger.openMemoryViewer` command, the same one the debug
+   * toolbar and command palette already use.
+   */
+  protected openMemoryViewer(): void {}
+
+  /**
    * Diagnostic logging for the perf-overrun/perf-fps handling below.
    * Defaults to stderr; the vscode host overrides this to route to an
    * Output channel instead.
@@ -330,6 +364,12 @@ export abstract class WebviewEmulator implements Emulator {
       });
     } else if (message.type === "openSource") {
       this.openSource(message.path, message.line);
+    } else if (message.type === "openProfiler") {
+      this.openProfiler(message.numFrames);
+    } else if (message.type === "openStateViewer") {
+      this.openStateViewer();
+    } else if (message.type === "openMemoryViewer") {
+      this.openMemoryViewer();
     } else if (message.type === "perf-overrun") {
       // app.ts's frame() aggregates frame-budget overruns (jerky-playback triage) and
       // reports them at most once a second, here as well as via the webview's own

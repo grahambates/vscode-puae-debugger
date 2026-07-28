@@ -79,6 +79,18 @@ export class VscodePuaeEmulator extends PuaeEmulator {
     void openSourceLocation(path, line ?? 1);
   }
 
+  protected openProfiler(numFrames?: number): void {
+    void vscode.commands.executeCommand("puae-debugger.openProfiler", numFrames);
+  }
+
+  protected openStateViewer(): void {
+    void vscode.commands.executeCommand("puae-debugger.openStateViewer");
+  }
+
+  protected openMemoryViewer(): void {
+    void vscode.commands.executeCommand("puae-debugger.openMemoryViewer");
+  }
+
   protected log(line: string): void {
     this.getPerfLog().appendLine(line);
   }

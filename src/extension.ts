@@ -208,9 +208,12 @@ export function activate(context: vscode.ExtensionContext) {
   context.subscriptions.push(
     vscode.commands.registerCommand(
       "puae-debugger.openProfiler",
-      async () => {
+      // numFrames: passed when triggered from the emulator webview's own frame-count field
+      // (VscodePuaeEmulator.openProfiler) — undefined from the command palette/debug toolbar,
+      // which have no way to supply one, same as before this param existed.
+      async (numFrames?: number) => {
         try {
-          await profilerViewer.show();
+          await profilerViewer.show(numFrames);
         } catch (error) {
           vscode.window.showErrorMessage(
             `Failed to open CPU profiler: ${error instanceof Error ? error.message : String(error)}`,

@@ -45,6 +45,9 @@ export abstract class ProfilerViewerProvider {
   protected symbolsSent = false; // symbols are session-constant — send them only once per webview mount
   private capturing = false;     // a frame capture is in flight (drops re-entrant requests)
   private numFrames = 1;         // updated by "setNumFrames" from the webview toolbar
+  // Set by show(numFrames) when there's no webview yet to capture into — consumed (and cleared)
+  // by the "ready" handler once the fresh webview mounts and requests its first capture.
+  private pendingNumFrames?: number;
 
   constructor(
     getClient: () => ProfilerRpcClient | undefined,
@@ -90,7 +93,14 @@ export abstract class ProfilerViewerProvider {
     return true;
   }
 
-  public async show(): Promise<void> {
+  // `numFrames`, if given, is how many frames the very first capture of a freshly opened panel
+  // should record — e.g. from a frame-count field next to the emulator toolbar's capture button
+  // (invalid/omitted values fall back to the usual default of 1, same as before this param
+  // existed). Ignored whenever a panel is already open: it already has its own frame-count field
+  // as the source of truth for the next capture, which this must not silently override (e.g. the
+  // toolbar field left at its own default of 1 would otherwise clobber a larger count the user
+  // had already set from inside the panel).
+  public async show(numFrames?: number): Promise<void> {
     if (this.host) {
       this.host.reveal();
       await this.capture();
@@ -98,9 +108,13 @@ export abstract class ProfilerViewerProvider {
     }
 
     this.resetCapture();
+    const clamped = clampNumFrames(numFrames);
+    // Consumed by the "ready" handler below once the webview mounts — can't call capture()
+    // directly here since no host/webview exists yet to send "capturing"/results to.
+    this.pendingNumFrames = clamped;
 
     const surface = this.createSurface();
-    surface.setHtml(buildProfilerHtml(surface.resolveUri, surface.cspMeta, "live", surface.extraHeadHtml));
+    surface.setHtml(buildProfilerHtml(surface.resolveUri, surface.cspMeta, "live", surface.extraHeadHtml, clamped));
     this.attachHost(surface.host);
   }
 
@@ -118,14 +132,18 @@ export abstract class ProfilerViewerProvider {
   private async handleMessage(message: ProfilerInboundMessage): Promise<void> {
     if (message.command === "ready") {
       this.symbolsSent = false;
-      this.numFrames = 1; // webview always resets its UI to 1 on mount — keep provider in sync
+      // The webview's own frame-count field always mounts showing pendingNumFrames (baked into
+      // #root by buildProfilerHtml) or 1 — mirror whichever it is here so a later plain
+      // "capture" message (no count of its own) matches what's on screen.
+      this.numFrames = this.pendingNumFrames ?? 1;
+      this.pendingNumFrames = undefined;
       if (this.lastFrames.length > 0) this.postResult(this.lastFrames, this.lastBulkUris);
       else await this.capture();
     } else if (message.command === "capture") {
       await this.capture();
     } else if (message.command === "setNumFrames") {
-      const n = message.numFrames;
-      if (Number.isInteger(n) && n >= 1 && n <= 500) this.numFrames = n;
+      const n = clampNumFrames(message.numFrames);
+      if (n !== undefined) this.numFrames = n;
     } else if (message.command === "computeRange") {
       this.computeRange(message as ComputeRangeMessage);
     } else if (message.command === "saveProfile") {
@@ -269,6 +287,13 @@ export abstract class ProfilerViewerProvider {
   }
 }
 
+// Validates a requested frame count (same bounds the webview's own frame-count field enforces
+// client-side) — undefined/out-of-range/non-integer input maps to undefined so callers can fall
+// back to whatever default applies at their call site rather than propagating a bad value.
+function clampNumFrames(n: number | undefined): number | undefined {
+  return n !== undefined && Number.isInteger(n) && n >= 1 && n <= 500 ? n : undefined;
+}
+
 // Strips per-frame data (DMA/copper/registers — fetched separately via bulkUri instead) from
 // every frame's model for the captureResult postMessage, and builds the combined-model payload
 // (multi-frame captures only). Symbols are session-constant, so they're included only once per
@@ -310,11 +335,15 @@ export function stripFramesForPost(
 // `extraHeadHtml` is arbitrary extra <head> content — the standalone host uses it to link
 // puae/vscodeDefaultTheme.css (vscode injects the user's real theme as --vscode-* CSS variables
 // into every webview automatically; nothing does that for a plain browser tab), "" elsewhere.
+// `initialNumFrames` seeds the "live" webview's frame-count field so it matches the frame count
+// the *first* capture actually runs with (see ProfilerViewerProvider.show()) — undefined (or
+// "file" mode, which has no frame-count field at all) falls back to the field's own default of 1.
 export function buildProfilerHtml(
   resolveUri: (file: string) => string,
   cspMeta: string,
   mode: "live" | "file",
   extraHeadHtml: string = "",
+  initialNumFrames?: number,
 ): string {
   const scriptUri = resolveUri("out/profilerViewer.js");
   const styleUri = resolveUri("out/profilerViewer.css");
@@ -332,7 +361,7 @@ export function buildProfilerHtml(
   <title>Profiler</title>
 </head>
 <body>
-  <div id="root" data-mode="${mode}"></div>
+  <div id="root" data-mode="${mode}" data-initial-num-frames="${initialNumFrames ?? 1}"></div>
   <script src="${scriptUri}"></script>
 </body>
 </html>`;

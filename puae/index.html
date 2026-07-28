@@ -58,6 +58,11 @@
   #dma-overlay, #channel-visibility {
     border-top: 1px solid var(--vscode-panel-border, #444);
   }
+  .control-item {
+    display: flex;
+    align-items: center;
+    gap: 3px;
+  }
   #controls label, .chan-group-label {
     opacity: 0.65;
     font-size: inherit;
@@ -107,7 +112,7 @@
   .opacity-row input[type=range] { width: 70px; vertical-align: middle; }
   .blit-decay { display: inline-flex; align-items: center; gap: 4px; }
   .blit-decay input[type=range] { width: 56px; vertical-align: middle; }
-  .blit-decay #blit-decay-val { opacity: 0.65; min-width: 3ch; }
+  .blit-decay #blit-decay-val { opacity: 0.65; min-width: 2ch; }
   .blit-decay.disabled { opacity: 0.4; pointer-events: none; }
   #open-state-viewer, #open-memory-viewer, #open-profiler, #audio-toggle {
     margin-left: auto;
@@ -129,6 +134,20 @@
   #open-state-viewer, #open-memory-viewer, #open-profiler { margin-left: 0; }
   #open-state-viewer .codicon, #open-memory-viewer .codicon, #open-profiler .codicon, #audio-toggle .codicon { font-size: 16px; }
   #open-state-viewer:hover, #open-memory-viewer:hover, #open-profiler:hover, #audio-toggle:hover { opacity: 1; background: var(--vscode-toolbar-hoverBackground, rgba(128,128,128,0.2)); }
+  /* Frame count for the "Open CPU Profiler" button's first capture — shown/hidden alongside it
+     (see app.ts). Same origin/margin as #open-profiler, not the auto-margin group above: it
+     always sits directly to that button's left, never pushed to the far right on its own. */
+  #profiler-num-frames {
+    margin-left: 0;
+    width: 38px;
+    height: 22px;
+    box-sizing: border-box;
+    background: var(--vscode-dropdown-background);
+    color: var(--vscode-dropdown-foreground);
+    border: 1px solid var(--vscode-dropdown-border, transparent);
+    font-size: inherit;
+    vertical-align: middle;
+  }
 </style>
 </head>
 <body>
@@ -138,34 +157,46 @@
   <div id="disconnected-overlay">Session ended — waiting to reconnect…</div>
 </div>
 <div id="controls">
-  <label for="speed">Speed:</label>
-  <select id="speed">
-    <option value="1" selected>100%</option>
-    <option value="0.5">50%</option>
-    <option value="0.25">25%</option>
-    <option value="0.1">10%</option>
-  </select>
-  <label for="scale">Scale:</label>
-  <select id="scale" title="Auto stretches to fill the available width; the rest show the emulated screen at exact integer multiples of its native resolution, pixel for pixel">
-    <option value="auto" selected>Auto</option>
-    <option value="1">100%</option>
-    <option value="2">200%</option>
-    <option value="3">300%</option>
-    <option value="4">400%</option>
-  </select>
+  <div class="control-item">
+    <label for="speed">Speed</label>
+    <select id="speed">
+      <option value="1" selected>100%</option>
+      <option value="0.5">50%</option>
+      <option value="0.25">25%</option>
+      <option value="0.1">10%</option>
+    </select>
+  </div>
+  <div class="control-item">
+    <label for="scale">Scale</label>
+    <select id="scale" title="Auto stretches to fill the available width; the rest show the emulated screen at exact integer multiples of its native resolution, pixel for pixel">
+      <option value="auto" selected>Auto</option>
+      <option value="1">100%</option>
+      <option value="2">200%</option>
+      <option value="3">300%</option>
+      <option value="4">400%</option>
+    </select>
+  </div>
   <button id="warp" type="button" class="chan-btn" title="Toggle warp mode">WARP</button>
-  <button id="blit-vis" type="button" class="chan-btn" title="Highlight blit regions" style="--chan-color:#008888">BLIT</button>
-  <span id="blit-decay-row" class="blit-decay disabled" title="How many frames a blit stays highlighted — raise it for triple buffering / longer frame rings">
-    <input id="blit-decay" type="range" min="1" max="60" value="8">
-    <span id="blit-decay-val">8f</span>
-  </span>
-  <!-- Standalone (non-vscode) host only — vscode already has these as debug
-       toolbar commands (puae-debugger.openStateViewer/openMemoryViewer/openProfiler).
-       Hidden here by default; shown by app.ts once it knows it's not running
-       inside a vscode webview. -->
-  <button id="open-state-viewer" type="button" title="Open Amiga State" style="display:none"><i class="codicon codicon-symbol-misc"></i></button>
-  <button id="open-memory-viewer" type="button" title="Open Memory Viewer" style="display:none"><i class="codicon codicon-symbol-array"></i></button>
-  <button id="open-profiler" type="button" title="Open CPU Profiler" style="display:none"><i class="codicon codicon-dashboard"></i></button>
+  <div class="control-item">
+    <button id="blit-vis" type="button" class="chan-btn" title="Highlight blit regions" style="--chan-color:#008888">BLIT</button>
+    <span id="blit-decay-row" class="blit-decay disabled" title="How many frames a blit stays highlighted — raise it for triple buffering / longer frame rings">
+      <input id="blit-decay" type="range" min="1" max="60" value="8">
+      <span id="blit-decay-val">8f</span>
+    </span>
+  </div>
+  <!-- Shown in both hosts (see app.ts): standalone routes clicks straight at
+       the server's own routes (window.open/fetch); vscode instead posts a
+       message that runs the equivalent puae-debugger.open* command. Hidden
+       here by default; shown by app.ts once it knows which host it's
+       running in. -->
+  <div class="control-item">
+    <button id="open-state-viewer" type="button" title="Open Amiga State" style="display:none"><i class="codicon codicon-symbol-misc"></i></button>
+    <button id="open-memory-viewer" type="button" title="Open Memory Viewer" style="display:none"><i class="codicon codicon-symbol-array"></i></button>
+    <div class="control-item">
+      <button id="open-profiler" type="button" title="Open CPU Profiler" style="display:none"><i class="codicon codicon-dashboard"></i></button>
+      <input id="profiler-num-frames" type="number" min="1" max="500" value="1" title="Number of frames to capture" style="display:none">
+    </div>
+  </div>
   <button id="audio-toggle" type="button" title="Unmute audio"><i class="codicon codicon-mute"></i></button>
 </div>
 <div id="dma-overlay"></div>

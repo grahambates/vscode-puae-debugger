@@ -486,11 +486,26 @@ export async function main(config: MainConfig = {}): Promise<void> {
     bridge.postMessage({ type: "exec-ready" });
   }
 
+  // Frame count for the *first* capture the "Open CPU Profiler" button
+  // triggers — read by both the standalone and vscode wiring below.
+  // Skipped (falls back to the profiler's own default of 1) if empty/out of
+  // range, mirroring the profiler panel's own frame-count field's bounds.
+  const profilerNumFramesInput = document.getElementById("profiler-num-frames") as HTMLInputElement | null;
+  const readProfilerNumFrames = (): number | undefined => {
+    if (!profilerNumFramesInput) return undefined;
+    const n = parseInt(profilerNumFramesInput.value, 10);
+    return Number.isInteger(n) && n >= 1 && n <= 500 ? n : undefined;
+  };
+
   // "Open Amiga State" / "Open Memory Viewer" / "Open CPU Profiler" toolbar
-  // buttons — standalone (non-vscode) host only. vscode already has these as
-  // debug toolbar commands (puae-debugger.openStateViewer/openMemoryViewer/
-  // openProfiler); outside vscode there's no command palette to put them in,
-  // so they live here instead.
+  // buttons — shown in both hosts. Standalone routes them straight at the
+  // server's own routes (same origin as this page); vscode instead posts a
+  // message that webviewEmulator.ts's handlePanelMessage forwards to
+  // VscodePuaeEmulator's openStateViewer()/openMemoryViewer()/openProfiler()
+  // overrides, which run the same puae-debugger.open* commands already
+  // reachable from the command palette and debug toolbar — surfacing them
+  // here too means they don't require an active debug session's toolbar to
+  // be visible.
   if (typeof acquireVsCodeApi !== "function") {
     // Same origin as this page, so a plain window.open is enough for the
     // state viewer — no server round-trip needed (its panel always exists
@@ -523,8 +538,10 @@ export async function main(config: MainConfig = {}): Promise<void> {
     const openProfilerBtn = document.getElementById("open-profiler");
     if (openProfilerBtn) {
       openProfilerBtn.style.display = "";
+      if (profilerNumFramesInput) profilerNumFramesInput.style.display = "";
       openProfilerBtn.addEventListener("click", () => {
-        window.open("/profiler", "_blank");
+        const numFrames = readProfilerNumFrames();
+        window.open(numFrames !== undefined ? `/profiler?numFrames=${numFrames}` : "/profiler", "_blank");
       });
     }
 
@@ -578,6 +595,35 @@ export async function main(config: MainConfig = {}): Promise<void> {
             disconnectedOverlay.style.display = "flex";
           }, DISCONNECT_DEBOUNCE_MS);
         }
+      });
+    }
+  } else if (vscode) {
+    const openStateViewerBtn = document.getElementById("open-state-viewer");
+    if (openStateViewerBtn) {
+      openStateViewerBtn.style.display = "";
+      openStateViewerBtn.addEventListener("click", () => {
+        if (vscode) vscode.postMessage({ type: "openStateViewer" });
+      });
+    }
+
+    const openMemoryViewerBtn = document.getElementById("open-memory-viewer");
+    if (openMemoryViewerBtn) {
+      openMemoryViewerBtn.style.display = "";
+      openMemoryViewerBtn.addEventListener("click", () => {
+        if (vscode) vscode.postMessage({ type: "openMemoryViewer" });
+      });
+    }
+
+    // "Capture Frame Profile" — same command the command palette/debug
+    // toolbar already reach, just also surfaced directly here (see the
+    // comment above this whole block).
+    const openProfilerBtn = document.getElementById("open-profiler");
+    if (openProfilerBtn) {
+      openProfilerBtn.title = "Capture Frame Profile";
+      openProfilerBtn.style.display = "";
+      if (profilerNumFramesInput) profilerNumFramesInput.style.display = "";
+      openProfilerBtn.addEventListener("click", () => {
+        if (vscode) vscode.postMessage({ type: "openProfiler", numFrames: readProfilerNumFrames() });
       });
     }
   }

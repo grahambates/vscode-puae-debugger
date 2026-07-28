@@ -123,12 +123,16 @@ function main(): void {
       );
       return;
     }
-    if (req.url === "/profiler") {
+    if (req.url === "/profiler" || req.url?.startsWith("/profiler?")) {
       // Lazily opens the profiler "panel" on first visit — unlike the
       // emulator screen, there's no DAP launch step that implies you want
       // this open; show() is cheap (surface creation is synchronous) even
-      // though it's typed async.
-      void profilerProvider.show().then(() => {
+      // though it's typed async. numFrames backs the emulator screen's
+      // profiler frame-count field (app.ts) — omitted/invalid falls back to
+      // show()'s own default of 1, same as before this query param existed.
+      const numFramesParam = new URL(req.url, "http://localhost").searchParams.get("numFrames");
+      const numFrames = numFramesParam ? Number(numFramesParam) : undefined;
+      void profilerProvider.show(numFrames).then(() => {
         res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
         res.end(profilerProvider.getHtml());
       });

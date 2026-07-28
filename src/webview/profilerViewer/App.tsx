@@ -24,6 +24,15 @@ const bridge: HostBridge =
     throw new Error("Profiler webview requires a vscode or standalone host bridge");
   })();
 
+// The host bakes the frame count the first capture will actually run with into #root (see
+// ProfilerViewerProvider.show()/buildProfilerHtml) — e.g. from a frame-count field next to the
+// emulator toolbar's capture button. Falls back to 1, matching the provider's own default.
+function getInitialNumFrames(): number {
+  const raw = document.getElementById("root")?.dataset.initialNumFrames;
+  const n = raw ? parseInt(raw, 10) : NaN;
+  return Number.isInteger(n) && n >= 1 && n <= 500 ? n : 1;
+}
+
 type TabId = "time" | "customregs" | "copper" | "blitter" | "memory" | "disasm" | "screen";
 const TAB_LABELS: Record<TabId, string> = {
   time: "Time View", customregs: "Custom Registers", copper: "Copper",
@@ -149,8 +158,13 @@ export function App() {
   // selectedRange: null = single frame (frameIndex), [a,b] = inclusive range of frames.
   // [0, N-1] = all frames (uses pre-built combinedModel); any other range = partial (uses rangeModel).
   const [selectedRange, setSelectedRange] = useState<[number, number] | null>(null);
-  const [numFrames, setNumFrames] = useState(1);
-  const [numFramesText, setNumFramesText] = useState("1");
+  const [numFrames, setNumFrames] = useState(getInitialNumFrames);
+  const [numFramesText, setNumFramesText] = useState(() => String(getInitialNumFrames()));
+  // "Latest ref" for numFrames — the captureResult message handler (registered once, [] deps,
+  // see the message-listener effect below) needs the CURRENT value to compare against, not
+  // whatever it was when the listener was first attached.
+  const numFramesRef = useRef(numFrames);
+  useEffect(() => { numFramesRef.current = numFrames; }, [numFrames]);
   // Combined model built server-side from all N frames' InstructionSamples. Can't be derived
   // client-side from IProfileModel.samples because those are call-tree node IDs local to each
   // model's own nodes[] array — concatenating them would reference wrong nodes.
@@ -311,6 +325,14 @@ export function App() {
             setFrameIndex(0);
             setSelectedRange(null);
             setRangeModel(null);
+            // Keeps the frame-count field in sync with what was actually captured — matters for
+            // the very first capture, which can be requested with a count other than 1 from
+            // outside the webview (see getInitialNumFrames above), before this field's own
+            // onChange ever fires.
+            if (newFrames.length !== numFramesRef.current) {
+              setNumFrames(newFrames.length);
+              setNumFramesText(String(newFrames.length));
+            }
             // Merge symbols into the server-built combined model (symbols are cached in
             // symbolsRef and omitted from subsequent posts to save bandwidth).
             if (m.combinedModel) {
