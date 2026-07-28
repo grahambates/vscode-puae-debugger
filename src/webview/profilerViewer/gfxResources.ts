@@ -751,7 +751,14 @@ export interface PixelSnapshot {
   firstLine: number;
   numPlanes: number;
   lineHam: Uint8Array; // per-scanline HAM state (BPLCON0 can change mid-frame)
-  lineDup: Uint8Array; // per-scanline canvas-column duplication factor (1 or 2, see canvasHires)
+  // Per-plane, per-canvas-pixel chip address of the fetched word actually backing that pixel
+  // (-1 where none — outside this plane's DMA/DDF window, or a static 7-plane-trick plane).
+  // Computed inline in the same per-pixel bit-decode loop that resolves rawBits/colorIdx, so it
+  // already accounts for BPLCON1 scroll and each plane's own DDFSTRT/margin exactly the way the
+  // displayed pixel does — computeHoverExtra just indexes into this rather than re-deriving a
+  // word index from canvas-x, which (before this) got the last few scrolled-in pixels of a line
+  // wrong (they reuse an earlier fetched word, not a new one past the end of the line).
+  planeAddr: Int32Array[];
   activeSpritesMask: number; // which sprites (0-7) have any visible data in the display area
 }
 
@@ -862,8 +869,9 @@ export function decodeScreenPixels(
   const pixColorIdx = new Uint8Array(width * height);
   const pixColors   = new Uint32Array(width * height);
   const pixSprite   = new Uint8Array(width * height).fill(0xff); // 0xff = no sprite
-  const lineDup     = new Uint8Array(height); // per-line canvas-column duplication factor (hover mapping)
   const lineHamArr  = new Uint8Array(height); // per-line HAM state (hover "Colour" row format)
+  const pixPlaneAddr: Int32Array[] =
+    Array.from({ length: numPlanes }, () => new Int32Array(width * height).fill(-1));
   // End-of-line palette snapshot per line, for the hover "Palette" swatch row — loses mid-line
   // precision (a hovered pixel under a colour-bar split shows the line's *final* palette, not
   // the one active at that exact x), an acceptable simplification for a debug-only display.
@@ -881,7 +889,6 @@ export function decodeScreenPixels(
     // A lores line rendered into a canvasHires canvas draws each fetched bit into 2 columns;
     // everything else (a hires line, or a whole-lores-frame canvas) draws 1:1.
     const dup = canvasHires && !lnHires ? 2 : 1;
-    lineDup[y]    = dup;
     lineHamArr[y] = lnHam ? 1 : 0;
     // Nominal fetched-word count for this line's own resolution and this line's own DDFSTRT/
     // DDFSTOP (see the tracking comment above) — sized so dup*16*lineRowWords covers this
@@ -907,6 +914,9 @@ export function decodeScreenPixels(
     // for them — they're filled from the static per-line register value below instead.
     const dmaPlanes = lnStatic ? Math.min(lnPlanes, 4) : lnPlanes;
     const fetchWords: number[][] = Array.from({ length: dmaPlanes }, () => []);
+    // Chip address behind each fetchWords[p][i] entry (parallel array) — the ground truth for
+    // the hover tooltip's per-pixel plane address, see PixelSnapshot.planeAddr's doc comment.
+    const fetchAddrs: number[][] = Array.from({ length: dmaPlanes }, () => []);
     // hpos of each fetched word for plane 0 (in fetch order) — the real, captured timing this
     // line's mid-scanline register events get positioned against (see eventThresholds).
     const wordHpos: number[] = [];
@@ -918,6 +928,7 @@ export function decodeScreenPixels(
       const pIdx = o - BusOwner.BPL1;
       if (pIdx < dmaPlanes) {
         fetchWords[pIdx].push(dma.value[idx]);
+        fetchAddrs[pIdx].push(dma.addr[idx]);
         if (pIdx === 0) wordHpos.push(hpos);
       }
     }
@@ -955,8 +966,24 @@ export function decodeScreenPixels(
     const marginWords = new Array<number>(dmaPlanes);
     for (let p = 0; p < dmaPlanes; p++) marginWords[p] = fetchWords[p].length - lineRowWords;
 
+    // BPLCON1 delay doesn't just push back when the display *starts* showing real data (the
+    // marginWords margin above compensates for that) — it equally pushes back when the display
+    // *stops*: the last fetched word's final `scroll` bits are still queued in Denise's shifter
+    // and get displayed `scroll` pixels late, past where an unshifted line would already have
+    // ended. Without this extension those trailing real bits are simply never reached by the
+    // loop below and the line's last `scroll` canvas columns are forced to background even
+    // though real hardware is still shifting out genuine (delayed) bitplane data there. Uses the
+    // line's end-of-line BPLCON1 (a mid-line change here is exotic — same simplification as
+    // curBplcon2/HAM's own end-of-line convention noted above).
+    const endBplcon1 = bplcon1Events.length ? bplcon1Events[bplcon1Events.length - 1].val : bplcon1Timeline.start[y];
+    const tailScroll = Math.max(endBplcon1 & 0xf, (endBplcon1 >> 4) & 0xf);
+
     let prevColor = palette[0];
-    const totalBits = lineRowWords * 16;
+    const totalBits = lineRowWords * 16 + tailScroll;
+    // Scratch, reused/reset each pixel: chip address of the word backing that pixel for each
+    // DMA-fetched plane this line (-1 = none, e.g. before the first real word of a scrolled-in
+    // line). See PixelSnapshot.planeAddr's doc comment.
+    const bitAddr = new Array<number>(dmaPlanes);
 
     for (let i = 0; i < totalBits; i++) {
       // Apply any mid-line register writes whose effect starts at or before this pixel —
@@ -989,9 +1016,12 @@ export function decodeScreenPixels(
           bitVal = (curBpl6 >> (15 - ((i - scroll) & 15))) & 1;
         } else if (p < dmaPlanes) {
           const srcBit = marginWords[p] * 16 + i - scroll;
+          bitAddr[p] = -1;
           if (srcBit >= 0) {
-            const w = fetchWords[p][srcBit >> 4] ?? 0;
+            const wIdx = srcBit >> 4;
+            const w = fetchWords[p][wIdx] ?? 0;
             bitVal = (w >> (15 - (srcBit & 15))) & 1;
+            bitAddr[p] = fetchAddrs[p][wIdx] ?? -1;
           }
         }
         if (bitVal) rawPixel |= 1 << p;
@@ -1069,6 +1099,9 @@ export function decodeScreenPixels(
         pixRawBits[li]  = rawPixel;
         pixColorIdx[li] = inDiw ? effectiveIdx : 0;
         pixColors[li]   = inDiw ? color : palette[0];
+        for (let p = 0; p < dmaPlanes; p++) {
+          if (bitAddr[p] >= 0) pixPlaneAddr[p][li] = bitAddr[p];
+        }
       }
     }
 
@@ -1168,7 +1201,7 @@ export function decodeScreenPixels(
   return {
     rawBits: pixRawBits, colorIdx: pixColorIdx, colors: pixColors,
     palettes: linePalettesSnap, spriteMask: pixSprite,
-    width, height, firstLine, numPlanes, lineHam: lineHamArr, lineDup,
+    width, height, firstLine, numPlanes, lineHam: lineHamArr, planeAddr: pixPlaneAddr,
     activeSpritesMask,
   };
 }
@@ -1176,7 +1209,10 @@ export function decodeScreenPixels(
 // ── Hover lookup (per-pixel extra info: plane addresses, BPLCON0, last copper instruction) ──
 
 export interface HoverExtra {
-  cck: number | undefined;
+  // The beam's colour-clock position for this canvas column — a property of where the beam is,
+  // not of whether bitplane DMA happens to be active there, so (unlike planeAddrs below) it's
+  // always available: over the border, over background pixels, wherever.
+  cck: number;
   planeAddrs: (number | undefined)[];
   bplcon0: number;
   copperInstr: { w1: number; w2: number; addr: number; instrVpos: number } | undefined;
@@ -1188,37 +1224,27 @@ export interface HoverExtra {
 // paused-screen tooltip.
 export function computeHoverExtra(
   model: IProfileModel,
-  firstLine: number,
-  logY: number,
+  screen: IScreen,
+  snapshot: PixelSnapshot,
   logX: number,
-  numPlanes: number,
-  dup: number,
+  logY: number,
 ): HoverExtra {
-  const dma    = model.dma!;
   const copper = model.copper;
   const custom = model.dmaSnapshot?.custom ?? new Uint16Array(256);
-  const vpos   = firstLine + logY;
-  // Best-effort word index: accounts for this line's resolution (dup), but not any BPLCON1
-  // scroll offset in effect — a scrolled line's reported plane address may be one word off.
-  const wx     = Math.floor(logX / dup) >> 4;
+  const vpos   = screen.firstLine + logY;
 
-  const lineBase   = vpos * DMA_HPOS;
-  const wordCounts = new Array(numPlanes).fill(0);
-  const planeAddrs: (number | undefined)[] = new Array(numPlanes).fill(undefined);
-  let cck: number | undefined;
+  // Beam hpos (CCK) for this canvas column — the same canvas-x -> hpos relationship
+  // computeSlotFromBeamPosition uses, solved directly rather than via a DMA-fetch-event lookup:
+  // fetch events only happen once per word (every N CCK), so snapping to the nearest fetch's
+  // own hpos made CCK jump in word-sized steps instead of reporting the exact hovered column.
+  const loresX = logX / (screen.canvasHires ? 2 : 1) + screen.displayLeft;
+  const cck = Math.max(0, Math.min(DMA_HPOS - 1, Math.round(loresX / 2)));
 
-  for (let hpos = 0; hpos < DMA_HPOS; hpos++) {
-    const idx = lineBase + hpos;
-    if (idx >= dma.owner.length) break;
-    const o = dma.owner[idx];
-    if (o < BusOwner.BPL1 || o > BusOwner.BPL8) continue;
-    const pIdx = o - BusOwner.BPL1;
-    if (pIdx >= numPlanes) continue;
-    const wi = wordCounts[pIdx]++;
-    if (wi === wx) {
-      planeAddrs[pIdx] = dma.addr[idx];
-      if (pIdx === 0 && cck === undefined) cck = hpos;
-    }
+  const li = logY * snapshot.width + logX;
+  const planeAddrs: (number | undefined)[] = new Array(snapshot.numPlanes).fill(undefined);
+  for (let p = 0; p < snapshot.numPlanes; p++) {
+    const addr = snapshot.planeAddr[p]?.[li] ?? -1;
+    if (addr >= 0) planeAddrs[p] = addr;
   }
 
   let bplcon0    = custom[R.BPLCON0 >> 1];

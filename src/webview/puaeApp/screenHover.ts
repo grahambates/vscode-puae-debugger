@@ -89,7 +89,7 @@ export interface ScreenHoverInfo {
   x: number; // canvas-space (profiler reconstruction coordinates, not raw hpos/vpos)
   y: number;
   vpos: number;
-  cck: number | undefined;
+  cck: number;
   rawBits: number;
   colorIdx: number;
   color: number;
@@ -149,7 +149,7 @@ export function decodeScreenHover(M: PuaeModule, px: number, py: number, fbWidth
   const li = y * snapshot.width + x;
 
   const spr = snapshot.spriteMask[li];
-  const extra = computeHoverExtra(model, screen.firstLine, y, x, snapshot.numPlanes, snapshot.lineDup[y]);
+  const extra = computeHoverExtra(model, screen, snapshot, x, y);
   const disassembled = extra.copperInstr
     ? disassembleCopper(extra.copperInstr)
     : undefined;
@@ -252,7 +252,7 @@ function renderScreenTooltipContent(tooltip: HTMLDivElement, info: ScreenHoverIn
   const table = document.createElement("table");
   table.style.cssText = "border-collapse:collapse";
 
-  addRow(table, "Beam", `${info.cck !== undefined ? `CCK:${info.cck}  ` : ""}VPOS:${info.vpos}`);
+  addRow(table, "Beam", `CCK:${info.cck}  VPOS:${info.vpos}`);
   addRow(table, "Source", info.spriteOwner !== undefined
     ? `Sprite ${info.spriteOwner}`
     : info.rawBits === 0 ? "Background" : "Bitplane");

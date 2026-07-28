@@ -22,7 +22,7 @@ interface HoverInfo {
   colorIdx: number;
   color: number;
   ham: boolean;
-  cck: number | undefined;
+  cck: number;
   planeAddrs: (number | undefined)[];
   bplcon0: number;
   copperInstr: { w1: number; w2: number; addr: number; instrVpos: number } | undefined;
@@ -122,7 +122,7 @@ export function ResourcesView({ model, selectedSlot, onSelectSlot }: ResourcesVi
       return;
     }
     const li    = logY * ps.width + logX;
-    const extra = computeHoverExtra(m, ps.firstLine, logY, logX, ps.numPlanes, ps.lineDup[logY]);
+    const extra = computeHoverExtra(m, sc, ps, logX, logY);
     const spr   = ps.spriteMask[li];
     setHover({
       logX, logY,
@@ -305,7 +305,7 @@ export function ResourcesView({ model, selectedSlot, onSelectSlot }: ResourcesVi
               </tr>
               <tr>
                 <td className="screen-tooltip-label">Beam</td>
-                <td>{hover.cck !== undefined ? `CCK:${hover.cck}  ` : ""}VPOS:{hover.vpos}</td>
+                <td>CCK:{hover.cck}  VPOS:{hover.vpos}</td>
               </tr>
               <tr>
                 <td className="screen-tooltip-label">Source</td>
