@@ -1370,6 +1370,51 @@ body {
   color: var(--vscode-editorWarning-foreground, var(--vscode-descriptionForeground));
 }
 
+/* Linear/Sorted mode toggle, reusing TimeView's own top-down/bottom-up toggle button look
+   (.time-mode-toggle/.time-mode-btn) but inline within .disasm-toolbar instead of that toggle's
+   own standalone row — the compound selector below overrides just the two properties that assume
+   a standalone row (specificity beats .time-mode-toggle alone regardless of rule order). */
+.time-mode-toggle.disasm-view-toggle {
+  padding: 0;
+  border-bottom: none;
+  flex-shrink: 0;
+}
+
+/* Sorted (hot-instruction) view: a flat, virtualized, whole-program instruction list — same
+   row/column look as Linear's own rows (.disasm-row/.disasm-hits/.disasm-cycles/.disasm-addr/
+   .disasm-text/.disasm-src) plus two new columns (.disasm-pct/.disasm-fn) below. */
+.disasm-sorted-rows {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  font-family: var(--vscode-editor-font-family), monospace;
+  font-size: var(--vscode-editor-font-size, 12px);
+  display: flex;
+  flex-direction: column;
+}
+
+.disasm-sorted-header {
+  flex-shrink: 0;
+  height: 18px;
+  background: var(--vscode-editor-background);
+  border-bottom: 1px solid var(--vscode-panel-border);
+  font-family: var(--vscode-font-family);
+}
+
+.disasm-pct {
+  width: 3.5em;
+  flex-shrink: 0;
+  text-align: right;
+  color: var(--vscode-descriptionForeground);
+}
+
+.disasm-fn {
+  width: 14em;
+  flex-shrink: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .disasm-body {
   flex: 1;
   display: flex;

@@ -2,7 +2,7 @@ import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { List, ListImperativeAPI, RowComponentProps } from "react-window";
 import { getProfileModel } from "./modelStore";
 import { buildColumns, columnIndexAtX, columnIndexToSlot, findNextSample, IColumn } from "./columns";
-import { IDisassembledInstruction, REG_COUNT, REG_D0, REG_A0, REG_SR, REG_PC, REG_USP } from "../../shared/profilerTypes";
+import { IDisassembledFunction, IDisassembledInstruction, REG_COUNT, REG_D0, REG_A0, REG_SR, REG_PC, REG_USP } from "../../shared/profilerTypes";
 import { heatColor } from "../../shared/profilerColor";
 import { srFlags } from "../shared/cpuFlags";
 import { createSymbolizer, Symbolizer } from "./symbols";
@@ -156,6 +156,83 @@ function RowRenderer({ index, style, rows, maxCycles, currentAddress, onOpenSour
   );
 }
 
+// ── Sorted (hot-instruction) view ───────────────────────────────────────────────────────────
+// A flat, whole-program list of every instruction that actually executed this frame (hits > 0 —
+// ranking never-executed code is meaningless), sortable by cycle cost or execution count instead
+// of the Linear view's per-function address order. Complements Linear rather than replacing it:
+// this is where you find "what's actually hot", Linear is where you read it in its real context.
+
+type SortKey = "cycles" | "hits";
+
+interface FlatIns {
+  fn: IDisassembledFunction;
+  ins: IDisassembledInstruction;
+}
+
+type SortedRowListProps = {
+  rows: FlatIns[];
+  totalCycles: number;
+  currentAddress: number | undefined;
+  maxCycles: number;
+  onOpenSource: (file: string, line: number, toSide: boolean) => void;
+  onJump: (fn: IDisassembledFunction, address: number) => void;
+};
+
+function SortedRowRenderer({ index, style, rows, totalCycles, currentAddress, maxCycles, onOpenSource, onJump }: RowComponentProps<SortedRowListProps>) {
+  const { fn, ins } = rows[index];
+  const pct = totalCycles > 0 ? (ins.cycles / totalCycles) * 100 : 0;
+  return (
+    <div
+      className={"disasm-row disasm-clickable" + (ins.address === currentAddress ? " disasm-current" : "")}
+      style={{ ...style, background: heatColor(ins.cycles, maxCycles) }}
+      onClick={() => onJump(fn, ins.address)}
+      title="Click: view in context"
+    >
+      <span className="disasm-hits" title="Executions this frame">{ins.hits}×</span>
+      <span className="disasm-cycles" title="Total cycles this frame">{ins.cycles}cy</span>
+      <span className="disasm-pct" title="Share of all executed instructions' total cycles this frame">{pct.toFixed(1)}%</span>
+      <span className="disasm-addr">${ins.address.toString(16).padStart(6, "0")}</span>
+      <span className="disasm-fn" title={fn.name}>{fn.name}</span>
+      <span className="disasm-text">{ins.text}</span>
+      {ins.file && (
+        <a
+          href="#"
+          className="disasm-src"
+          onClick={(e) => {
+            e.preventDefault();
+            e.stopPropagation(); // don't also trigger the row's jump-to-context click
+            onOpenSource(ins.file!, ins.line !== undefined && ins.line >= 0 ? ins.line : 1, e.altKey);
+          }}
+        >
+          {ins.file.split(/[/\\]/).pop()}:{ins.line ?? 1}
+        </a>
+      )}
+    </div>
+  );
+}
+
+function SortedHeader({ sortKey, onChangeSort }: { sortKey: SortKey; onChangeSort: (k: SortKey) => void }) {
+  const heading = (key: SortKey, cls: string, label: string) => (
+    <div
+      className={cls + " tv-heading" + (sortKey === key ? " tv-sorted" : "")}
+      style={{ cursor: "pointer" }}
+      onClick={() => onChangeSort(key)}
+    >
+      {sortKey === key && <span className="codicon codicon-chevron-down" />}{label}
+    </div>
+  );
+  return (
+    <div className="disasm-row disasm-sorted-header">
+      {heading("hits", "disasm-hits", "Hits")}
+      {heading("cycles", "disasm-cycles", "Cycles")}
+      <div className="disasm-pct tv-heading">%</div>
+      <div className="disasm-addr tv-heading">Address</div>
+      <div className="disasm-fn tv-heading">Function</div>
+      <div className="disasm-text tv-heading">Instruction</div>
+    </div>
+  );
+}
+
 const hex = (v: number, digits = 8) => `$${(v >>> 0).toString(16).padStart(digits, "0")}`;
 
 type RegKind = "data" | "address";
@@ -286,7 +363,7 @@ function RegistersPanel({
 // state — a tab switch unmounts/remounts DisassemblyView, which would otherwise reset these
 // checkboxes back to their hardcoded defaults every time). Same pattern as MemoryView's own
 // `savedView`. Reset on a full webview reload, same as everything else in module scope.
-let savedOptions: { follow: boolean; showRegs: boolean; showSource: boolean; globalHeat: boolean } | undefined;
+let savedOptions: { follow: boolean; showRegs: boolean; showSource: boolean; globalHeat: boolean; viewMode: "linear" | "sorted"; sortKey: SortKey } | undefined;
 
 // Per-instruction disassembly for every function that executed this frame, annotated with exact
 // per-PC hit/cycle counts (this profiler traces every retired instruction — not statistical
@@ -322,15 +399,20 @@ export function DisassemblyView({
   // Heat map scale: per-function (its own hottest instruction, the default) or global (the
   // hottest instruction across every executed function this frame) — see maxCycles below.
   const [globalHeat, setGlobalHeat] = useState(savedOptions?.globalHeat ?? true);
+  // Linear (per-function, address order — the original view) vs Sorted (flat, whole-program,
+  // ranked by cycle cost or execution count — see the SortedRowRenderer/SortedHeader doc comment).
+  const [viewMode, setViewMode] = useState<"linear" | "sorted">(savedOptions?.viewMode ?? "linear");
+  const [sortKey, setSortKey] = useState<SortKey>(savedOptions?.sortKey ?? "cycles");
   const [scrollTop, setScrollTop] = useState(0);
   const listRef = useRef<ListImperativeAPI>(null);
+  const sortedListRef = useRef<ListImperativeAPI>(null);
   const symbolize = useMemo(() => createSymbolizer(model?.symbols), [model]);
 
   // Keep savedOptions current as the toolbar toggles change, so the next mount (e.g. switching
   // back to this tab) restores them instead of resetting to the hardcoded defaults.
   useEffect(() => {
-    savedOptions = { follow, showRegs, showSource, globalHeat };
-  }, [follow, showRegs, showSource, globalHeat]);
+    savedOptions = { follow, showRegs, showSource, globalHeat, viewMode, sortKey };
+  }, [follow, showRegs, showSource, globalHeat, viewMode, sortKey]);
 
   // Also re-notify on mount (not just when the user toggles it) so a restored `globalHeat` from
   // savedOptions keeps the real-editor decorations in sync after switching back to this tab.
@@ -477,15 +559,36 @@ export function DisassemblyView({
   // spread. Per-function: the active function's own hottest instruction instead, so the gradient
   // stays meaningful even for a function that's individually cold relative to the rest of the
   // program — useful when comparing hot spots within one routine rather than across the frame.
+  // Sorted view always uses the global scale (it spans every function at once, so "per function"
+  // wouldn't mean anything) regardless of the Linear-only "Global heat" checkbox's own state.
   const maxCycles = useMemo(() => {
-    if (!globalHeat) return active ? Math.max(0, ...active.instructions.map((i) => i.cycles)) : 0;
+    if (!globalHeat && viewMode === "linear") return active ? Math.max(0, ...active.instructions.map((i) => i.cycles)) : 0;
     let max = 0;
     for (const fn of disassembly ?? []) {
       for (const ins of fn.instructions) if (ins.cycles > max) max = ins.cycles;
     }
     return max;
-  }, [globalHeat, disassembly, active]);
+  }, [globalHeat, viewMode, disassembly, active]);
   const arrows = useMemo(() => computeArrows(active?.instructions ?? []), [active]);
+
+  // Sorted view's data: every instruction that actually executed this frame (hits > 0), across
+  // every function, ranked by whichever of cycles/hits is currently the sort key. Kept separate
+  // from `functions` (which is per-function totals, sorted for the Linear picker) — this is
+  // per-instruction and flat.
+  const { sortedRows, sortedTotalCycles } = useMemo(() => {
+    if (!disassembly) return { sortedRows: [] as FlatIns[], sortedTotalCycles: 0 };
+    const flat: FlatIns[] = [];
+    let totalCycles = 0;
+    for (const fn of disassembly) {
+      for (const ins of fn.instructions) {
+        if (ins.hits <= 0) continue;
+        flat.push({ fn, ins });
+        totalCycles += ins.cycles;
+      }
+    }
+    flat.sort((a, b) => (sortKey === "cycles" ? b.ins.cycles - a.ins.cycles : b.ins.hits - a.ins.hits) || a.ins.address - b.ins.address);
+    return { sortedRows: flat, sortedTotalCycles: totalCycles };
+  }, [disassembly, sortKey]);
 
   // Scan model.pcs forward (prev=false) or backward (prev=true) from currentIdx to find the
   // next/previous execution of a specific instruction address, then jump the playhead there.
@@ -505,6 +608,31 @@ export function DisassemblyView({
     [rows, maxCycles, currentAddress, onOpenSource, jumpToExecution, showSource],
   );
 
+  // "View in context": switch to Linear, select the clicked instruction's own function (so it's
+  // guaranteed visible regardless of "Follow"), and jump the shared playhead to this instruction's
+  // first execution this frame — findNextSample(..., -1, false, ...) is the same recipe
+  // jumpToExecution above uses, just starting fresh from the beginning rather than continuing from
+  // wherever the playhead currently sits. Every row here has hits > 0 (see sortedRows above), so a
+  // matching sample always exists — the existing scroll-to-row effect (keyed off currentAddress)
+  // then does the rest once `active`/`rows` update to the newly-selected function.
+  const jumpFromSorted = useMemo(() => {
+    return (fn: IDisassembledFunction, address: number) => {
+      setFollow(false);
+      const fnIndex = functions.findIndex(f => f.address === fn.address);
+      if (fnIndex >= 0) setSelectedFn(fnIndex);
+      setViewMode("linear");
+      if (model?.pcs.length && dmaSlots && columns.length > 0) {
+        const k = findNextSample(model.pcs.length, -1, false, (i) => model.pcs[i] === address);
+        if (k !== undefined) onSelectSlot(columnIndexToSlot(columns, k, dmaSlots));
+      }
+    };
+  }, [functions, model, dmaSlots, columns, onSelectSlot]);
+
+  const sortedRowProps = useMemo<SortedRowListProps>(
+    () => ({ rows: sortedRows, totalCycles: sortedTotalCycles, currentAddress, maxCycles, onOpenSource, onJump: jumpFromSorted }),
+    [sortedRows, sortedTotalCycles, currentAddress, maxCycles, onOpenSource, jumpFromSorted],
+  );
+
   if (!model) return null;
   if (!disassembly || functions.length === 0) {
     return <div className="hint">No disassembly captured for this frame.</div>;
@@ -513,82 +641,114 @@ export function DisassemblyView({
   return (
     <div className="disassemblyview">
       <div className="disasm-toolbar">
-        <select
-          value={activeFnIndex}
-          onChange={(e) => { setFollow(false); setSelectedFn(Number(e.target.value)); }}
-        >
-          {functions.map((fn, i) => (
-            <option key={fn.address} value={i}>
-              {fn.name} ({fn.totalCycles} cy)
-            </option>
-          ))}
-        </select>
-        <label className="disasm-option">
-          <input type="checkbox" checked={follow} onChange={(e) => setFollow(e.target.checked)} />
-          Follow
-        </label>
-        <label className="disasm-option">
-          <input type="checkbox" checked={showRegs} onChange={(e) => setShowRegs(e.target.checked)} />
-          Registers
-        </label>
-        <label className="disasm-option">
-          <input type="checkbox" checked={showSource} onChange={(e) => setShowSource(e.target.checked)} />
-          Source
-        </label>
-        <label className="disasm-option" title="Scale the heat map by the hottest instruction across every executed function this frame, instead of just the function currently shown — also applies to the real editor's source line decorations.">
-          <input type="checkbox" checked={globalHeat} onChange={(e) => setGlobalHeat(e.target.checked)} />
-          Global heat
-        </label>
-        {activeTruncated && (
-          <span className="disasm-truncated-hint" title="This function's decoded range was cut short by the disassembly work budget — its tail instructions aren't shown.">
-            ⚠ disassembly truncated ({active!.instructions.length} instructions shown)
-          </span>
-        )}
-        {columns.length > 0 && dmaSlots && (
-          <span className="cr-nav">
-            <button
-              onClick={() => {
-                const target = currentIdx !== undefined ? currentIdx - 1 : columns.length - 1;
-                if (target >= 0) onSelectSlot(columnIndexToSlot(columns, target, dmaSlots));
-              }}
-              title="Previous instruction"
-            >◀</button>
-            <button
-              onClick={() => {
-                const target = currentIdx !== undefined ? currentIdx + 1 : 0;
-                if (target < columns.length) onSelectSlot(columnIndexToSlot(columns, target, dmaSlots));
-              }}
-              title="Next instruction"
-            >▶</button>
-          </span>
+        <span className="time-mode-toggle disasm-view-toggle">
+          <button
+            className={"time-mode-btn" + (viewMode === "linear" ? " active" : "")}
+            onClick={() => setViewMode("linear")}
+            title="Per-function disassembly in address order, interleaved with source"
+          >Linear</button>
+          <button
+            className={"time-mode-btn" + (viewMode === "sorted" ? " active" : "")}
+            onClick={() => setViewMode("sorted")}
+            title="Every executed instruction this frame, whole-program, ranked by cycle cost or execution count"
+          >Sorted</button>
+        </span>
+        {viewMode === "linear" ? (
+          <>
+            <select
+              value={activeFnIndex}
+              onChange={(e) => { setFollow(false); setSelectedFn(Number(e.target.value)); }}
+            >
+              {functions.map((fn, i) => (
+                <option key={fn.address} value={i}>
+                  {fn.name} ({fn.totalCycles} cy)
+                </option>
+              ))}
+            </select>
+            <label className="disasm-option">
+              <input type="checkbox" checked={follow} onChange={(e) => setFollow(e.target.checked)} />
+              Follow
+            </label>
+            <label className="disasm-option">
+              <input type="checkbox" checked={showRegs} onChange={(e) => setShowRegs(e.target.checked)} />
+              Registers
+            </label>
+            <label className="disasm-option">
+              <input type="checkbox" checked={showSource} onChange={(e) => setShowSource(e.target.checked)} />
+              Source
+            </label>
+            <label className="disasm-option" title="Scale the heat map by the hottest instruction across every executed function this frame, instead of just the function currently shown — also applies to the real editor's source line decorations.">
+              <input type="checkbox" checked={globalHeat} onChange={(e) => setGlobalHeat(e.target.checked)} />
+              Global heat
+            </label>
+            {activeTruncated && (
+              <span className="disasm-truncated-hint" title="This function's decoded range was cut short by the disassembly work budget — its tail instructions aren't shown.">
+                ⚠ disassembly truncated ({active!.instructions.length} instructions shown)
+              </span>
+            )}
+            {columns.length > 0 && dmaSlots && (
+              <span className="cr-nav">
+                <button
+                  onClick={() => {
+                    const target = currentIdx !== undefined ? currentIdx - 1 : columns.length - 1;
+                    if (target >= 0) onSelectSlot(columnIndexToSlot(columns, target, dmaSlots));
+                  }}
+                  title="Previous instruction"
+                >◀</button>
+                <button
+                  onClick={() => {
+                    const target = currentIdx !== undefined ? currentIdx + 1 : 0;
+                    if (target < columns.length) onSelectSlot(columnIndexToSlot(columns, target, dmaSlots));
+                  }}
+                  title="Next instruction"
+                >▶</button>
+              </span>
+            )}
+          </>
+        ) : (
+          <span className="disasm-option">{sortedRows.length} executed instructions this frame</span>
         )}
       </div>
-      <div className="disasm-body">
-        <div className="disasm-rows">
-          <ArrowGutter arrows={arrows} instructionRowY={instructionRowY} scrollTop={scrollTop} />
+      {viewMode === "linear" ? (
+        <div className="disasm-body">
+          <div className="disasm-rows">
+            <ArrowGutter arrows={arrows} instructionRowY={instructionRowY} scrollTop={scrollTop} />
+            <List
+              style={{ flex: 1, minWidth: 0, minHeight: 0 }}
+              listRef={listRef}
+              rowComponent={RowRenderer}
+              rowProps={rowProps}
+              rowCount={rows.length}
+              rowHeight={(index) => rows[index]?.kind === "source" ? SRC_H : ROW_H}
+              onScroll={(e) => setScrollTop(e.currentTarget.scrollTop)}
+            />
+          </div>
+          {currentRegs && showRegs && (
+            <RegistersPanel
+              regs={currentRegs}
+              prev={prevRegs}
+              symbolize={symbolize}
+              registers={model.registers}
+              currentIdx={currentIdx}
+              columns={columns}
+              dmaSlots={dmaSlots}
+              onSelectSlot={onSelectSlot}
+            />
+          )}
+        </div>
+      ) : (
+        <div className="disasm-sorted-rows">
+          <SortedHeader sortKey={sortKey} onChangeSort={setSortKey} />
           <List
             style={{ flex: 1, minWidth: 0, minHeight: 0 }}
-            listRef={listRef}
-            rowComponent={RowRenderer}
-            rowProps={rowProps}
-            rowCount={rows.length}
-            rowHeight={(index) => rows[index]?.kind === "source" ? SRC_H : ROW_H}
-            onScroll={(e) => setScrollTop(e.currentTarget.scrollTop)}
+            listRef={sortedListRef}
+            rowComponent={SortedRowRenderer}
+            rowProps={sortedRowProps}
+            rowCount={sortedRows.length}
+            rowHeight={ROW_H}
           />
         </div>
-        {currentRegs && showRegs && (
-          <RegistersPanel
-            regs={currentRegs}
-            prev={prevRegs}
-            symbolize={symbolize}
-            registers={model.registers}
-            currentIdx={currentIdx}
-            columns={columns}
-            dmaSlots={dmaSlots}
-            onSelectSlot={onSelectSlot}
-          />
-        )}
-      </div>
+      )}
     </div>
   );
 }
