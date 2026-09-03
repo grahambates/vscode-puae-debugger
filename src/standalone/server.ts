@@ -7,6 +7,7 @@ import { DebugAdapter } from "../debugAdapter";
 import { ProfilerRpcClient } from "../profilerManager";
 import { openInBrowser } from "./openInBrowser";
 import { runProfileCli } from "./profileCli";
+import { runMcpServer } from "../mcp/server";
 import { StandaloneMemoryViewerProvider } from "./standaloneMemoryViewerProvider";
 import { StandalonePuaeEmulator } from "./standalonePuaeEmulator";
 import { StandaloneProfilerViewerProvider } from "./standaloneProfilerViewerProvider";
@@ -22,6 +23,9 @@ if (process.argv[2] === "profile") {
   process.exit(runProfileCli(process.argv.slice(3)));
 }
 
+// `puae-debugger mcp` — MCP server over stdio (see src/mcp/server.ts). Dispatched here for the
+// same reason as `profile`, and with the same constraint the DAP --stdio mode has: stdout is the
+// protocol stream, so this must return rather than fall through to main()'s server startup.
 interface Options {
   dapPort: number;
   httpPort: number;
@@ -282,4 +286,11 @@ function main(): void {
   }
 }
 
-main();
+// `puae-debugger mcp` — MCP server over stdio (src/mcp/server.ts). Like the DAP --stdio mode,
+// stdout is a protocol stream, so it must not share the process with the HTTP/DAP servers main()
+// starts; it takes over the process instead of falling through to them.
+if (process.argv[2] === "mcp") {
+  runMcpServer();
+} else {
+  main();
+}
