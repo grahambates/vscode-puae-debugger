@@ -55,7 +55,12 @@ const CODE_MATCH_WINDOW = 512;
 // left edge of the flame graph even though real samples begin almost immediately.
 const ANCHOR_CANDIDATES = 32;
 
-function buildSampleSlots(pcs: readonly number[], timeDeltas: readonly number[], dma: IDmaModel): { slots: Int32Array; matched: number } {
+// Exported for profileAnalysis.ts, which reports how much of a frame's layout is anchored to a
+// real instruction fetch versus interpolated from cycle cost. That has to be the matcher's own
+// count: inferring it from column widths can't tell an anchored column from an interpolated one
+// that merely happens to be a slot wide, and (since zero-cost samples collapse to zero width) it
+// systematically overstates anchoring.
+export function buildSampleSlots(pcs: readonly number[], timeDeltas: readonly number[], dma: IDmaModel): { slots: Int32Array; matched: number } {
   const { owner, flags, addr } = dma;
   const N = owner.length;
   const slots = new Int32Array(pcs.length).fill(-1);

@@ -18,7 +18,7 @@
 //   - registers-truncated    → the register cap that used to stop profile recording outright
 //   - frame-short            → the profile buffer running out mid-capture
 
-import { buildColumns } from "./webview/profilerViewer/columns";
+import { buildColumns, buildSampleSlots } from "./webview/profilerViewer/columns";
 import { BusOwner, IProfileModel, REG_COUNT } from "./shared/profilerTypes";
 import { loadProfile } from "./profileLoader";
 import { ProfileManifest } from "./profileFormat";
@@ -28,10 +28,11 @@ import { ProfileManifest } from "./profileFormat";
 // every cycle figure here is measured against. Used as the fallback when a frame has no grid.
 const PAL_FRAME_CCK = 227 * 313;
 
-// A capture's final frame legitimately overruns: retro_run() returns a few scanlines past the
-// true frame boundary and, unlike every earlier frame, nothing emits a boundary marker to cut it
-// off there. Measured at ~1% (~3 scanlines) on real captures, so allow a little headroom on the
-// last frame before calling it a fault.
+// Kept for captures taken before wasm_profile_on_frame_boundary learned to stop recording at the
+// final frame's true boundary. Until then the last frame ran on for the few scanlines retro_run()
+// takes to return past that boundary — a consistent ~1% overrun, since nothing marked where the
+// last frame really ended (every earlier frame is bounded on both sides by markers). Current
+// captures land on the frame length like any other frame, so this only tolerates older files.
 const LAST_FRAME_OVERRUN_TOLERANCE = 1.05;
 // Earlier frames are bounded on both sides by markers and should land on the frame length. Only
 // rounding of the one unfinalized sample per frame should show up, hence a tight bound.
@@ -163,14 +164,12 @@ export function analyseFrame(model: IProfileModel, index: number): FrameAnalysis
       if (owner[i] === BusOwner.CPU && (flags[i] & 0x4) !== 0) fetchCells++;
     }
   }
-  // A column narrower than a single grid slot never got its own anchor — it was interpolated or
-  // extrapolated into place. Counting the rest approximates the anchored share closely enough to
-  // judge how literally to read box positions.
-  let anchoredSamples = 0;
-  if (dmaSlots > 0) {
-    const slot = 1 / dmaSlots;
-    for (let k = 0; k < columns.length; k++) if (columns[k].x2 - columns[k].x1 >= slot) anchoredSamples++;
-  }
+  // The matcher's own count of samples it tied to a real fetch cell. Re-running buildSampleSlots
+  // repeats a linear pass buildColumns already did, which is irrelevant for an offline report and
+  // buys an exact figure rather than one inferred from column widths.
+  const anchoredSamples = model.dma && model.pcs.length
+    ? buildSampleSlots(model.pcs, model.timeDeltas, model.dma).matched
+    : 0;
 
   const dmaOwners: DmaOwnerCount[] = [];
   if (model.dma) {
@@ -252,7 +251,7 @@ export function checkFrame(f: FrameAnalysis, isLast: boolean, findings: ProfileF
       severity: "info",
       code: "low-anchor-rate",
       frame: f.index,
-      message: `frame ${f.index} anchored ~${f.anchoredSamples} of ${f.samples} samples to a real instruction fetch (${f.fetchCells} fetch cells in the grid)`,
+      message: `frame ${f.index} anchored ${f.anchoredSamples} of ${f.samples} samples to a real instruction fetch (${f.fetchCells} fetch cells in the grid)`,
       hint: "normal with an instruction cache — most positions are interpolated from cycle cost rather than observed directly",
     });
   }

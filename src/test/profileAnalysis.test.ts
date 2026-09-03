@@ -100,7 +100,9 @@ describe("analyseFrame", () => {
     model.dma = { owner, flags, addr, value: new Uint16Array(N) };
     const f2 = analyseFrame(model, 0);
     expect(f2.fetchCells).toBe(3);
-    expect(f2.anchoredSamples).toBeGreaterThanOrEqual(3);
+    // The matcher's own count, so this is exact rather than inferred from column widths: samples
+    // 0, 1 and 2 each have a fetch cell of their own; sample 3 has none and is interpolated.
+    expect(f2.anchoredSamples).toBe(3);
   });
 });
 

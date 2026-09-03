@@ -33,7 +33,7 @@ function dumpFrame(f: FrameAnalysis, limit: number, out: string[]): void {
   out.push(`Frame ${f.index}: ${f.samples} samples, ${f.cycles} cycles = ${pct(f.cyclePct)} of ${f.frameCycles} color clocks`);
   const detail = [`zero-cost samples: ${f.zeroCostSamples}`];
   if (f.registerSamples) detail.push(`register trace: ${f.registerSamples}`);
-  if (f.dmaSlots) detail.push(`fetch cells: ${f.fetchCells}`, `anchored: ~${f.anchoredSamples}`);
+  if (f.dmaSlots) detail.push(`fetch cells: ${f.fetchCells}`, `anchored: ${f.anchoredSamples}`);
   out.push(`  ${detail.join(", ")}`);
 
   if (f.dmaOwners.length > 0) {
