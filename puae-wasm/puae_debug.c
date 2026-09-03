@@ -269,6 +269,16 @@ static int      g_wprofLastCycleValid;
 static int      g_wprofWasPaused;
 static int      g_wprofSavedBlitterCE; /* saved currprefs.blitter_cycle_exact during capture */
 static evt_t    g_wprofStartCycles;
+/* Cycle count at the true end of the final profiled frame, once that boundary has been crossed
+ * (see wasm_profile_on_frame_boundary). retro_run() returns a few scanlines PAST the boundary it
+ * was going to stop at, and unlike every earlier frame nothing marks where the last one really
+ * ended — so measuring the capture with get_cycles() at wasm_profile_finish time overstated it by
+ * those scanlines, consistently ~1% of a frame (~680 color clocks, measured). Recording now stops
+ * at the boundary itself and this remembers when that was, so both the samples and the reported
+ * frameCycles cover exactly the frames asked for. Valid flag rather than a 0 sentinel: 0 is a
+ * legitimate cycle count right after a reset. */
+static evt_t    g_wprofEndCycles;
+static int      g_wprofEndValid;
 static uint64_t g_wprofFrameCycles;
 /* When 0, wasm_profile_instrHook still records profile samples but skips the
  * register snapshot.  Cleared by wasm_profile_emit_frame_marker(), so that only
@@ -426,6 +436,7 @@ wasm_profile_reset_counters(void)
 	g_wprofLastCycleValid   = 0;
 	g_wprofTotalInstrs      = 0;
 	g_wprofInRangeInstrs    = 0;
+	g_wprofEndValid         = 0;
 	g_wprofStartCycles      = get_cycles();
 }
 
@@ -467,7 +478,10 @@ void
 wasm_profile_finish(int numFrames)
 {
 	if (numFrames > 0 && CYCLE_UNIT > 0) {
-		evt_t elapsed = get_cycles() - g_wprofStartCycles;
+		/* g_wprofEndCycles is the last frame's true boundary; falling back to get_cycles() only
+		 * matters if recording never reached one (a capture cut short). */
+		evt_t end = g_wprofEndValid ? g_wprofEndCycles : get_cycles();
+		evt_t elapsed = end - g_wprofStartCycles;
 		g_wprofFrameCycles = (uint64_t)elapsed / (uint64_t)CYCLE_UNIT / (uint64_t)numFrames;
 	}
 	g_wprofActive    = 0;
@@ -2213,6 +2227,30 @@ wasm_profile_on_frame_boundary(void)
 		if (wasm_profile_emit_frame_marker(g_wprofFrameMarkersEmitted + 1)) {
 			g_wprofFrameMarkersEmitted++;
 		}
+	} else if (g_wprofMarkersAllowed) {
+		/* Every frame asked for has now been marked off, so this boundary is the end of the last
+		 * one. Stop here rather than letting the counted retro_run() call keep recording for the
+		 * few scanlines it runs past the boundary before returning — that tail belonged to no
+		 * requested frame and showed up as a consistent ~1% overrun on the final frame.
+		 *
+		 * The still-pending sample can be finalized exactly now, instead of being left at the
+		 * "1 = unknown" placeholder: its cost is the time from its own hook to this boundary,
+		 * truncated at the frame edge, which is precisely what a frame-bounded profile wants.
+		 * (Inter-frame markers still drop theirs — one fabricated color clock per frame, far
+		 * below anything measurable.) */
+		if (g_wprofPendingCycleSlot != WASM_PROFILE_NO_PENDING_SLOT) {
+			evt_t now = get_cycles();
+			uint32_t d = 0;
+			if (g_wprofLastCycleValid && CYCLE_UNIT > 0 && now > g_wprofLastCycle) {
+				uint64_t v = (uint64_t)(now - g_wprofLastCycle) / (uint64_t)CYCLE_UNIT;
+				d = (uint32_t)(v < 0xfffffu ? v : 0xfffffu);
+			}
+			g_wprofBuf[g_wprofPendingCycleSlot] = d;
+			g_wprofPendingCycleSlot = WASM_PROFILE_NO_PENDING_SLOT;
+		}
+		g_wprofEndCycles = get_cycles();
+		g_wprofEndValid  = 1;
+		g_wprofActive    = 0;
 	}
 }
 
