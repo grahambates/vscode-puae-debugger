@@ -2,7 +2,7 @@ import { looksLikePlain68000, theoreticalTiming } from "../theoreticalTimings";
 // analyseStalls lives in profileAnalysis but is tested here, alongside the timing source it
 // depends on — the arithmetic is only meaningful in terms of what 68kcounter returns.
 import { analyseStalls } from "../profileAnalysis";
-import { ProfileManifest } from "../profileFormat";
+import { IDisassembledFunction } from "../shared/profilerTypes";
 
 describe("theoreticalTiming", () => {
   it("reports datasheet cost in COLOR clocks, not CPU cycles", () => {
@@ -80,31 +80,21 @@ describe("looksLikePlain68000", () => {
   });
 });
 
-// Minimal manifest carrying just the disassembly analyseStalls reads.
-function manifestWith(instructions: { text: string; hits: number; cycles: number }[]): ProfileManifest {
-  return {
-    version: 1,
-    program: { elfEmbedded: false },
-    meta: { frameCycles: 71051, isPAL: true, start: 0, end: 0, total: 0, inRange: 0 },
-    relocation: { segmentOffsets: [], baseDir: "" },
-    kickstart: { sha1: "", name: "" },
-    sections: [],
-    frameCount: 1,
-    frameMeta: [],
-    disassembly: [{
-      address: 0x1000, end: 0x1000 + instructions.length * 2, name: "fn", totalCycles: 0,
-      instructions: instructions.map((ins, i) => ({
-        address: 0x1000 + i * 2, hex: "0000", length: 2, text: ins.text, hits: ins.hits, cycles: ins.cycles,
-      })),
-    }],
-  } as ProfileManifest;
+// Minimal disassembly of one function, which is all analyseStalls reads.
+function disasmWith(instructions: { text: string; hits: number; cycles: number }[]): IDisassembledFunction[] {
+  return [{
+    address: 0x1000, end: 0x1000 + instructions.length * 2, name: "fn", totalCycles: 0,
+    instructions: instructions.map((ins, i) => ({
+      address: 0x1000 + i * 2, hex: "0000", length: 2, text: ins.text, hits: ins.hits, cycles: ins.cycles,
+    })),
+  }];
 }
 
 describe("analyseStalls", () => {
   it("attributes the excess over datasheet cost to stall", () => {
     // move.l 4(a6),d1 is 8 color clocks unblocked. Run 10 times costing 200 measured means
     // 120 of those color clocks were spent waiting, not working.
-    const st = analyseStalls(manifestWith([{ text: "move.l 4(a6),d1", hits: 10, cycles: 200 }]), 0);
+    const st = analyseStalls(disasmWith([{ text: "move.l 4(a6),d1", hits: 10, cycles: 200 }]), 0);
     expect(st.applicable).toBe(true);
     expect(st.totalTheoretical).toBe(80);
     expect(st.totalMeasured).toBe(200);
@@ -115,13 +105,13 @@ describe("analyseStalls", () => {
   });
 
   it("reports no stall for an instruction running at datasheet speed", () => {
-    const st = analyseStalls(manifestWith([{ text: "move.l 4(a6),d1", hits: 10, cycles: 80 }]), 0);
+    const st = analyseStalls(disasmWith([{ text: "move.l 4(a6),d1", hits: 10, cycles: 80 }]), 0);
     expect(st.applicable).toBe(true);
     expect(st.functions[0].stall).toBe(0);
   });
 
   it("excludes untimeable instructions from both sides rather than one", () => {
-    const st = analyseStalls(manifestWith([
+    const st = analyseStalls(disasmWith([
       { text: "move.l 4(a6),d1", hits: 10, cycles: 200 },
       { text: "$$$ not an instruction", hits: 5, cycles: 999 },
     ]), 0);
@@ -131,7 +121,7 @@ describe("analyseStalls", () => {
   });
 
   it("skips instructions that never executed", () => {
-    const st = analyseStalls(manifestWith([
+    const st = analyseStalls(disasmWith([
       { text: "move.l 4(a6),d1", hits: 0, cycles: 0 },
       { text: "nop", hits: 1, cycles: 2 },
     ]), 0);
@@ -139,17 +129,27 @@ describe("analyseStalls", () => {
   });
 
   it("refuses when the capture has sub-color-clock samples (68020+ path)", () => {
-    const st = analyseStalls(manifestWith([{ text: "move.l 4(a6),d1", hits: 10, cycles: 200 }]), 17185);
+    const st = analyseStalls(disasmWith([{ text: "move.l 4(a6),d1", hits: 10, cycles: 200 }]), 17185);
     expect(st.applicable).toBe(false);
     expect(st.caveat).toMatch(/68020\+/);
   });
 
-  it("refuses when measured comes in under datasheet, which contention cannot cause", () => {
+  it("refuses when measured comes in well under datasheet, which contention cannot cause", () => {
     // The guard that catches a 68020 capture old enough to have no stored zeros: a faster core
-    // beats the 68000 datasheet, and no amount of bus contention can subtract cycles.
-    const st = analyseStalls(manifestWith([{ text: "move.l 4(a6),d1", hits: 10, cycles: 40 }]), 0);
+    // beats the 68000 datasheet, and no amount of bus contention can subtract cycles. A real one
+    // measured 0.73x; this is 0.5x.
+    const st = analyseStalls(disasmWith([{ text: "move.l 4(a6),d1", hits: 10, cycles: 40 }]), 0);
     expect(st.applicable).toBe(false);
-    expect(st.caveat).toMatch(/below the 68000 datasheet/);
+    expect(st.caveat).toMatch(/0\.50x the 68000 datasheet/);
+  });
+
+  it("tolerates measuring slightly under datasheet, which the worst-case bias causes", () => {
+    // theoreticalTiming takes the SLOWEST of a branch's timings, so the datasheet side runs a
+    // little high. A real 68000 capture with an almost-idle bus came in at 0.997x — correct, and
+    // rejected by an exact test. 8 cck x 10 = 80 datasheet against 78 measured is 0.975x.
+    const st = analyseStalls(disasmWith([{ text: "move.l 4(a6),d1", hits: 10, cycles: 78 }]), 0);
+    expect(st.applicable).toBe(true);
+    expect(st.functions[0].stall).toBe(-2);
   });
 });
 

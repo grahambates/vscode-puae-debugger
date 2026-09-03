@@ -627,6 +627,7 @@ export function combineFrames(frames: FrameCapture[], allSamples: InstructionSam
   if (frames[0].raw.disassembly?.length) {
     const reweighted = reweightDisassembly(frames[0].raw.disassembly, allSamples);
     combined.disassembly = attachDisassembly(reweighted, sourceMap);
+    combined.datasheet = judgeDatasheet(combined.disassembly, allSamples);
   }
   return combined;
 }
@@ -654,6 +655,7 @@ export function buildFrameRangeModel(
   if (frames[0]?.raw.disassembly?.length) {
     const reweighted = reweightDisassembly(frames[0].raw.disassembly, samples);
     model.disassembly = attachDisassembly(reweighted, sourceMap);
+    model.datasheet = judgeDatasheet(model.disassembly, samples);
   }
   return model;
 }
@@ -679,6 +681,7 @@ export function buildFramesFromCaptures(raws: RawCapture[], sourceMap: SourceMap
       const reweighted = reweightDisassembly(frames[0].raw.disassembly, samples);
       raw.disassembly = reweighted;
       model.disassembly = attachDisassembly(reweighted, sourceMap);
+      model.datasheet = judgeDatasheet(model.disassembly, samples);
     }
     frames.push({ model, raw });
   }

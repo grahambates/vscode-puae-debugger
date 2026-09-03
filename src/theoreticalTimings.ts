@@ -23,6 +23,18 @@
 
 import parse from "68kcounter";
 
+// How far below the datasheet total a capture may measure before the comparison is rejected.
+//
+// Not zero, because the datasheet side is deliberately biased high: theoreticalTiming takes the
+// SLOWEST of an instruction's possible timings, so every branch that wasn't taken and every DBcc
+// that didn't expire contributes a little more theoretical cost than really applied. On a real
+// 68000 capture with an almost-idle bus that put measured at 0.997x datasheet — correct (no
+// contention to suffer) but under 1.0, which an exact test rejected.
+//
+// The gap this guard actually exists to catch is much larger: a 68020 capture measured 0.73x,
+// running faster than a 68000 can. 0.9 separates the two with room on both sides.
+const DATASHEET_SHORTFALL_TOLERANCE = 0.9;
+
 export interface TheoreticalTiming {
   /** Datasheet cost with no bus contention, in COLOR clocks (68kcounter's CPU cycles / 2). */
   cck: number;
@@ -134,10 +146,11 @@ export function datasheetApplicability(
       caveat: `capture contains ${zeroCostSamples} sub-color-clock samples, so it was recorded on the 68020+ cycle-exact path — 68kcounter models the 68000 only, and these figures do not apply`,
     };
   }
-  if (totalMeasured < totalTheoretical) {
+  if (totalMeasured < totalTheoretical * DATASHEET_SHORTFALL_TOLERANCE) {
+    const ratio = totalTheoretical > 0 ? (totalMeasured / totalTheoretical).toFixed(2) : "0";
     return {
       applicable: false,
-      caveat: `measured cost (${totalMeasured}) is below the 68000 datasheet cost (${totalTheoretical}), which bus contention cannot cause — this code is not running 68000 timings, so the comparison is void`,
+      caveat: `measured cost (${totalMeasured}) is ${ratio}x the 68000 datasheet cost (${totalTheoretical}) — bus contention can only add cycles, so this code is not running 68000 timings and the comparison is void`,
     };
   }
   return { applicable: true };

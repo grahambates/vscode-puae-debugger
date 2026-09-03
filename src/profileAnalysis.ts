@@ -19,7 +19,7 @@
 //   - frame-short            → the profile buffer running out mid-capture
 
 import { buildColumns, buildSampleSlots } from "./webview/profilerViewer/columns";
-import { BusOwner, IProfileModel, REG_COUNT } from "./shared/profilerTypes";
+import { BusOwner, IDisassembledFunction, IProfileModel, REG_COUNT } from "./shared/profilerTypes";
 import { loadProfile } from "./profileLoader";
 import { ProfileManifest } from "./profileFormat";
 import { datasheetApplicability, theoreticalTiming } from "./theoreticalTimings";
@@ -99,14 +99,14 @@ export interface FrameAnalysis {
   anchoredSamples: number; // samples matched to one of those cells
   functions: FunctionCost[]; // descending by selfCycles
   dmaOwners: DmaOwnerCount[]; // descending by cells
+  /** Present only when stall analysis was requested (see analyseProfile's options). */
+  stalls?: StallAnalysis;
 }
 
 export interface ProfileAnalysis {
   manifest: ProfileManifest;
   frames: FrameAnalysis[];
   findings: ProfileFinding[];
-  /** Present only when stall analysis was requested (see analyseProfile's options). */
-  stalls?: StallAnalysis;
 }
 
 // Measured cost against datasheet cost, per function — the difference between "this routine is
@@ -314,15 +314,21 @@ export function checkFrame(f: FrameAnalysis, isLast: boolean, findings: ProfileF
   }
 }
 
-// Measured-vs-datasheet cost per function, from frame 0's disassembly (the only frame that
-// carries one — see ProfileManifest.disassembly). Instructions 68kcounter can't time are counted
-// in `untimed` and excluded from both totals rather than silently contributing to one side.
-export function analyseStalls(manifest: ProfileManifest, zeroCostSamples: number): StallAnalysis {
+// Measured-vs-datasheet cost per function. Takes the FRAME's own disassembly rather than the
+// document's: ProfileManifest.disassembly holds frame 0's only, and buildFramesFromCaptures
+// reweights per-instruction hits/cycles onto each later frame. Reading the manifest here made
+// every frame report frame 0's figures — visibly wrong on a capture whose bus load alternates
+// between frames. Instructions 68kcounter can't time are counted in `untimed` and excluded from
+// both totals rather than silently contributing to one side.
+export function analyseStalls(
+  disassembly: IDisassembledFunction[] | undefined,
+  zeroCostSamples: number,
+): StallAnalysis {
   const functions: FunctionStall[] = [];
   let totalMeasured = 0;
   let totalTheoretical = 0;
 
-  for (const fn of manifest.disassembly ?? []) {
+  for (const fn of disassembly ?? []) {
     let measured = 0;
     let theoretical = 0;
     let busAccesses = 0;
@@ -353,7 +359,11 @@ export function analyseStalls(manifest: ProfileManifest, zeroCostSamples: number
 
 export function analyseProfile(file: Uint8Array, opts: { stalls?: boolean } = {}): ProfileAnalysis {
   const { frames, manifest } = loadProfile(file);
-  const analysed = frames.map((f, i) => analyseFrame(f.model, i));
+  const analysed = frames.map((f, i) => {
+    const a = analyseFrame(f.model, i);
+    if (opts.stalls) a.stalls = analyseStalls(f.model.disassembly, a.zeroCostSamples);
+    return a;
+  });
   const findings: ProfileFinding[] = [];
 
   const { total, inRange } = manifest.meta;
@@ -370,6 +380,5 @@ export function analyseProfile(file: Uint8Array, opts: { stalls?: boolean } = {}
 
   const rank: Record<Severity, number> = { error: 0, warning: 1, info: 2 };
   findings.sort((a, b) => rank[a.severity] - rank[b.severity] || (a.frame ?? -1) - (b.frame ?? -1));
-  const stalls = opts.stalls ? analyseStalls(manifest, analysed[0]?.zeroCostSamples ?? 0) : undefined;
-  return { manifest, frames: analysed, findings, stalls };
+  return { manifest, frames: analysed, findings };
 }

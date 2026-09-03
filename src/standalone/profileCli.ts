@@ -56,10 +56,11 @@ function dumpFrame(f: FrameAnalysis, limit: number, out: string[]): void {
   if (limit > 0 && f.functions.length > limit) {
     out.push(`  … ${f.functions.length - limit} more (use --functions 0)`);
   }
+  if (f.stalls) out.push(...renderStalls(f.stalls, limit, f.index));
 }
 
-function renderStalls(st: StallAnalysis, limit: number): string[] {
-  const out: string[] = ["", "Measured vs 68000 datasheet cost (frame 0)"];
+function renderStalls(st: StallAnalysis, limit: number, frameIndex: number): string[] {
+  const out: string[] = ["", `  Measured vs 68000 datasheet cost (frame ${frameIndex})`];
   if (!st.applicable) {
     out.push(`  NOT APPLICABLE: ${st.caveat}`);
     return out;
@@ -95,7 +96,6 @@ function renderDump(a: ProfileAnalysis, frame: number | undefined, limit: number
     return out.join("\n");
   }
   for (const f of frames) dumpFrame(f, limit, out);
-  if (a.stalls) out.push(...renderStalls(a.stalls, limit));
   return out.join("\n");
 }
 
