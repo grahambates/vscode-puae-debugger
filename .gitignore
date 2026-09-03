@@ -6,7 +6,10 @@ node_modules
 *.local.json
 coverage
 tsconfig.tsbuildinfo
-.claude
+# Local Claude Code state (settings.json, scheduled_tasks.lock, worktrees/) stays untracked, but
+# project skills are shared tooling meant to travel with the repo — see .claude/skills/.
+.claude/*
+!.claude/skills
 
 # PUAE wasm build artifacts
 puae-wasm/*.a

@@ -6,11 +6,21 @@ import { WebSocketServer } from "ws";
 import { DebugAdapter } from "../debugAdapter";
 import { ProfilerRpcClient } from "../profilerManager";
 import { openInBrowser } from "./openInBrowser";
+import { runProfileCli } from "./profileCli";
 import { StandaloneMemoryViewerProvider } from "./standaloneMemoryViewerProvider";
 import { StandalonePuaeEmulator } from "./standalonePuaeEmulator";
 import { StandaloneProfilerViewerProvider } from "./standaloneProfilerViewerProvider";
 import { StandaloneStateViewerProvider } from "./standaloneStateViewerProvider";
 import { notFound, serveStaticFile } from "./staticServer";
+
+// `puae-debugger profile <dump|check> ...` is a plain offline CLI (no DAP/HTTP server, no
+// emulator) — dispatched before parseArgs/main below (which are for the DAP server) even run,
+// so it exits fast without booting any of that. See profileCli.ts's own header for why this is
+// a subcommand of the existing binary rather than a separate one: it shares the bin entry, the
+// bundle, and package installation, and "puae-debugger profile" reads naturally either way.
+if (process.argv[2] === "profile") {
+  process.exit(runProfileCli(process.argv.slice(3)));
+}
 
 interface Options {
   dapPort: number;
