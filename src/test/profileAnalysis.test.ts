@@ -118,8 +118,12 @@ function baseFrame(overrides: Partial<FrameAnalysis> = {}): FrameAnalysis {
     zeroCostSamples: 0,
     registerSamples: 0,
     dmaSlots: 71051,
+    // Healthy by low-anchor-rate's measure: the matcher used most of the fetch cells the grid
+    // offered it (3000/5000). The sample count is deliberately far higher than either — a cached
+    // CPU emits no fetch cell for most instructions, which is exactly why the check counts
+    // against fetchCells rather than samples.
     fetchCells: 5000,
-    anchoredSamples: 900,
+    anchoredSamples: 3000,
     functions: [],
     dmaOwners: [],
     ...overrides,
@@ -184,11 +188,19 @@ describe("checkFrame", () => {
     expect(codesOf(findings)).toEqual(["no-dma-grid"]);
   });
 
-  it("flags low-anchor-rate when few samples matched a real instruction fetch", () => {
+  it("flags low-anchor-rate when the matcher used few of the available fetch cells", () => {
     const findings: ProfileFinding[] = [];
-    checkFrame(baseFrame({ samples: 1000, anchoredSamples: 50 }), false, findings);
+    checkFrame(baseFrame({ fetchCells: 5000, anchoredSamples: 50 }), false, findings);
     expect(codesOf(findings)).toContain("low-anchor-rate");
     expect(findings.find((f) => f.code === "low-anchor-rate")!.severity).toBe("info");
+  });
+
+  it("does not flag low-anchor-rate merely because samples outnumber fetch cells", () => {
+    // The cached-CPU case: 31k samples against 10k fetch cells, but the matcher anchored to most
+    // of the cells that existed. Counting against samples would call this a problem; it isn't.
+    const findings: ProfileFinding[] = [];
+    checkFrame(baseFrame({ samples: 31078, fetchCells: 10028, anchoredSamples: 5959 }), false, findings);
+    expect(codesOf(findings)).not.toContain("low-anchor-rate");
   });
 
   it("flags width-vs-cycles when a function's flame-graph width diverges from its cycle share", () => {

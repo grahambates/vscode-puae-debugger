@@ -233,7 +233,10 @@ static uint32_t  g_wprofBufLen;
  * block per recorded sample (D0-D7, A0-A7, SR, PC, USP; see WASM_REG_COUNT/wasm_read_regs below),
  * rather than interleaved into g_wprofBuf's variable-length records. At 19 words/sample flat
  * (vs g_wprofBuf's ~5 words/sample average at typical call-stack depth), this is the larger of
- * the two getProfileData/getProfileRegs transfers, so it gets its own cap.
+ * the two getProfileData/getProfileRegs transfers, so it gets its own cap. At the current cap
+ * that transfer measures ~94 ms end to end (93 ms base64-encoding it webview-side, 1 ms decoding
+ * host-side) against 26 ms at the old 16k cap — comfortably inside getProfileRegs' 30 s timeout,
+ * so the cap is bounded by memory and document size rather than by transfer cost.
  *
  * That cap bounds the register trace ONLY — it must never stop a profile sample being recorded.
  * It used to: instrHook returned early once the register buffer was full, which threw away the

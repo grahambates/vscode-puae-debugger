@@ -42,11 +42,23 @@ const FRAME_OVERRUN_TOLERANCE = 1.02;
 const FRAME_SHORTFALL_TOLERANCE = 0.8;
 // A function whose flame-graph width and cycle share disagree by more than this (in percentage
 // points of the frame) is being drawn in the wrong place, however plausible its cycle figure is.
+// Calibrated rather than guessed: sweeping columns.ts's CODE_MATCH_WINDOW over a real capture put
+// a healthy layout at 0.2pp worst-case and a deliberately mis-tuned one (wrong-lap matches) at
+// 6.8pp, with the two well separated. 3pp sits between them — comfortably clear of measurement
+// noise, and still catching the real failure this check exists for (a busy-wait rendered at 91.5%
+// of a frame's width for 14.5% of its cycles).
 const WIDTH_DIVERGENCE_PP = 3;
-// Below this share of samples anchored to a real instruction fetch, flame-graph positions are
-// mostly interpolated. Not a fault — a cached CPU emits no fetch cell for most instructions —
-// but it decides how much to trust box positions, so it belongs in the report.
-const LOW_ANCHOR_RATE = 0.2;
+// Share of the frame's instruction-fetch cells the matcher actually tied a sample to, below which
+// flame-graph positions are mostly interpolated rather than observed.
+//
+// Measured against fetch cells, NOT against sample count. A cached CPU emits no fetch cell for
+// most instructions — on a real 68020 frame, 10,028 cells for 31,078 samples — so anchored/samples
+// is capped by cache behaviour nobody controls and reads "low" even when the matcher has done
+// everything available to it. Anchored/fetchCells asks the question that's actually actionable:
+// of the positions the grid could have confirmed, how many did we use? The same frame went from
+// 7.9% of them (blind forward search) to 59.4% (cycle-predicted), so half is a fair line between
+// "working" and "struggling".
+const LOW_ANCHOR_RATE = 0.5;
 
 export type Severity = "error" | "warning" | "info";
 
@@ -246,13 +258,13 @@ export function checkFrame(f: FrameAnalysis, isLast: boolean, findings: ProfileF
     return;
   }
 
-  if (f.samples > 0 && f.anchoredSamples / f.samples < LOW_ANCHOR_RATE) {
+  if (f.fetchCells > 0 && f.anchoredSamples / f.fetchCells < LOW_ANCHOR_RATE) {
     findings.push({
       severity: "info",
       code: "low-anchor-rate",
       frame: f.index,
-      message: `frame ${f.index} anchored ${f.anchoredSamples} of ${f.samples} samples to a real instruction fetch (${f.fetchCells} fetch cells in the grid)`,
-      hint: "normal with an instruction cache — most positions are interpolated from cycle cost rather than observed directly",
+      message: `frame ${f.index} used ${f.anchoredSamples} of the ${f.fetchCells} instruction-fetch cells available to anchor to (${((f.anchoredSamples / f.fetchCells) * 100).toFixed(0)}%), across ${f.samples} samples`,
+      hint: "most flame-graph positions are interpolated from cycle cost rather than observed; see buildSampleSlots' CODE_MATCH_WINDOW",
     });
   }
 
