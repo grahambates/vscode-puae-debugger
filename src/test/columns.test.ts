@@ -145,6 +145,90 @@ describe("buildColumns (DMA-anchored positions)", () => {
     expect(columns[1].x1).toBeCloseTo(3005 / M, 6);
     expect(columns[2].x1).toBeCloseTo(3010 / M, 6);
   });
+
+  // Regression test for a real bug report: on a 68020 the I-cache means most instructions never
+  // emit a fetch cell at all (a whole captured frame offered 10,028 cells for 31,078 executed
+  // instructions), and a busy-wait spin loop emits almost none — so long runs of samples get
+  // interpolated rather than matched. Spreading such a run by sample INDEX assumes every sample
+  // costs the same, which is exactly what a spin loop violates: it retires far more instructions
+  // per cycle than the real work around it, so it swallows width that belongs to the work.
+  it("spreads an unmatched run by cycle cost, not by sample count", () => {
+    const M = 1000;
+    const owner = new Uint8Array(M);
+    const flags = new Uint8Array(M);
+    const addr = new Uint32Array(M);
+    const value = new Uint16Array(M);
+    const fetch = (slot: number, pc: number) => {
+      owner[slot] = BusOwner.CPU;
+      flags[slot] = DMA_CODE;
+      addr[slot] = pc;
+    };
+    // Samples 1 and 6 both match a real fetch cell, 400 slots apart. Samples 2-5 fall between
+    // them with no cell of their own: three cheap spin samples (1 cycle each) and one expensive
+    // one (297 cycles). (Sample 0 anchors and sample 1 confirms it — see the tests above.)
+    fetch(100, 0x3000);
+    fetch(105, 0x3004);
+    fetch(505, 0x3014);
+
+    const spinModel: IProfileModel = {
+      ...model,
+      samples: [0, 1, 1, 1, 1, 1, 1],
+      timeDeltas: [1, 1, 1, 1, 297, 1],
+      pcs: [0x3000, 0x3004, 0x3008, 0x300c, 0x3010, 0x3014],
+      duration: 302,
+      dma: { owner, flags, addr, value },
+    };
+    const columns = buildColumns(spinModel);
+    expect(columns[0].x1).toBeCloseTo(100 / M, 6);
+    expect(columns[1].x1).toBeCloseTo(105 / M, 6);
+    // Samples 2-4 span 400 slots and 300 cycles between the anchors at 105 and 505. The two
+    // cheap samples sit 1 and 2 cycles in, so they stay bunched against the left anchor...
+    expect(columns[2].x1).toBeCloseTo((105 + Math.round((400 * 1) / 300)) / M, 6);
+    expect(columns[3].x1).toBeCloseTo((105 + Math.round((400 * 2) / 300)) / M, 6);
+    expect(columns[4].x1).toBeCloseTo((105 + Math.round((400 * 3) / 300)) / M, 6);
+    // ...rather than each taking a quarter of the span, as spreading by sample index would give.
+    expect(columns[4].x1).toBeLessThan((105 + (400 * 3) / 4) / M);
+    // The expensive sample gets essentially the whole gap, closing on the right anchor.
+    expect(columns[4].x2 - columns[4].x1).toBeGreaterThan((400 * 0.95) / M);
+    expect(columns[5].x1).toBeCloseTo(505 / M, 6);
+  });
+
+  // Regression test for the same bug report: once one spin puts the matcher's cursor more than
+  // CODE_MATCH_WINDOW behind the raster, the bounded forward search can never catch back up, so
+  // matching stops for the rest of the frame (measured: dead at sample 1,907 of 31,078). Clamping
+  // that whole trailing run onto the last matched slot gives every one of those samples zero
+  // width and lets the single final column stretch across everything they should have covered —
+  // which is how a busy-wait ended up rendered as 91.5% of a frame it actually spent 14.5% of.
+  // A grid slot is one color clock and timeDeltas are color clocks, so the run extrapolates
+  // directly at one slot per cycle.
+  it("extrapolates a trailing unmatched run by cycles instead of collapsing it onto one slot", () => {
+    const M = 1000;
+    const owner = new Uint8Array(M);
+    const flags = new Uint8Array(M);
+    const addr = new Uint32Array(M);
+    const value = new Uint16Array(M);
+    owner[100] = BusOwner.CPU;
+    flags[100] = DMA_CODE;
+    addr[100] = 0x4000;
+    // Only sample 0 ever matches; samples 1-3 are the trailing run.
+    const tailModel: IProfileModel = {
+      ...model,
+      samples: [0, 1, 1, 1, 1],
+      timeDeltas: [50, 200, 50, 1],
+      pcs: [0x4000, 0x4004, 0x4008, 0x400c],
+      duration: 301,
+      dma: { owner, flags, addr, value },
+    };
+    const columns = buildColumns(tailModel);
+    expect(columns[0].x1).toBeCloseTo(100 / M, 6);
+    expect(columns[1].x1).toBeCloseTo(150 / M, 6); // +50 cycles
+    expect(columns[2].x1).toBeCloseTo(350 / M, 6); // +200
+    expect(columns[3].x1).toBeCloseTo(400 / M, 6); // +50
+    // Each trailing sample gets real width proportional to its cost, rather than all three
+    // collapsing to slot 100 and leaving the last column to span the remaining 90% of the frame.
+    expect(columns[1].x2 - columns[1].x1).toBeCloseTo(200 / M, 6);
+    expect(columns[2].x2 - columns[2].x1).toBeCloseTo(50 / M, 6);
+  });
 });
 
 describe("columnIndexToSlot", () => {

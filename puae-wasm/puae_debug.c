@@ -217,7 +217,14 @@ static int puae_debug_regwatchCheck(uint32_t pc24);
 // dropping both later samples AND the frame-boundary markers themselves — which
 // showed up as a 10-frame capture returning only 6 (sometimes CPU-data-less)
 // frames instead of 10 evenly-truncated ones.
-#define WASM_PROFILE_BUF_WORDS_PER_FRAME (1 << 18)   /* 1 MB/frame ≈ 43k samples/frame at avg depth 5 */
+//
+// Raised from 1 MB/frame after a real 5-frame capture exhausted the pool exactly — 1,310,717 of
+// its 1,310,720 words used, with two of the five frames individually needing 1.6 MB and 1.5 MB
+// and borrowing the headroom from quieter ones. That pooling is working as intended, but it left
+// three words spare (a record is 1 + depth + 1, so ~7 at typical depth), meaning the last frame
+// was silently cut mid-frame. The per-frame figure has to cover a *busy* frame, not an average
+// one, precisely because the pool lets frames borrow from each other.
+#define WASM_PROFILE_BUF_WORDS_PER_FRAME (1 << 19)   /* 2 MB/frame ≈ 75k samples/frame at avg depth 5 */
 static uint32_t *g_wprofBuf = NULL;
 static uint32_t  g_wprofBufCapWords = 0;   /* current g_wprofBuf allocation, in words */
 static uint32_t  g_wprofBufLen;
@@ -226,19 +233,31 @@ static uint32_t  g_wprofBufLen;
  * block per recorded sample (D0-D7, A0-A7, SR, PC, USP; see WASM_REG_COUNT/wasm_read_regs below),
  * rather than interleaved into g_wprofBuf's variable-length records. At 19 words/sample flat
  * (vs g_wprofBuf's ~5 words/sample average at typical call-stack depth), this is the larger of
- * the two getProfileData/getProfileRegs transfers, so it's capped more tightly — see
- * WASM_PROFILE_BUF_WORDS' comment on why a hard, deliberately-conservative cap matters here
- * regardless of how many instructions a frame legitimately retires. Recording gates on BOTH
- * caps (see wasm_profile_instrHook), so this never desyncs from the sample actually pushed to
- * g_wprofBuf: the JS-side decode order for both is strictly sequential (one entry per successful
- * wasm_profile_instrHook call), so registers[k] always belongs to the k-th decoded
- * InstructionSample. Being the smaller of the two caps, this is also what actually bounds
- * g_wprofBuf's growth in practice for frame 0 (where register recording is enabled) — both
- * checks happen before either buffer is written. */
+ * the two getProfileData/getProfileRegs transfers, so it gets its own cap.
+ *
+ * That cap bounds the register trace ONLY — it must never stop a profile sample being recorded.
+ * It used to: instrHook returned early once the register buffer was full, which threw away the
+ * flame graph for the rest of the frame to protect a secondary dataset. On a real capture that
+ * cost frame 0 the last 43% of its cycles (16,384 samples covering 40,522 of the frame's 71,051
+ * color clocks) while the same program's other frames recorded 55-59k samples each — so frame 0
+ * silently showed a little over half the frame's work and, being frame 0, is also the one frame
+ * whose disassembly the whole capture is reweighted from. Now a full register buffer just stops
+ * the snapshots (clearing g_wprofRegEnabled) and lets profiling continue.
+ *
+ * The lockstep contract survives that because registers are still written strictly in sample
+ * order, from sample 0, with no gaps: registers[k] belongs to the k-th decoded InstructionSample
+ * for every k the register buffer actually reached, and the trace is simply shorter than the
+ * sample stream past that point. Both consumers already handle a short trace — the extension
+ * clips to model.pcs.length in buildModelFromCapture, and DisassemblyView derives its own
+ * sampleCount from registers.length and bounds-checks every slice.
+ *
+ * Allocated per capture (like g_wprofBuf, and for the same reason) rather than living in BSS,
+ * so raising the cap costs nothing outside an active capture. */
 #define WASM_PROFILE_REG_COUNT 19          /* = WASM_REG_COUNT (wasm_read_regs, below) */
-#define WASM_PROFILE_MAX_REG_SAMPLES (1 << 14)   /* 16k samples ≈ 1.25 MB */
-static uint32_t g_wprofRegBuf[WASM_PROFILE_MAX_REG_SAMPLES * WASM_PROFILE_REG_COUNT];
-static uint32_t g_wprofRegSampleCount;
+#define WASM_PROFILE_MAX_REG_SAMPLES (1 << 16)   /* 64k samples ≈ 4.75 MB; covers a busy frame's ~59k */
+static uint32_t *g_wprofRegBuf = NULL;
+static uint32_t  g_wprofRegCapSamples = 0;  /* samples g_wprofRegBuf can hold (0 = allocation failed) */
+static uint32_t  g_wprofRegSampleCount;
 
 int             g_wprofActive;             /* non-static: read by wasm_profile_start */
 static uint32_t g_wprofStartAddr;
@@ -252,10 +271,10 @@ static int      g_wprofSavedBlitterCE; /* saved currprefs.blitter_cycle_exact du
 static evt_t    g_wprofStartCycles;
 static uint64_t g_wprofFrameCycles;
 /* When 0, wasm_profile_instrHook still records profile samples but skips the
- * register snapshot.  Set to 0 by wasm_profile_emit_frame_marker() so that
- * only frame 0 carries register data in multi-frame captures — avoiding the
- * register cap (WASM_PROFILE_MAX_REG_SAMPLES) from blocking profile recording
- * for later frames. */
+ * register snapshot.  Cleared by wasm_profile_emit_frame_marker(), so that only
+ * frame 0 carries register data in multi-frame captures, and by instrHook itself
+ * once the register buffer fills.  Either way profile recording continues
+ * unaffected — see g_wprofRegBuf's comment. */
 static int      g_wprofRegEnabled;
 
 /* Index into g_wprofBuf of the cycleDelta word belonging to the MOST RECENTLY pushed sample,
@@ -422,6 +441,12 @@ wasm_profile_prepare(int numFrames)
 	g_wprofBuf = (uint32_t *)malloc((size_t)g_wprofBufCapWords * sizeof(uint32_t));
 	if (!g_wprofBuf) g_wprofBufCapWords = 0; /* allocation failed: recording stays disabled via the cap below */
 
+	/* Same lifecycle for the register trace. A failed allocation leaves the cap at 0, which
+	 * instrHook treats exactly like a full buffer: no register trace, profiling unaffected. */
+	free(g_wprofRegBuf);
+	g_wprofRegBuf = (uint32_t *)malloc((size_t)WASM_PROFILE_MAX_REG_SAMPLES * WASM_PROFILE_REG_COUNT * sizeof(uint32_t));
+	g_wprofRegCapSamples = g_wprofRegBuf ? WASM_PROFILE_MAX_REG_SAMPLES : 0;
+
 	wasm_profile_reset_counters();
 	g_wprofRegEnabled      = 1;
 	g_wprofFrameCycles     = 0;
@@ -477,16 +502,44 @@ wasm_profile_instrHook(uint32_t pc24)
 	 * Getting this backwards was a real bug: every sample's reported cost belonged to whichever
 	 * instruction preceded it, e.g. a slow `divs` would show up attributed to the *following*
 	 * fast `add` instead of itself. */
+	/* get_cycles() counts in CYCLE_UNIT sub-units of a color clock, and cycleDelta is reported in
+	 * whole color clocks — so a sample's elapsed time routinely does NOT land on a color-clock
+	 * boundary, and on the 68020/030 cycle-exact path (m68k_run_2ce) it can be genuinely zero:
+	 * that model defers the CPU's cycle accounting in lumps (wait_memory_cycles' grace period),
+	 * so a run of register-only instructions retires with get_cycles() unmoved and the whole lump
+	 * then lands on whichever instruction next touches memory.
+	 *
+	 * Two rules keep the total honest across that:
+	 *   - a measured zero is recorded AS zero. Forcing a floor of 1 color clock per sample (what
+	 *     this used to do) invents time that never elapsed, and it does so in exact proportion to
+	 *     how many instructions a function retires per color clock — so it lands almost entirely
+	 *     on the tightest loop in the capture. A raster/blitter busy-wait is precisely that kind
+	 *     of loop, so the fabricated cycles piled onto the one function that represents the
+	 *     frame's *idle* time: measured on a real capture, a 5-instruction WaitRaster loop (4 of
+	 *     whose 5 instructions measured zero every single iteration) had its cost doubled, from
+	 *     64% to 76% of the frame, and inflated the frame's own reported duration to 157% of the
+	 *     71051 color clocks a PAL frame physically has.
+	 *   - the sub-color-clock remainder is carried forward rather than truncated away, by
+	 *     advancing the baseline only by the whole color clocks just reported. Truncating each
+	 *     sample independently would lose up to one color clock per sample — the same
+	 *     proportional-to-instruction-count bias as the floor, just with the opposite sign.
+	 * Together the reported deltas sum to the true elapsed color clocks (to within the one
+	 * unfinalized sample per frame), instead of over-reporting by ~57%. */
 	evt_t now = get_cycles();
-	uint32_t cycleDelta = 1;
+	uint32_t cycleDelta = 1;   /* "unknown" — only ever reaches the buffer for a frame's first sample */
 	if (g_wprofLastCycleValid && CYCLE_UNIT > 0) {
 		evt_t delta = now - g_wprofLastCycle;
-		if (delta > 0) {
-			uint64_t d = (uint64_t)delta / (uint64_t)CYCLE_UNIT;
-			if (d > 0) cycleDelta = (uint32_t)(d < 0xfffffu ? d : 0xfffffu);
+		uint64_t d = delta > 0 ? (uint64_t)delta / (uint64_t)CYCLE_UNIT : 0;
+		if (d > 0xfffffu) {
+			cycleDelta            = 0xfffffu;
+			g_wprofLastCycle      = now;   /* clamped: drop the remainder rather than carry a huge one */
+		} else {
+			cycleDelta            = (uint32_t)d;
+			g_wprofLastCycle     += (evt_t)(d * (uint64_t)CYCLE_UNIT);
 		}
+	} else {
+		g_wprofLastCycle = now;
 	}
-	g_wprofLastCycle      = now;
 	g_wprofLastCycleValid = 1;
 	if (g_wprofPendingCycleSlot != WASM_PROFILE_NO_PENDING_SLOT) {
 		g_wprofBuf[g_wprofPendingCycleSlot] = cycleDelta;
@@ -517,11 +570,6 @@ wasm_profile_instrHook(uint32_t pc24)
 	uint32_t depth  = 1 + stkDepth;
 	uint32_t needed = 1 + depth + 1;   /* depth-word + PCs + cycleDelta placeholder */
 	if (g_wprofBufLen + needed > g_wprofBufCapWords) return;
-	/* When register recording is active (frame 0 of multi-frame; always in single-frame mode),
-	 * gate on the register cap too — the two buffers stay in lockstep so registers[k] reliably
-	 * belongs to the k-th decoded InstructionSample.  wasm_profile_emit_frame_marker() clears
-	 * g_wprofRegEnabled for frames 1..N-1, allowing the profile buffer to keep filling. */
-	if (g_wprofRegEnabled && g_wprofRegSampleCount >= WASM_PROFILE_MAX_REG_SAMPLES) return;
 
 	g_wprofBuf[g_wprofBufLen++] = depth;
 	g_wprofBuf[g_wprofBufLen++] = pc24;   /* leaf */
@@ -535,10 +583,16 @@ wasm_profile_instrHook(uint32_t pc24)
 	g_wprofBuf[g_wprofBufLen++] = 1;
 
 	/* Register snapshot: only for the frames where register recording is enabled (frame 0 of
-	 * a multi-frame capture; always enabled in single-frame mode). */
+	 * a multi-frame capture; always enabled in single-frame mode). Running out of room here
+	 * ends the register trace and nothing else — the sample above is already recorded, and
+	 * every later sample still will be. See g_wprofRegBuf's comment on why that's safe. */
 	if (g_wprofRegEnabled) {
-		puae_debug_read_regs(&g_wprofRegBuf[g_wprofRegSampleCount * WASM_PROFILE_REG_COUNT], WASM_PROFILE_REG_COUNT);
-		g_wprofRegSampleCount++;
+		if (g_wprofRegSampleCount < g_wprofRegCapSamples) {
+			puae_debug_read_regs(&g_wprofRegBuf[g_wprofRegSampleCount * WASM_PROFILE_REG_COUNT], WASM_PROFILE_REG_COUNT);
+			g_wprofRegSampleCount++;
+		} else {
+			g_wprofRegEnabled = 0;
+		}
 	}
 }
 

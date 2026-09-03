@@ -55,7 +55,7 @@ const CODE_MATCH_WINDOW = 512;
 // left edge of the flame graph even though real samples begin almost immediately.
 const ANCHOR_CANDIDATES = 32;
 
-function buildSampleSlots(pcs: readonly number[], dma: IDmaModel): { slots: Int32Array; matched: number } {
+function buildSampleSlots(pcs: readonly number[], timeDeltas: readonly number[], dma: IDmaModel): { slots: Int32Array; matched: number } {
   const { owner, flags, addr } = dma;
   const N = owner.length;
   const slots = new Int32Array(pcs.length).fill(-1);
@@ -157,10 +157,32 @@ function buildSampleSlots(pcs: readonly number[], dma: IDmaModel): { slots: Int3
     // this one just consumed no grid cell.
   }
 
-  // Fill unmatched runs by interpolating between the nearest matched neighbours (linear in sample
-  // index, which is what buildColumns needs — a straight line between two known points). A run
-  // before the first match or after the last has no far endpoint to interpolate towards, so it
-  // clamps to the nearest match instead of extrapolating off the grid.
+  // Fill unmatched runs by interpolating between the nearest matched neighbours — weighted by
+  // each sample's CYCLE COST, not by its index in the run.
+  //
+  // Sample index is not proportional to elapsed time, and on a cached CPU the error is enormous
+  // rather than marginal. Instructions running out of the 68020's I-cache emit no fetch cell at
+  // all, so a tight loop is invisible to the matcher above: measured on a real capture, a whole
+  // frame offered 10,028 fetch cells for 31,078 executed instructions, and the WaitRaster spin
+  // loop contributed 17 cells for 11,806 samples. Worse, one such spin puts `cell` more than
+  // CODE_MATCH_WINDOW behind the raster, and the bounded forward search can never catch back up
+  // — so matching died at sample 1,907 of 31,078 and the remaining 29,170 samples (91% of the
+  // frame's cycles) became one interpolated run. Spread by index, a spin loop retiring ~0.9
+  // cycles per sample crowds out the real work at ~3.9, and the flame graph handed WaitRaster
+  // 91.5% of its width for 14.5% of the frame's actual cycles — the busy-wait appearing to eat a
+  // frame that the DMA band plainly shows driving blits.
+  //
+  // Cycles are the right weight because the two clocks are the same clock: a grid slot is one
+  // color clock, and timeDeltas are color clocks that now sum to the frame (see
+  // wasm_profile_instrHook's cycleDelta accounting). That also makes the trailing run — which has
+  // no far endpoint to interpolate towards — extrapolable at 1 cycle per slot from the last
+  // match, instead of clamping 29,170 samples onto a single slot and letting the final column
+  // stretch across everything they should have covered. The leading run keeps the old clamp: it
+  // spans at most the handful of samples before the anchor (which is chosen from the first
+  // ANCHOR_CANDIDATES), and extrapolating backwards off the grid buys nothing at that size.
+  const cum = new Float64Array(slots.length + 1); // cum[k] = cycles elapsed before sample k
+  for (let k = 0; k < slots.length; k++) cum[k + 1] = cum[k] + (timeDeltas[k] ?? 0);
+
   let prev = -1;
   for (let k = 0; k < slots.length; k++) {
     if (slots[k] < 0) continue;
@@ -169,13 +191,19 @@ function buildSampleSlots(pcs: readonly number[], dma: IDmaModel): { slots: Int3
     } else if (k - prev > 1) {
       const s0 = slots[prev];
       const s1 = slots[k];
-      const span = k - prev;
-      for (let j = prev + 1; j < k; j++) slots[j] = s0 + Math.round(((s1 - s0) * (j - prev)) / span);
+      // Zero-cycle span (every sample in the run measured sub-color-clock, which the 68020's
+      // lumped accounting does produce) carries no timing information — fall back to index.
+      const cycleSpan = cum[k] - cum[prev];
+      const span = cycleSpan > 0 ? cycleSpan : k - prev;
+      const at = (j: number) => (cycleSpan > 0 ? cum[j] - cum[prev] : j - prev);
+      for (let j = prev + 1; j < k; j++) slots[j] = s0 + Math.round(((s1 - s0) * at(j)) / span);
     }
     prev = k;
   }
   if (prev >= 0) {
-    for (let j = prev + 1; j < slots.length; j++) slots[j] = slots[prev];
+    for (let j = prev + 1; j < slots.length; j++) {
+      slots[j] = Math.min(N - 1, slots[prev] + Math.round(cum[j] - cum[prev]));
+    }
   }
   return { slots, matched };
 }
@@ -192,7 +220,7 @@ export const buildColumns = (model: IProfileModel): IColumn[] => {
   // cycle-cost estimate is strictly better than that.
   const dma = model.dma;
   const N = dma ? dma.owner.length : 0;
-  const sampleSlots = dma && N && model.pcs.length ? buildSampleSlots(model.pcs, dma) : undefined;
+  const sampleSlots = dma && N && model.pcs.length ? buildSampleSlots(model.pcs, model.timeDeltas, dma) : undefined;
   const anchored = !!sampleSlots && sampleSlots.matched > 0;
   const slotX = (k: number): number =>
     k < sampleSlots!.slots.length ? sampleSlots!.slots[k] / N : 1;
