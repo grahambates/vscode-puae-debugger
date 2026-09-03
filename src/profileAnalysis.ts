@@ -22,6 +22,7 @@ import { buildColumns, buildSampleSlots } from "./webview/profilerViewer/columns
 import { BusOwner, IProfileModel, REG_COUNT } from "./shared/profilerTypes";
 import { loadProfile } from "./profileLoader";
 import { ProfileManifest } from "./profileFormat";
+import { looksLikePlain68000, theoreticalTiming } from "./theoreticalTimings";
 
 // The emulator serialises a fixed PAL-geometry DMA grid (DMA_HPOS × DMA_VPOS in the C side), so
 // a frame's grid cell count is also the number of color clocks in that frame — the ground truth
@@ -104,6 +105,36 @@ export interface ProfileAnalysis {
   manifest: ProfileManifest;
   frames: FrameAnalysis[];
   findings: ProfileFinding[];
+  /** Present only when stall analysis was requested (see analyseProfile's options). */
+  stalls?: StallAnalysis;
+}
+
+// Measured cost against datasheet cost, per function — the difference between "this routine is
+// doing a lot of work" and "this routine spent its time waiting for the bus". See
+// theoreticalTimings.ts for why this is opt-in and 68000-only.
+export interface FunctionStall {
+  name: string;
+  /** Cycles the capture measured across every instruction of this function that could be timed. */
+  measured: number;
+  /** Datasheet cost of those same executions, unblocked. */
+  theoretical: number;
+  /** measured - theoretical: time the CPU spent not retiring the instruction it was on. */
+  stall: number;
+  /** Share of measured that is stall. */
+  stallPct: number;
+  /** Bus accesses those executions demand — what the contention is competing for. */
+  busAccesses: number;
+  /** Instructions in the function 68kcounter could not time; their cost is excluded above. */
+  untimed: number;
+}
+
+export interface StallAnalysis {
+  /** False when the capture's own data says the 68000 timings don't apply — see the `caveat`. */
+  applicable: boolean;
+  caveat?: string;
+  functions: FunctionStall[]; // descending by stall
+  totalMeasured: number;
+  totalTheoretical: number;
 }
 
 // Bus owners collapsed to the categories worth reporting. Deliberately coarse: the point is to
@@ -283,7 +314,64 @@ export function checkFrame(f: FrameAnalysis, isLast: boolean, findings: ProfileF
   }
 }
 
-export function analyseProfile(file: Uint8Array): ProfileAnalysis {
+// Measured-vs-datasheet cost per function, from frame 0's disassembly (the only frame that
+// carries one — see ProfileManifest.disassembly). Instructions 68kcounter can't time are counted
+// in `untimed` and excluded from both totals rather than silently contributing to one side.
+export function analyseStalls(manifest: ProfileManifest, zeroCostSamples: number): StallAnalysis {
+  const functions: FunctionStall[] = [];
+  let totalMeasured = 0;
+  let totalTheoretical = 0;
+
+  for (const fn of manifest.disassembly ?? []) {
+    let measured = 0;
+    let theoretical = 0;
+    let busAccesses = 0;
+    let untimed = 0;
+    for (const ins of fn.instructions) {
+      if (ins.hits === 0) continue; // never executed this frame
+      const t = theoreticalTiming(ins.text);
+      if (!t) { untimed++; continue; }
+      measured += ins.cycles;
+      theoretical += t.cck * ins.hits;
+      busAccesses += (t.reads + t.writes) * ins.hits;
+    }
+    if (measured === 0 && untimed === 0) continue;
+    const stall = measured - theoretical;
+    functions.push({
+      name: fn.name, measured, theoretical, stall,
+      stallPct: measured > 0 ? (stall / measured) * 100 : 0,
+      busAccesses, untimed,
+    });
+    totalMeasured += measured;
+    totalTheoretical += theoretical;
+  }
+  functions.sort((a, b) => b.stall - a.stall);
+
+  // Two independent guards, because the first one alone is not enough.
+  //
+  // Sub-color-clock samples prove the 020+ cycle-exact path — but only for captures recorded
+  // since cycleDelta stopped flooring them to 1. An older capture of the very same 68020 program
+  // stores no zeros at all and sails through, which is exactly what happened the first time this
+  // ran on one.
+  //
+  // The second guard needs no such luck: bus contention can only ever ADD cycles, so on a real
+  // 68000 the measured cost cannot come in under the datasheet. Aggregate measured below
+  // theoretical means the code is not executing 68000 timings — a faster core, near-certainly —
+  // and the comparison is void whatever the sample data looks like. It is checked in aggregate
+  // rather than per instruction so that ordinary per-instruction noise doesn't trip it.
+  let applicable = true;
+  let caveat: string | undefined;
+  if (!looksLikePlain68000(zeroCostSamples)) {
+    applicable = false;
+    caveat = `capture contains ${zeroCostSamples} sub-color-clock samples, so it was recorded on the 68020+ cycle-exact path — 68kcounter models the 68000 only, and these figures do not apply`;
+  } else if (totalMeasured < totalTheoretical) {
+    applicable = false;
+    caveat = `measured cost (${totalMeasured}) is below the 68000 datasheet cost (${totalTheoretical}), which bus contention cannot cause — this code is not running 68000 timings, so the comparison is void`;
+  }
+  return { applicable, caveat, functions, totalMeasured, totalTheoretical };
+}
+
+export function analyseProfile(file: Uint8Array, opts: { stalls?: boolean } = {}): ProfileAnalysis {
   const { frames, manifest } = loadProfile(file);
   const analysed = frames.map((f, i) => analyseFrame(f.model, i));
   const findings: ProfileFinding[] = [];
@@ -302,5 +390,6 @@ export function analyseProfile(file: Uint8Array): ProfileAnalysis {
 
   const rank: Record<Severity, number> = { error: 0, warning: 1, info: 2 };
   findings.sort((a, b) => rank[a.severity] - rank[b.severity] || (a.frame ?? -1) - (b.frame ?? -1));
-  return { manifest, frames: analysed, findings };
+  const stalls = opts.stalls ? analyseStalls(manifest, analysed[0]?.zeroCostSamples ?? 0) : undefined;
+  return { manifest, frames: analysed, findings, stalls };
 }

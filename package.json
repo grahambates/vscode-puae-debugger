@@ -624,6 +624,7 @@
   "dependencies": {
     "@vscode/codicons": "^0.0.41",
     "@vscode/debugadapter": "^1.68.0",
+    "68kcounter": "^3.2.1",
     "downshift": "^9.0.10",
     "expr-eval": "^2.0.2",
     "m68kdecode": "^1.1.4",

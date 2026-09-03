@@ -16,7 +16,7 @@ live in any one comment.
 
 ```
 node out/standalone.js profile check <file.puaeprofile> [--json]
-node out/standalone.js profile dump  <file.puaeprofile> [--frame N] [--functions N] [--json]
+node out/standalone.js profile dump  <file.puaeprofile> [--frame N] [--functions N] [--stalls] [--json]
 ```
 
 (Or `npx puae-debugger profile check|dump ...` once the package is installed — same binary,
@@ -94,12 +94,27 @@ denominator that's already wrong.
 ## Don't conflate "CPU time in a function" with "the CPU was busy"
 
 `selfCycles`/`selfPct` measure CPU sample attribution — they say nothing about whether the CPU
-was doing useful work or blocked waiting for the bus. `dump`'s DMA bus census
-(`dmaOwners` — CPU/BLITTER/BITPLANE/COPPER/... /IDLE, from the same frame's grid) is what
-disambiguates "CPU driving blits" from "CPU idling in a raster wait" from "genuinely idle frame."
-Read the two side by side before recommending an optimization: a routine can dominate self-cycle
-share while the bus census shows the frame was mostly BLITTER/BITPLANE-bound, in which case
-speeding up that routine's CPU code won't move the frame time at all.
+was doing useful work or blocked waiting for the bus. Two things disambiguate that, and both
+matter before recommending an optimization:
+
+**The DMA bus census.** `dump`'s `dmaOwners` (CPU/BLITTER/BITPLANE/COPPER/… /IDLE, from the same
+frame's grid) separates "CPU driving blits" from "CPU idling in a raster wait" from "genuinely
+idle frame." A routine can dominate self-cycle share while the census shows the frame was mostly
+BLITTER/BITPLANE-bound, in which case speeding up its CPU code won't move the frame time at all.
+
+**`dump --stalls`** goes further, per function: it compares measured cost against the 68000
+datasheet cost of the same executions (via the `68kcounter` library) and reports the difference.
+Contention can only ever add cycles, so the excess is time the CPU spent waiting rather than
+working — a high `stall%` means "blocked, look at the bus", a low one means "genuinely this
+expensive, look at the algorithm". `bus` shows the read/write accesses those executions demand,
+i.e. what the contention is competing for.
+
+Two guards make this refuse rather than mislead, and it will tell you which one fired:
+68kcounter models the **68000 only**, so a capture containing sub-color-clock samples (the 020+
+cycle-exact path) is rejected outright; and any capture whose measured cost comes in *below* the
+datasheet is rejected too, since no amount of contention can subtract cycles — that catches a
+68020 capture old enough to predate the `cycleDelta` fix and so carry no stored zeros to give
+itself away. If it says NOT APPLICABLE, believe it; the numbers underneath would be fiction.
 
 ## When `check`/`dump` aren't enough
 

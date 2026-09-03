@@ -9,10 +9,10 @@
 // subcommands never start the DAP server.
 
 import { readFileSync } from "fs";
-import { analyseProfile, FrameAnalysis, ProfileAnalysis } from "../profileAnalysis";
+import { analyseProfile, FrameAnalysis, ProfileAnalysis, StallAnalysis } from "../profileAnalysis";
 
 const USAGE = `Usage:
-  puae-debugger profile dump  <file.puaeprofile> [--frame N] [--functions N] [--json]
+  puae-debugger profile dump  <file.puaeprofile> [--frame N] [--functions N] [--stalls] [--json]
   puae-debugger profile check <file.puaeprofile> [--json]
 
   dump   Per-frame cost tables: cycles, top functions by self time, DMA bus census.
@@ -22,6 +22,8 @@ const USAGE = `Usage:
 Options:
   --frame N       Restrict dump to one frame (default: all).
   --functions N   Functions to list per frame (default: 12, 0 for all).
+  --stalls        Compare measured cost against 68000 datasheet timings (68kcounter)
+                  to separate slow instructions from bus-blocked ones. 68000 only.
   --json          Emit the full analysis as JSON instead of text.`;
 
 function pct(v: number): string {
@@ -56,6 +58,28 @@ function dumpFrame(f: FrameAnalysis, limit: number, out: string[]): void {
   }
 }
 
+function renderStalls(st: StallAnalysis, limit: number): string[] {
+  const out: string[] = ["", "Measured vs 68000 datasheet cost (frame 0)"];
+  if (!st.applicable) {
+    out.push(`  NOT APPLICABLE: ${st.caveat}`);
+    return out;
+  }
+  const overall = st.totalMeasured - st.totalTheoretical;
+  out.push(`  total measured ${st.totalMeasured}, datasheet ${st.totalTheoretical}, ` +
+    `stall ${overall} (${st.totalMeasured > 0 ? ((overall / st.totalMeasured) * 100).toFixed(1) : "0.0"}% waiting)`);
+  out.push("");
+  out.push(`  ${"function".padEnd(36)}${"measured".padStart(10)}${"datasheet".padStart(11)}${"stall".padStart(9)}${"stall%".padStart(8)}${"bus".padStart(8)}`);
+  const rows = limit > 0 ? st.functions.slice(0, limit) : st.functions;
+  for (const f of rows) {
+    out.push(
+      `  ${f.name.slice(0, 35).padEnd(36)}${String(f.measured).padStart(10)}${String(f.theoretical).padStart(11)}` +
+      `${String(f.stall).padStart(9)}${(f.stallPct.toFixed(1) + "%").padStart(8)}${String(f.busAccesses).padStart(8)}` +
+      (f.untimed ? `  (${f.untimed} untimed)` : ""),
+    );
+  }
+  return out;
+}
+
 function renderDump(a: ProfileAnalysis, frame: number | undefined, limit: number): string {
   const out: string[] = [];
   const m = a.manifest;
@@ -71,6 +95,7 @@ function renderDump(a: ProfileAnalysis, frame: number | undefined, limit: number
     return out.join("\n");
   }
   for (const f of frames) dumpFrame(f, limit, out);
+  if (a.stalls) out.push(...renderStalls(a.stalls, limit));
   return out.join("\n");
 }
 
@@ -110,11 +135,13 @@ export function runProfileCli(argv: string[]): number {
 
   let file: string | undefined;
   let json = false;
+  let stalls = false;
   let frame: number | undefined;
   let limit = 12;
   for (let i = 1; i < argv.length; i++) {
     const arg = argv[i];
     if (arg === "--json") json = true;
+    else if (arg === "--stalls") stalls = true;
     else if (arg === "--frame") frame = Number(argv[++i]);
     else if (arg === "--functions") limit = Number(argv[++i]);
     else if (arg.startsWith("-")) { console.error(`Unknown option: ${arg}\n\n${USAGE}`); return 1; }
@@ -125,7 +152,7 @@ export function runProfileCli(argv: string[]): number {
 
   let analysis: ProfileAnalysis;
   try {
-    analysis = analyseProfile(new Uint8Array(readFileSync(file)));
+    analysis = analyseProfile(new Uint8Array(readFileSync(file)), { stalls });
   } catch (err) {
     console.error(`Could not read ${file}: ${err instanceof Error ? err.message : String(err)}`);
     return 1;
