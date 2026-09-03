@@ -152,3 +152,18 @@ describe("analyseStalls", () => {
     expect(st.caveat).toMatch(/below the 68000 datasheet/);
   });
 });
+
+describe("DBcc", () => {
+  it("times a DBcc loop, whose counter register sits between mnemonic and target", () => {
+    // "dbf.w d7,-16(pc)" — the shape of nearly every hand-written Amiga loop. Missing the
+    // register group left every one of these untimed.
+    const t = theoreticalTiming("dbf.w d7,-16(pc)");
+    expect(t).toBeDefined();
+    expect(t!.cck).toBeGreaterThan(0);
+    expect(t!.worstCase).toBe(true); // taken / not taken / expired
+  });
+
+  it("times a conditional DBcc too", () => {
+    expect(theoreticalTiming("dbhi.w d3,2(pc)")).toBeDefined();
+  });
+});

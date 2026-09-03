@@ -218,6 +218,14 @@ export interface IDisassembledInstruction {
   file?: string;
   line?: number; // 1-based, straight from SourceMap.lookupAddress().line — see ProfileFrame.line
   jumpTarget?: number; // resolved branch/jump target address, for arrow-gutter visualization
+  // Datasheet cost of ONE execution with no bus contention, in color clocks, and the bus accesses
+  // it makes (68kcounter — see theoreticalTimings.ts). Derived from `text`, so it is recomputed by
+  // attachDisassembly on every load rather than stored in the .puaeprofile: the document holds the
+  // raw capture, not conclusions drawn from it, and a stored figure would be frozen against later
+  // fixes to the timing data. Absent when 68kcounter can't time the instruction. Only meaningful
+  // to compare against `cycles` when IProfileModel.datasheet says so.
+  theoreticalCycles?: number;
+  busAccesses?: number;
 }
 
 // One executed function's full disassembly. Only functions that actually executed (per the
@@ -266,6 +274,10 @@ export interface IProfileModel {
   // Disassembly + per-instruction profiling stats for every function that executed this frame.
   // Absent if disassembly capture wasn't supported/failed (CPU profile is unaffected either way).
   disassembly?: IDisassembledFunction[];
+  // Whether this capture's measured costs may be compared against the per-instruction
+  // `theoreticalCycles` above — 68kcounter models the 68000 only. Absent when there's no
+  // disassembly to judge. See theoreticalTimings.ts's datasheetApplicability for the two guards.
+  datasheet?: { applicable: boolean; caveat?: string };
   // Per-sample CPU register snapshot, flat and parallel to pcs/timeDeltas: registers[k*REG_COUNT
   // + r] is sample k's register r (see REG_* offsets below). Absent if unsupported/failed.
   registers?: Uint32Array;

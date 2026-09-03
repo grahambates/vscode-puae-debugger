@@ -101,9 +101,21 @@ type RowListProps = {
   // When source lines are interleaved, the file:line link lives on the source row itself
   // (once per source line) instead of repeating on every instruction compiled from it.
   showSource: boolean;
+  // Whether measured cost may be compared against each instruction's datasheet cost for THIS
+  // capture (68000 only — see theoreticalTimings.ts). False hides the stall column entirely
+  // rather than showing a figure that would be fiction.
+  datasheetApplicable: boolean;
 };
 
-function RowRenderer({ index, style, rows, maxCycles, currentAddress, onOpenSource, onJumpToExecution, showSource }: RowComponentProps<RowListProps>) {
+// Cycles this instruction spent waiting rather than working: what it actually cost, minus what
+// the 68000 datasheet says those same executions cost with the bus to itself. Undefined when
+// there's nothing to compare (never executed, untimeable instruction, or wrong CPU).
+function stallOf(ins: IDisassembledInstruction, applicable: boolean): number | undefined {
+  if (!applicable || ins.hits === 0 || ins.theoreticalCycles === undefined) return undefined;
+  return ins.cycles - ins.theoreticalCycles * ins.hits;
+}
+
+function RowRenderer({ index, style, rows, maxCycles, currentAddress, onOpenSource, onJumpToExecution, showSource, datasheetApplicable }: RowComponentProps<RowListProps>) {
   const row = rows[index];
   if (row.kind === "source") {
     return (
@@ -135,6 +147,21 @@ function RowRenderer({ index, style, rows, maxCycles, currentAddress, onOpenSour
     >
       <span className="disasm-hits" title="Executions this frame">{ins.hits > 0 ? `${ins.hits}×` : ""}</span>
       <span className="disasm-cycles" title="Total cycles this frame">{ins.cycles > 0 ? `${ins.cycles}cy` : ""}</span>
+      {datasheetApplicable && (() => {
+        const stall = stallOf(ins, true);
+        if (stall === undefined) return <span className="disasm-stall" />;
+        const theoretical = ins.theoreticalCycles! * ins.hits;
+        return (
+          <span
+            className={"disasm-stall" + (stall > 0 ? " disasm-stalled" : "")}
+            title={`Measured ${ins.cycles}cy vs 68000 datasheet ${theoretical}cy for ${ins.hits} execution(s)`
+              + ` — ${stall > 0 ? `${stall}cy waiting for the bus` : "no contention"}`
+              + (ins.busAccesses ? `, ${ins.busAccesses * ins.hits} bus accesses` : "")}
+          >
+            {stall > 0 ? `+${stall}` : ""}
+          </span>
+        );
+      })()}
       <span className="disasm-addr">${ins.address.toString(16).padStart(6, "0")}</span>
       <span className="disasm-text">{ins.text}</span>
       {!showSource && ins.file && (
@@ -615,9 +642,10 @@ export function DisassemblyView({
     };
   }, [model, currentIdx, columns, dmaSlots, onSelectSlot]);
 
+  const datasheetApplicable = !!model?.datasheet?.applicable;
   const rowProps = useMemo<RowListProps>(
-    () => ({ rows, maxCycles, currentAddress, onOpenSource, onJumpToExecution: jumpToExecution, showSource }),
-    [rows, maxCycles, currentAddress, onOpenSource, jumpToExecution, showSource],
+    () => ({ rows, maxCycles, currentAddress, onOpenSource, onJumpToExecution: jumpToExecution, showSource, datasheetApplicable }),
+    [rows, maxCycles, currentAddress, onOpenSource, jumpToExecution, showSource, datasheetApplicable],
   );
 
   // "View in context": switch to Linear, select the clicked instruction's own function (so it's

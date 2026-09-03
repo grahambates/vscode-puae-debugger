@@ -17,6 +17,7 @@ import {
   NTSC_COLOR_CLOCKS_PER_US,
 } from "./shared/profilerTypes";
 import { decodeDmaGrid, decodeCustomRegs, decodeAgaColors, decodeCopperRecords, decodeDmaEvents, decodeRegisterTrace } from "./shared/dma";
+import { datasheetApplicability, theoreticalTiming } from "./theoreticalTimings";
 
 export type { ProfileFrame, IProfileModel };
 
@@ -490,7 +491,10 @@ export function buildModelFromCapture(
     }
   }
   if (raw.copper) model.copper = decodeCopperRecords(raw.copper);
-  if (raw.disassembly) model.disassembly = attachDisassembly(raw.disassembly, sourceMap);
+  if (raw.disassembly) {
+    model.disassembly = attachDisassembly(raw.disassembly, sourceMap);
+    model.datasheet = judgeDatasheet(model.disassembly, samples);
+  }
   if (raw.registers) {
     const decoded = decodeRegisterTrace(raw.registers);
     // Clip to model.pcs.length (decodeProfileStream can stop early on a corrupt/truncated
@@ -513,9 +517,40 @@ export function attachDisassembly(raw: RawDisassembledFunction[], sourceMap: Sou
     totalCycles: fn.totalCycles,
     instructions: fn.instructions.map((ins) => {
       const loc = sourceMap.lookupAddress(ins.address);
-      return { ...ins, file: loc?.path, line: loc?.line };
+      // Datasheet timing is derived from the instruction text, so it is recomputed here on every
+      // load alongside file/line rather than persisted — same reasoning, and it keeps a document
+      // from freezing timing data that may later be corrected.
+      const t = theoreticalTiming(ins.text);
+      return {
+        ...ins,
+        file: loc?.path,
+        line: loc?.line,
+        theoreticalCycles: t?.cck,
+        busAccesses: t ? t.reads + t.writes : undefined,
+      };
     }),
   }));
+}
+
+// Whether this capture's measured costs can be compared against the datasheet figures
+// attachDisassembly just derived — see theoreticalTimings.ts. Aggregated over everything that
+// actually executed and could be timed, which is the same basis the CLI's stall report uses.
+function judgeDatasheet(
+  disassembly: IDisassembledFunction[],
+  samples: InstructionSample[],
+): { applicable: boolean; caveat?: string } {
+  let measured = 0;
+  let theoretical = 0;
+  for (const fn of disassembly) {
+    for (const ins of fn.instructions) {
+      if (ins.hits === 0 || ins.theoreticalCycles === undefined) continue;
+      measured += ins.cycles;
+      theoretical += ins.theoreticalCycles * ins.hits;
+    }
+  }
+  let zeroCost = 0;
+  for (const s of samples) if (s.cycles === 0) zeroCost++;
+  return datasheetApplicability(zeroCost, measured, theoretical);
 }
 
 // Bound disassembly work by decoded instructions rather than symbol-defined functions. Assembly

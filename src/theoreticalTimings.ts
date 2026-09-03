@@ -37,7 +37,12 @@ export interface TheoreticalTiming {
 // isn't source syntax and parses as no instruction at all — which would silently drop every
 // branch, and branches are a large share of the instructions in the tight loops this analysis is
 // most wanted for. Substituting a stand-in label gets the real timing back.
-const PC_RELATIVE_BRANCH = /^(b[a-z]{2}|bra|bsr|db[a-z]{1,2})(\.[bwsl])?\s+-?\d+\(pc\)$/i;
+//
+// The optional register group is DBcc's counter ("dbf.w d7,-16(pc)"), which comes between the
+// mnemonic and the target. Omitting it left every DBcc untimed — and a DBcc loop is about the most
+// common shape there is in hand-written Amiga code, so that accounted for every untimed
+// instruction across both captures on hand.
+const PC_RELATIVE_BRANCH = /^(b[a-z]{2}|bra|bsr|db[a-z]{1,2})(\.[bwsl])?\s+(d\d\s*,\s*)?-?\d+\(pc\)$/i;
 
 function toSourceSyntax(text: string): string {
   const t = text.trim();
@@ -100,4 +105,40 @@ export function theoreticalTiming(text: string): TheoreticalTiming | undefined {
  */
 export function looksLikePlain68000(zeroCostSamples: number): boolean {
   return zeroCostSamples === 0;
+}
+
+/**
+ * Whether measured cost may be compared against 68000 datasheet cost for this capture, given the
+ * aggregate of both. Shared by the CLI's stall report and the model the profiler UI renders, so
+ * the two can never disagree about whether the comparison is meaningful.
+ *
+ * Two independent guards, because the first alone is not enough:
+ *
+ *   - Sub-color-clock samples prove the 020+ cycle-exact path, whose lumped accounting makes a
+ *     per-instruction datasheet comparison meaningless. But that evidence only exists in captures
+ *     recorded since cycleDelta stopped flooring those to 1; an older capture of the very same
+ *     68020 program stores no zeros and sails through.
+ *   - Bus contention can only ever ADD cycles, so on a real 68000 measured cannot come in under
+ *     the datasheet. Aggregate measured below theoretical means the code is not running 68000
+ *     timings — a faster core, near-certainly — whatever the sample data looks like. Checked in
+ *     aggregate so ordinary per-instruction noise doesn't trip it.
+ */
+export function datasheetApplicability(
+  zeroCostSamples: number,
+  totalMeasured: number,
+  totalTheoretical: number,
+): { applicable: boolean; caveat?: string } {
+  if (!looksLikePlain68000(zeroCostSamples)) {
+    return {
+      applicable: false,
+      caveat: `capture contains ${zeroCostSamples} sub-color-clock samples, so it was recorded on the 68020+ cycle-exact path — 68kcounter models the 68000 only, and these figures do not apply`,
+    };
+  }
+  if (totalMeasured < totalTheoretical) {
+    return {
+      applicable: false,
+      caveat: `measured cost (${totalMeasured}) is below the 68000 datasheet cost (${totalTheoretical}), which bus contention cannot cause — this code is not running 68000 timings, so the comparison is void`,
+    };
+  }
+  return { applicable: true };
 }

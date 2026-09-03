@@ -22,7 +22,7 @@ import { buildColumns, buildSampleSlots } from "./webview/profilerViewer/columns
 import { BusOwner, IProfileModel, REG_COUNT } from "./shared/profilerTypes";
 import { loadProfile } from "./profileLoader";
 import { ProfileManifest } from "./profileFormat";
-import { looksLikePlain68000, theoreticalTiming } from "./theoreticalTimings";
+import { datasheetApplicability, theoreticalTiming } from "./theoreticalTimings";
 
 // The emulator serialises a fixed PAL-geometry DMA grid (DMA_HPOS × DMA_VPOS in the C side), so
 // a frame's grid cell count is also the number of color clocks in that frame — the ground truth
@@ -347,27 +347,7 @@ export function analyseStalls(manifest: ProfileManifest, zeroCostSamples: number
   }
   functions.sort((a, b) => b.stall - a.stall);
 
-  // Two independent guards, because the first one alone is not enough.
-  //
-  // Sub-color-clock samples prove the 020+ cycle-exact path — but only for captures recorded
-  // since cycleDelta stopped flooring them to 1. An older capture of the very same 68020 program
-  // stores no zeros at all and sails through, which is exactly what happened the first time this
-  // ran on one.
-  //
-  // The second guard needs no such luck: bus contention can only ever ADD cycles, so on a real
-  // 68000 the measured cost cannot come in under the datasheet. Aggregate measured below
-  // theoretical means the code is not executing 68000 timings — a faster core, near-certainly —
-  // and the comparison is void whatever the sample data looks like. It is checked in aggregate
-  // rather than per instruction so that ordinary per-instruction noise doesn't trip it.
-  let applicable = true;
-  let caveat: string | undefined;
-  if (!looksLikePlain68000(zeroCostSamples)) {
-    applicable = false;
-    caveat = `capture contains ${zeroCostSamples} sub-color-clock samples, so it was recorded on the 68020+ cycle-exact path — 68kcounter models the 68000 only, and these figures do not apply`;
-  } else if (totalMeasured < totalTheoretical) {
-    applicable = false;
-    caveat = `measured cost (${totalMeasured}) is below the 68000 datasheet cost (${totalTheoretical}), which bus contention cannot cause — this code is not running 68000 timings, so the comparison is void`;
-  }
+  const { applicable, caveat } = datasheetApplicability(zeroCostSamples, totalMeasured, totalTheoretical);
   return { applicable, caveat, functions, totalMeasured, totalTheoretical };
 }
 
