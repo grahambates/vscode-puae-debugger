@@ -13,6 +13,8 @@ import {
   REG_COUNT,
   ILineTableEntry,
   ISegmentRange,
+  PAL_COLOR_CLOCKS_PER_US,
+  NTSC_COLOR_CLOCKS_PER_US,
 } from "./shared/profilerTypes";
 import { decodeDmaGrid, decodeCustomRegs, decodeAgaColors, decodeCopperRecords, decodeDmaEvents, decodeRegisterTrace } from "./shared/dma";
 
@@ -243,7 +245,7 @@ export function trimToProgramRoot(samples: InstructionSample[], sourceMap: Sourc
 //   - samples[] the leaf node id per instruction in execution order (samples[0] is
 //     a dummy paired with timeDeltas — matches the offset buildColumns expects),
 //   - timeDeltas[] the per-instruction cycle cost; duration = total cycles.
-export function buildProfileModel(samples: InstructionSample[], sourceMap: SourceMap, cyclesPerMicroSecond = 7.09379): IProfileModel {
+export function buildProfileModel(samples: InstructionSample[], sourceMap: SourceMap, cyclesPerMicroSecond = PAL_COLOR_CLOCKS_PER_US): IProfileModel {
   const locations: ILocation[] = [];
   // Key: "functionName:url" — all instructions within the same function share one location.
   // This matches the V8/CDP convention where callFrame.lineNumber = function declaration line,
@@ -455,10 +457,12 @@ export function buildModelFromCapture(
   const words = new Uint32Array(pb.data.buffer, pb.data.byteOffset, pb.data.byteLength >>> 2);
   const samples = decodeProfileStream(words);
 
-  // Derive the CPU clock from the measured frame cycles + PAL/NTSC (PAL = 50 Hz/20000 µs,
-  // NTSC = 60 Hz). frameCycles == 0 means the emulator didn't report one → standard PAL constant.
+  // Derive the color clock from the measured frame cycles + PAL/NTSC (PAL = 50 Hz/20000 µs,
+  // NTSC = 60 Hz). frameCycles == 0 means the emulator didn't report one → the machine's nominal
+  // constant, matching the unit frameCycles itself is in (see PAL_COLOR_CLOCKS_PER_US).
   const frameUs = pb.isPAL ? 20000 : 1_000_000 / 60;
-  const cyclesPerMicroSecond = pb.frameCycles > 0 ? pb.frameCycles / frameUs : 7.09379;
+  const nominal = pb.isPAL ? PAL_COLOR_CLOCKS_PER_US : NTSC_COLOR_CLOCKS_PER_US;
+  const cyclesPerMicroSecond = pb.frameCycles > 0 ? pb.frameCycles / frameUs : nominal;
 
   const model = buildProfileModel(samples, sourceMap, cyclesPerMicroSecond);
   model.symbols = buildSymbolList(sourceMap);
@@ -1141,8 +1145,10 @@ export class ProfilerManager {
         const words = new Uint32Array(profileBytes.buffer, profileBytes.byteOffset, profileBytes.byteLength >>> 2);
         const { perFrame: perFrameSamples, startWords, endWords } = splitProfileStream(words);
 
-        const frameUs = (res.isPAL ?? true) ? 20000 : 1_000_000 / 60;
-        const cyclesPerMicroSecond = (res.frameCycles ?? 0) > 0 ? (res.frameCycles!) / frameUs : 7.09379;
+        const isPAL = res.isPAL ?? true;
+        const frameUs = isPAL ? 20000 : 1_000_000 / 60;
+        const nominal = isPAL ? PAL_COLOR_CLOCKS_PER_US : NTSC_COLOR_CLOCKS_PER_US;
+        const cyclesPerMicroSecond = (res.frameCycles ?? 0) > 0 ? (res.frameCycles!) / frameUs : nominal;
 
         // Validate frame 0 has samples before spending time building the rest.
         if ((perFrameSamples[0]?.length ?? 0) === 0) {

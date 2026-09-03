@@ -40,7 +40,7 @@ describe("buildColumns (DMA-anchored positions)", () => {
     timeDeltas: [5, 5, 5, 5],
     pcs: [0x1000, 0x1002, 0x1004, 0x1006],
     duration: 20,
-    cyclesPerMicroSecond: 7.09379,
+    cyclesPerMicroSecond: 3.546895,
     dma: { owner, flags, addr, value },
   };
 
@@ -334,7 +334,7 @@ describe("findLineExecutionSlot", () => {
     timeDeltas: [1, 1, 1, 1, 1],
     pcs: [0x1000, 0x1002, 0x1004, 0x1000, 0x1002],
     duration: 5,
-    cyclesPerMicroSecond: 7.09379,
+    cyclesPerMicroSecond: 3.546895,
     dma: { owner: new Uint8Array(100), flags: new Uint8Array(100), addr: new Uint32Array(100), value: new Uint16Array(100) },
     disassembly: [fn],
   };

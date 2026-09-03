@@ -149,7 +149,7 @@ function makeModel(opts: {
   if (opts.diwstop !== undefined) custom[R.DIWSTOP >> 1] = opts.diwstop;
   return {
     nodes: [], locations: [], samples: [], timeDeltas: [], pcs: [],
-    duration: 0, cyclesPerMicroSecond: 7.09379,
+    duration: 0, cyclesPerMicroSecond: 3.546895,
     dma: makeDma(opts.firstLine, opts.lastLine, opts.planes),
     dmaSnapshot: { chip: new Uint8Array(0), slow: new Uint8Array(0), custom },
     copper: makeCopper(opts.copperWrites ?? []),

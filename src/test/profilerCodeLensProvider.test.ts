@@ -19,7 +19,7 @@ const model = (locations: ILocation[]): IProfileModel => ({
   timeDeltas: [],
   pcs: [],
   duration: 1000,
-  cyclesPerMicroSecond: 7.09379,
+  cyclesPerMicroSecond: 3.546895,
 });
 
 const doc = (path: string): vscode.TextDocument => ({ uri: { fsPath: path } }) as vscode.TextDocument;

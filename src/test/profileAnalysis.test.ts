@@ -26,7 +26,7 @@ function twoFunctionModel(): IProfileModel {
     timeDeltas: [10, 10, 5, 5],
     pcs: [0x1000, 0x1004, 0x2000, 0x2004],
     duration: 30,
-    cyclesPerMicroSecond: 7.09379,
+    cyclesPerMicroSecond: 3.546895,
   };
 }
 

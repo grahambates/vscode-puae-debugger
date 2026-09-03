@@ -30,7 +30,7 @@ const model = (disassembly: IDisassembledFunction[]): IProfileModel => ({
   timeDeltas: [],
   pcs: [],
   duration: 1000,
-  cyclesPerMicroSecond: 7.09379,
+  cyclesPerMicroSecond: 3.546895,
   disassembly,
 });
 

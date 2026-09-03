@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import "./App.css";
-import { ProfilerOutboundMessage, ISymbol, IProfileModel, IDmaModel, ComputeRangeMessage, DMA_HPOS, DMA_VPOS, ReadSourceFileMessage, SetGlobalHeatMessage, BusOwner } from "../../shared/profilerTypes";
+import { ProfilerOutboundMessage, ISymbol, IProfileModel, IDmaModel, ComputeRangeMessage, DMA_HPOS, DMA_VPOS, ReadSourceFileMessage, SetGlobalHeatMessage, BusOwner, PAL_COLOR_CLOCKS_PER_US } from "../../shared/profilerTypes";
 import { unpackBulk } from "../../profilerBulk";
 import { createHostBridge, HostBridge } from "../shared/hostBridge";
 import { setProfileModel, getProfileModel, useModelVersion } from "./modelStore";
@@ -459,7 +459,7 @@ export function App() {
   const timing = useMemo<Timing>(
     () => model
       ? { cyclesPerMicroSecond: model.cyclesPerMicroSecond, duration: model.duration, numFrames: selectedRange ? (selectedRange[1] - selectedRange[0] + 1) : 1 }
-      : { cyclesPerMicroSecond: 7.09379, duration: 1 },
+      : { cyclesPerMicroSecond: PAL_COLOR_CLOCKS_PER_US, duration: 1 },
     [model, selectedRange],
   );
 

@@ -127,6 +127,19 @@ export interface IDmaModel {
 export const DMA_HPOS = 227;
 export const DMA_VPOS = 313;
 
+// Color clocks per microsecond — the clock IProfileModel.timeDeltas/duration are counted in, and
+// so the divisor every display-unit conversion needs (see webview/profilerViewer/display.ts).
+//
+// This is the COLOR clock (Amiga "CCK"), not the CPU clock: the emulator reports cycle costs as
+// get_cycles()/CYCLE_UNIT, which is color clocks, and one DMA-grid slot is likewise one color
+// clock — which is what lets buildSampleSlots treat a cycle count and a grid position as the same
+// axis. A PAL frame is DMA_HPOS*DMA_VPOS = 71051 of them, and wasm_profile_finish reports exactly
+// that. Deriving from the master clock: PAL 28.37516 MHz / 8, NTSC 28.63636 MHz / 8. (The CPU runs
+// at master/4 — twice these — so using a CPU-clock figure here reads every microsecond, rasterline
+// and %-of-frame value at half its true size.)
+export const PAL_COLOR_CLOCKS_PER_US = 3.546895;
+export const NTSC_COLOR_CLOCKS_PER_US = 3.579545;
+
 // Is this DMA cell a custom-register access? CPU custom reads/writes carry the full
 // 0xDFFxxx bus address; a Copper MOVE's bus address is the bare register offset
 // (0x000-0x1FE). Both are register accesses, not chip-RAM. The register offset is
@@ -236,9 +249,10 @@ export interface IProfileModel {
   // it). buildColumns reads this to give each column's leaf cell its own real address.
   pcs: number[];
   duration: number;
-  // CPU clock for the display-unit conversions (a property of the running machine,
-  // PAL only for now). The old WinUAE baseClock analog.
-  cyclesPerMicroSecond: number; // CPU clock /1e6 (PAL 7.09379)
+  // Color clock for the display-unit conversions (a property of the running machine). The old
+  // WinUAE baseClock analog. Measured from the capture's own frame length where the emulator
+  // reported one, else PAL_COLOR_CLOCKS_PER_US/NTSC_COLOR_CLOCKS_PER_US.
+  cyclesPerMicroSecond: number; // color clocks per µs (PAL 3.546895) — NOT the CPU clock
   // Per-DMA-cycle grid (same captured frame). Absent if DMA capture produced nothing.
   dma?: IDmaModel;
   // Capture-start chip/slow RAM baseline; with `dma` it lets the webview reconstruct memory

@@ -20,7 +20,7 @@
 // mapping into the reconstruction's own coordinate space (see decodeScreenHover below).
 import { disassembleCopperInstruction } from "../../shared/copperDisassembler";
 import { decodeCopperRecords, decodeCustomRegs, decodeAgaColors, decodeDmaGrid } from "../../shared/dma";
-import { IProfileModel } from "../../shared/profilerTypes";
+import { IProfileModel, PAL_COLOR_CLOCKS_PER_US } from "../../shared/profilerTypes";
 import {
   buildScreenFromModel, computeHoverExtra, decodeScreenPixels, IScreen, PixelSnapshot,
 } from "../profilerViewer/gfxResources";
@@ -33,7 +33,7 @@ import type { PuaeModule } from "./types";
 function emptyProfileModel(): IProfileModel {
   return {
     nodes: [], locations: [], samples: [], timeDeltas: [], pcs: [],
-    duration: 0, cyclesPerMicroSecond: 7.09379, // PAL CPU clock, matching profilerTypes.ts's own doc comment
+    duration: 0, cyclesPerMicroSecond: PAL_COLOR_CLOCKS_PER_US, // see profilerTypes.ts: color clock, not CPU
   };
 }
 

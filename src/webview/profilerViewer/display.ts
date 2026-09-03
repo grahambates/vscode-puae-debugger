@@ -24,7 +24,7 @@ export enum DisplayUnit {
 }
 
 export interface Timing {
-  cyclesPerMicroSecond: number; // CPU clock /1e6 (PAL 7.09379 = 28_375_160 / 4 / 1e6)
+  cyclesPerMicroSecond: number; // color clocks per µs (PAL 3.546895 = 28_375_160 / 8 / 1e6)
   duration: number; // total captured cycles (for the Size-group "% of total" unit)
   // Number of frames in this capture (default 1). When > 1 (combined "All" view), the
   // PercentFrame/Lines denominators scale by this so percentages show per-frame averages,

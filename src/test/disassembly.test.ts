@@ -51,7 +51,7 @@ describe("fetchDisassembly", () => {
     timeDeltas: [],
     pcs: [],
     duration: 1000,
-    cyclesPerMicroSecond: 7.09379,
+    cyclesPerMicroSecond: 3.546895,
     symbols: [
       { address: 0x1000, name: "foo", size: 0x10 },
       { address: 0x2000, name: "bar", size: 0x10 },

@@ -1,6 +1,6 @@
 import { buildProfileModel, InstructionSample } from "../profilerManager";
 import { buildColumns, columnIndexAtX } from "../webview/profilerViewer/columns";
-import { Category } from "../shared/profilerTypes";
+import { Category, DMA_HPOS, DMA_VPOS, PAL_COLOR_CLOCKS_PER_US } from "../shared/profilerTypes";
 import { SourceMap } from "../sourceMap";
 
 // Minimal SourceMap stub: only the two methods symbolicate() touches.
@@ -65,8 +65,16 @@ describe("buildProfileModel", () => {
     expect(loc.callFrame.url).toBe("");
   });
 
-  it("carries the PAL CPU clock (NTSC deferred)", () => {
-    expect(model.cyclesPerMicroSecond).toBeCloseTo(7.09379, 5);
+  // The COLOR clock, not the CPU clock: timeDeltas are color clocks, so display.ts's
+  // µs/rasterline/%-of-frame conversions divide by this. A CPU-clock figure here (7.09379, twice
+  // this) halved every one of them.
+  it("defaults to the PAL color clock when no measured frame length is supplied", () => {
+    expect(model.cyclesPerMicroSecond).toBeCloseTo(PAL_COLOR_CLOCKS_PER_US, 5);
+    // Cross-check against the raster geometry: DMA_HPOS color clocks per line, over the 312.5
+    // lines a 50 Hz PAL field averages, per 20000 µs. DMA_VPOS is 313 because the grid holds a
+    // long field; the constant tracks the average, hence the half-line difference.
+    expect(PAL_COLOR_CLOCKS_PER_US).toBeCloseTo((DMA_HPOS * 312.5) / 20000, 4);
+    expect(DMA_VPOS).toBe(313);
   });
 });
 
