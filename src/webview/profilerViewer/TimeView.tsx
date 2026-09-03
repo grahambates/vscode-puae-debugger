@@ -90,7 +90,7 @@ export function TimeView({
   onOpenSource: (file: string, line: number, toSide: boolean) => void;
   hideTotalTime?: boolean;
   selectedSlot: number | undefined;
-  onSelectSlot: (slot: number) => void;
+  onSelectSlot: (slot: number, sampleIdx?: number) => void;
   onOpenCpuTab: () => void;
 }) {
   // v2 ListImperativeAPI: scrollToRow({index, align}) — v2 auto-sizes the container via CSS.
@@ -234,7 +234,7 @@ export function TimeView({
       // samples[i+1] pairs with pcs[i] (samples[0] is a dummy — see shared/profilerTypes.ts).
       const k = findNextSample(count, from, prev, (i) => model.nodes[model.samples[i + 1]].locationId === locationId);
       if (k !== undefined) {
-        onSelectSlot(columnIndexToSlot(columns, k, dmaSlots));
+        onSelectSlot(columnIndexToSlot(columns, k, dmaSlots), k);
         onOpenCpuTab();
       }
     };

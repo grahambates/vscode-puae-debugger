@@ -265,7 +265,7 @@ function RegistersPanel({
   currentIdx: number | undefined;
   columns: IColumn[];
   dmaSlots: number | undefined;
-  onSelectSlot: (slot: number) => void;
+  onSelectSlot: (slot: number, sampleIdx?: number) => void;
 }) {
   const [hover, setHover] = useState<RegHover | undefined>(undefined);
   const changed = (i: number) => prev !== undefined && regs[i] !== prev[i];
@@ -286,7 +286,7 @@ function RegistersPanel({
       ? findRegNextChangeSample(registers, REG_COUNT, sampleCount, i, currentIdx)
       : findPrevRegChangeSample(registers, REG_COUNT, sampleCount, i, currentIdx);
     if (target === undefined) return;
-    onSelectSlot(columnIndexToSlot(columns, target, dmaSlots));
+    onSelectSlot(columnIndexToSlot(columns, target, dmaSlots), target);
   };
 
   const cell = (label: string, i: number, kind: RegKind, digits = 8) => (
@@ -373,6 +373,7 @@ let savedOptions: { follow: boolean; showRegs: boolean; showSource: boolean; glo
 // fetchDisassembly) — see model.disassembly.
 export function DisassemblyView({
   selectedSlot,
+  selectedSampleIdx,
   onSelectSlot,
   onOpenSource,
   sourceFiles,
@@ -380,7 +381,11 @@ export function DisassemblyView({
   onSetGlobalHeat,
 }: {
   selectedSlot: number | undefined;
-  onSelectSlot: (slot: number) => void;
+  // The exact sample the cursor means, when whatever moved it knew (see App.tsx's selectSlot).
+  // Takes precedence over re-deriving one from selectedSlot, which cannot distinguish samples
+  // that share a slot.
+  selectedSampleIdx: number | undefined;
+  onSelectSlot: (slot: number, sampleIdx?: number) => void;
   onOpenSource: (file: string, line: number, toSide: boolean) => void;
   sourceFiles: Map<string, string[] | null>;
   onRequestSourceFile: (file: string) => void;
@@ -441,9 +446,16 @@ export function DisassemblyView({
   const columns = useMemo(() => (model ? buildColumns(model) : []), [model]);
   const dmaSlots = model?.dma?.owner.length;
   const currentIdx = useMemo(() => {
-    if (selectedSlot === undefined || !dmaSlots || !model?.pcs.length) return undefined;
+    if (!model?.pcs.length) return undefined;
+    // An exact sample index beats re-deriving one from the slot. A slot cannot identify a sample:
+    // instructions the CPU model measured at zero color clocks (68020+ lumped accounting) share
+    // their slot with whichever neighbour carried the lump, so columnIndexAtX below resolves that
+    // whole group to one column — the widest. Navigation that knows its target therefore hands the
+    // index over rather than round-tripping through a slot that would land somewhere else.
+    if (selectedSampleIdx !== undefined && selectedSampleIdx < model.pcs.length) return selectedSampleIdx;
+    if (selectedSlot === undefined || !dmaSlots) return undefined;
     return columnIndexAtX(columns, (selectedSlot + 0.5) / dmaSlots);
-  }, [columns, selectedSlot, dmaSlots, model]);
+  }, [columns, selectedSlot, selectedSampleIdx, dmaSlots, model]);
   const currentAddress = currentIdx !== undefined ? model?.pcs[currentIdx] : undefined;
 
   // D0-D7/A0-A7/SR/PC/USP at currentIdx, for the CPU Registers panel — bounds-checked since
@@ -599,7 +611,7 @@ export function DisassemblyView({
       const pcs = model.pcs;
       const from = currentIdx ?? (prev ? pcs.length - 1 : -1);
       const k = findNextSample(pcs.length, from, prev, (i) => pcs[i] === address);
-      if (k !== undefined) onSelectSlot(columnIndexToSlot(columns, k, dmaSlots));
+      if (k !== undefined) onSelectSlot(columnIndexToSlot(columns, k, dmaSlots), k);
     };
   }, [model, currentIdx, columns, dmaSlots, onSelectSlot]);
 
@@ -623,7 +635,7 @@ export function DisassemblyView({
       setViewMode("linear");
       if (model?.pcs.length && dmaSlots && columns.length > 0) {
         const k = findNextSample(model.pcs.length, -1, false, (i) => model.pcs[i] === address);
-        if (k !== undefined) onSelectSlot(columnIndexToSlot(columns, k, dmaSlots));
+        if (k !== undefined) onSelectSlot(columnIndexToSlot(columns, k, dmaSlots), k);
       }
     };
   }, [functions, model, dmaSlots, columns, onSelectSlot]);
@@ -691,14 +703,14 @@ export function DisassemblyView({
                 <button
                   onClick={() => {
                     const target = currentIdx !== undefined ? currentIdx - 1 : columns.length - 1;
-                    if (target >= 0) onSelectSlot(columnIndexToSlot(columns, target, dmaSlots));
+                    if (target >= 0) onSelectSlot(columnIndexToSlot(columns, target, dmaSlots), target);
                   }}
                   title="Previous instruction"
                 >◀</button>
                 <button
                   onClick={() => {
                     const target = currentIdx !== undefined ? currentIdx + 1 : 0;
-                    if (target < columns.length) onSelectSlot(columnIndexToSlot(columns, target, dmaSlots));
+                    if (target < columns.length) onSelectSlot(columnIndexToSlot(columns, target, dmaSlots), target);
                   }}
                   title="Next instruction"
                 >▶</button>

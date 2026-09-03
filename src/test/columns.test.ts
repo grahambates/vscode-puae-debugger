@@ -341,16 +341,51 @@ describe("findLineExecutionSlot", () => {
   const sameFile = (a: string, b: string) => a === b;
 
   it("finds the first matching execution when starting with no current slot", () => {
-    const slot = findLineExecutionSlot(model, "a.c", 10, undefined, sameFile);
-    expect(slot).toBeDefined();
+    const hit = findLineExecutionSlot(model, "a.c", 10, undefined, sameFile);
+    expect(hit).toBeDefined();
     // Column 0 (sample index 0, pcs[0]=0x1000) — resolves back to column 0.
-    expect(columnIndexAtX(buildColumns(model), (slot! + 0.5) / 100)).toBe(0);
+    expect(columnIndexAtX(buildColumns(model), (hit!.slot + 0.5) / 100)).toBe(0);
+    // The exact sample is reported alongside the slot, so a caller never has to re-derive it.
+    expect(hit!.sampleIdx).toBe(0);
   });
 
   it("cycles to the next matching sample when already at a match", () => {
     const first = findLineExecutionSlot(model, "a.c", 10, undefined, sameFile)!;
-    const second = findLineExecutionSlot(model, "a.c", 10, first, sameFile)!;
-    expect(columnIndexAtX(buildColumns(model), (second + 0.5) / 100)).toBe(1); // next matching sample
+    const second = findLineExecutionSlot(model, "a.c", 10, first.slot, sameFile)!;
+    expect(columnIndexAtX(buildColumns(model), (second.slot + 0.5) / 100)).toBe(1); // next matching sample
+    expect(second.sampleIdx).toBe(1);
+  });
+
+  // Regression test for a real bug report ("follow CPU is wrong"): once per-sample cycle costs
+  // became honest, a 68020's lumped accounting measures a majority of instructions at zero color
+  // clocks, so they share a slot with whichever neighbour carried the lump. A DMA slot therefore
+  // cannot identify a sample, and round-tripping one back through columnIndexAtX lands on a
+  // different instruction — measured on a real capture: 55% of columns zero-width, every one of
+  // those round-trips landing on a different PC, and single-stepping skipping 27% of instructions.
+  // The slot stays the shared cursor; callers that know their target carry the index with it.
+  it("reports the exact sample index, which a slot alone cannot identify", () => {
+    // Zero-cost samples 1 and 2 collapse onto the same x as sample 3 (no fetch cells in the grid,
+    // so buildColumns takes its cycle-fraction path and gives them no width of their own).
+    const collapsed: IProfileModel = {
+      ...model,
+      samples: [0, 1, 1, 1, 1],
+      timeDeltas: [10, 0, 0, 10],
+      pcs: [0x1000, 0x1002, 0x1002, 0x1004],
+      duration: 20,
+    };
+    const hit = findLineExecutionSlot(collapsed, "a.c", 10, undefined, sameFile)!;
+    expect(hit.sampleIdx).toBe(0);
+
+    // Continuing from that slot finds sample 1 — a zero-cost sample whose own slot, mapped back
+    // through columnIndexAtX, resolves to a *later* column. The index is what makes it reachable.
+    const next = findLineExecutionSlot(collapsed, "a.c", 10, hit.slot, sameFile)!;
+    expect(next.sampleIdx).toBe(1);
+    expect(collapsed.pcs[next.sampleIdx]).toBe(0x1002);
+
+    const cols = buildColumns(collapsed);
+    expect(cols[1].x2 - cols[1].x1).toBe(0); // genuinely zero-width
+    const rederived = columnIndexAtX(cols, (next.slot + 0.5) / 100);
+    expect(rederived).not.toBe(next.sampleIdx); // the slot alone would land elsewhere
   });
 
   it("returns undefined for a line with no instructions", () => {

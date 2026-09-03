@@ -102,6 +102,20 @@ export function App() {
   // The pinned DMA-cycle cursor, shared between the flame graph (which sets it on click) and the
   // custom-registers view (which reads it). Reset on a fresh capture, below.
   const [selectedSlot, setSelectedSlot] = useState<number | undefined>(undefined);
+  // The sample (instruction) the cursor means, when the thing that moved it knew exactly — a DMA
+  // slot alone cannot say. Since per-sample cycle costs became honest (a 68020's lumped accounting
+  // genuinely measures many instructions at zero color clocks), a majority of samples share their
+  // slot with whichever neighbour carried the lump, so re-deriving "which instruction" from the
+  // slot alone lands on a different one. Navigation that already knows its target (jump to next
+  // execution, a register's last write, the step buttons, a source-line jump) passes the index
+  // through here; scrubbing the flame graph passes none and leaves the slot authoritative.
+  const [selectedSampleIdx, setSelectedSampleIdx] = useState<number | undefined>(undefined);
+  // Always set the pair together: a stale sample index outliving the slot it came from would
+  // silently pin the CPU tab to an unrelated instruction.
+  const selectSlot = useCallback((slot: number, sampleIdx?: number) => {
+    setSelectedSlot(slot);
+    setSelectedSampleIdx(sampleIdx);
+  }, []);
   // "Latest ref" for selectedSlot — the jumpToExecutionAtLine message handler (registered once,
   // [] deps, see the message-listener effect below) needs the CURRENT slot to search forward
   // from, not whatever it was when the listener was first attached.
@@ -258,6 +272,7 @@ export function App() {
       const m = message as ProfilerOutboundMessage;
       if (m.command === "captureResult") {
         setSelectedSlot(0);
+        setSelectedSampleIdx(undefined);
         // Seed the Time-View-switch watcher so this automatic reset (a fresh capture, not a user
         // navigating) doesn't itself trigger switching away from Time View — it should stay the
         // default landing tab.
@@ -365,11 +380,12 @@ export function App() {
         // profilerLineDecorationProvider.ts). Always opens in the left panel, same as TimeView's
         // own function-name jump.
         const curModel = getProfileModel();
-        const slot = curModel
+        const hit = curModel
           ? findLineExecutionSlot(curModel, m.file, m.line, selectedSlotRef.current, (a, b) => normalizePath(a) === normalizePath(b))
           : undefined;
-        if (slot !== undefined) {
-          setSelectedSlot(slot);
+        if (hit !== undefined) {
+          setSelectedSlot(hit.slot);
+          setSelectedSampleIdx(hit.sampleIdx);
           setLeftTab("disasm");
         }
       } else if (m.command === "downloadProfile") {
@@ -534,12 +550,12 @@ export function App() {
           onOpenSource={openSource}
           hideTotalTime={treeMode === "bottom"}
           selectedSlot={selectedSlot}
-          onSelectSlot={setSelectedSlot}
+          onSelectSlot={selectSlot}
           onOpenCpuTab={() => setTab("disasm")}
         />
       </div>
     );
-    if (tab === "customregs") return <CustomRegsView selectedSlot={selectedSlot} onSelectSlot={setSelectedSlot} />;
+    if (tab === "customregs") return <CustomRegsView selectedSlot={selectedSlot} onSelectSlot={selectSlot} />;
     if (tab === "copper") {
       // In combined multi-frame mode, selectedSlot spans N × frameSlots. The copper
       // trace is from one frame, but the copper list restarts at vpos 0 each frame —
@@ -551,15 +567,15 @@ export function App() {
         ? selectedSlot % frameSlots
         : selectedSlot;
       const onCopperSelectSlot = (slot: number) => {
-        if (!selectedRange || selectedSlot === undefined) { setSelectedSlot(slot); return; }
-        setSelectedSlot(Math.floor(selectedSlot / frameSlots) * frameSlots + slot);
+        if (!selectedRange || selectedSlot === undefined) { selectSlot(slot); return; }
+        selectSlot(Math.floor(selectedSlot / frameSlots) * frameSlots + slot);
       };
       return <CopperView selectedSlot={copperSlot} onSelectSlot={onCopperSelectSlot} onOpenSource={openSource} />;
     }
     if (tab === "blitter") return (
       <BlitterView
         selectedSlot={selectedSlot}
-        onSelectSlot={setSelectedSlot}
+        onSelectSlot={selectSlot}
         displayUnit={unit}
         timing={timing}
         onOpenMemory={(address, bytesPerRow) => {
@@ -568,22 +584,23 @@ export function App() {
         }}
       />
     );
-    if (tab === "memory") return <MemoryView selectedSlot={selectedSlot} onSelectSlot={setSelectedSlot} onOpenSource={openSource} jumpRequest={memoryJumpRequest} />;
+    if (tab === "memory") return <MemoryView selectedSlot={selectedSlot} onSelectSlot={selectSlot} onOpenSource={openSource} jumpRequest={memoryJumpRequest} />;
     if (tab === "screen") {
       // Same combined-multi-frame convention as the copper tab above: screenModel always shows
       // a single frame (frameIndex), so a click's local slot is placed back at whichever frameSlots
       // chunk the current playhead was already in, rather than jumping to an unrelated frame.
       const frameSlots = DMA_HPOS * DMA_VPOS;
       const onScreenSelectSlot = (slot: number) => {
-        if (!selectedRange || selectedSlot === undefined) { setSelectedSlot(slot); return; }
-        setSelectedSlot(Math.floor(selectedSlot / frameSlots) * frameSlots + slot);
+        if (!selectedRange || selectedSlot === undefined) { selectSlot(slot); return; }
+        selectSlot(Math.floor(selectedSlot / frameSlots) * frameSlots + slot);
       };
       return <ResourcesView selectedSlot={selectedSlot} model={screenModel} onSelectSlot={onScreenSelectSlot} />;
     }
     return (
       <DisassemblyView
         selectedSlot={selectedSlot}
-        onSelectSlot={setSelectedSlot}
+        selectedSampleIdx={selectedSampleIdx}
+        onSelectSlot={selectSlot}
         onOpenSource={openSource}
         sourceFiles={sourceFiles}
         onRequestSourceFile={requestSourceFile}
@@ -781,7 +798,7 @@ export function App() {
             filter={filter}
             onOpenSource={openSource}
             selectedSlot={selectedSlot}
-            onSelectSlot={setSelectedSlot}
+            onSelectSlot={selectSlot}
             onOpenBlitterTab={() => setLeftTab("blitter")}
             onOpenMemory={(address, bytesPerRow) => {
               setMemoryJumpRequest({ address, bytesPerRow });

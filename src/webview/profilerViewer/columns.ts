@@ -350,13 +350,19 @@ export function findNextSample(
 // them executing counts as "this line ran". Returns undefined if there's no data for the line or
 // the model lacks the DMA trace needed to search it. `isSameFile` lets the caller supply its own
 // path-equality (the webview has no Node "path" module — see App.tsx's normalizePath).
+//
+// Returns the sample index alongside the slot, because a slot alone can't identify a sample: a
+// zero-cost sample (68020+ lumped accounting — see buildSampleSlots) shares its slot with the
+// neighbour that carried the lump, so mapping the slot back through columnIndexAtX would land on
+// a different instruction than the one searched for. The caller keeps the slot as the shared
+// cursor and uses sampleIdx for anything that needs THIS sample exactly.
 export function findLineExecutionSlot(
   model: IProfileModel,
   file: string,
   line: number,
   currentSlot: number | undefined,
   isSameFile: (a: string, b: string) => boolean,
-): number | undefined {
+): { slot: number; sampleIdx: number } | undefined {
   const dmaSlots = model.dma?.owner.length;
   if (!model.pcs.length || !dmaSlots) return undefined;
   const addrs = new Set(
@@ -370,7 +376,7 @@ export function findLineExecutionSlot(
   if (columns.length === 0) return undefined;
   const from = currentSlot !== undefined ? columnIndexAtX(columns, (currentSlot + 0.5) / dmaSlots) : -1;
   const k = findNextSample(model.pcs.length, from, false, (i) => addrs.has(model.pcs[i]));
-  return k !== undefined ? columnIndexToSlot(columns, k, dmaSlots) : undefined;
+  return k !== undefined ? { slot: columnIndexToSlot(columns, k, dmaSlots), sampleIdx: k } : undefined;
 }
 
 // Resolve the call stack (outermost→leaf) executing at normalized x (0..1) — the column covering
