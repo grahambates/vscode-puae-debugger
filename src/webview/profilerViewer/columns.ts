@@ -21,10 +21,30 @@ export interface IColumn {
   rows: (IColumnLocation | number)[];
 }
 
-// Cells to search ahead (in the DMA grid) before giving up on matching a given sample's fetch —
-// bounded so a genuinely unmatchable sample (see below) can't turn this into an O(samples * N)
-// scan; a real fetch, when there is one, shows up within a handful of cells of the previous match.
-const CODE_MATCH_WINDOW = 512;
+// How far either side of a sample's PREDICTED grid position to look for its fetch cell. Bounded so
+// a genuinely unmatchable sample (see below) can't turn this into an O(samples * N) scan.
+//
+// The prediction is what makes a small window workable. Searching blindly forward from the last
+// match instead — which this did originally — fails as soon as anything runs for longer than the
+// window without emitting a fetch cell, and then fails permanently: the cursor is left further
+// behind the raster than the window reaches, so every subsequent sample looks unmatchable too. One
+// raster busy-wait is enough to trigger it. Measured on a real 68020 capture, matching died at
+// sample 1,907 of 31,078 and never recovered, leaving 2.5% of samples anchored to observed
+// positions and the rest riding on extrapolation alone.
+//
+// Keep this TIGHT. It is a tolerance on how far the grid may disagree with the cycle clock, not a
+// search budget, and widening it past what that disagreement actually is starts matching the wrong
+// lap of a loop — the same PC, a different iteration. A wrong match is worse than no match: it
+// pins a sample to a position it never occupied and desynchronises everything after it. Swept
+// against the width-vs-cycles invariant (profileAnalysis.ts) on a real capture, worst divergence
+// between a function's flame-graph width and its measured cycle share:
+//
+//     window     4      8     16     32     64     96    128    192    512
+//     matched  679   3973   5744   5911   5934   5948   5959   5955   3452
+//     worst   0.0pp  0.1pp  0.2pp  0.2pp  0.2pp  0.2pp  0.2pp  0.1pp  6.8pp
+//
+// 512 matching FEWER samples than 128 is the wrong-lap cascade, not noise. 128 sits at the plateau.
+const CODE_MATCH_WINDOW = 128;
 
 // Anchor each CPU sample to the DMA grid's own record of its instruction fetch (owner==CPU,
 // DMA_CODE flag, real bus address) — ground truth for "when did this instruction actually run,"
@@ -134,32 +154,50 @@ export function buildSampleSlots(pcs: readonly number[], timeDeltas: readonly nu
     anchorSlot = ordered[0].slot;
   }
 
+  // Cumulative cycle cost, used to predict where a sample should be before looking for it. A grid
+  // slot is one color clock and timeDeltas are color clocks, so cycles elapsed since the last
+  // confirmed match convert straight into slots travelled — the two are the same axis.
+  const cum = new Float64Array(pcs.length + 1);
+  for (let k = 0; k < pcs.length; k++) cum[k + 1] = cum[k] + (timeDeltas[k] ?? 0);
+
   let cell = 0;
   let matched = 0;
   let startK = 0;
+  // The most recent confirmed (sample, slot) pair — the origin every prediction is measured from,
+  // so drift can't accumulate across a frame the way it would from a single fixed origin.
+  let refK = 0;
+  let refSlot = 0;
   if (anchorK >= 0) {
     slots[anchorK] = anchorSlot;
     cell = anchorSlot + 1;
     matched = 1;
     startK = anchorK + 1;
+    refK = anchorK;
+    refSlot = anchorSlot;
     // Samples before the anchor never got a matchable fetch cell (that's the whole point of
     // picking the earliest candidate) — left unmatched, they're interpolated/clamped to the
     // anchor below, same as any other unmatched run.
   }
   for (let k = startK; k < pcs.length; k++) {
     const pc = pcs[k];
-    // Bounded: steady-state gaps between consecutive samples are small (see the header comment);
-    // a real fetch, when there is one, shows up within a handful of cells of the previous match.
-    const limit = Math.min(N, cell + CODE_MATCH_WINDOW);
-    let j = cell;
+    // Where this sample should be if the cycle clock and the grid agree. Never search behind
+    // `cell`: slots must come out non-decreasing for the interpolation and every binary search
+    // downstream (columnIndexAtX) to hold.
+    const predicted = refSlot + (cum[k] - cum[refK]);
+    const from = Math.max(cell, Math.min(N, Math.floor(predicted) - CODE_MATCH_WINDOW));
+    const limit = Math.min(N, Math.ceil(predicted) + CODE_MATCH_WINDOW);
+    let j = from;
     while (j < limit && !(owner[j] === BusOwner.CPU && flags[j] & DMA_CODE && addr[j] === pc)) j++;
     if (j < limit) {
       slots[k] = j;
       cell = j + 1;
       matched++;
+      refK = k;
+      refSlot = j;
     }
     // else: leave unmatched (-1); `cell` stays put so the next sample can still match nearby —
-    // this one just consumed no grid cell.
+    // this one just consumed no grid cell. The prediction keeps tracking the raster meanwhile, so
+    // a long unmatchable stretch no longer strands the search behind it.
   }
 
   // Fill unmatched runs by interpolating between the nearest matched neighbours — weighted by
@@ -185,9 +223,7 @@ export function buildSampleSlots(pcs: readonly number[], timeDeltas: readonly nu
   // stretch across everything they should have covered. The leading run keeps the old clamp: it
   // spans at most the handful of samples before the anchor (which is chosen from the first
   // ANCHOR_CANDIDATES), and extrapolating backwards off the grid buys nothing at that size.
-  const cum = new Float64Array(slots.length + 1); // cum[k] = cycles elapsed before sample k
-  for (let k = 0; k < slots.length; k++) cum[k + 1] = cum[k] + (timeDeltas[k] ?? 0);
-
+  // (cum, above, is the same cycles-elapsed-before-sample-k prefix the matcher predicts with.)
   let prev = -1;
   for (let k = 0; k < slots.length; k++) {
     if (slots[k] < 0) continue;

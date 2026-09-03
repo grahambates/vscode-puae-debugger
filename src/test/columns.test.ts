@@ -152,6 +152,40 @@ describe("buildColumns (DMA-anchored positions)", () => {
   // interpolated rather than matched. Spreading such a run by sample INDEX assumes every sample
   // costs the same, which is exactly what a spin loop violates: it retires far more instructions
   // per cycle than the real work around it, so it swallows width that belongs to the work.
+  // Regression test for the matcher recovering after a stretch it can't match. Searching blindly
+  // forward from the last match strands the cursor behind the raster the moment anything runs
+  // longer than the window without emitting a fetch cell (a cached spin loop does exactly this),
+  // and it never recovers. Predicting from the cycle clock keeps the search tracking the raster
+  // across that gap.
+  it("re-matches after a long unmatchable gap instead of giving up for the rest of the frame", () => {
+    const M = 4000;
+    const owner = new Uint8Array(M);
+    const flags = new Uint8Array(M);
+    const addr = new Uint32Array(M);
+    const value = new Uint16Array(M);
+    const fetch = (slot: number, pc: number) => { owner[slot] = BusOwner.CPU; flags[slot] = DMA_CODE; addr[slot] = pc; };
+    // Two samples fetch normally at the start; then a sample costing 2000 cycles emits no fetch
+    // cell of its own (cached loop), putting the next fetch far beyond any fixed forward window.
+    fetch(10, 0x5000);
+    fetch(14, 0x5004);
+    fetch(2020, 0x500c);
+
+    const gapModel: IProfileModel = {
+      ...model,
+      samples: [0, 1, 1, 1, 1],
+      timeDeltas: [4, 2, 2000, 4],
+      pcs: [0x5000, 0x5004, 0x5008, 0x500c],
+      duration: 2010,
+      dma: { owner, flags, addr, value },
+    };
+    const columns = buildColumns(gapModel);
+    expect(columns[0].x1).toBeCloseTo(10 / M, 6);
+    expect(columns[1].x1).toBeCloseTo(14 / M, 6);
+    // The point: sample 3's fetch at slot 2020 is ~2000 slots past the last match, so a fixed
+    // forward window would never reach it and it would be extrapolated instead of observed.
+    expect(columns[3].x1).toBeCloseTo(2020 / M, 6);
+  });
+
   it("spreads an unmatched run by cycle cost, not by sample count", () => {
     const M = 1000;
     const owner = new Uint8Array(M);
