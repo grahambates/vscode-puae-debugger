@@ -9,11 +9,12 @@
 // subcommands never start the DAP server.
 
 import { readFileSync } from "fs";
-import { analyseProfile, ProfileAnalysis } from "../profileAnalysis";
+import { analyseProfile, ProfileAnalysis, ProfileRequestError } from "../profileAnalysis";
 import { renderCheck, renderDump } from "../profileReport";
 
 const USAGE = `Usage:
-  puae-debugger profile dump  <file.puaeprofile> [--frame N] [--functions N] [--stalls] [--json]
+  puae-debugger profile dump  <file.puaeprofile> [--frame N] [--functions N] [--stalls]
+                                                  [--instructions NAME] [--json]
   puae-debugger profile check <file.puaeprofile> [--json]
 
   dump   Per-frame cost tables: cycles, top functions by self time, DMA bus census.
@@ -21,11 +22,13 @@ const USAGE = `Usage:
          layout, buffer truncation). Exits 1 if any error-level finding is reported.
 
 Options:
-  --frame N       Restrict dump to one frame (default: all).
-  --functions N   Functions to list per frame (default: 12, 0 for all).
-  --stalls        Compare measured cost against 68000 datasheet timings (68kcounter)
-                  to separate slow instructions from bus-blocked ones. 68000 only.
-  --json          Emit the full analysis as JSON instead of text.`;
+  --frame N            Restrict dump to one frame (default: all).
+  --functions N        Functions to list per frame (default: 12, 0 for all).
+  --stalls             Compare measured cost against 68000 datasheet timings (68kcounter)
+                       to separate slow instructions from bus-blocked ones. 68000 only.
+  --instructions NAME  Per-instruction costs within one function: cycles, hits, cycles
+                       per hit, and (68000) datasheet cost and stall per execution.
+  --json               Emit the full analysis as JSON instead of text.`;
 
 // Returns the process exit code. `check` fails the run on any error-level finding so it can be
 // used as a gate; `dump` is purely informational and always succeeds once the file parses.
@@ -43,12 +46,17 @@ export function runProfileCli(argv: string[]): number {
   let file: string | undefined;
   let json = false;
   let stalls = false;
+  let instructions: string | undefined;
   let frame: number | undefined;
   let limit = 12;
   for (let i = 1; i < argv.length; i++) {
     const arg = argv[i];
     if (arg === "--json") json = true;
     else if (arg === "--stalls") stalls = true;
+    else if (arg === "--instructions") {
+      instructions = argv[++i];
+      if (instructions === undefined) { console.error(`--instructions needs a function name.\n\n${USAGE}`); return 1; }
+    }
     else if (arg === "--frame") frame = Number(argv[++i]);
     else if (arg === "--functions") limit = Number(argv[++i]);
     else if (arg.startsWith("-")) { console.error(`Unknown option: ${arg}\n\n${USAGE}`); return 1; }
@@ -56,12 +64,34 @@ export function runProfileCli(argv: string[]): number {
     else { console.error(`Unexpected argument: ${arg}\n\n${USAGE}`); return 1; }
   }
   if (file === undefined) { console.error(`No file given.\n\n${USAGE}`); return 1; }
+  if (instructions !== undefined && instructions.length === 0) {
+    console.error(`--instructions needs a function name.\n\n${USAGE}`); return 1;
+  }
+  if (instructions !== undefined && sub !== "dump") {
+    console.error(`--instructions applies to "dump", not "${sub}".\n\n${USAGE}`); return 1;
+  }
+
+  let bytes: Uint8Array;
+  try {
+    bytes = new Uint8Array(readFileSync(file));
+  } catch (err) {
+    console.error(`Could not read ${file}: ${err instanceof Error ? err.message : String(err)}`);
+    return 1;
+  }
 
   let analysis: ProfileAnalysis;
   try {
-    analysis = analyseProfile(new Uint8Array(readFileSync(file)), { stalls });
+    analysis = analyseProfile(bytes, { stalls, instructions });
   } catch (err) {
-    console.error(`Could not read ${file}: ${err instanceof Error ? err.message : String(err)}`);
+    // A request the capture can't satisfy (an unknown --instructions name) is reported on its own
+    // terms: its message already names what the capture does contain, and a "could not read"
+    // prefix would send the caller looking at the file instead of at their argument. Anything
+    // else here is a damaged or unexpected file, which is exactly what that prefix is for.
+    if (err instanceof ProfileRequestError) {
+      console.error(err.message);
+    } else {
+      console.error(`Could not read ${file}: ${err instanceof Error ? err.message : String(err)}`);
+    }
     return 1;
   }
 

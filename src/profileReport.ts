@@ -3,7 +3,7 @@
 // terminal and a number a model reads over MCP should never be formatted differently, or a
 // conversation about one won't transfer to the other.
 
-import { FrameAnalysis, ProfileAnalysis, StallAnalysis } from "./profileAnalysis";
+import { FrameAnalysis, InstructionAnalysis, ProfileAnalysis, StallAnalysis } from "./profileAnalysis";
 
 export function pct(v: number): string {
   return `${v.toFixed(1)}%`;
@@ -36,6 +36,44 @@ function dumpFrame(f: FrameAnalysis, limit: number, out: string[]): void {
     out.push(`  … ${f.functions.length - limit} more (use --functions 0)`);
   }
   if (f.stalls) out.push(...renderStalls(f.stalls, limit, f.index));
+  if (f.instructionDetail) out.push(...renderInstructions(f.instructionDetail, f.index));
+}
+
+// Address order, not cost order: a routine is read top to bottom, and where the expensive
+// instruction sits relative to the branch above it is usually the point. The cost columns make
+// the hot line obvious without reordering it out of its context.
+function renderInstructions(d: InstructionAnalysis, frameIndex: number): string[] {
+  const out: string[] = [
+    "",
+    `  ${d.name} (0x${d.address.toString(16)}) — per instruction, frame ${frameIndex}, ${d.totalCycles} cycles total`,
+  ];
+  if (d.datasheetApplicable) {
+    out.push(`  cyc/hit vs datasheet cost; a large "stall" is time blocked on the bus, not work.`);
+  } else if (d.datasheetCaveat) {
+    out.push(`  (no datasheet comparison: ${d.datasheetCaveat})`);
+  }
+  out.push("");
+  const head =
+    `  ${"address".padEnd(10)}${"cycles".padStart(9)}${"%fn".padStart(7)}${"hits".padStart(8)}${"cyc/hit".padStart(9)}` +
+    (d.datasheetApplicable ? `${"sheet".padStart(7)}${"stall".padStart(7)}` : "") +
+    "  instruction";
+  out.push(head);
+  for (const ins of d.instructions) {
+    const timing = d.datasheetApplicable
+      ? (ins.theoreticalCycles === undefined ? "".padStart(7) + "".padStart(7)
+        : String(ins.theoreticalCycles).padStart(7) +
+          (ins.stallPerHit === undefined ? "".padStart(7) : ins.stallPerHit.toFixed(1).padStart(7)))
+      : "";
+    out.push(
+      `  0x${ins.address.toString(16).padStart(6, "0")}  ${String(ins.cycles).padStart(9)}` +
+      `${pct(ins.pctOfFunction).padStart(7)}${String(ins.hits).padStart(8)}` +
+      `${(ins.hits ? ins.cyclesPerHit.toFixed(1) : "-").padStart(9)}${timing}  ${ins.text}`,
+    );
+  }
+  if (d.truncated) {
+    out.push(`  … listing cut short by the disassembler's instruction budget before the function's end.`);
+  }
+  return out;
 }
 
 function renderStalls(st: StallAnalysis, limit: number, frameIndex: number): string[] {

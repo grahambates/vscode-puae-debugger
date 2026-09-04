@@ -101,6 +101,8 @@ export interface FrameAnalysis {
   dmaOwners: DmaOwnerCount[]; // descending by cells
   /** Present only when stall analysis was requested (see analyseProfile's options). */
   stalls?: StallAnalysis;
+  /** Present only when per-instruction detail was requested for a named function. */
+  instructionDetail?: InstructionAnalysis;
 }
 
 export interface ProfileAnalysis {
@@ -126,6 +128,60 @@ export interface FunctionStall {
   busAccesses: number;
   /** Instructions in the function 68kcounter could not time; their cost is excluded above. */
   untimed: number;
+}
+
+/**
+ * A request this capture can't satisfy — an unknown or ambiguous function name, or a frame with
+ * no disassembly — as distinct from a file that can't be read or decoded.
+ *
+ * The difference is the whole message to the caller: "fix your argument" versus "this file is
+ * damaged or the wrong file". Typed rather than sniffed from the message text so the CLI and the
+ * MCP tools can tell them apart without matching on prose.
+ */
+export class ProfileRequestError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ProfileRequestError";
+  }
+}
+
+// One instruction's measured cost within a function, for the question a function-level table
+// can't answer: WHICH instruction in this routine is expensive. The capture has carried this all
+// along (it is what the profiler's Disassembly view draws, and what analyseStalls aggregates);
+// it just had no way out of the library until now.
+export interface InstructionCost {
+  address: number;
+  /** Mnemonic + operands, as disassembled. */
+  text: string;
+  /** Source line, when the debug info places this address. */
+  line?: number;
+  /** Times this exact PC was the executing instruction in this frame. */
+  hits: number;
+  /** Cycles attributed to this PC in this frame. */
+  cycles: number;
+  /** cycles/hits — the figure to compare against the datasheet cost below. */
+  cyclesPerHit: number;
+  /** Share of the enclosing function's measured cycles. */
+  pctOfFunction: number;
+  /** Datasheet cost of ONE unblocked execution, when 68kcounter can time it (68000 only). */
+  theoreticalCycles?: number;
+  /** cyclesPerHit - theoreticalCycles: per-execution time spent blocked rather than working. */
+  stallPerHit?: number;
+}
+
+export interface InstructionAnalysis {
+  /** The function actually matched, which may differ from what was asked for. */
+  name: string;
+  address: number;
+  /** Exact total for the function this frame, correct even if `instructions` was truncated. */
+  totalCycles: number;
+  /** True when the decode budget cut the listing short of the function's real end. */
+  truncated: boolean;
+  /** Whether datasheet comparison applies at all — same gate `--stalls` uses. */
+  datasheetApplicable: boolean;
+  datasheetCaveat?: string;
+  /** In address order: how you read a routine, not a ranking. */
+  instructions: InstructionCost[];
 }
 
 export interface StallAnalysis {
@@ -357,11 +413,99 @@ export function analyseStalls(
   return { applicable, caveat, functions, totalMeasured, totalTheoretical };
 }
 
-export function analyseProfile(file: Uint8Array, opts: { stalls?: boolean } = {}): ProfileAnalysis {
+/**
+ * Per-instruction costs within one function.
+ *
+ * `query` is matched leniently — exact name first (case-insensitively), then a unique substring —
+ * because a caller reading a function table shouldn't have to reproduce a mangled or suffixed
+ * name exactly. An ambiguous or unknown query throws with the candidates listed, since silently
+ * picking one would attribute costs to the wrong routine.
+ */
+export function analyseInstructions(
+  disassembly: IDisassembledFunction[] | undefined,
+  query: string,
+  zeroCostSamples: number,
+): InstructionAnalysis {
+  const functions = disassembly ?? [];
+  if (functions.length === 0) {
+    throw new ProfileRequestError(
+      "This frame carries no disassembly, so per-instruction costs aren't available for it.",
+    );
+  }
+  const wanted = query.trim().toLowerCase();
+  const exact = functions.filter((f) => f.name.toLowerCase() === wanted);
+  const matches = exact.length ? exact : functions.filter((f) => f.name.toLowerCase().includes(wanted));
+  if (matches.length === 0) {
+    throw new ProfileRequestError(
+      `No executed function matching "${query}" in this frame. Executed functions: ` +
+        functions.map((f) => f.name).join(", "),
+    );
+  }
+  if (matches.length > 1) {
+    throw new ProfileRequestError(
+      `"${query}" matches ${matches.length} functions: ${matches.map((f) => f.name).join(", ")}. Be more specific.`,
+    );
+  }
+
+  const fn = matches[0];
+  // Totals for the datasheet gate are computed over this function alone: it is the only code
+  // being reported on, so a global figure could declare the comparison applicable (or not) on
+  // the strength of code the caller isn't looking at.
+  // Datasheet cost comes from theoreticalTiming(text), not the model's precomputed
+  // `theoreticalCycles` field: analyseStalls derives it the same way, so both report identical
+  // numbers for the same instruction, and neither silently loses the comparison against a model
+  // whose optional field wasn't populated.
+  let measured = 0;
+  let theoretical = 0;
+  const timings = fn.instructions.map((ins) => theoreticalTiming(ins.text)?.cck);
+  fn.instructions.forEach((ins, i) => {
+    const cck = timings[i];
+    if (ins.hits === 0 || cck === undefined) return;
+    measured += ins.cycles;
+    theoretical += cck * ins.hits;
+  });
+  const { applicable, caveat } = datasheetApplicability(zeroCostSamples, measured, theoretical);
+
+  const instructions = fn.instructions.map((ins, i) => {
+    const cyclesPerHit = ins.hits > 0 ? ins.cycles / ins.hits : 0;
+    const theoreticalCycles = timings[i];
+    return {
+      address: ins.address,
+      text: ins.text,
+      line: ins.line,
+      hits: ins.hits,
+      cycles: ins.cycles,
+      cyclesPerHit,
+      pctOfFunction: fn.totalCycles > 0 ? (ins.cycles / fn.totalCycles) * 100 : 0,
+      theoreticalCycles,
+      stallPerHit:
+        applicable && ins.hits > 0 && theoreticalCycles !== undefined
+          ? cyclesPerHit - theoreticalCycles
+          : undefined,
+    };
+  });
+
+  const last = fn.instructions[fn.instructions.length - 1];
+  return {
+    name: fn.name,
+    address: fn.address,
+    totalCycles: fn.totalCycles,
+    // `end` is the symbol's real end; the listing stops early when the decode budget ran out.
+    truncated: last !== undefined && last.address + last.length < fn.end,
+    datasheetApplicable: applicable,
+    datasheetCaveat: caveat,
+    instructions,
+  };
+}
+
+export function analyseProfile(file: Uint8Array, opts: { stalls?: boolean; instructions?: string } = {}): ProfileAnalysis {
   const { frames, manifest } = loadProfile(file);
   const analysed = frames.map((f, i) => {
     const a = analyseFrame(f.model, i);
     if (opts.stalls) a.stalls = analyseStalls(f.model.disassembly, a.zeroCostSamples);
+    if (opts.instructions) {
+      a.instructionDetail = analyseInstructions(f.model.disassembly, opts.instructions, a.zeroCostSamples);
+    }
     return a;
   });
   const findings: ProfileFinding[] = [];

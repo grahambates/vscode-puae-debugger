@@ -164,7 +164,7 @@ Since there's no command palette or debug toolbar outside VS Code, the UI action
 
 The same binary has a few modes that need neither the emulator nor a browser:
 
-- `puae-debugger profile dump|check <file.puaeprofile>` — inspect a saved capture from the command line. `dump` prints per-frame cycle costs, top functions and the DMA bus census (`--stalls` additionally compares measured cost against 68000 datasheet timings); `check` verifies the capture against physical invariants and exits non-zero on an error-level finding, so it can gate a build. `--json` emits the full analysis for a script to consume.
+- `puae-debugger profile dump|check <file.puaeprofile>` — inspect a saved capture from the command line. `dump` prints per-frame cycle costs, top functions and the DMA bus census (`--stalls` additionally compares measured cost against 68000 datasheet timings, and `--instructions <function>` breaks one routine down instruction by instruction); `check` verifies the capture against physical invariants and exits non-zero on an error-level finding, so it can gate a build. `--json` emits the full analysis for a script to consume.
 - `puae-debugger mcp` — an MCP server exposing the emulator and the profile analysis to an MCP client:
 
   ```sh

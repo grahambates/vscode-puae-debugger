@@ -6,6 +6,7 @@ import { WebSocketServer } from "ws";
 import { DebugAdapter } from "../debugAdapter";
 import { ProfilerRpcClient } from "../profilerManager";
 import { openInBrowser } from "./openInBrowser";
+import { HELP_FLAGS, usage, VERSION_FLAGS } from "./cliHelp";
 import { runProfileCli } from "./profileCli";
 import { runSkillCli } from "./skillCli";
 import { runMcpServer } from "../mcp/server";
@@ -14,6 +15,18 @@ import { StandalonePuaeEmulator } from "./standalonePuaeEmulator";
 import { StandaloneProfilerViewerProvider } from "./standaloneProfilerViewerProvider";
 import { StandaloneStateViewerProvider } from "./standaloneStateViewerProvider";
 import { notFound, serveStaticFile } from "./staticServer";
+
+// `puae-debugger --help` / `--version`. First of the early dispatches, and on stdout rather than
+// stderr: this output was asked for, unlike the status logging further down (which goes to stderr
+// unconditionally because stdout may be the DAP or MCP protocol stream).
+if (HELP_FLAGS.includes(process.argv[2])) {
+  console.log(usage(__PUAE_DEBUGGER_VERSION__));
+  process.exit(0);
+}
+if (VERSION_FLAGS.includes(process.argv[2])) {
+  console.log(__PUAE_DEBUGGER_VERSION__);
+  process.exit(0);
+}
 
 // `puae-debugger profile <dump|check> ...` is a plain offline CLI (no DAP/HTTP server, no
 // emulator) — dispatched before parseArgs/main below (which are for the DAP server) even run,
@@ -58,7 +71,7 @@ function parseArgs(argv: string[]): Options {
         options.stdio = true;
         break;
       default:
-        console.error(`Unknown argument: ${argv[i]}`);
+        console.error(`Unknown argument: ${argv[i]}\n\nRun "puae-debugger --help" for usage.`);
         process.exit(1);
     }
   }

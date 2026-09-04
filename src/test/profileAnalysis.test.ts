@@ -1,7 +1,7 @@
 import { readFileSync } from "fs";
 import * as path from "path";
-import { analyseFrame, analyseProfile, checkFrame, FrameAnalysis, ProfileFinding } from "../profileAnalysis";
-import { BusOwner, Category, DMA_CODE, IProfileModel } from "../shared/profilerTypes";
+import { analyseFrame, analyseInstructions, analyseProfile, checkFrame, FrameAnalysis, ProfileFinding, ProfileRequestError } from "../profileAnalysis";
+import { BusOwner, Category, DMA_CODE, IDisassembledFunction, IProfileModel } from "../shared/profilerTypes";
 
 // Minimal synthetic model: root -> "hot" (2 samples, 10 cycles each) and root -> "cold" (2
 // samples, 5 cycles each). No `dma`, so buildColumns falls back to plain cycle-cost fractions —
@@ -269,3 +269,106 @@ describe("analyseProfile (real fixture)", () => {
     expect(a.findings.some((f) => f.code === "out-of-range-instructions")).toBe(true);
   });
 });
+
+// Two functions' worth of disassembly, which is all analyseInstructions reads. Hand-built for the
+// same reason analyseStalls' tests are (see theoreticalTimings.test.ts): the committed
+// .puaeprofile fixture predates the sections the disassembler needs, and a capture that has them
+// can only be produced by running the emulator against a real Kickstart ROM.
+function disassembly(): IDisassembledFunction[] {
+  const fn = (name: string, address: number, rows: { text: string; hits: number; cycles: number }[], end?: number) => ({
+    address, end: end ?? address + rows.length * 2, name,
+    totalCycles: rows.reduce((sum, r) => sum + r.cycles, 0),
+    instructions: rows.map((r, i) => ({
+      address: address + i * 2, hex: "0000", length: 2, text: r.text, hits: r.hits, cycles: r.cycles,
+      line: 10 + i,
+    })),
+  });
+  return [
+    // move.l 4(a6),d1 is 8 color clocks unblocked; lsr.w #7,d1 is 10. The second row here costs
+    // 24.5/execution against that 10 — the shape of a real bus stall, not a slow instruction.
+    fn("DrawThing", 0x1000, [
+      { text: "move.l 4(a6),d1", hits: 2, cycles: 16 },
+      { text: "lsr.w #7,d1", hits: 2, cycles: 49 },
+      { text: "rts", hits: 0, cycles: 0 },
+    ]),
+    fn("DrawOther", 0x2000, [{ text: "nop", hits: 1, cycles: 4 }]),
+  ];
+}
+
+describe("analyseInstructions", () => {
+  it("reports per-instruction cost, in address order", () => {
+    const d = analyseInstructions(disassembly(), "DrawThing", 0);
+    expect(d.name).toBe("DrawThing");
+    expect(d.instructions.map((i) => i.address)).toEqual([0x1000, 0x1002, 0x1004]);
+    expect(d.instructions[1]).toMatchObject({ hits: 2, cycles: 49, cyclesPerHit: 24.5, line: 11 });
+  });
+
+  it("expresses each instruction as a share of its function", () => {
+    const d = analyseInstructions(disassembly(), "DrawThing", 0);
+    // 49 of 65 total cycles.
+    expect(d.instructions[1].pctOfFunction).toBeCloseTo(75.4, 1);
+    expect(d.totalCycles).toBe(65);
+  });
+
+  it("separates a slow instruction from a blocked one", () => {
+    // The distinction the whole feature exists for: lsr.w is a 10-cycle instruction that spent
+    // 14.5 cycles per execution waiting for the bus. "Make it faster" and "stop competing for the
+    // bus" are different fixes, and only this column tells them apart.
+    const d = analyseInstructions(disassembly(), "DrawThing", 0);
+    expect(d.datasheetApplicable).toBe(true);
+    expect(d.instructions[0]).toMatchObject({ theoreticalCycles: 8, stallPerHit: 0 });
+    expect(d.instructions[1]).toMatchObject({ theoreticalCycles: 10, stallPerHit: 14.5 });
+  });
+
+  it("leaves stall undefined for instructions that never ran", () => {
+    // 0 hits means no measurement to compare, not a zero-cost instruction.
+    const d = analyseInstructions(disassembly(), "DrawThing", 0);
+    expect(d.instructions[2].hits).toBe(0);
+    expect(d.instructions[2].stallPerHit).toBeUndefined();
+  });
+
+  it("withholds the datasheet comparison when the capture says it doesn't apply", () => {
+    // zeroCostSamples > 0 means a 68020+ capture, where 68000 datasheet timings are fiction.
+    const d = analyseInstructions(disassembly(), "DrawThing", 5);
+    expect(d.datasheetApplicable).toBe(false);
+    expect(d.datasheetCaveat).toBeTruthy();
+    expect(d.instructions[1].stallPerHit).toBeUndefined();
+    // The measured figures stand on their own and are still reported.
+    expect(d.instructions[1].cyclesPerHit).toBe(24.5);
+  });
+
+  it("matches a name case-insensitively, and by unique substring", () => {
+    expect(analyseInstructions(disassembly(), "drawthing", 0).name).toBe("DrawThing");
+    expect(analyseInstructions(disassembly(), "Other", 0).name).toBe("DrawOther");
+  });
+
+  it("prefers an exact match over a substring one", () => {
+    // Without this, a function whose name is a prefix of another's is unreachable.
+    const fns = [...disassembly(), { address: 0x3000, end: 0x3002, name: "Draw", totalCycles: 0,
+      instructions: [{ address: 0x3000, hex: "0000", length: 2, text: "nop", hits: 1, cycles: 2 }] }];
+    expect(analyseInstructions(fns, "Draw", 0).name).toBe("Draw");
+  });
+
+  it("refuses an ambiguous match rather than picking one", () => {
+    expect(() => analyseInstructions(disassembly(), "Draw", 0)).toThrow(ProfileRequestError);
+    expect(() => analyseInstructions(disassembly(), "Draw", 0)).toThrow(/matches 2 functions/);
+  });
+
+  it("lists what does exist when nothing matches", () => {
+    expect(() => analyseInstructions(disassembly(), "Missing", 0)).toThrow(/DrawThing, DrawOther/);
+  });
+
+  it("distinguishes a capture with no disassembly from a bad function name", () => {
+    expect(() => analyseInstructions([], "DrawThing", 0)).toThrow(/carries no disassembly/);
+    expect(() => analyseInstructions(undefined, "DrawThing", 0)).toThrow(ProfileRequestError);
+  });
+
+  it("flags a listing the disassembler cut short of the function's end", () => {
+    // Silently showing a partial routine would understate its cost and hide the expensive line.
+    const [fn] = disassembly();
+    const truncated = [{ ...fn, end: fn.address + 0x100 }];
+    expect(analyseInstructions(truncated, "DrawThing", 0).truncated).toBe(true);
+    expect(analyseInstructions(disassembly(), "DrawThing", 0).truncated).toBe(false);
+  });
+});
+

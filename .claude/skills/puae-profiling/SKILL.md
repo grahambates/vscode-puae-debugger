@@ -53,6 +53,22 @@ census) and a manifest summary. Use `--json` for anything you're going to reason
 programmatically rather than read; use `--frame N` to scope to one frame; `--functions 0` for
 the full function list instead of the default top 12.
 
+**`--instructions <function>` goes a level deeper**, and is the answer to "which instruction in
+this routine costs the time" — cycles, hits and cycles-per-execution for every instruction in
+one function, in address order, plus (on a 68000 capture) the datasheet cost of each and the
+stall against it. Reach for it as soon as the function table has told you *which* routine to look
+at: a function-level number tells you where to look, never what to change. Don't go reading the
+source to guess at instruction costs — they are measured, and they are right here:
+
+```
+  address      cycles    %fn    hits  cyc/hit  sheet  stall  instruction
+  0xc046d6         10  10.6%       2      5.0      5    0.0  lsr.l #1,d1
+  0xc046d8         49  52.1%       2     24.5     10   14.5  lsr.w #7,d1
+```
+
+(that `lsr.w` is not a slow instruction — it is a 10-cycle instruction that spent 14.5 cycles per
+execution blocked on the bus, which is a completely different fix.)
+
 If `check` reports nothing, the numbers below can be read at face value. If it reports
 something, **fix or account for the finding before trusting anything downstream of it** — an
 over-budget frame's per-function percentages are not "slightly off," they're derived from a
@@ -86,11 +102,12 @@ denominator that's already wrong.
   in-program instruction ran right after it returned. `check`'s `out-of-range-instructions`
   finding tells you how much of the capture this affects — worth knowing before attributing a
   large single-sample cost to the instruction it landed on.
-- **Only frame 0 carries a register trace and disassembly** in a multi-frame capture
-  (`WASM_PROFILE_REG_COUNT`/register cap in `puae_debug.c`; `ProfileManifest.disassembly` in
-  `src/profileFormat.ts`). A register trace can also be shorter than a frame's own sample count
-  if the register cap was reached mid-frame (`check`'s `registers-truncated`, info-level, not an
-  error — it doesn't affect the CPU/DMA data, only the Disassembly view's register panel).
+- **Only frame 0 carries a register trace** in a multi-frame capture (`WASM_PROFILE_REG_COUNT`/
+  register cap in `puae_debug.c`). It can also be shorter than that frame's own sample count if
+  the cap was reached mid-frame (`check`'s `registers-truncated`, info-level, not an error — it
+  affects only the Disassembly view's register panel, not the CPU/DMA data). **Per-instruction
+  costs are a different matter and are available for every frame** — the disassembly is attached
+  on load, so `dump --instructions` (below) works on any frame, not just frame 0.
 - **The last frame of any capture legitimately overruns by ~1%** (`check`'s
   `last-frame-overrun`, info-level) — `retro_run()` returns a few scanlines past the true frame
   boundary and nothing bounds the final frame the way inter-frame markers bound every earlier
@@ -139,10 +156,11 @@ flame-graph-layout path the extension's viewer uses (`loadProfile` → `buildFra
 that can drift from it.
 
 `--json` is the widest view the CLI gives: the whole `ProfileAnalysis`, not just what the text
-report prints, so reach for it before concluding the tool can't answer the question. Beyond that
-(a specific DMA cell, the copper trace, register values at one sample) you need the debugger's
-own sources checked out, where `loadProfile`/`decodeCapture` can be called from a small Node
-script. **Do not hand-parse the gzip/manifest/section format instead** — that reimplementation is
+report prints, so reach for it before concluding the tool can't answer the question — and note
+that per-instruction detail only appears in it when `--instructions` asked for it, so an absence
+in the JSON is not evidence the data doesn't exist. Beyond that (a specific DMA cell, the copper
+trace, register values at one sample) you need the debugger's own sources checked out, where
+`loadProfile`/`decodeCapture` can be called from a small Node script. **Do not hand-parse the gzip/manifest/section format instead** — that reimplementation is
 exactly what used to happen before this tool existed, and it's how a decode mistake gets mistaken
 for a data bug. Ask for the numbers you need to be added to `dump` rather than reconstructing
 them by eye.

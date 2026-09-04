@@ -9,6 +9,32 @@ const production = process.argv.includes('--production');
 const watch = process.argv.includes('--watch');
 
 /**
+ * Restores the executable bit on a bin output after every build.
+ *
+ * esbuild writes the file fresh each time, which drops the mode — so although the banner on the
+ * standalone bundle makes it a valid executable script, `./out/standalone.js` and, more sharply,
+ * an `npm link`ed `puae-debugger` on PATH both stop working the moment it is rebuilt: npm sets +x
+ * when it links or installs a bin, and nothing sets it again afterwards. Cheap to reapply, and it
+ * runs for watch rebuilds too.
+ *
+ * @param {string} outfile
+ * @returns {import('esbuild').Plugin}
+ */
+const makeExecutablePlugin = (outfile) => ({
+  name: 'make-executable',
+  setup(build) {
+    build.onEnd((result) => {
+      if (result.errors.length > 0) return;
+      try {
+        require('fs').chmodSync(outfile, 0o755);
+      } catch (error) {
+        console.error(`could not chmod +x ${outfile}: ${error.message}`);
+      }
+    });
+  },
+});
+
+/**
  * @type {import('esbuild').Plugin}
  */
 const esbuildProblemMatcherPlugin = {
@@ -100,6 +126,7 @@ async function main() {
     },
     plugins: [
       esbuildProblemMatcherPlugin,
+      makeExecutablePlugin('out/standalone.js'),
     ],
   });
 

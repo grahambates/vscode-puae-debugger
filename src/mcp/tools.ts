@@ -34,18 +34,22 @@ function optionalNumber(args: Record<string, unknown>, key: string): number | un
 
 // Reading and decoding is the expensive part (gunzip, DWARF, model build, column layout), and a
 // model typically calls check then dump on the same file. Cache the last one.
-let cache: { file: string; stalls: boolean; analysis: ReturnType<typeof analyseProfile> } | undefined;
+let cache:
+  | { file: string; stalls: boolean; instructions?: string; analysis: ReturnType<typeof analyseProfile> }
+  | undefined;
 
-function load(file: string, stalls: boolean): ReturnType<typeof analyseProfile> {
-  if (cache && cache.file === file && cache.stalls === stalls) return cache.analysis;
+function load(file: string, stalls: boolean, instructions?: string): ReturnType<typeof analyseProfile> {
+  if (cache && cache.file === file && cache.stalls === stalls && cache.instructions === instructions) {
+    return cache.analysis;
+  }
   let bytes: Uint8Array;
   try {
     bytes = new Uint8Array(readFileSync(file));
   } catch (err) {
     throw new Error(`Could not read ${file}: ${err instanceof Error ? err.message : String(err)}`);
   }
-  const analysis = analyseProfile(bytes, { stalls });
-  cache = { file, stalls, analysis };
+  const analysis = analyseProfile(bytes, { stalls, instructions });
+  cache = { file, stalls, instructions, analysis };
   return analysis;
 }
 
@@ -73,7 +77,8 @@ export const TOOLS: ToolDefinition[] = [
     name: "profile_dump",
     description:
       "Per-frame cost tables for a .puaeprofile capture: self cycles and flame-graph width per " +
-      "function, plus a DMA bus census showing what the chipset was doing. Read the two together " +
+      "function, plus a DMA bus census showing what the chipset was doing. Set `instructions` to a " +
+      "function name to go a level deeper and get its per-instruction costs. Read the two together " +
       "— a routine can dominate CPU time while the census shows the frame was blitter-bound, in " +
       "which case optimising its code will not move the frame time. Set stalls:true to compare " +
       "measured cost against 68000 datasheet timings, which separates an instruction that is " +
@@ -94,6 +99,14 @@ export const TOOLS: ToolDefinition[] = [
             "Include measured-vs-datasheet stall analysis, showing how much of each function's " +
             "time was spent blocked rather than working. 68000 captures only.",
         },
+        instructions: {
+          type: "string",
+          description:
+            "Name of one function to break down instruction by instruction: cycles, hits, cycles " +
+            "per execution, and (68000) the datasheet cost and the stall against it. This is how " +
+            "to find WHICH instruction in a slow routine costs the time — reach for it once the " +
+            "function table has told you which routine to look at.",
+        },
       },
       required: ["file"],
       additionalProperties: false,
@@ -103,7 +116,8 @@ export const TOOLS: ToolDefinition[] = [
       const stalls = args.stalls === true;
       const frame = optionalNumber(args, "frame");
       const functions = optionalNumber(args, "functions");
-      return renderDump(load(file, stalls), frame, functions ?? 12);
+      const instructions = args.instructions === undefined ? undefined : requireString(args, "instructions");
+      return renderDump(load(file, stalls, instructions), frame, functions ?? 12);
     },
   },
 ];

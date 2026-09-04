@@ -123,6 +123,40 @@ describe("runProfileCli", () => {
     });
   });
 
+  describe("dump --instructions", () => {
+    // The committed fixture predates the snapshot sections the disassembler needs, so it can only
+    // exercise the wiring and the failure paths here. analyseInstructions' own behaviour — matching,
+    // per-instruction costs, the datasheet columns — is unit-tested against a hand-built model in
+    // profileAnalysis.test.ts, the same split analyseStalls uses.
+    it("reports clearly when a capture carries no disassembly", () => {
+      // Distinguishing "this capture can't answer that" from "no such function" matters: the first
+      // means re-capture, the second means fix the name.
+      const { code, err } = run(["dump", FIXTURE, "--instructions", "main"]);
+      expect(code).toBe(1);
+      expect(err).toContain("carries no disassembly");
+      expect(err).not.toContain("Could not read"); // the file read fine; the request is what failed
+    });
+
+    it("rejects --instructions on check, which has no such option", () => {
+      const { code, err } = run(["check", FIXTURE, "--instructions", "main"]);
+      expect(code).toBe(1);
+      expect(err).toContain('--instructions applies to "dump"');
+    });
+
+    it("requires a function name", () => {
+      const { code, err } = run(["dump", FIXTURE, "--instructions"]);
+      expect(code).toBe(1);
+      expect(err).toContain("--instructions needs a function name");
+    });
+
+    it("omits instructionDetail from --json when it wasn't asked for", () => {
+      // An absent field must mean "not requested", never "not available" — the misreading that
+      // sends a caller off to guess at instruction costs from the source instead.
+      const { out } = run(["dump", FIXTURE, "--json"]);
+      expect(JSON.parse(out).frames[0].instructionDetail).toBeUndefined();
+    });
+  });
+
   describe("check", () => {
     it("exits 1 when an error-level finding is present", () => {
       // template.puaeprofile carries a known pre-existing frame-over-budget anomaly (see
