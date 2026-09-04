@@ -87,6 +87,52 @@ describe("fetchDisassembly", () => {
     expect(foo.instructions[0]).toMatchObject({ address: 0x1000, hits: 2, cycles: 10 }); // 4+6
   });
 
+  it("decodes functions that only ran in another frame, with zero counts for this one", () => {
+    // The case this exists for: a rebuild step on an every-other-frame cadence. Selecting from
+    // one frame's samples left such a routine with no instruction text anywhere in the document,
+    // however much time it cost in the frame that did run it.
+    const frame0: InstructionSample[] = [{ stack: [0x1000], cycles: 10 }];
+    const frame1: InstructionSample[] = [{ stack: [0x2000], cycles: 100 }];
+    const map = sourceMap({
+      0x1000: { symbol: "foo", offset: 0 },
+      0x2000: { symbol: "bar", offset: 0 },
+    });
+
+    const result = fetchDisassembly(baseModel(), frame0, map, nopChipMem(), undefined, undefined, undefined,
+      [...frame0, ...frame1]);
+
+    expect(result.map((f) => f.name)).toEqual(["bar", "foo"]); // bar is hotter across the capture
+    const bar = result.find((f) => f.name === "bar")!;
+    // Decoded, so it can be inspected — and honestly reported as costing frame 0 nothing.
+    expect(bar.instructions.length).toBeGreaterThan(0);
+    expect(bar.totalCycles).toBe(0);
+    expect(bar.instructions[0]).toMatchObject({ address: 0x2000, hits: 0, cycles: 0 });
+    // This frame's own counts are untouched by the wider selection.
+    expect(result.find((f) => f.name === "foo")!.instructions[0]).toMatchObject({ hits: 1, cycles: 10 });
+  });
+
+  it("orders the decode queue by cost across the whole capture, not this frame", () => {
+    // Ordering decides what survives the instruction budget, so it has to reflect the capture:
+    // a routine that is trivial in frame 0 and dominant in frame 1 must not be the first dropped.
+    const frame0: InstructionSample[] = [{ stack: [0x1000], cycles: 100 }];
+    const frame1: InstructionSample[] = [{ stack: [0x2000], cycles: 1000 }];
+    const map = sourceMap({
+      0x1000: { symbol: "foo", offset: 0 },
+      0x2000: { symbol: "bar", offset: 0 },
+    });
+    const result = fetchDisassembly(baseModel(), frame0, map, nopChipMem(), undefined, undefined, undefined,
+      [...frame0, ...frame1]);
+    expect(result[0].name).toBe("bar");
+  });
+
+  it("behaves exactly as before when no wider selection is given", () => {
+    // Single-frame captures pass no selectionSamples; that path must be unchanged.
+    const samples: InstructionSample[] = [{ stack: [0x1000], cycles: 10 }];
+    const map = sourceMap({ 0x1000: { symbol: "foo", offset: 0 }, 0x2000: { symbol: "bar", offset: 0 } });
+    const result = fetchDisassembly(baseModel(), samples, map, nopChipMem());
+    expect(result.map((f) => f.name)).toEqual(["foo"]); // bar never ran, so it isn't decoded
+  });
+
   it("returns [] when no chip memory is provided", () => {
     const samples: InstructionSample[] = [{ stack: [0x1000], cycles: 10 }];
     const map = sourceMap({ 0x1000: { symbol: "foo", offset: 0 } });

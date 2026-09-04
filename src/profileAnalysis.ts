@@ -109,6 +109,12 @@ export interface ProfileAnalysis {
   manifest: ProfileManifest;
   frames: FrameAnalysis[];
   findings: ProfileFinding[];
+  /**
+   * The function name `--instructions` asked for, if any. Carried so a report can distinguish
+   * "this frame didn't run that function" from "no detail was requested" — the two look identical
+   * from a frame with no `instructionDetail`.
+   */
+  instructionQuery?: string;
 }
 
 // Measured cost against datasheet cost, per function — the difference between "this routine is
@@ -498,16 +504,97 @@ export function analyseInstructions(
   };
 }
 
+/**
+ * Resolves one function's per-instruction detail across every frame, tolerating the frames that
+ * never ran it.
+ *
+ * A capture's frames don't all execute the same code — a routine can be absent from frame 0 and
+ * dominate frame 1 — so a miss in any one frame is normal and must not fail the analysis. Only a
+ * function absent from *every* frame is a bad request, and its error names what was executed
+ * anywhere in the capture rather than whatever happened to be in the frame that failed first.
+ *
+ * Exported so this can be tested directly against hand-built disassembly, in the same spirit as
+ * analyseFrame/checkFrame: reaching it through analyseProfile would need a multi-frame encoded
+ * capture with real disassembly, which only the emulator can produce.
+ */
+export function selectInstructionDetail(
+  frames: {
+    disassembly: IDisassembledFunction[] | undefined;
+    zeroCostSamples: number;
+    /** Function names the frame's samples attribute time to — a superset of the disassembled ones. */
+    executedFunctions: string[];
+  }[],
+  query: string,
+): (InstructionAnalysis | undefined)[] {
+  const details = frames.map((f) => {
+    try {
+      return analyseInstructions(f.disassembly, query, f.zeroCostSamples);
+    } catch (err) {
+      if (err instanceof ProfileRequestError) return undefined;
+      throw err;
+    }
+  });
+  if (details.some((d) => d !== undefined)) return details;
+
+  // Nothing matched anywhere: report against the union of what every frame did execute, so the
+  // caller sees the whole capture's vocabulary and not just one frame's.
+  const executed = [...new Set(frames.flatMap((f) => (f.disassembly ?? []).map((fn) => fn.name)))];
+  if (executed.length === 0) {
+    throw new ProfileRequestError(
+      "This capture carries no disassembly, so per-instruction costs aren't available for it.",
+    );
+  }
+  const wanted = query.trim().toLowerCase();
+  const ambiguous = executed.filter((name) => name.toLowerCase().includes(wanted));
+  if (ambiguous.length > 1) {
+    throw new ProfileRequestError(
+      `"${query}" matches ${ambiguous.length} functions: ${ambiguous.join(", ")}. Be more specific.`,
+    );
+  }
+
+  // A function can cost real time in a later frame and still have no disassembly: only the FIRST
+  // frame's executed functions are disassembled, and later frames reuse that listing with their
+  // own counts reweighted onto it (see reweightDisassembly). Saying "no such function" there is
+  // wrong twice over — it did run, and the fix is to re-capture, not to correct the name.
+  const ranIn = frames
+    .map((f, i) => ({ i, names: f.executedFunctions.filter((n) => n.toLowerCase().includes(wanted)) }))
+    .filter((f) => f.names.length > 0);
+  if (ranIn.length > 0) {
+    const names = [...new Set(ranIn.flatMap((f) => f.names))];
+    throw new ProfileRequestError(
+      `${names.join(", ")} ran in frame(s) ${ranIn.map((f) => f.i).join(", ")} but was never disassembled: a ` +
+        "capture only disassembles the functions that executed in its FIRST frame, and later frames reuse that " +
+        "listing with their own hit/cycle counts. To inspect it, re-capture so the frame that runs it is frame 0 " +
+        "(e.g. raise warmupFrames by one). Function-level costs for it are still in the dump.",
+    );
+  }
+
+  throw new ProfileRequestError(
+    `No executed function matching "${query}" anywhere in this capture. Executed functions: ${executed.join(", ")}`,
+  );
+}
+
 export function analyseProfile(file: Uint8Array, opts: { stalls?: boolean; instructions?: string } = {}): ProfileAnalysis {
   const { frames, manifest } = loadProfile(file);
   const analysed = frames.map((f, i) => {
     const a = analyseFrame(f.model, i);
     if (opts.stalls) a.stalls = analyseStalls(f.model.disassembly, a.zeroCostSamples);
-    if (opts.instructions) {
-      a.instructionDetail = analyseInstructions(f.model.disassembly, opts.instructions, a.zeroCostSamples);
-    }
     return a;
   });
+  if (opts.instructions) {
+    // Resolved across all frames at once, not per frame inside the map above: a function that only
+    // runs in a later frame would otherwise abort the whole analysis on the first frame that
+    // didn't run it — which made exactly the routines worth inspecting unreachable.
+    const details = selectInstructionDetail(
+      frames.map((f, i) => ({
+        disassembly: f.model.disassembly,
+        zeroCostSamples: analysed[i].zeroCostSamples,
+        executedFunctions: analysed[i].functions.map((fn) => fn.name),
+      })),
+      opts.instructions,
+    );
+    details.forEach((d, i) => { analysed[i].instructionDetail = d; });
+  }
   const findings: ProfileFinding[] = [];
 
   const { total, inRange } = manifest.meta;
@@ -524,5 +611,5 @@ export function analyseProfile(file: Uint8Array, opts: { stalls?: boolean; instr
 
   const rank: Record<Severity, number> = { error: 0, warning: 1, info: 2 };
   findings.sort((a, b) => rank[a.severity] - rank[b.severity] || (a.frame ?? -1) - (b.frame ?? -1));
-  return { manifest, frames: analysed, findings };
+  return { manifest, frames: analysed, findings, instructionQuery: opts.instructions };
 }

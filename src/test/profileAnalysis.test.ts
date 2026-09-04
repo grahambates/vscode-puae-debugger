@@ -1,6 +1,6 @@
 import { readFileSync } from "fs";
 import * as path from "path";
-import { analyseFrame, analyseInstructions, analyseProfile, checkFrame, FrameAnalysis, ProfileFinding, ProfileRequestError } from "../profileAnalysis";
+import { analyseFrame, analyseInstructions, analyseProfile, checkFrame, FrameAnalysis, ProfileFinding, ProfileRequestError, selectInstructionDetail } from "../profileAnalysis";
 import { BusOwner, Category, DMA_CODE, IDisassembledFunction, IProfileModel } from "../shared/profilerTypes";
 
 // Minimal synthetic model: root -> "hot" (2 samples, 10 cycles each) and root -> "cold" (2
@@ -369,6 +369,67 @@ describe("analyseInstructions", () => {
     const truncated = [{ ...fn, end: fn.address + 0x100 }];
     expect(analyseInstructions(truncated, "DrawThing", 0).truncated).toBe(true);
     expect(analyseInstructions(disassembly(), "DrawThing", 0).truncated).toBe(false);
+  });
+});
+
+describe("selectInstructionDetail", () => {
+  // A capture whose frames don't run the same code: frame 0 runs DrawThing/DrawOther, frame 1 also
+  // spends time in Rebuild — the every-other-frame cadence (a rebuild step, a double-buffered
+  // update) that is completely normal in demo code.
+  const frame0 = () => ({
+    disassembly: disassembly(),
+    zeroCostSamples: 0,
+    executedFunctions: ["DrawThing", "DrawOther"],
+  });
+  const frame1 = () => ({
+    disassembly: disassembly(), // frame 0's listing, reused — Rebuild is not in it
+    zeroCostSamples: 0,
+    executedFunctions: ["DrawThing", "DrawOther", "Rebuild"],
+  });
+
+  it("resolves a function present in every frame, per frame", () => {
+    const details = selectInstructionDetail([frame0(), frame1()], "DrawThing");
+    expect(details.map((d) => d?.name)).toEqual(["DrawThing", "DrawThing"]);
+  });
+
+  it("tolerates frames that never ran the function instead of failing the whole capture", () => {
+    // The bug this covers: resolving per frame inside the analysis loop meant one frame without
+    // the function aborted the run, so a routine absent from frame 0 was unreachable even with
+    // --frame pointed straight at the frame that did run it.
+    const missingInFrame0 = { ...frame0(), disassembly: [disassembly()[1]] }; // only DrawOther
+    const details = selectInstructionDetail([missingInFrame0, frame1()], "DrawThing");
+    expect(details[0]).toBeUndefined();
+    expect(details[1]?.name).toBe("DrawThing");
+  });
+
+  it("explains a function that ran but was never disassembled", () => {
+    // The honest answer for a later-frame-only routine: it exists, it cost time, and the capture
+    // simply has no instruction text for it. Saying "no such function" would send the caller off
+    // to correct a name that was right all along.
+    let error: Error | undefined;
+    try {
+      selectInstructionDetail([frame0(), frame1()], "Rebuild");
+    } catch (e) {
+      error = e as Error;
+    }
+    expect(error).toBeInstanceOf(ProfileRequestError);
+    expect(error!.message).toMatch(/Rebuild ran in frame\(s\) 1 but was never disassembled/);
+    expect(error!.message).toMatch(/warmupFrames/); // says how to get a capture that can answer
+  });
+
+  it("still reports a genuinely unknown name as unknown", () => {
+    expect(() => selectInstructionDetail([frame0(), frame1()], "NeverHeardOfIt")).toThrow(
+      /No executed function matching "NeverHeardOfIt" anywhere/,
+    );
+  });
+
+  it("reports ambiguity across the whole capture, not just the first frame", () => {
+    expect(() => selectInstructionDetail([frame0(), frame1()], "Draw")).toThrow(/matches 2 functions/);
+  });
+
+  it("reports a capture with no disassembly at all as such", () => {
+    const bare = { disassembly: undefined, zeroCostSamples: 0, executedFunctions: ["DrawThing"] };
+    expect(() => selectInstructionDetail([bare], "DrawThing")).toThrow(/carries no disassembly/);
   });
 });
 

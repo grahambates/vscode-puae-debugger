@@ -9,7 +9,7 @@ export function pct(v: number): string {
   return `${v.toFixed(1)}%`;
 }
 
-function dumpFrame(f: FrameAnalysis, limit: number, out: string[]): void {
+function dumpFrame(f: FrameAnalysis, limit: number, out: string[], instructionQuery?: string): void {
   out.push("");
   out.push(`Frame ${f.index}: ${f.samples} samples, ${f.cycles} cycles = ${pct(f.cyclePct)} of ${f.frameCycles} color clocks`);
   const detail = [`zero-cost samples: ${f.zeroCostSamples}`];
@@ -36,7 +36,14 @@ function dumpFrame(f: FrameAnalysis, limit: number, out: string[]): void {
     out.push(`  … ${f.functions.length - limit} more (use --functions 0)`);
   }
   if (f.stalls) out.push(...renderStalls(f.stalls, limit, f.index));
-  if (f.instructionDetail) out.push(...renderInstructions(f.instructionDetail, f.index));
+  if (f.instructionDetail) {
+    out.push(...renderInstructions(f.instructionDetail, f.index));
+  } else if (instructionQuery) {
+    // Said explicitly rather than left as an absent section: a frame that didn't run the function
+    // and a frame nobody asked about look identical otherwise, and the first is a real answer —
+    // frames of the same capture don't all execute the same code.
+    out.push("", `  ${instructionQuery}: not executed in frame ${f.index}.`);
+  }
 }
 
 // Address order, not cost order: a routine is read top to bottom, and where the expensive
@@ -112,7 +119,7 @@ export function renderDump(a: ProfileAnalysis, frame: number | undefined, limit:
     out.push(`No such frame ${frame} (capture has ${a.frames.length}).`);
     return out.join("\n");
   }
-  for (const f of frames) dumpFrame(f, limit, out);
+  for (const f of frames) dumpFrame(f, limit, out, a.instructionQuery);
   return out.join("\n");
 }
 

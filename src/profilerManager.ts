@@ -419,7 +419,10 @@ export interface RawCapture {
   snapshot?: { chip: Uint8Array; slow: Uint8Array; fast?: Uint8Array; fastAddr?: number; custom: Uint8Array; agaColors?: Uint8Array };
   copper?: Uint8Array; // raw copper-instruction-trace bytes (absent if unsupported/empty)
   dmaEvents?: Uint8Array; // raw per-cycle event-bitfield bytes, parallel to `dma` (absent if unsupported/empty)
-  disassembly?: RawDisassembledFunction[]; // every function that executed this frame (absent if unsupported/empty)
+  // Every function that executed anywhere in the capture, with THIS frame's per-instruction
+  // counts (absent if unsupported/empty). See fetchDisassembly on why selection spans all frames
+  // while the counts don't.
+  disassembly?: RawDisassembledFunction[];
   registers?: Uint8Array; // raw per-sample register trace bytes, parallel to `profile.data` (absent if unsupported/empty)
   // JPEG thumbnail of the framebuffer at capture time, for the multi-frame filmstrip UI.
   thumbnail?: { data: Uint8Array; width: number; height: number };
@@ -662,7 +665,7 @@ export function buildFrameRangeModel(
 
 // Rebuild every frame of a capture from already-complete RawCapture data — no RPC/emulator
 // involved — the file-load counterpart of ProfilerManager.capture()'s live multi-frame loop.
-// Frame 0 carries its own real disassembly (persisted in the .puaeprofile manifest); later
+// Frame 0 carries the capture's disassembly listing (persisted in the .puaeprofile manifest); later
 // frames have none of their own (matching what a live capture actually stores — see
 // profileFormat.ts), so they reuse frame 0's, reweighted to their own sample counts, exactly as
 // the live capture's multi-frame loop does for frames 1..N-1. frameSamples[i] (parallel to
@@ -757,9 +760,22 @@ export function fetchDisassembly(
   slowMem?: Uint8Array,
   fastMem?: Uint8Array,
   fastAddr?: number,
+  selectionSamples: InstructionSample[] = samples,
 ): RawDisassembledFunction[] {
   if (!chipMem) return [];
 
+  // Two sample sets, doing two different jobs.
+  //
+  // `selectionSamples` decides WHICH functions get decoded, and is every frame's samples on a
+  // multi-frame capture. Frames of the same capture routinely don't run the same code — a rebuild
+  // step on an every-other-frame cadence is ordinary demo structure — and selecting from frame 0
+  // alone left those routines with no instruction text anywhere in the document, however much
+  // time they cost in the frame that did run them.
+  //
+  // `samples` stays this frame's, and provides the per-instruction hit/cycle counts stored in the
+  // template. A function that didn't run in this frame is decoded with zero counts here, which is
+  // exactly right: the instructions exist, and this frame spent nothing on them. Later frames
+  // replace the counts with their own (reweightDisassembly).
   const pcStats = new Map<number, { hits: number; cycles: number }>();
   for (const s of samples) {
     const pc = s.stack[0];
@@ -769,18 +785,37 @@ export function fetchDisassembly(
   }
 
   const symByName = new Map((model.symbols ?? []).map((s) => [s.name, s]));
-  const functions = new Map<number, { name: string; end: number; totalCycles: number }>();
-  for (const [pc, stat] of pcStats) {
+  // selectionCycles orders the decode queue against the instruction budget below, so the
+  // hottest code across the WHOLE capture is decoded first and truncation drops what matters
+  // least. totalCycles is this frame's alone, since that is what the field means.
+  const functions = new Map<number, { name: string; end: number; totalCycles: number; selectionCycles: number }>();
+  const noteFunction = (pc: number, cycles: number, forSelection: boolean) => {
     const off = sourceMap.findSymbolOffset(pc, true);
-    if (!off) continue;
+    if (!off) return;
     const sym = symByName.get(off.symbol);
-    if (!sym || sym.size <= 0) continue;
+    if (!sym || sym.size <= 0) return;
     let fn = functions.get(sym.address);
-    if (!fn) { fn = { name: sym.name, end: sym.address + sym.size, totalCycles: 0 }; functions.set(sym.address, fn); }
-    fn.totalCycles += stat.cycles;
-  }
+    if (!fn) {
+      fn = { name: sym.name, end: sym.address + sym.size, totalCycles: 0, selectionCycles: 0 };
+      functions.set(sym.address, fn);
+    }
+    if (forSelection) fn.selectionCycles += cycles;
+    else fn.totalCycles += cycles;
+  };
 
-  const ordered = [...functions.entries()].sort((a, b) => b[1].totalCycles - a[1].totalCycles);
+  const selectionStats = selectionSamples === samples ? pcStats : new Map<number, { hits: number; cycles: number }>();
+  if (selectionSamples !== samples) {
+    for (const s of selectionSamples) {
+      const pc = s.stack[0];
+      const e = selectionStats.get(pc);
+      if (e) { e.hits++; e.cycles += s.cycles; }
+      else selectionStats.set(pc, { hits: 1, cycles: s.cycles });
+    }
+  }
+  for (const [pc, stat] of selectionStats) noteFunction(pc, stat.cycles, true);
+  for (const [pc, stat] of pcStats) noteFunction(pc, stat.cycles, false);
+
+  const ordered = [...functions.entries()].sort((a, b) => b[1].selectionCycles - a[1].selectionCycles);
 
   const out: RawDisassembledFunction[] = [];
   let remainingInstructions = MAX_DISASSEMBLE_INSTRUCTIONS;
@@ -1282,7 +1317,11 @@ export class ProfilerManager {
           }
 
           if (fi === 0) {
-            raw.disassembly = fetchDisassembly(model, samples, sourceMap, snapshotRaw?.chip, snapshotRaw?.slow, snapshotRaw?.fast, snapshotRaw?.fastAddr);
+            // Selected across every frame's samples (see fetchDisassembly): the stored listing is
+            // the capture's, not frame 0's, so a routine that only runs in a later frame can still
+            // be inspected instruction by instruction.
+            const everyFrameSamples = perFrameSamples.flat();
+            raw.disassembly = fetchDisassembly(model, samples, sourceMap, snapshotRaw?.chip, snapshotRaw?.slow, snapshotRaw?.fast, snapshotRaw?.fastAddr, everyFrameSamples);
             if (raw.disassembly.length) model.disassembly = attachDisassembly(raw.disassembly, sourceMap);
             this._lastSamples0 = samples;
           } else if (frames[0].raw.disassembly?.length) {

@@ -50,11 +50,16 @@ export interface ProfileManifest {
   // (unknown/unset ROM), which the loader treats as a flat [Kickstart] fallback.
   kickstart: { sha1: string; name: string };
   sections: { name: string; offset: number; length: number }[];
-  // Disassembly text/bytes/stats for every function that executed — stored directly in the
-  // manifest (JSON, not a binary section) since it's naturally structured data, not a flat
-  // buffer, and the whole container is gzipped anyway. Re-symbolicated (file/line) on load via
-  // attachDisassembly, same as every other RawCapture field. Absent in pre-disassembly documents.
-  // Frame 0's only, like a live capture — later frames reweight it (see buildFramesFromCaptures).
+  // Disassembly text/bytes/stats for every function that executed anywhere in the capture —
+  // stored directly in the manifest (JSON, not a binary section) since it's naturally structured
+  // data, not a flat buffer, and the whole container is gzipped anyway. Re-symbolicated
+  // (file/line) on load via attachDisassembly, same as every other RawCapture field. Absent in
+  // pre-disassembly documents.
+  //
+  // The per-instruction counts here are frame 0's; later frames reweight the same listing with
+  // their own (see buildFramesFromCaptures). Documents written before fetchDisassembly selected
+  // across all frames carry only the functions frame 0 executed — nothing breaks, there is simply
+  // no instruction text for a routine that first ran later, and `--instructions` says so.
   disassembly?: RawDisassembledFunction[];
   // Number of captured frames.
   frameCount: number;
@@ -229,7 +234,7 @@ export function decodeCapture(file: Uint8Array): DecodedCapture {
       snapshot: chip && slow ? { chip, slow, custom: get(`${prefix}custom`) ?? new Uint8Array(0), agaColors: get(`${prefix}agaColors`) } : undefined,
       copper: get(`${prefix}copper`), // absent in pre-copper-trace documents
       dmaEvents: get(`${prefix}dmaEvents`), // absent in pre-events documents
-      // Only frame 0 ever carries real disassembly (see ProfileManifest.disassembly's comment) —
+      // The document stores one listing (in the manifest) with frame 0's counts on it;
       // buildFramesFromCaptures reweights it onto frames 1..N-1 the same way a live capture does.
       disassembly: i === 0 ? manifest.disassembly : undefined,
       registers: get(`${prefix}registers`), // absent in pre-register-trace documents, or frames 1..N-1

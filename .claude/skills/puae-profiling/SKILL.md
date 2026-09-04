@@ -58,7 +58,8 @@ this routine costs the time" — cycles, hits and cycles-per-execution for every
 one function, in address order, plus (on a 68000 capture) the datasheet cost of each and the
 stall against it. Reach for it as soon as the function table has told you *which* routine to look
 at: a function-level number tells you where to look, never what to change. Don't go reading the
-source to guess at instruction costs — they are measured, and they are right here:
+source to guess at instruction costs — they are measured, and they are right here (but see the
+frame-0 disassembly limit below before concluding a function is missing):
 
 ```
   address      cycles    %fn    hits  cyc/hit  sheet  stall  instruction
@@ -105,9 +106,18 @@ denominator that's already wrong.
 - **Only frame 0 carries a register trace** in a multi-frame capture (`WASM_PROFILE_REG_COUNT`/
   register cap in `puae_debug.c`). It can also be shorter than that frame's own sample count if
   the cap was reached mid-frame (`check`'s `registers-truncated`, info-level, not an error — it
-  affects only the Disassembly view's register panel, not the CPU/DMA data). **Per-instruction
-  costs are a different matter and are available for every frame** — the disassembly is attached
-  on load, so `dump --instructions` (below) works on any frame, not just frame 0.
+  affects only the Disassembly view's register panel, not the CPU/DMA data).
+- **One disassembly listing covers the whole capture, and per-instruction costs are per frame.**
+  A capture decodes every function that executed in *any* of its frames (ordered by cost across
+  the capture, against a 16k-instruction budget), stores that listing once, and reweights it with
+  each frame's own hit/cycle counts (`fetchDisassembly`/`reweightDisassembly` in
+  `src/profilerManager.ts`). So `--instructions` works for any function in any frame, and a
+  routine that runs on an every-other-frame cadence reads as 0 hits in the frames that skip it —
+  a real answer, not a gap.
+  - **Captures taken before this** selected only frame 0's functions, so a routine that first ran
+    in a later frame has no instruction text anywhere in that file. `--instructions` says exactly
+    that when it happens (it names the frames the function did run in) — re-capture rather than
+    falling back to estimating costs from the source.
 - **The last frame of any capture legitimately overruns by ~1%** (`check`'s
   `last-frame-overrun`, info-level) — `retro_run()` returns a few scanlines past the true frame
   boundary and nothing bounds the final frame the way inter-frame markers bound every earlier
