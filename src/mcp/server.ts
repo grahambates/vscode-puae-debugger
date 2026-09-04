@@ -13,14 +13,29 @@
 // is how puae-wasm/test/*.mjs drive it — so a headless PuaeRpcClient can be added without a
 // browser when those tools are wanted.
 
-import { serveStdio } from "./jsonRpc";
-import { TOOLS } from "./tools";
+import { log, serveStdio } from "./jsonRpc";
+import { buildTools } from "./tools";
 
-export function runMcpServer(): void {
+/**
+ * @param rootDir Package root (the directory holding `puae/` and `out/`), which the
+ * emulator-backed tools need to find the wasm module and the RPC dispatcher at runtime.
+ */
+export function runMcpServer(rootDir: string): void {
+  // stdout is the protocol stream, so nothing but sendMessage may write to it. That is easy to
+  // honour in this code and impossible to honour in code this server calls: booting the emulator
+  // pulls in the Emscripten module, whose frontend_shim.c logs its boot progress with EM_ASM
+  // console.log — which landed mid-frame in a JSON-RPC message and broke the client's parser
+  // outright the first time an emulator tool ran. Redirecting console.log for the process closes
+  // that off for anything else that logs too. (Emscripten's own printf path is redirected
+  // separately, where the module is created — see headlessEmulator.ts.)
+  console.log = (...args: unknown[]) => log(args.map(String).join(" "));
+  console.info = console.log;
+  console.debug = console.log;
+
   // Version is informational (clients show it). Injected from package.json by esbuild's `define`
   // (see esbuild.js), so it can't drift the way the hand-synced copy it replaced would have:
   // importing package.json would bundle the whole manifest, and reading it at runtime would mean
   // guessing a path back to the package root that differs between a checkout, an installed
   // package and ts-jest.
-  serveStdio({ name: "puae-debugger", version: __PUAE_DEBUGGER_VERSION__ }, TOOLS);
+  serveStdio({ name: "puae-debugger", version: __PUAE_DEBUGGER_VERSION__ }, buildTools({ rootDir }));
 }

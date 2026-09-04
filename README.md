@@ -165,8 +165,26 @@ Since there's no command palette or debug toolbar outside VS Code, the UI action
 The same binary has a few modes that need neither the emulator nor a browser:
 
 - `puae-debugger profile dump|check <file.puaeprofile>` — inspect a saved capture from the command line. `dump` prints per-frame cycle costs, top functions and the DMA bus census (`--stalls` additionally compares measured cost against 68000 datasheet timings); `check` verifies the capture against physical invariants and exits non-zero on an error-level finding, so it can gate a build. `--json` emits the full analysis for a script to consume.
-- `puae-debugger mcp` — an MCP server over saved `.puaeprofile` captures, exposing the same analysis to an MCP client (e.g. `claude mcp add puae -- npx puae-debugger mcp`).
-- `puae-debugger skill install` — installs the `puae-profiling` skill into your project's `.claude/skills/` (`--global` for `~/.claude/skills/` instead). It's the judgement that goes with the two commands above: verify a capture before reading it, don't mistake flame-graph width for time spent, and check the DMA bus census before optimizing CPU code that was really waiting on the blitter. Worth installing in the Amiga project you're profiling, not just here.
+- `puae-debugger mcp` — an MCP server exposing the emulator and the profile analysis to an MCP client:
+
+  ```sh
+  claude mcp add puae -e PUAE_KICKSTART_ROM=/path/to/kick31.rom -- npx puae-debugger mcp
+  ```
+
+  `profile_check` and `profile_dump` read a saved `.puaeprofile`, as above. The rest *run* the program, on a machine booted headlessly — no browser, no VS Code — with the program injected the way `fastLoad` does. The ROM comes from `PUAE_KICKSTART_ROM` (as above) or a per-call `kickstartRom` argument.
+
+  | Tool | |
+  |---|---|
+  | `emulator_screenshot` | Run for N frames and save a PNG of the screen — whether an effect renders, where a glitch appears, whether a change altered the picture |
+  | `emulator_capture_profile` | Run for N frames and record a `.puaeprofile`, verified with `profile_check` before it's handed back |
+  | `emulator_launch` | Start a session: boot, inject, hold at the entry point. Breakpoints take an address (`0x2140`), a symbol (`draw_sprite`) or a source line (`main.s:42`) |
+  | `emulator_continue` | Run until a breakpoint fires or a frame budget runs out, reporting where it stopped and why |
+  | `emulator_step` | Single-step instructions |
+  | `emulator_inspect` | Registers, symbolicated call stack, current source line, and hex dumps of memory at an address or symbol |
+  | `emulator_close` | End a session |
+
+  The first two work standalone — pass a `program` and they boot a throwaway machine, so the same arguments always give the same answer. They also take a `session` instead, which is what makes the interesting sequence possible: run to a breakpoint, inspect registers and memory there, then profile or screenshot *from that exact state*. Together this closes the loop — "why is this routine slow", "did that change help", "what's in this buffer by the time we reach here" — without a person driving the debugger and relaying the results.
+- `puae-debugger skill install` — installs the `puae-profiling` skill into your project's `.claude/skills/` (`--global` for `~/.claude/skills/` instead). It's the judgement that goes with the commands above: verify a capture before reading it, don't mistake flame-graph width for time spent, and check the DMA bus census before optimizing CPU code that was really waiting on the blitter. Worth installing in the Amiga project you're profiling, not just here.
 
 ## Configuration reference
 

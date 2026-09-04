@@ -298,7 +298,9 @@ function main(): void {
 // stdout is a protocol stream, so it must not share the process with the HTTP/DAP servers main()
 // starts; it takes over the process instead of falling through to them.
 if (process.argv[2] === "mcp") {
-  runMcpServer();
+  // Same rootDir derivation main() uses for the HTTP server's static files: out/standalone.js ->
+  // the package root, which is where puae/puae.js and out/puaeRpc.mjs live.
+  runMcpServer(join(__dirname, ".."));
 } else {
   main();
 }

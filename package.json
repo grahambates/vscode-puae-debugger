@@ -31,6 +31,7 @@
   },
   "files": [
     "out/standalone.js",
+    "out/puaeRpc.mjs",
     "out/puaeApp.js",
     "out/puaeAudioProcessor.js",
     "out/memoryViewer.js",
@@ -615,7 +616,7 @@
     "lint": "eslint src --ext ts,tsx",
     "test": "npm run test:unit && npm run test:wasm",
     "test:unit": "jest",
-    "test:wasm": "node puae-wasm/test/test_g1.mjs && node puae-wasm/test/test_g2.mjs && node puae-wasm/test/test_g3.mjs && node puae-wasm/test/test_g4.mjs && node puae-wasm/test/test_g5.mjs && node puae-wasm/test/test_g6.mjs && node puae-wasm/test/test_g7_harddrive.mjs && node puae-wasm/test/test_reset.mjs && node puae-wasm/test/test_reverse.mjs",
+    "test:wasm": "node puae-wasm/test/test_g1.mjs && node puae-wasm/test/test_g2.mjs && node puae-wasm/test/test_g3.mjs && node puae-wasm/test/test_g4.mjs && node puae-wasm/test/test_g5.mjs && node puae-wasm/test/test_g6.mjs && node puae-wasm/test/test_g7_harddrive.mjs && node puae-wasm/test/test_reset.mjs && node puae-wasm/test/test_reverse.mjs && node puae-wasm/test/test_mcp_emulator.mjs",
     "test:coverage": "jest --coverage",
     "build:wasm": "node scripts/build-wasm.mjs",
     "format": "prettier --write \"src/**/*.{ts,tsx}\"",

@@ -25,6 +25,19 @@ same binary before packaging. And if the `puae-debugger` MCP server is registere
 `profile_check`/`profile_dump` tools are the same two commands with the same output — use those
 instead of shelling out, and read the rest of this file as guidance on what they return.)
 
+**No capture yet, but you have the program?** Make one rather than asking for it: the MCP
+server's `emulator_capture_profile` boots a machine headlessly, injects the program and records
+frames to a `.puaeprofile` you can then read with everything below (`emulator_screenshot` does
+the same for the picture, when the question is what the program draws rather than what it
+costs). Both need a Kickstart ROM — `PUAE_KICKSTART_ROM` in the server's environment, or a
+`kickstartRom` argument. `warmupFrames` runs past loading/setup before recording starts; without
+it you may capture nothing but the intro. When "the interesting frame" is a place in the code
+rather than a number of frames in, `emulator_launch` + `emulator_continue` stop at a breakpoint
+first, and `emulator_capture_profile` then records from exactly that state via its `session`
+argument. Everything below applies unchanged to a capture made
+this way, with one exception: it carries no filmstrip thumbnails, which nothing in the analysis
+uses.
+
 Run `check` **before** reading any per-function percentage by eye, and before proposing an
 optimization based on what a flame graph looks like. A profile's numbers are easy to rationalize
 even when they're wrong — a busy-wait spinning at 76% of a frame is a completely plausible

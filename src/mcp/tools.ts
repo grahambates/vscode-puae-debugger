@@ -1,4 +1,6 @@
-// The tools this MCP server exposes, over saved .puaeprofile captures.
+// The tools this MCP server exposes over saved .puaeprofile captures. The emulator-backed tools —
+// the ones that produce a capture in the first place — live in emulatorTools.ts; `buildTools`
+// below is what the server actually serves.
 //
 // Descriptions are written for a model deciding which tool to reach for, and they carry the one
 // piece of judgement that matters most here: run `profile_check` before trusting any number from
@@ -13,6 +15,7 @@
 import { readFileSync } from "fs";
 import { analyseProfile } from "../profileAnalysis";
 import { renderCheck, renderDump } from "../profileReport";
+import { emulatorTools, EmulatorToolContext } from "./emulatorTools";
 import { ToolDefinition } from "./jsonRpc";
 
 function requireString(args: Record<string, unknown>, key: string): string {
@@ -104,3 +107,11 @@ export const TOOLS: ToolDefinition[] = [
     },
   },
 ];
+
+/**
+ * Every tool the server serves, analysis and emulator alike, in the order a caller works through
+ * them: capture, then verify, then read.
+ */
+export function buildTools(ctx: EmulatorToolContext): ToolDefinition[] {
+  return [...emulatorTools(ctx), ...TOOLS];
+}
