@@ -102,15 +102,16 @@ Profiler data also surfaces back in the editor: per-line heat-tinted background 
 
 The same debug adapter also runs as a standalone server, for any editor that speaks the Debug Adapter Protocol (nvim-dap, Emacs `dap-mode`, …). Everything that would be a VS Code webview — the live emulator screen, profiler, memory viewer and state viewer — is served to a browser tab instead, by a small local HTTP/WebSocket server.
 
-From a checkout of this repo:
+Install it from npm:
 
 ```sh
-npm install
-npm run compile
-npm run standalone
+npm install -g puae-debugger
+puae-debugger
 ```
 
-Or run the package's `puae-debugger` binary directly once it's installed (`npx puae-debugger`). Both the DAP and HTTP servers bind to `127.0.0.1` only.
+Or run it without installing at all, with `npx puae-debugger`. (Working in a checkout of this repo instead? `npm install && npm run compile && npm run standalone` starts the same server from your build.)
+
+Both the DAP and HTTP servers bind to `127.0.0.1` only.
 
 | Flag | Purpose |
 |---|---|
@@ -184,7 +185,7 @@ Full schema with inline documentation is available via IntelliSense in `launch.j
 ## Requirements
 
 - **Kickstart ROM**: not included, for copyright reasons — supply your own dump matching the machine you're targeting.
-- VS Code 1.104 or later.
+- VS Code 1.104 or later — or, for the [standalone server](#standalone-server-outside-vs-code), Node.js and a DAP-capable editor instead.
 
 ## License
 
