@@ -451,10 +451,28 @@ export async function main(config: MainConfig = {}): Promise<void> {
     // frame() (uncapped, time-budgeted tick recovery) restores after a
     // main-thread stall — see the comment there.
     resetResampler();
+    // ...but never while the debugger has the CPU paused. wasm_tick() is not
+    // gated on the pause flag C-side (that gate is purely a convention the
+    // render loop below follows), so these prefill ticks would run the CPU
+    // for ~10 frames behind the debugger's back -- and they land at an
+    // unpredictable point, since the awaits above resolve whenever the
+    // AudioWorklet module happens to finish loading. On a fastLoad boot that
+    // window straddles exactly the handshake the _wasm_pause() at the end of
+    // the warm-up above exists to protect: exec-ready has already been
+    // posted, and the extension host is mid-round-trip towards
+    // injectProgram() (debugAdapter.ts). Ticking in there either drifts the
+    // CPU off the state isExecReady() validated -- so the program is injected
+    // into a machine that has moved on, typically ending up back in ROM code
+    // with a blank screen -- or, if injection already landed, free-runs the
+    // freshly injected program before stopOnEntry/breakpoints are in place.
+    // The cushion isn't worth that: skip it while paused and let frame() fill
+    // the ring buffer once execution actually resumes.
     const PREFILL_FRAMES = 10;
-    for (let i = 0; i < PREFILL_FRAMES; i++) M._wasm_tick();
-    emuFrames += PREFILL_FRAMES;
-    pushAccumToWorklet();
+    if (!M._wasm_is_paused()) {
+      for (let i = 0; i < PREFILL_FRAMES; i++) M._wasm_tick();
+      emuFrames += PREFILL_FRAMES;
+      pushAccumToWorklet();
+    }
   }
   // -------------------------------------------------------
 
@@ -468,7 +486,7 @@ export async function main(config: MainConfig = {}): Promise<void> {
   const bridge = createHostBridge("/rpc");
   if (bridge) {
     vscode = bridge;
-    rpc = setupRpcDispatcher(M, (msg) => bridge.postMessage(msg));
+    rpc = setupRpcDispatcher(M, (msg) => bridge.postMessage(msg), { usesDh0 });
     bridge.onMessage((message) => {
       // Matches the old raw JSON.parse's implicit `any` return.
       // eslint-disable-next-line @typescript-eslint/no-explicit-any

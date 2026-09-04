@@ -351,6 +351,13 @@ export function setupRpcDispatcher(
   M: PuaeModule,
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   postMessage: (message: any) => void,
+  // Boot mode of the session this dispatcher belongs to, mirroring app.ts's
+  // own `usesDh0`: true when AmigaOS loads the program itself off DH0:,
+  // false for a fastLoad boot that injects it straight into memory. Only the
+  // "load" (session restart) command needs it -- see the pause there.
+  // Optional so the Node test harnesses (puae-wasm/test/*.mjs) can keep
+  // calling this with two arguments.
+  options: { usesDh0?: boolean } = {},
 ): RpcDispatcher {
   // Copies `size` bytes out of the wasm heap at `ptr` into a detached Uint8Array (`.slice()`,
   // not a view — the wasm heap can grow/move between this call and whenever the RPC response
@@ -1025,6 +1032,22 @@ export function setupRpcDispatcher(
         // GfxBase is confirmed set if isExecReady() actually passed (vs. the
         // loop timing out) â€” safe to walk the library list now.
         if (isExecReady(M)) M._wasm_memprotect_seed_libraries();
+        // Pause synchronously right here, in the same tick that just
+        // validated isExecReady() -- app.ts's initial fastLoad boot warm-up
+        // does the same thing for the same reason (see the comment on its
+        // _wasm_pause() call), and this restart path needs it more, not less.
+        // Unlike the initial boot, the tick worker is already running by now,
+        // so the instant this handler returns frame() resumes ticking -- with
+        // a whole handler's worth of backlog to catch up on in one go --
+        // while the exec-ready message below is still travelling to the
+        // extension host and injectProgram()'s pause is still travelling
+        // back. The CPU then drifts off the state isExecReady() just
+        // confirmed and the program gets injected into a machine that has
+        // moved on, which is how a restarted session can end up running ROM
+        // code with a blank screen. Skipped for a DH0: boot: nothing gets
+        // injected there -- AmigaOS loads the program itself -- so the
+        // machine has to keep running for the boot to make any progress.
+        if (!options.usesDh0) M._wasm_pause();
         // Snapshots captured before the reset reference the previous
         // program's RAM/state â€” restoring them now would be confusing/
         // incorrect, so drop them.

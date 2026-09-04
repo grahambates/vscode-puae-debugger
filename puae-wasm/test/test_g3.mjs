@@ -419,7 +419,21 @@ check("eof pauses at end of frame", eofHit);
 
   check("load: posts exec-ready", broadcasts.some((m) => m.type === "exec-ready"),
     JSON.stringify(broadcasts));
-  check("load: machine is running again (not paused)", M._wasm_is_paused() === 0);
+  // fastLoad restart contract (no `usesDh0` option was passed to
+  // setupRpcDispatcher above, so this dispatcher is a fastLoad session):
+  // "load" leaves the CPU paused at the exec-ready point it just validated,
+  // so the extension host's injectProgram() writes the program into exactly
+  // that state rather than racing the render loop's ticks against it -- see
+  // the _wasm_pause() in rpc.ts's "load" handler.
+  check("load: paused at the exec-ready point, awaiting fastLoad injection",
+    M._wasm_is_paused() === 1);
+
+  // ...and it is a recoverable pause, not the halted/corrupt CPU the previous
+  // section left behind: resuming runs instructions again.
+  send("run");
+  check("load: resumes cleanly (recovered from the halted CPU above)", M._wasm_is_paused() === 0);
+  M._wasm_tick();
+  check("load: keeps running once resumed", M._wasm_is_paused() === 0);
 
   const cpuInfoAfterLoad = await request("getCpuInfo");
   check("load: getCpuInfo.pc is a hex32 string after reset", HEX32_RE.test(cpuInfoAfterLoad.pc),
@@ -430,6 +444,20 @@ check("eof pauses at end of frame", eofHit);
   const memInfoAfterLoad = await request("getMemoryInfo");
   check("load: getMemoryInfo still resolves after reset", typeof memInfoAfterLoad.chipMask === "string",
     JSON.stringify(memInfoAfterLoad));
+}
+
+// --- 19. "load" on a DH0: (non-fastLoad) session: must NOT leave it paused ---
+// Nothing injects a program there -- AmigaOS loads it off DH0: itself -- so
+// the machine has to keep running for the boot to make any progress. Uses its
+// own dispatcher since the boot mode is fixed at setupRpcDispatcher() time.
+{
+  const dh0Rpc = setupRpcDispatcher(M, postMessage, { usesDh0: true });
+  broadcasts.length = 0;
+  dh0Rpc.handleMessage({ command: "load", args: {} });
+
+  check("load (usesDh0): posts exec-ready", broadcasts.some((m) => m.type === "exec-ready"),
+    JSON.stringify(broadcasts));
+  check("load (usesDh0): machine is left running, not paused", M._wasm_is_paused() === 0);
 }
 
 console.log("");
