@@ -98,6 +98,74 @@ Multi-frame captures get a filmstrip of thumbnails (hover to enlarge) and suppor
 
 Profiler data also surfaces back in the editor: per-line heat-tinted background + cycle/hit counts (toggle via "Toggle Line Profiler Annotations"), a CodeLens above each profiled function ("X% Self, Y% Total"), and "Jump to Next Execution in Profiler" from the editor context menu.
 
+## Standalone server (outside VS Code)
+
+The same debug adapter also runs as a standalone server, for any editor that speaks the Debug Adapter Protocol (nvim-dap, Emacs `dap-mode`, …). Everything that would be a VS Code webview — the live emulator screen, profiler, memory viewer and state viewer — is served to a browser tab instead, by a small local HTTP/WebSocket server.
+
+From a checkout of this repo:
+
+```sh
+npm install
+npm run compile
+npm run standalone
+```
+
+Or run the package's `puae-debugger` binary directly once it's installed (`npx puae-debugger`). Both the DAP and HTTP servers bind to `127.0.0.1` only.
+
+| Flag | Purpose |
+|---|---|
+| `--port N` | DAP TCP port (default `4711`) |
+| `--http-port N` | HTTP/WebSocket port serving the browser panels (default `5321`) |
+| `--stdio` | Speak DAP over stdin/stdout instead of listening on a TCP port — for clients that spawn the adapter process themselves |
+| `--no-open` | Don't open the emulator screen in a browser on launch |
+
+### Connecting a client
+
+Launch configurations take exactly the same options as in VS Code (see [Configuration reference](#configuration-reference)) — minus any `${...}` variables your client doesn't expand itself, so prefer absolute paths if in doubt. For nvim-dap:
+
+```lua
+-- Long-lived server: start `puae-debugger` yourself, then point nvim-dap at it.
+dap.adapters.puae = { type = "server", host = "127.0.0.1", port = 4711 }
+
+-- Or let nvim-dap spawn a process per session instead:
+-- dap.adapters.puae = { type = "executable", command = "puae-debugger", args = { "--stdio" } }
+
+dap.configurations.asm = {
+  {
+    type = "puae",
+    request = "launch",
+    name = "Launch PUAE",
+    program = "${workspaceFolder}/out/a.exe",
+    fastLoad = true,
+    stopOnEntry = true,
+    kickstartRom = "${workspaceFolder}/roms/kick13.rom",
+  },
+}
+```
+
+The TCP server shares one emulator instance — and one browser tab — across every debug session that connects to it, so relaunching doesn't reboot the wasm machine or make the tab reconnect. `--stdio` trades that away: the client owns the process, so each session gets a fresh boot and a new tab.
+
+### Browser panels
+
+The emulator screen opens automatically on launch (Chrome is preferred when installed — its WebGL/WebAssembly performance is meaningfully better here — falling back to the default browser). The other panels are reachable from that screen's toolbar buttons, or directly:
+
+| URL | Panel |
+|---|---|
+| `/` | Live emulator screen |
+| `/profiler` | CPU/DMA profiler — `?numFrames=N` sets the capture length |
+| `/state` | Amiga state viewer |
+
+The memory viewer is opened per-address, from the emulator screen's toolbar button or the `openMemoryViewer` custom request.
+
+Since there's no command palette or debug toolbar outside VS Code, the UI actions those provide are exposed as DAP custom requests to bind to a key: `openProfiler`, `openStateViewer` and `openMemoryViewer` (optional `address`), plus `stepBackFrame`, `eof` and `eol` for the frame/scanline stepping commands (back one frame, forward to end of frame, forward to end of scanline).
+
+### Offline subcommands
+
+The same binary has two modes that need neither the emulator nor a browser:
+
+- `puae-debugger profile dump|check <file.puaeprofile>` — inspect a saved capture from the command line. `dump` prints per-frame cycle costs, top functions and the DMA bus census (`--stalls` additionally compares measured cost against 68000 datasheet timings); `check` verifies the capture against physical invariants and exits non-zero on an error-level finding, so it can gate a build. `--json` emits the full analysis for a script to consume.
+- `puae-debugger mcp` — an MCP server over saved `.puaeprofile` captures, exposing the same analysis to an MCP client (e.g. `claude mcp add puae -- npx puae-debugger mcp`).
+
 ## Configuration reference
 
 Full schema with inline documentation is available via IntelliSense in `launch.json`. Key options:
