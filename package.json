@@ -42,7 +42,8 @@
     "puae/index.html",
     "puae/puae.js",
     "puae/puae.wasm",
-    "puae/vscodeDefaultTheme.css"
+    "puae/vscodeDefaultTheme.css",
+    ".claude/skills/puae-profiling/SKILL.md"
   ],
   "contributes": {
     "customEditors": [

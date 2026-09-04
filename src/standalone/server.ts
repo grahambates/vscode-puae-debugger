@@ -7,6 +7,7 @@ import { DebugAdapter } from "../debugAdapter";
 import { ProfilerRpcClient } from "../profilerManager";
 import { openInBrowser } from "./openInBrowser";
 import { runProfileCli } from "./profileCli";
+import { runSkillCli } from "./skillCli";
 import { runMcpServer } from "../mcp/server";
 import { StandaloneMemoryViewerProvider } from "./standaloneMemoryViewerProvider";
 import { StandalonePuaeEmulator } from "./standalonePuaeEmulator";
@@ -21,6 +22,13 @@ import { notFound, serveStaticFile } from "./staticServer";
 // bundle, and package installation, and "puae-debugger profile" reads naturally either way.
 if (process.argv[2] === "profile") {
   process.exit(runProfileCli(process.argv.slice(3)));
+}
+
+// `puae-debugger skill install` — copies the packaged puae-profiling skill into a project's
+// .claude/skills (see skillCli.ts). Same reasoning as `profile` above: no DAP/HTTP server, no
+// emulator, so it's dispatched before any of that starts.
+if (process.argv[2] === "skill") {
+  process.exit(runSkillCli(process.argv.slice(3)));
 }
 
 // `puae-debugger mcp` — MCP server over stdio (see src/mcp/server.ts). Dispatched here for the

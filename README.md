@@ -162,10 +162,11 @@ Since there's no command palette or debug toolbar outside VS Code, the UI action
 
 ### Offline subcommands
 
-The same binary has two modes that need neither the emulator nor a browser:
+The same binary has a few modes that need neither the emulator nor a browser:
 
 - `puae-debugger profile dump|check <file.puaeprofile>` — inspect a saved capture from the command line. `dump` prints per-frame cycle costs, top functions and the DMA bus census (`--stalls` additionally compares measured cost against 68000 datasheet timings); `check` verifies the capture against physical invariants and exits non-zero on an error-level finding, so it can gate a build. `--json` emits the full analysis for a script to consume.
 - `puae-debugger mcp` — an MCP server over saved `.puaeprofile` captures, exposing the same analysis to an MCP client (e.g. `claude mcp add puae -- npx puae-debugger mcp`).
+- `puae-debugger skill install` — installs the `puae-profiling` skill into your project's `.claude/skills/` (`--global` for `~/.claude/skills/` instead). It's the judgement that goes with the two commands above: verify a capture before reading it, don't mistake flame-graph width for time spent, and check the DMA bus census before optimizing CPU code that was really waiting on the blitter. Worth installing in the Amiga project you're profiling, not just here.
 
 ## Configuration reference
 

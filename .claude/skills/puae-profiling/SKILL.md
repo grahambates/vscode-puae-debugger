@@ -1,27 +1,29 @@
 ---
 name: puae-profiling
-description: Investigate a .puaeprofile capture from this repo (vscode-puae-debugger) — diagnose why a routine looks slow, verify a suspicious flame-graph reading, or check a capture is trustworthy before drawing conclusions from it. Use whenever a .puaeprofile file, a profiler/flame-graph reading, or "why is this function/frame slow" comes up for this project.
+description: Investigate a .puaeprofile capture from the PUAE Amiga debugger/profiler — diagnose why a routine or frame is slow, verify a suspicious flame-graph reading, or check a capture is trustworthy before drawing conclusions from it. Use whenever a .puaeprofile file, a profiler/flame-graph reading, or "why is this function/frame slow" comes up in an Amiga project.
 ---
 
 # Profiling .puaeprofile captures
 
-This is a **playbook**, not a format spec — the container layout, sample encoding, and DMA
-grid format are already documented as header comments in [src/profileFormat.ts](../../../src/profileFormat.ts),
-[src/profilerManager.ts](../../../src/profilerManager.ts) (`decodeProfileStream`,
-`buildProfileModel`), and [src/shared/dma.ts](../../../src/shared/dma.ts). Read those if you need
-the byte layout; this file is about what to do with a capture, and the physical facts that don't
-live in any one comment.
+This is a **playbook**, not a format spec. It assumes only that the `puae-debugger` npm package
+is available (`npx puae-debugger ...`) and that you have a `.puaeprofile` file captured from the
+PUAE debugger's profiler — you do not need its source checked out. If you do have it, the
+container layout, sample encoding and DMA grid format are documented as header comments in
+`src/profileFormat.ts`, `src/profilerManager.ts` (`decodeProfileStream`, `buildProfileModel`) and
+`src/shared/dma.ts`; this file is instead about what to do with a capture, and the physical facts
+that don't live in any one comment.
 
 ## First move, always: `profile check`, not a hand read
 
 ```
-node out/standalone.js profile check <file.puaeprofile> [--json]
-node out/standalone.js profile dump  <file.puaeprofile> [--frame N] [--functions N] [--stalls] [--json]
+npx puae-debugger profile check <file.puaeprofile> [--json]
+npx puae-debugger profile dump  <file.puaeprofile> [--frame N] [--functions N] [--stalls] [--json]
 ```
 
-(Or `npx puae-debugger profile check|dump ...` once the package is installed — same binary,
-`profile` is a subcommand of the existing `puae-debugger` CLI, dispatched before the DAP/HTTP
-server starts.)
+(Working inside a checkout of the debugger itself? `node out/standalone.js profile ...` is the
+same binary before packaging. And if the `puae-debugger` MCP server is registered, its
+`profile_check`/`profile_dump` tools are the same two commands with the same output — use those
+instead of shelling out, and read the rest of this file as guidance on what they return.)
 
 Run `check` **before** reading any per-function percentage by eye, and before proposing an
 optimization based on what a flame graph looks like. A profile's numbers are easy to rationalize
@@ -29,7 +31,7 @@ even when they're wrong — a busy-wait spinning at 76% of a frame is a complete
 number to read off a flame graph and accept, right up until you notice the frame's own samples
 sum to 157% of the color clocks a PAL frame can physically contain. `check` runs exactly that
 kind of invariant, not a vibe check: it goes through the real decode → model-build → flame-graph
-layout path ([src/profileAnalysis.ts](../../../src/profileAnalysis.ts)) and reports anything that
+layout path (`src/profileAnalysis.ts` in the debugger's own sources) and reports anything that
 disagrees with what's physically possible. Exit code is 1 iff an error-level finding fired, so it
 also works as a gate in a script.
 
@@ -53,7 +55,7 @@ denominator that's already wrong.
   `wasm_profile_instrHook`, `puae-wasm/puae_debug.c`) and the grid's slot index are the same
   clock, just two different ways of walking it — which is what makes the DMA grid usable as
   ground truth for where a CPU sample actually happened (`buildSampleSlots`,
-  [src/webview/profilerViewer/columns.ts](../../../src/webview/profilerViewer/columns.ts)).
+  `src/webview/profilerViewer/columns.ts`).
 - **Sample count is not proportional to elapsed time on a cached CPU.** A 68020+ instruction
   cache means most instructions never touch the bus at all — a busy frame can have far more
   fetch-cell-less samples than fetch cells in the grid. `dump`'s `anchored` figure (and `check`'s
@@ -88,8 +90,8 @@ denominator that's already wrong.
   current build — verified across whole/narrow address ranges, one and two frames, several capture
   start phases, and running vs paused: `samples == inRange` exactly, `frameCycles` one frame. So a
   `frame-over-budget` finding with **zero `zeroCostSamples`** (ruling out the `cycleDelta` floor)
-  on an old capture means a stale file, not a live bug — re-capture before investigating. The
-  committed `template.puaeprofile` test fixture is one of these.
+  on an old capture means a stale file, not a live bug — re-capture before investigating. (The
+  `template.puaeprofile` test fixture committed in the debugger's own repo is one of these.)
 
 ## Don't conflate "CPU time in a function" with "the CPU was busy"
 
@@ -118,11 +120,16 @@ itself away. If it says NOT APPLICABLE, believe it; the numbers underneath would
 
 ## When `check`/`dump` aren't enough
 
-Both go through `analyseProfile` (`src/profileAnalysis.ts`), which is deliberately the same
-decode → model → flame-graph-layout path the extension's viewer uses
-(`loadProfile` → `buildFramesFromCaptures` → `buildColumns`) — so its numbers are what a human
-would see in the viewer, not a reimplementation that can drift from it. If you need something
-the CLI doesn't surface (a specific DMA cell, the copper trace, register values at one sample),
-call `loadProfile`/`decodeCapture` yourself from a small Node script rather than hand-parsing the
-gzip/manifest/section format from scratch — that hand-reimplementation is exactly what used to
-happen before this tool existed, and it's how a decode mistake gets mistaken for a data bug.
+Both go through `analyseProfile`, which is deliberately the same decode → model →
+flame-graph-layout path the extension's viewer uses (`loadProfile` → `buildFramesFromCaptures` →
+`buildColumns`) — so its numbers are what a human would see in the viewer, not a reimplementation
+that can drift from it.
+
+`--json` is the widest view the CLI gives: the whole `ProfileAnalysis`, not just what the text
+report prints, so reach for it before concluding the tool can't answer the question. Beyond that
+(a specific DMA cell, the copper trace, register values at one sample) you need the debugger's
+own sources checked out, where `loadProfile`/`decodeCapture` can be called from a small Node
+script. **Do not hand-parse the gzip/manifest/section format instead** — that reimplementation is
+exactly what used to happen before this tool existed, and it's how a decode mistake gets mistaken
+for a data bug. Ask for the numbers you need to be added to `dump` rather than reconstructing
+them by eye.
