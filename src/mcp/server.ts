@@ -17,7 +17,10 @@ import { serveStdio } from "./jsonRpc";
 import { TOOLS } from "./tools";
 
 export function runMcpServer(): void {
-  // Version is informational (clients show it); kept in step with package.json by hand rather
-  // than importing it, since the bundle has no reliable path back to the package root at runtime.
-  serveStdio({ name: "puae-debugger", version: "1.0.0" }, TOOLS);
+  // Version is informational (clients show it). Injected from package.json by esbuild's `define`
+  // (see esbuild.js), so it can't drift the way the hand-synced copy it replaced would have:
+  // importing package.json would bundle the whole manifest, and reading it at runtime would mean
+  // guessing a path back to the package root that differs between a checkout, an installed
+  // package and ts-jest.
+  serveStdio({ name: "puae-debugger", version: __PUAE_DEBUGGER_VERSION__ }, TOOLS);
 }

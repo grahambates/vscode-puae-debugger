@@ -2,6 +2,8 @@
 // (stop it in the Terminal panel and restart debugging)
 
 const esbuild = require('esbuild');
+// Read for its "version" only, injected into the standalone bundle below.
+const pkg = require('./package.json');
 
 const production = process.argv.includes('--production');
 const watch = process.argv.includes('--watch');
@@ -85,6 +87,16 @@ async function main() {
     // package's "bin" entry / `npx`) without touching server.ts itself.
     banner: {
       js: '#!/usr/bin/env node',
+    },
+    // The version the MCP server reports to its client (src/mcp/server.ts),
+    // taken from package.json at build time. Injected rather than read at
+    // runtime because a bundle's path back to its own package.json differs
+    // between this checkout, an installed package and ts-jest — and rather
+    // than hardcoded, because a hand-synced copy silently drifts on the first
+    // version bump. Declared for TypeScript in src/globals.d.ts; ts-jest,
+    // which never runs this build, gets a stub from src/test/jestSetup.ts.
+    define: {
+      __PUAE_DEBUGGER_VERSION__: JSON.stringify(pkg.version),
     },
     plugins: [
       esbuildProblemMatcherPlugin,

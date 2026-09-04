@@ -97,5 +97,11 @@ console.error = (...args: any[]) => {
   originalConsoleError.apply(console, args);
 };
 
+// Build-time constants esbuild injects via `define` (see esbuild.js and src/globals.d.ts). Jest
+// runs the TypeScript sources directly, never that build, so anything reading one of these would
+// hit a ReferenceError without a stand-in. Deliberately not package.json's real version: a test
+// asserting on it would then be asserting on the stub, not on what a built binary reports.
+(globalThis as unknown as Record<string, unknown>).__PUAE_DEBUGGER_VERSION__ = "0.0.0-test";
+
 // Export empty object to make this a module
 export {};
