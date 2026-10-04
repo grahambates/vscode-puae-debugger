@@ -85,7 +85,7 @@ The webview isn't just a passive screen:
 
 ## CPU/DMA Profiler
 
-Capture 1–500 frames of full DMA-cycle and CPU-instruction detail ("Capture Frame Profile" on the debug toolbar) and explore it across several linked views, all synced to one shared timeline:
+Capture 1–100 frames of full DMA-cycle and CPU-instruction detail ("Capture Frame Profile" on the debug toolbar) and explore it across several linked views, all synced to one shared timeline:
 
 - **Flame graph** — top-down or bottom-up call trees, filterable by function/file name (including regex).
 - **CPU/Disassembly** — per-instruction cycle and hit-count heat-map, branch/jump arrow lanes, register value history, source correlation.

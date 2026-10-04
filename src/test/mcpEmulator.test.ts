@@ -10,6 +10,7 @@
 import { readFileSync } from "fs";
 import * as path from "path";
 import { inflateSync } from "zlib";
+import { MAX_CAPTURE_FRAMES } from "../shared/profilerTypes";
 import { parseHunks } from "../amigaHunkParser";
 import { sourceMapFromHunks } from "../amigaHunkSourceMap";
 import { describe as describeAddress, resolveBreakpointSpec } from "../mcp/breakpointSpec";
@@ -69,7 +70,7 @@ describe("emulator MCP tools", () => {
     // this asserting on "capped" is what proves the bound is checked first.
     await expect(
       runTool("emulator_capture_profile", { program: "/tmp/x", kickstartRom: "/tmp/rom", frames: 9999 }),
-    ).rejects.toThrow(/capped at 50/);
+    ).rejects.toThrow(`capped at ${MAX_CAPTURE_FRAMES}`);
     await expect(
       runTool("emulator_screenshot", { program: "/tmp/x", kickstartRom: "/tmp/rom", frames: 100000 }),
     ).rejects.toThrow(/capped at 5000/);

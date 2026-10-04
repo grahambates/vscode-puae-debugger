@@ -11,9 +11,11 @@ const columns: IColumn[] = [
 describe("buildColumns (DMA-anchored positions)", () => {
   // 4 samples, uniform cycle cost — under the old cycle-fraction model these would land at
   // x1 = 0, 0.25, 0.5, 0.75 (of a 100-slot grid: 0, 25, 50, 75). The DMA grid instead records the
-  // *real* fetch slot for samples 0, 2, 3 (10, 40, 50) with no cell for sample 1 (0x1002) — as if
+  // *real* fetch slot for samples 0, 2, 3 (10, 40, 50) with no cell for sample 1 (0x1020) — as if
   // its opcode word was still sitting in the prefetch queue — which must be recovered by
   // interpolating between samples 0 and 2's real slots (10 and 40), not by dividing cycle cost.
+  // PCs are spaced as jump targets: only a control-transfer target's fetch cell is trusted as its
+  // start (see the prefetch-lead test below).
   const N = 100;
   const owner = new Uint8Array(N);
   const flags = new Uint8Array(N);
@@ -25,9 +27,9 @@ describe("buildColumns (DMA-anchored positions)", () => {
     addr[slot] = pc;
   };
   fetch(10, 0x1000);
-  // slot for 0x1002 deliberately omitted (unmatched sample).
-  fetch(40, 0x1004);
-  fetch(50, 0x1006);
+  // slot for 0x1020 deliberately omitted (unmatched sample).
+  fetch(40, 0x1040);
+  fetch(50, 0x1060);
 
   const model: IProfileModel = {
     nodes: [
@@ -38,7 +40,7 @@ describe("buildColumns (DMA-anchored positions)", () => {
       callFrame: { functionName: "fn", url: "a.c", scriptId: "0", lineNumber: 10, columnNumber: 0 } }],
     samples: [0, 1, 1, 1, 1],
     timeDeltas: [5, 5, 5, 5],
-    pcs: [0x1000, 0x1002, 0x1004, 0x1006],
+    pcs: [0x1000, 0x1020, 0x1040, 0x1060],
     duration: 20,
     cyclesPerMicroSecond: 3.546895,
     dma: { owner, flags, addr, value },
@@ -54,7 +56,7 @@ describe("buildColumns (DMA-anchored positions)", () => {
 
   it("interpolates an unmatched sample between its matched neighbours", () => {
     const columns = buildColumns(model);
-    // Sample 1 (0x1002) has no fetch cell: interpolated midway between slots 10 and 40 -> 25.
+    // Sample 1 (0x1020) has no fetch cell: interpolated midway between slots 10 and 40 -> 25.
     expect(columns[1].x1).toBeCloseTo(25 / N, 6);
   });
 
@@ -86,17 +88,17 @@ describe("buildColumns (DMA-anchored positions)", () => {
       addr[slot] = pc;
     };
     // Sample 0's own address (0x2000) has NO cell near the true start — it only reappears at
-    // slot 900, on the loop's next lap. Sample 1 (0x2004, the very next instruction) is fetched
-    // normally and shows up right away, at slot 20.
-    fetch(20, 0x2004);
-    fetch(30, 0x2006);
+    // slot 900, on the loop's next lap. Sample 1 (0x2040, the very next instruction to run) is
+    // fetched normally and shows up right away, at slot 20.
+    fetch(20, 0x2040);
+    fetch(30, 0x2060);
     fetch(900, 0x2000); // the "next lap" revisit — must NOT be picked as sample 0's anchor.
 
     const loopModel: IProfileModel = {
       ...model,
       samples: [0, 1, 1, 1],
       timeDeltas: [5, 5, 5],
-      pcs: [0x2000, 0x2004, 0x2006],
+      pcs: [0x2000, 0x2040, 0x2060],
       duration: 15,
       dma: { owner, flags, addr, value },
     };
@@ -167,14 +169,14 @@ describe("buildColumns (DMA-anchored positions)", () => {
     // Two samples fetch normally at the start; then a sample costing 2000 cycles emits no fetch
     // cell of its own (cached loop), putting the next fetch far beyond any fixed forward window.
     fetch(10, 0x5000);
-    fetch(14, 0x5004);
-    fetch(2020, 0x500c);
+    fetch(14, 0x5040);
+    fetch(2020, 0x50c0);
 
     const gapModel: IProfileModel = {
       ...model,
       samples: [0, 1, 1, 1, 1],
       timeDeltas: [4, 2, 2000, 4],
-      pcs: [0x5000, 0x5004, 0x5008, 0x500c],
+      pcs: [0x5000, 0x5040, 0x5080, 0x50c0],
       duration: 2010,
       dma: { owner, flags, addr, value },
     };
@@ -184,6 +186,41 @@ describe("buildColumns (DMA-anchored positions)", () => {
     // The point: sample 3's fetch at slot 2020 is ~2000 slots past the last match, so a fixed
     // forward window would never reach it and it would be extrapolated instead of observed.
     expect(columns[3].x1).toBeCloseTo(2020 / M, 6);
+  });
+
+  // Regression test for a real capture: a fetch cell records when an opcode was PREFETCHED, which
+  // in straight-line code is an instruction or two before it starts, but right at its start after a
+  // taken branch flushes the queue. Anchoring on the sequential fetch moved cost across the boundary
+  // where that lead changes — a `move.b` falling through into the scanline loop's `dbf` gave the dbf
+  // roughly double its measured share of the flame graph.
+  it("trusts fetch cells only at control-transfer targets, not prefetched sequential opcodes", () => {
+    const M = 1000;
+    const owner = new Uint8Array(M);
+    const flags = new Uint8Array(M);
+    const addr = new Uint32Array(M);
+    const value = new Uint16Array(M);
+    const fetch = (slot: number, pc: number) => { owner[slot] = BusOwner.CPU; flags[slot] = DMA_CODE; addr[slot] = pc; };
+    // 0x4000 runs 8 cycles (starting at 100) and falls through into the dbf at 0x4002, which runs
+    // 6 and branches back to 0x4040 (starting at 114). The dbf's opcode was prefetched 3 slots into
+    // the move.b, at 103 — long before the dbf actually started at 108.
+    fetch(100, 0x4000);
+    fetch(103, 0x4002);
+    fetch(114, 0x4040);
+    fetch(118, 0x4044);
+
+    const lagModel: IProfileModel = {
+      ...model,
+      samples: [0, 1, 1, 1, 1],
+      timeDeltas: [8, 6, 4, 4],
+      pcs: [0x4000, 0x4002, 0x4040, 0x4044],
+      duration: 22,
+      dma: { owner, flags, addr, value },
+    };
+    const columns = buildColumns(lagModel);
+    // The dbf spans its measured 6 cycles (108..114), not the 11 the prefetch cell would give it.
+    expect(columns[1].x1).toBeCloseTo(108 / M, 6);
+    expect(columns[1].x2 - columns[1].x1).toBeCloseTo(6 / M, 6);
+    expect(columns[2].x1).toBeCloseTo(114 / M, 6);
   });
 
   it("spreads an unmatched run by cycle cost, not by sample count", () => {
@@ -201,14 +238,14 @@ describe("buildColumns (DMA-anchored positions)", () => {
     // them with no cell of their own: three cheap spin samples (1 cycle each) and one expensive
     // one (297 cycles). (Sample 0 anchors and sample 1 confirms it — see the tests above.)
     fetch(100, 0x3000);
-    fetch(105, 0x3004);
-    fetch(505, 0x3014);
+    fetch(105, 0x3040);
+    fetch(505, 0x3080);
 
     const spinModel: IProfileModel = {
       ...model,
       samples: [0, 1, 1, 1, 1, 1, 1],
       timeDeltas: [1, 1, 1, 1, 297, 1],
-      pcs: [0x3000, 0x3004, 0x3008, 0x300c, 0x3010, 0x3014],
+      pcs: [0x3000, 0x3040, 0x3044, 0x3048, 0x304c, 0x3080],
       duration: 302,
       dma: { owner, flags, addr, value },
     };

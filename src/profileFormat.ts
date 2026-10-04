@@ -165,15 +165,23 @@ export function encodeCapture(raws: RawCapture[], opts: EncodeOptions = {}): Buf
   header.writeUInt32LE(manifestJson.length, MAGIC.length);
 
   const container = Buffer.concat([header, manifestJson, ...sections.map((s) => asBuffer(s.bytes))]);
+  // Refuse to write a file decodeCapture would refuse to read back — failing at save time names the
+  // cause, where failing at load time just reports an opaque zlib buffer error.
+  if (container.length > MAX_DECOMPRESSED_BYTES) {
+    throw new Error(
+      `Capture is too large to save: ${raws.length} frames come to ${(container.length / 2 ** 20).toFixed(0)} MB, ` +
+      `over the ${MAX_DECOMPRESSED_BYTES / 2 ** 20} MB a .puaeprofile can hold. Capture fewer frames.`,
+    );
+  }
   return gzipSync(container);
 }
 
 // A .puaeprofile file is loaded from disk -- possibly one a user didn't create themselves.
 // gzip's compression ratio is effectively unbounded (a few KB can expand to gigabytes), so cap
 // the decompressed size before any of the manifest/section bounds checks below get a chance to
-// run. Generous relative to any real capture (chip RAM tops out at 2MB, slow RAM ~1.8MB, plus a
-// DMA grid/copper trace/disassembly manifest that's still comfortably under this per frame, times
-// however many frames a multi-frame capture stores), but firmly blocks a crafted small file from
+// run. A real capture runs ~1.43 MB per frame decompressed (mostly the fixed DMA grid), so this
+// holds ~180 frames — MAX_CAPTURE_FRAMES (shared/profilerTypes.ts) is sized to stay under it, and
+// encodeCapture refuses to write anything over it. Still firmly blocks a crafted small file from
 // exhausting memory.
 const MAX_DECOMPRESSED_BYTES = 256 * 1024 * 1024;
 

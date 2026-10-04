@@ -5,7 +5,7 @@ import { ProfilerManager, ProfilerRpcClient, FrameCapture } from "./profilerMana
 import { encodeCapture } from "./profileFormat";
 import { ProfilerCodeLensProvider } from "./profilerCodeLensProvider";
 import { ProfilerLineDecorationProvider } from "./profilerLineDecorationProvider";
-import { ProfilerInboundMessage, ProfilerOutboundMessage, IProfileModel, CaptureFrameInfo, ComputeRangeMessage } from "./shared/profilerTypes";
+import { ProfilerInboundMessage, ProfilerOutboundMessage, IProfileModel, CaptureFrameInfo, ComputeRangeMessage, MAX_CAPTURE_FRAMES } from "./shared/profilerTypes";
 import { WebviewHost } from "./webviewHost";
 
 /** A concrete host's UI surface for one `show()` — mirrors `PuaeSurface` (puaeEmulator.ts). */
@@ -291,7 +291,7 @@ export abstract class ProfilerViewerProvider {
 // client-side) — undefined/out-of-range/non-integer input maps to undefined so callers can fall
 // back to whatever default applies at their call site rather than propagating a bad value.
 function clampNumFrames(n: number | undefined): number | undefined {
-  return n !== undefined && Number.isInteger(n) && n >= 1 && n <= 500 ? n : undefined;
+  return n !== undefined && Number.isInteger(n) && n >= 1 && n <= MAX_CAPTURE_FRAMES ? n : undefined;
 }
 
 // Strips per-frame data (DMA/copper/registers — fetched separately via bulkUri instead) from

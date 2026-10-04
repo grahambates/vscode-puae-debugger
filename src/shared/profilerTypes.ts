@@ -127,6 +127,14 @@ export interface IDmaModel {
 export const DMA_HPOS = 227;
 export const DMA_VPOS = 313;
 
+// Most frames one capture may record — the single bound for the profiler panel's frame-count field,
+// the emulator toolbar's, and the MCP capture tool. Sized to what a saved file can be loaded back
+// from: decodeCapture (profileFormat.ts) refuses a container over 256 MB decompressed, and a real
+// 68000 capture runs ~1.43 MB per frame (dominated by the fixed DMA grid), so ~180 frames is the
+// ceiling; 100 leaves headroom for busier frames. More frames make a longer timeline, not a more
+// accurate one.
+export const MAX_CAPTURE_FRAMES = 100;
+
 // Color clocks per microsecond — the clock IProfileModel.timeDeltas/duration are counted in, and
 // so the divisor every display-unit conversion needs (see webview/profilerViewer/display.ts).
 //

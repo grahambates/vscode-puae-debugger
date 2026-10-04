@@ -9,7 +9,7 @@ import { installDmaHoverTooltip, handleDmaHoverMessage } from "./dmaHover";
 import { installScreenHoverTooltip } from "./screenHover";
 import { installMouseCapture } from "./mouseCapture";
 import { installKeyboardCapture } from "./keyboardCapture";
-import { DmaRecordType } from "../../shared/profilerTypes";
+import { DmaRecordType, MAX_CAPTURE_FRAMES } from "../../shared/profilerTypes";
 import { createHostBridge } from "../shared/hostBridge";
 import type { PuaeModule } from "./types";
 
@@ -509,10 +509,11 @@ export async function main(config: MainConfig = {}): Promise<void> {
   // Skipped (falls back to the profiler's own default of 1) if empty/out of
   // range, mirroring the profiler panel's own frame-count field's bounds.
   const profilerNumFramesInput = document.getElementById("profiler-num-frames") as HTMLInputElement | null;
+  if (profilerNumFramesInput) profilerNumFramesInput.max = String(MAX_CAPTURE_FRAMES);
   const readProfilerNumFrames = (): number | undefined => {
     if (!profilerNumFramesInput) return undefined;
     const n = parseInt(profilerNumFramesInput.value, 10);
-    return Number.isInteger(n) && n >= 1 && n <= 500 ? n : undefined;
+    return Number.isInteger(n) && n >= 1 && n <= MAX_CAPTURE_FRAMES ? n : undefined;
   };
 
   // "Open Amiga State" / "Open Memory Viewer" / "Open CPU Profiler" toolbar

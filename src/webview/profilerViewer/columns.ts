@@ -200,6 +200,25 @@ export function buildSampleSlots(pcs: readonly number[], timeDeltas: readonly nu
     // a long unmatchable stretch no longer strands the search behind it.
   }
 
+  // A fetch cell marks when an opcode was FETCHED, not when its instruction started, and the gap
+  // between the two is the prefetch queue's lead. After a taken branch/jump flushes the queue that
+  // lead is ~0 (the target is fetched as the transfer completes); in straight-line code the opcode
+  // was prefetched an instruction or two earlier. So positions anchored on sequential samples are
+  // shifted copies of the truth: within one function the shift cancels, but wherever the lead
+  // changes it moves cost across a function boundary. Measured on a 68000 texture mapper, a
+  // `move.b (a3),-(a2)` falling through into the `dbf d7,loop` that closes each scanline handed
+  // the dbf 13.4 color clocks of width per execution for 6.6 measured, doubling its flame-graph
+  // share. Keep only matches on control-transfer targets (or the start anchor), where fetch ≈
+  // start; the cycle-weighted fill below places everything between them, and cycleDeltas are
+  // exact hook-to-hook durations, so that loses nothing. "Sequential" is a forward step of at
+  // most one maximal 68000 instruction (10 bytes): a short forward branch misread as sequential
+  // only costs an anchor, never a wrong one. `matched` keeps counting every match — it reports
+  // whether the matcher is tracking the raster (profileAnalysis' low-anchor-rate), not this.
+  for (let k = startK; k < pcs.length; k++) {
+    const step = pcs[k] - pcs[k - 1];
+    if (slots[k] >= 0 && step >= 2 && step <= 10) slots[k] = -1;
+  }
+
   // Fill unmatched runs by interpolating between the nearest matched neighbours — weighted by
   // each sample's CYCLE COST, not by its index in the run.
   //

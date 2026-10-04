@@ -93,10 +93,14 @@ denominator that's already wrong.
   cycle cost. This is normal, not a fault, but it means a spin loop and real work can retire
   wildly different numbers of samples for the same number of cycles — **never read "sample
   count" or "flame-graph width" as "time spent" directly; use self cycles (`selfCycles`/
-  `selfPct`), and treat a width/cycle-share mismatch (`check`'s `width-vs-cycles`) as a real bug,
-  not noise.** This exact failure mode shipped once: a busy-wait rendered at 91.5% of a frame's
-  flame-graph width for 14.5% of its actual cycles, because index-based interpolation crowded out
-  the real work in an unmatched run.
+  `selfPct`).** A `width-vs-cycles` finding is a bug **in the profiler's layout**, not in the
+  program and not noise: self cycles are still right, so the analysis can proceed on them, but
+  tell the user plainly that the flame graph they're looking at is misdrawn for that function
+  (and that it's a debugger bug worth reporting) — don't quietly route around it. It has shipped
+  twice: a busy-wait rendered at 91.5% of a frame's flame-graph width for 14.5% of its actual
+  cycles (index-based interpolation crowding out real work in an unmatched run), and a
+  scanline loop's `dbf` drawn at double its cycle share (68000 prefetch fetching an opcode
+  before its instruction starts, so fetch-cell anchors in straight-line code ran early).
 - **Time outside `[start, end)` doesn't vanish, it folds into the preceding sample.** ROM/OS/
   interrupt code is never itself sampled (see `syntheticLabel`/`trimToProgramRoot` in
   `src/profilerManager.ts`); its real cost shows up as one inflated `cycleDelta` on whichever

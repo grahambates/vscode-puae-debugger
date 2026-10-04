@@ -24,6 +24,7 @@ import { tmpdir } from "os";
 import { basename, join } from "path";
 import { analyseProfile } from "../profileAnalysis";
 import { renderCheck } from "../profileReport";
+import { MAX_CAPTURE_FRAMES } from "../shared/profilerTypes";
 import { formatAddress } from "./breakpointSpec";
 import { HeadlessSession, InspectResult, LaunchOptions, StopState } from "./emulatorSession";
 import { ToolDefinition } from "./jsonRpc";
@@ -36,7 +37,6 @@ const ROM_ENV_VAR = "PUAE_KICKSTART_ROM";
 // frames is ~100 seconds of emulated time), tight enough that a mistyped argument can't hang the
 // server for an hour.
 const MAX_WARMUP_FRAMES = 5000;
-const MAX_CAPTURE_FRAMES = 50;
 // Each step is a round trip into the emulator, so a large count is slower than a continue with a
 // breakpoint and almost never what's actually wanted.
 const MAX_STEP_INSTRUCTIONS = 1000;

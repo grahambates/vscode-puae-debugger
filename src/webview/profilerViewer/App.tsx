@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import "./App.css";
-import { ProfilerOutboundMessage, ISymbol, IProfileModel, IDmaModel, ComputeRangeMessage, DMA_HPOS, DMA_VPOS, ReadSourceFileMessage, SetGlobalHeatMessage, BusOwner, PAL_COLOR_CLOCKS_PER_US } from "../../shared/profilerTypes";
+import { ProfilerOutboundMessage, ISymbol, IProfileModel, IDmaModel, ComputeRangeMessage, DMA_HPOS, DMA_VPOS, ReadSourceFileMessage, SetGlobalHeatMessage, BusOwner, PAL_COLOR_CLOCKS_PER_US, MAX_CAPTURE_FRAMES } from "../../shared/profilerTypes";
 import { unpackBulk } from "../../profilerBulk";
 import { createHostBridge, HostBridge } from "../shared/hostBridge";
 import { setProfileModel, getProfileModel, useModelVersion } from "./modelStore";
@@ -30,7 +30,7 @@ const bridge: HostBridge =
 function getInitialNumFrames(): number {
   const raw = document.getElementById("root")?.dataset.initialNumFrames;
   const n = raw ? parseInt(raw, 10) : NaN;
-  return Number.isInteger(n) && n >= 1 && n <= 500 ? n : 1;
+  return Number.isInteger(n) && n >= 1 && n <= MAX_CAPTURE_FRAMES ? n : 1;
 }
 
 type TabId = "time" | "customregs" | "copper" | "blitter" | "memory" | "disasm" | "screen";
@@ -660,13 +660,13 @@ export function App() {
                 className="frames-input"
                 type="number"
                 min={1}
-                max={500}
+                max={MAX_CAPTURE_FRAMES}
                 value={numFramesText}
                 disabled={busy}
                 onChange={(e) => {
                   setNumFramesText(e.target.value);
                   const n = parseInt(e.target.value, 10);
-                  if (!Number.isNaN(n) && n >= 1 && n <= 500) {
+                  if (!Number.isNaN(n) && n >= 1 && n <= MAX_CAPTURE_FRAMES) {
                     setNumFrames(n);
                     bridge.postMessage({ command: "setNumFrames", numFrames: n });
                   }
