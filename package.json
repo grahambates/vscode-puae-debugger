@@ -46,7 +46,8 @@
     "puae/vscodeDefaultTheme.css",
     ".claude/skills/puae-profiling/SKILL.md",
     "THIRD_PARTY_NOTICES.md",
-    "LICENSES/"
+    "LICENSES/",
+    "CHANGELOG.md"
   ],
   "contributes": {
     "customEditors": [
