@@ -2,15 +2,10 @@
 // - exception breakpoints need useful stack trace
 // - step on first instruction in non-fast mode
 // TODO: features
-// - trace
-// - memory to disk?
 // - beamtraps?
 // - Constants/symbols browser in variables view
-// - Copper debugging support
 // - Custom register offset prefix display
-// - Profiler
 // - Control warp from Amiga
-// - conditional breakpoints
 
 import {
   logger,
@@ -69,7 +64,10 @@ import { BreakpointManager } from "./breakpointManager";
 import { StackManager } from "./stackManager";
 import { DisassemblyManager } from "./disassemblyManager";
 import { EvaluateManager } from "./evaluateManager";
-import { decodeInstruction as m68kDecode, instructionToString } from "m68kdecode";
+import {
+  decodeInstruction as m68kDecode,
+  instructionToString,
+} from "m68kdecode";
 
 /**
  * Launch configuration arguments for starting a debug session.
@@ -192,7 +190,11 @@ export class DebugAdapter extends LoggingDebugSession {
   private lastStepGranularity: DebugProtocol.SteppingGranularity | undefined;
   // Non-null while a line-granularity step is in progress; cleared when the source line changes.
   // isOver: true = step-over (doInstructionStepOver loop), false = step-in (stepInto loop).
-  private lineStepStart: { path: string; line: number; isOver: boolean } | null = null;
+  private lineStepStart: {
+    path: string;
+    line: number;
+    isOver: boolean;
+  } | null = null;
 
   private variablesManager?: VariablesManager;
   private breakpointManager?: BreakpointManager;
@@ -303,7 +305,9 @@ export class DebugAdapter extends LoggingDebugSession {
     }
     void Promise.resolve(this.emulator.run()).catch(() => undefined); // best effort while disposing
     if (this.breakpointManager) {
-      void Promise.resolve(this.breakpointManager.clearAll()).catch(() => undefined);
+      void Promise.resolve(this.breakpointManager.clearAll()).catch(
+        () => undefined,
+      );
     }
     this.disposables.forEach((d) => d?.dispose());
     this.disposables = [];
@@ -415,7 +419,8 @@ export class DebugAdapter extends LoggingDebugSession {
 
     // Load Kickstart ROM symbols if the configured ROM is one we have symbols for.
     // Best-effort: a missing/unreadable/unknown ROM must not abort the launch.
-    const kickstartRomPath = args.kickstartRom ?? args.emulatorOptions?.kickstartRomPath;
+    const kickstartRomPath =
+      args.kickstartRom ?? args.emulatorOptions?.kickstartRomPath;
     if (kickstartRomPath) {
       try {
         const romBuffer = await readFile(kickstartRomPath as string);
@@ -432,10 +437,14 @@ export class DebugAdapter extends LoggingDebugSession {
               `(${this.kickstartSymbols.name}) at base 0x${this.kickstartSymbols.base.toString(16)}`,
           );
         } else {
-          logger.log(`No Kickstart symbols available for ROM ${kickstartRomPath}`);
+          logger.log(
+            `No Kickstart symbols available for ROM ${kickstartRomPath}`,
+          );
         }
       } catch (err) {
-        logger.warn(`Could not read Kickstart ROM for symbols: ${this.errorString(err)}`);
+        logger.warn(
+          `Could not read Kickstart ROM for symbols: ${this.errorString(err)}`,
+        );
       }
     }
 
@@ -524,7 +533,9 @@ export class DebugAdapter extends LoggingDebugSession {
     this.sendResponse(response);
   }
 
-  protected async continueRequest(response: DebugProtocol.ContinueResponse): Promise<void> {
+  protected async continueRequest(
+    response: DebugProtocol.ContinueResponse,
+  ): Promise<void> {
     try {
       await this.emulator.run();
       response.body = { allThreadsContinued: true };
@@ -539,7 +550,9 @@ export class DebugAdapter extends LoggingDebugSession {
     }
   }
 
-  protected async pauseRequest(response: DebugProtocol.PauseResponse): Promise<void> {
+  protected async pauseRequest(
+    response: DebugProtocol.PauseResponse,
+  ): Promise<void> {
     try {
       await this.emulator.pause();
       this.sendResponse(response);
@@ -578,11 +591,12 @@ export class DebugAdapter extends LoggingDebugSession {
     const maxLevels = args.levels ?? 16;
 
     try {
-      const { frames: stk, total: totalFrames } = await this.getStackManager().getStackFrames(
-        startFrame,
-        maxLevels,
-        this.exceptionInstruction,
-      );
+      const { frames: stk, total: totalFrames } =
+        await this.getStackManager().getStackFrames(
+          startFrame,
+          maxLevels,
+          this.exceptionInstruction,
+        );
       this.exceptionInstruction = null; // clear after using it once
       this.frameIdToPc.clear();
       // A variablesReference is only valid until the next stop (DAP spec); VS Code always
@@ -592,7 +606,10 @@ export class DebugAdapter extends LoggingDebugSession {
       this.variablesManager?.reset();
       for (const f of stk) {
         if (f.instructionPointerReference)
-          this.frameIdToPc.set(f.id, parseInt(f.instructionPointerReference, 16));
+          this.frameIdToPc.set(
+            f.id,
+            parseInt(f.instructionPointerReference, 16),
+          );
       }
       response.body = {
         stackFrames: stk,
@@ -609,7 +626,10 @@ export class DebugAdapter extends LoggingDebugSession {
     }
   }
 
-  protected scopesRequest(response: DebugProtocol.ScopesResponse, args: DebugProtocol.ScopesArguments): void {
+  protected scopesRequest(
+    response: DebugProtocol.ScopesResponse,
+    args: DebugProtocol.ScopesArguments,
+  ): void {
     const pc = this.frameIdToPc.get(args.frameId) ?? null;
     const regs = this.stackManager?.getFrameRegs(args.frameId) ?? null;
     const scopes = this.variablesManager?.getScopes(pc, regs) ?? [];
@@ -703,7 +723,12 @@ export class DebugAdapter extends LoggingDebugSession {
         // Record start location so handleStep can loop until the source line changes.
         const cpuInfo = await this.emulator.getCpuInfo();
         const loc = this.sourceMap?.lookupAddress(Number(cpuInfo.pc));
-        if (loc) this.lineStepStart = { path: loc.path, line: loc.line, isOver: false };
+        if (loc)
+          this.lineStepStart = {
+            path: loc.path,
+            line: loc.line,
+            isOver: false,
+          };
       }
       this.stepping = true;
       this.isRunning = true;
@@ -737,7 +762,11 @@ export class DebugAdapter extends LoggingDebugSession {
     const pc = Number(cpuInfo.pc);
     // Read enough bytes for 2 worst-case instructions and decode locally.
     const memBuf = await this.emulator.readMemory(pc, 20);
-    const mem = new Uint8Array(memBuf.buffer, memBuf.byteOffset, memBuf.byteLength);
+    const mem = new Uint8Array(
+      memBuf.buffer,
+      memBuf.byteOffset,
+      memBuf.byteLength,
+    );
     const instrs: { addr: number; text: string }[] = [];
     let off = 0;
     while (off < mem.length && instrs.length < 2) {
@@ -749,7 +778,9 @@ export class DebugAdapter extends LoggingDebugSession {
         const d = m68kDecode(slice);
         bytesUsed = Math.max(d.bytesUsed, 2);
         text = instructionToString(d.instruction).trim();
-      } catch { /* unknown opcode */ }
+      } catch {
+        /* unknown opcode */
+      }
       instrs.push({ addr: pc + off, text });
       off += bytesUsed;
     }
@@ -941,9 +972,10 @@ export class DebugAdapter extends LoggingDebugSession {
     args: DebugProtocol.SetFunctionBreakpointsArguments,
   ): Promise<void> {
     try {
-      const breakpoints = await this.getBreakpointManager().setFunctionBreakpoints(
-        args.breakpoints ?? [],
-      );
+      const breakpoints =
+        await this.getBreakpointManager().setFunctionBreakpoints(
+          args.breakpoints ?? [],
+        );
 
       response.body = { breakpoints };
       this.sendResponse(response);
@@ -1047,9 +1079,10 @@ export class DebugAdapter extends LoggingDebugSession {
         return;
       }
       if (command === "getWatchpointLength") {
-        response.body = await this.getBreakpointManager().getWatchpointLengthInfo(
-          args.dataId as string,
-        );
+        response.body =
+          await this.getBreakpointManager().getWatchpointLengthInfo(
+            args.dataId as string,
+          );
         this.sendResponse(response);
         return;
       }
@@ -1497,11 +1530,19 @@ export class DebugAdapter extends LoggingDebugSession {
           // TODO: find a better way to do this, add launch option, check files exist there
           const baseDir = path.dirname(path.dirname(this.programPath));
           this.sourceBaseDir = baseDir;
-          this.sourceMap = sourceMapFromDwarf(this.dwarfData!, offsets, baseDir);
+          this.sourceMap = sourceMapFromDwarf(
+            this.dwarfData!,
+            offsets,
+            baseDir,
+          );
           break;
         }
         case "elf-stabs":
-          this.sourceMap = sourceMapFromElfStabs(this.dwarfData!, this.elfStabs!, offsets);
+          this.sourceMap = sourceMapFromElfStabs(
+            this.dwarfData!,
+            this.elfStabs!,
+            offsets,
+          );
           break;
         case "hunk":
           this.sourceMap = sourceMapFromHunks(this.hunks, offsets);
@@ -1523,7 +1564,10 @@ export class DebugAdapter extends LoggingDebugSession {
       this.emulator.setSourceMap(this.sourceMap);
 
       // Initialize specialized manager classes for debugging functionality:
-      this.variablesManager = new VariablesManager(this.emulator, this.sourceMap);
+      this.variablesManager = new VariablesManager(
+        this.emulator,
+        this.sourceMap,
+      );
       this.breakpointManager = new BreakpointManager(
         this.emulator,
         this.sourceMap,
@@ -1672,7 +1716,10 @@ export class DebugAdapter extends LoggingDebugSession {
     // Line-granularity loop: keep stepping until the source line changes.
     if (this.lineStepStart && pc !== undefined) {
       const loc = this.sourceMap?.lookupAddress(pc);
-      if (loc?.path === this.lineStepStart.path && loc?.line === this.lineStepStart.line) {
+      if (
+        loc?.path === this.lineStepStart.path &&
+        loc?.line === this.lineStepStart.line
+      ) {
         // Still on the same source line — fire another step of the appropriate kind.
         if (this.lineStepStart.isOver) {
           await this.doInstructionStepOver();
@@ -1739,8 +1786,12 @@ export class DebugAdapter extends LoggingDebugSession {
         const pc = Number(cpuInfo.pc);
         const loc = this.sourceMap?.lookupAddress(pc);
 
-        continueLoop = loc?.path === this.lineStepStart.path && loc?.line === this.lineStepStart.line;
-      } catch { /* fall through and stop */ }
+        continueLoop =
+          loc?.path === this.lineStepStart.path &&
+          loc?.line === this.lineStepStart.line;
+      } catch {
+        /* fall through and stop */
+      }
       if (continueLoop) {
         await this.doInstructionStepOver();
         return;
@@ -1766,7 +1817,9 @@ export class DebugAdapter extends LoggingDebugSession {
           shouldStop = Boolean(value);
         } catch (error) {
           this.sendEvent(
-            new OutputEvent(`Breakpoint condition error: ${this.errorString(error)}\n`),
+            new OutputEvent(
+              `Breakpoint condition error: ${this.errorString(error)}\n`,
+            ),
           );
         }
         if (!shouldStop) {
@@ -1842,7 +1895,9 @@ export class DebugAdapter extends LoggingDebugSession {
     // Other reasons: let the helper fetch the (still-current) PC itself.
     await this.applyNoSourceReasonHint(
       evt,
-      result.reason === "exception" ? this.exceptionInstruction?.address : undefined,
+      result.reason === "exception"
+        ? this.exceptionInstruction?.address
+        : undefined,
     );
 
     this.sendEvent(evt);
