@@ -21,17 +21,34 @@ This project adds and modifies the wasm frontend and debugging integration.
 
 ## vscode-amiga-debug
 
-Portions of the debugger, profiler, hardware visualizers, documentation data,
-and webview code are adapted from
+Portions of the debugger, profiler, hardware visualizers, documentation data
+(including the Kickstart symbol files in `kickstart/symbols/`), and webview code
+are adapted from
 [vscode-amiga-debug](https://github.com/BartmanAbyss/vscode-amiga-debug),
-copyright Bartman/Abyss and contributors.
+copyright Bartman/Abyss and contributors. Bartman/Abyss also contributed
+directly to this project's history, while it was distributed under GPL
+version 3.
 
 The upstream project is distributed under the GNU General Public License
-version 3. The adapted portions may be distributed under GPL version 2 only
-when all relevant copyright holders have supplied an additional GPLv2 license
-grant. Preserve the durable grant with this repository before distributing a
-GPLv2 release. Until then, `LICENSES/GPL-3.0-only.txt` records the upstream
-license under which those portions were received.
+version 3 (`LICENSES/GPL-3.0-only.txt`). Bartman/Abyss has given permission for
+his contributions, both those adapted from vscode-amiga-debug and those made
+directly to this project, to be distributed under GPL version 2 as part of this
+project.
+
+## vscode-js-profile-visualizer
+
+Parts of the profiler viewer (flame graph, top-down/bottom-up call trees, time
+view, middle-out compression, filtering and display helpers) derive, via
+vscode-amiga-debug, from
+[vscode-js-profile-visualizer](https://github.com/microsoft/vscode-js-profile-visualizer),
+copyright Microsoft Corporation, distributed under the MIT License. See
+`LICENSES/MIT-vscode-js-profile-visualizer.txt`.
+
+## Amiga Hardware Reference Manual
+
+The custom-register documentation shown in the profiler and DMA tooltips
+(`src/webview/shared/customRegisterDocs.ts`) is transcribed from the Amiga
+Hardware Reference Manual, by way of vscode-amiga-debug's register docs.
 
 ## engine9000-public
 
