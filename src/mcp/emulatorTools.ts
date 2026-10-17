@@ -103,7 +103,7 @@ function resolveRom(args: Record<string, unknown>): string {
   if (fromEnv) return fromEnv;
   throw new Error(
     `No Kickstart ROM: pass "kickstartRom", or set ${ROM_ENV_VAR} in this server's environment ` +
-      `(e.g. claude mcp add puae -e ${ROM_ENV_VAR}=/path/to/kick31.rom -- npx puae-debugger mcp). ` +
+      `(e.g. claude mcp add puae -e ${ROM_ENV_VAR}=/path/to/kick31.rom -- npx -y puae-debugger mcp). ` +
       "ROMs are copyrighted and aren't shipped with this package.",
   );
 }

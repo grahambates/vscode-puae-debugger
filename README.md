@@ -168,8 +168,24 @@ The same binary has a few modes that need neither the emulator nor a browser:
 - `puae-debugger mcp` — an MCP server exposing the emulator and the profile analysis to an MCP client:
 
   ```sh
-  claude mcp add puae -e PUAE_KICKSTART_ROM=/path/to/kick31.rom -- npx puae-debugger mcp
+  claude mcp add puae -e PUAE_KICKSTART_ROM=/path/to/kick31.rom -- npx -y puae-debugger mcp
   ```
+
+  To share the setup with everyone working on a project, commit it as `.mcp.json` instead. Other MCP clients (Cursor, Claude Desktop, VS Code) take the same `command`/`args`/`env` in their own config files. Leave the ROM path to each user's environment, since it differs per machine and the ROM can't be committed:
+
+  ```json
+  {
+    "mcpServers": {
+      "puae": {
+        "command": "npx",
+        "args": ["-y", "puae-debugger", "mcp"],
+        "env": { "PUAE_KICKSTART_ROM": "${PUAE_KICKSTART_ROM}" }
+      }
+    }
+  }
+  ```
+
+  (`${VAR}` expansion in `.mcp.json` is a Claude Code feature; other clients may need the path written in.)
 
   `profile_check` and `profile_dump` read a saved `.puaeprofile`, as above. The rest *run* the program, on a machine booted headlessly — no browser, no VS Code — with the program injected the way `fastLoad` does. The ROM comes from `PUAE_KICKSTART_ROM` (as above) or a per-call `kickstartRom` argument.
 
