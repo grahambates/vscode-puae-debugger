@@ -44,7 +44,9 @@
     "puae/puae.js",
     "puae/puae.wasm",
     "puae/vscodeDefaultTheme.css",
-    ".claude/skills/puae-profiling/SKILL.md"
+    ".claude/skills/puae-profiling/SKILL.md",
+    "THIRD_PARTY_NOTICES.md",
+    "LICENSES/"
   ],
   "contributes": {
     "customEditors": [
@@ -624,17 +626,7 @@
     "gen:kickstart-symbols": "node scripts/gen-kickstart-symbols.mjs"
   },
   "dependencies": {
-    "@vscode/codicons": "^0.0.41",
-    "@vscode/debugadapter": "^1.68.0",
-    "68kcounter": "^3.2.1",
-    "downshift": "^9.0.10",
-    "expr-eval": "^2.0.2",
-    "m68kdecode": "^1.1.4",
-    "markdown-to-jsx": "^9.8.2",
-    "react": "^19.2.0",
-    "react-dom": "^19.2.0",
-    "react-window": "^2.2.7",
-    "ws": "^8.21.1"
+    "@vscode/codicons": "^0.0.41"
   },
   "devDependencies": {
     "@eslint/js": "^9.36.0",
@@ -649,18 +641,28 @@
     "@typescript-eslint/eslint-plugin": "^8.43.0",
     "@typescript-eslint/parser": "^8.43.0",
     "@vscode-elements/elements": "^2.3.1",
+    "@vscode/debugadapter": "^1.68.0",
     "@vscode/test-cli": "^0.0.11",
     "@vscode/test-electron": "^2.5.2",
+    "68kcounter": "^3.2.1",
+    "downshift": "^9.0.10",
     "esbuild": "^0.25.10",
     "eslint": "^9.36.0",
     "eslint-plugin-react": "^7.37.5",
     "eslint-plugin-react-hooks": "7.0.0",
+    "expr-eval": "^2.0.2",
     "jest": "^30.1.3",
+    "m68kdecode": "^1.1.4",
+    "markdown-to-jsx": "^9.8.2",
     "prettier": "^3.6.2",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
+    "react-window": "^2.2.7",
     "sinon": "^21.0.0",
     "ts-jest": "^29.4.4",
     "typescript": "^5.9.2",
-    "typescript-eslint": "^8.43.0"
+    "typescript-eslint": "^8.43.0",
+    "ws": "^8.21.1"
   },
   "jest": {
     "preset": "ts-jest",

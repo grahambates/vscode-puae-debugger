@@ -1,15 +1,30 @@
-**/.*
-**/*.mjs
-**/*.json
-**/*.ts
-**/*.tsx
-puae-wasm
-scripts
-src
-coverage
-node_modules
-!node_modules/@vscode/codicons/dist/**
-esbuild.js
-**/tsconfig.tsbuildinfo
-AGENTS.md
-CLAUDE.md
+# Whitelist: exclude everything, then re-include only what the extension loads at runtime. This
+# keeps local-only files (Kickstart ROMs, .adf images, .puaeprofile captures, .claude/ state) out
+# of the VSIX however they got into the working tree. package.json is always included by vsce.
+# Anything new the extension reads from extensionUri needs adding here.
+**
+
+!out/extension.js
+!out/puaeApp.js
+!out/puaeAudioProcessor.js
+!out/memoryViewer.js
+!out/memoryViewer.css
+!out/profilerViewer.js
+!out/profilerViewer.css
+!out/stateViewer.js
+!out/stateViewer.css
+
+!puae/index.html
+!puae/puae.js
+!puae/puae.wasm
+!puae/vscodeDefaultTheme.css
+
+!node_modules/@vscode/codicons/dist/codicon.css
+!node_modules/@vscode/codicons/dist/codicon.ttf
+
+!images/icon.png
+
+!README.md
+!LICENSE.txt
+!THIRD_PARTY_NOTICES.md
+!LICENSES/**
