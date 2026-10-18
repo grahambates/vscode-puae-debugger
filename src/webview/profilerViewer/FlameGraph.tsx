@@ -291,7 +291,10 @@ export function FlameGraph({
   }, [dma]);
   // Offscreen 1px-tall band: the DMA fill writes per-pixel RGBA here and blits it in one drawImage.
   const dmaBandRef = useRef<{ canvas: HTMLCanvasElement; ctx: CanvasRenderingContext2D; img: ImageData; cap: number } | null>(null);
-  const blitResult = useMemo(() => (dma ? getBlits(dma) : { blits: [], fastBlitter: false }), [dma]);
+  // A frame-start register baseline (only when the capture recorded one) fills in blitter
+  // registers set before the frame — see getBlits.
+  const blitBaseline = model.dmaSnapshot?.atFrameStart ? model.dmaSnapshot.custom : undefined;
+  const blitResult = useMemo(() => (dma ? getBlits(dma, blitBaseline) : { blits: [], fastBlitter: false }), [dma, blitBaseline]);
   const blits = blitResult.blits;
   const blitH = blits.length ? BLIT_BAND_H : 0;
   const yOffset = TIMELINE_H + bandH + blitH;

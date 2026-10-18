@@ -621,6 +621,17 @@ describe("analyseBlits", () => {
     expect(b.blits[0]).toMatchObject({ startSlot: 3, endSlot: 7, finished: true, startedBy: "hot", label: "Clear ---D 16x1px" });
   });
 
+  it("uses a frame-start snapshot as the register baseline, and only a frame-start one", () => {
+    const custom = new Uint16Array(256);
+    custom[0x040 >> 1] = 0x0100;
+    const snapshot = { chip: new Uint8Array(0), slow: new Uint8Array(0), custom };
+    const seeded = analyseBlits({ ...modelWithBlit(false), dmaSnapshot: { ...snapshot, atFrameStart: true } })!.blits[0];
+    expect(seeded.label).toBe("Clear ---D 16x1px");
+    // A post-capture snapshot (older captures) holds later values; it must not be used.
+    const unseeded = analyseBlits({ ...modelWithBlit(false), dmaSnapshot: snapshot })!.blits[0];
+    expect(unseeded.label).toBe("? 16x1px");
+  });
+
   it("refuses to describe an operation whose BLTCON0 it never saw", () => {
     const blit = analyseBlits(modelWithBlit(false))!.blits[0];
     expect(blit.label).toBe("? 16x1px");

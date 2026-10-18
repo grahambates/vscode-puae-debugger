@@ -111,6 +111,18 @@ check("profile_dump reads the headless capture", dump.isError !== true && /Frame
 check("capture symbolicates to real function names", /WaitRaster/.test(dump.content[0].text),
   dump.content?.[0]?.text?.slice(0, 200));
 
+// The DMA snapshot must be the state at the start of the frame it's attached to (the last one),
+// copied C-side at the true frame boundary — reconstruction replays the frame's writes over it.
+// Read back through the CLI's JSON, which carries the manifest's per-frame metadata.
+{
+  const { spawnSync } = await import("node:child_process");
+  const json = spawnSync("node", [path.join(repoRoot, "out", "standalone.js"), "profile", "dump", capturePath, "--json"], { encoding: "utf8" });
+  let meta;
+  try { meta = JSON.parse(json.stdout).manifest.frameMeta; } catch { meta = undefined; }
+  check("the capture's snapshot is the last frame's start state", meta?.[meta.length - 1]?.snapshotAtFrameStart === true,
+    JSON.stringify(meta));
+}
+
 // --- argument handling ---
 const missing = await callTool("emulator_screenshot", { program: "/definitely/not/here.exe", kickstartRom: romPath });
 check("a missing program is an isError result, not a crash", missing.isError === true,

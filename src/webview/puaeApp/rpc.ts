@@ -1392,20 +1392,28 @@ export function setupRpcDispatcher(
       // comment above: chip+slow alone are ~1MB, and this is a multi-MB round trip on top of
       // everything else a capture already transfers.
       case "getDmaSnapshot": {
-        const chipPtr = M._wasm_dma_get_chip_ptr();
-        const chipSize = M._wasm_dma_get_chip_size();
+        // The state at the START of the captured frame (the last one, for a multi-frame capture),
+        // which memory reconstruction replays the frame's writes over — copied C-side at the true
+        // frame boundary (see wasm_profile_capture_baseline in puae_debug.c). Reading live memory
+        // here instead, as this originally did, returned the state after the capture: every
+        // address written during the frame then showed its final value from the first cycle.
+        // Live state remains the fallback for a wasm build without the baseline exports, or a
+        // capture whose baseline allocation failed.
+        const baseline = typeof M._wasm_profile_baseline_valid === "function" && M._wasm_profile_baseline_valid() !== 0;
+        const chipPtr = baseline ? M._wasm_profile_baseline_chip_ptr() : M._wasm_dma_get_chip_ptr();
+        const chipSize = baseline ? M._wasm_profile_baseline_chip_size() : M._wasm_dma_get_chip_size();
         const chipBase64 = uint8ToBase64(new Uint8Array(M.HEAPU8.buffer, chipPtr, chipSize));
 
-        const slowPtr = M._wasm_dma_get_slow_ptr();
-        const slowSize = M._wasm_dma_get_slow_size();
+        const slowPtr = baseline ? M._wasm_profile_baseline_slow_ptr() : M._wasm_dma_get_slow_ptr();
+        const slowSize = baseline ? M._wasm_profile_baseline_slow_size() : M._wasm_dma_get_slow_size();
         const slowBase64 = uint8ToBase64(new Uint8Array(M.HEAPU8.buffer, slowPtr, slowSize));
 
         // Zorro II fast RAM (board 0). Unlike chip (fixed at 0) and slow (fixed at
         // 0xC00000), fast RAM's start address is autoconfig-assigned, so its Amiga
-        // address is reported alongside the bytes â€” see wasm_dma_get_fast_addr's
-        // comment in puae_debug.c.
-        const fastPtr = M._wasm_dma_get_fast_ptr();
-        const fastSize = M._wasm_dma_get_fast_size();
+        // address is reported alongside the bytes — see wasm_dma_get_fast_addr's
+        // comment in puae_debug.c. The address itself never changes, so it's read live.
+        const fastPtr = baseline ? M._wasm_profile_baseline_fast_ptr() : M._wasm_dma_get_fast_ptr();
+        const fastSize = baseline ? M._wasm_profile_baseline_fast_size() : M._wasm_dma_get_fast_size();
         const fastBase64 = fastSize > 0 ? uint8ToBase64(new Uint8Array(M.HEAPU8.buffer, fastPtr, fastSize)) : undefined;
         const fastAddr = M._wasm_dma_get_fast_addr();
 
@@ -1415,8 +1423,8 @@ export function setupRpcDispatcher(
         // than hardcoding it: PUAE_CUSTOM_REGS_RAW_SIZE's buffer capacity is a few bytes larger
         // than the header+registers actually written, so a hardcoded window here would silently
         // desync from the real layout if that padding, or the format itself, ever changes.
-        const rawCap = M._wasm_read_custom_regs_raw();
-        const rawPtr = M._wasm_get_custom_regs_raw_buf();
+        const rawCap = M._wasm_read_custom_regs_raw(); // also sizes the baseline's identical layout
+        const rawPtr = baseline ? M._wasm_profile_baseline_custom_ptr() : M._wasm_get_custom_regs_raw_buf();
         const rawView = new DataView(M.HEAPU8.buffer, rawPtr, rawCap);
         const custom = new Uint8Array(512);
         const customView = new DataView(custom.buffer);
@@ -1425,14 +1433,19 @@ export function setupRpcDispatcher(
         }
 
         // AGA's full 256-entry, already-24-bit palette (0x00RRGGBB per entry, native
-        // little-endian â€” no byte-swap needed, unlike `custom` above). All zero outside AGA
+        // little-endian — no byte-swap needed, unlike `custom` above). All zero outside AGA
         // mode; the profiler treats "all zero" the same as "absent" (see decodeAgaColors).
-        M._wasm_read_aga_colors();
-        const agaPtr = M._wasm_get_aga_colors_buf();
+        let agaPtr: number;
+        if (baseline) {
+          agaPtr = M._wasm_profile_baseline_aga_ptr();
+        } else {
+          M._wasm_read_aga_colors();
+          agaPtr = M._wasm_get_aga_colors_buf();
+        }
         const agaColorsBase64 = uint8ToBase64(new Uint8Array(M.HEAPU8.buffer, agaPtr, 256 * 4));
         const customBase64 = uint8ToBase64(custom);
 
-        rpcRequest(() => ({ chipBase64, slowBase64, fastBase64, fastAddr, customBase64, agaColorsBase64 }));
+        rpcRequest(() => ({ chipBase64, slowBase64, fastBase64, fastAddr, customBase64, agaColorsBase64, atFrameStart: baseline }));
         break;
       }
       // Lightweight counterpart of getDmaSnapshot's agaColors field, for callers (the state

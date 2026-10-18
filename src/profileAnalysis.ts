@@ -534,7 +534,10 @@ export function buildFlame(model: IProfileModel, lines?: { from: number; to: num
  */
 export function analyseBlits(model: IProfileModel): BlitAnalysis | undefined {
   if (!model.dma) return undefined;
-  const { blits, fastBlitter } = getBlits(model.dma);
+  // Only a snapshot recorded at the frame's start is a valid baseline; an older capture's is the
+  // state after it, and seeding from that would present a later value as the one the blit used.
+  const baseline = model.dmaSnapshot?.atFrameStart ? model.dmaSnapshot.custom : undefined;
+  const { blits, fastBlitter } = getBlits(model.dma, baseline);
   const symbolize = createSymbolizer(model.symbols);
   const pointer = (addr: number) => {
     const sym = symbolize(addr);

@@ -416,7 +416,7 @@ export interface RawCapture {
   dma?: Uint8Array; // raw enriched DMA grid bytes (absent if DMA capture produced nothing)
   // Reconstruction baseline (raw bytes; `custom` is 256 little-endian u16 = the custom-register
   // file at capture start, used for DMACON / register reconstruction).
-  snapshot?: { chip: Uint8Array; slow: Uint8Array; fast?: Uint8Array; fastAddr?: number; custom: Uint8Array; agaColors?: Uint8Array };
+  snapshot?: { chip: Uint8Array; slow: Uint8Array; fast?: Uint8Array; fastAddr?: number; custom: Uint8Array; agaColors?: Uint8Array; atFrameStart?: boolean };
   copper?: Uint8Array; // raw copper-instruction-trace bytes (absent if unsupported/empty)
   dmaEvents?: Uint8Array; // raw per-cycle event-bitfield bytes, parallel to `dma` (absent if unsupported/empty)
   // Every function that executed anywhere in the capture, with THIS frame's per-instruction
@@ -483,6 +483,7 @@ export function buildModelFromCapture(
           slow: raw.snapshot.slow,
           custom: decodeCustomRegs(raw.snapshot.custom),
           agaColors: decodeAgaColors(raw.snapshot.agaColors),
+          atFrameStart: raw.snapshot.atFrameStart,
         };
       }
       // Only attach if it lines up with the grid — a mismatched length (stale/corrupt capture)
@@ -1077,6 +1078,7 @@ export class ProfilerManager {
               fastAddr: snap.fastAddr,
               custom: fromBase64(snap.customBase64),
               agaColors: fromBase64(snap.agaColorsBase64),
+              atFrameStart: snap.atFrameStart === true,
             };
             const eventsRes = await rpc.sendRpcCommand("getDmaEvents", undefined, 30000);
             const eventsBytes = fromBase64(eventsRes.dataBase64);
@@ -1194,9 +1196,10 @@ export class ProfilerManager {
           console.warn("[profiler] per-frame DMA capture failed:", e);
         }
 
-        // Snapshot captured at end-of-capture state (last frame) — used for memory
-        // reconstruction; only attached to the last frame to avoid duplicating 2.5MB per frame.
-        let snapshotRaw: { chip: Uint8Array; slow: Uint8Array; fast?: Uint8Array; fastAddr?: number; custom: Uint8Array; agaColors?: Uint8Array } | undefined;
+        // The last frame's START state (copied C-side at its true frame boundary — see
+        // wasm_profile_capture_baseline), which memory reconstruction replays that frame's writes
+        // over; only attached to the last frame to avoid duplicating 2.5MB per frame.
+        let snapshotRaw: { chip: Uint8Array; slow: Uint8Array; fast?: Uint8Array; fastAddr?: number; custom: Uint8Array; agaColors?: Uint8Array; atFrameStart?: boolean } | undefined;
         try {
           if (perFrameDmaBytes[numFrames - 1]) {
             const snap = await rpc.sendRpcCommand("getDmaSnapshot", undefined, 30000);
@@ -1207,6 +1210,7 @@ export class ProfilerManager {
               fastAddr: snap.fastAddr,
               custom: fromBase64(snap.customBase64),
               agaColors: fromBase64(snap.agaColorsBase64),
+              atFrameStart: snap.atFrameStart === true,
             };
           }
         } catch (e) {
@@ -1301,6 +1305,7 @@ export class ProfilerManager {
                   slow: raw.snapshot.slow,
                   custom: decodeCustomRegs(raw.snapshot.custom),
                   agaColors: decodeAgaColors(raw.snapshot.agaColors),
+                  atFrameStart: raw.snapshot.atFrameStart,
                 };
               }
               if (raw.dmaEvents) {

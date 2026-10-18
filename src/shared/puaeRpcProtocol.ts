@@ -36,6 +36,9 @@ export interface RpcDmaSnapshot {
   fastAddr?: number;
   customBase64: string;
   agaColorsBase64: string;
+  // True when this is the state at the captured frame's start (copied at the true frame boundary);
+  // absent/false when only live, post-capture state was available (an older wasm build).
+  atFrameStart?: boolean;
 }
 
 export interface RpcProfileData {

@@ -68,7 +68,9 @@ export interface ProfileManifest {
   // recoverable from a JPEG's length alone. duplicateOfPrevious mirrors RawCapture's field of the
   // same name (see its comment) — round-tripped here since it's plain per-frame boolean data,
   // not something re-derivable from the other sections on load.
-  frameMeta: { thumbWidth?: number; thumbHeight?: number; fullWidth?: number; fullHeight?: number; duplicateOfPrevious?: boolean }[];
+  // snapshotAtFrameStart records whether the frame's DMA snapshot is its start state (see
+  // DmaSnapshot.atFrameStart); absent in older documents, whose snapshots are post-capture.
+  frameMeta: { thumbWidth?: number; thumbHeight?: number; fullWidth?: number; fullHeight?: number; duplicateOfPrevious?: boolean; snapshotAtFrameStart?: boolean }[];
 }
 
 export interface DecodedCapture {
@@ -123,6 +125,7 @@ export function encodeCapture(raws: RawCapture[], opts: EncodeOptions = {}): Buf
       fullWidth: raw.fullFrame?.width,
       fullHeight: raw.fullFrame?.height,
       duplicateOfPrevious: raw.duplicateOfPrevious,
+      snapshotAtFrameStart: raw.snapshot?.atFrameStart || undefined,
     });
   });
   if (opts.elf) sections.push({ name: "elf", bytes: opts.elf });
@@ -239,7 +242,9 @@ export function decodeCapture(file: Uint8Array): DecodedCapture {
       dma: get(`${prefix}dma`),
       // `custom` (the custom-register baseline) may be absent in pre-baseline documents;
       // decodeCustomRegs() tolerates an empty array, so default it rather than dropping the snapshot.
-      snapshot: chip && slow ? { chip, slow, custom: get(`${prefix}custom`) ?? new Uint8Array(0), agaColors: get(`${prefix}agaColors`) } : undefined,
+      snapshot: chip && slow
+        ? { chip, slow, custom: get(`${prefix}custom`) ?? new Uint8Array(0), agaColors: get(`${prefix}agaColors`), atFrameStart: fm?.snapshotAtFrameStart === true }
+        : undefined,
       copper: get(`${prefix}copper`), // absent in pre-copper-trace documents
       dmaEvents: get(`${prefix}dmaEvents`), // absent in pre-events documents
       // The document stores one listing (in the manifest) with frame 0's counts on it;

@@ -85,6 +85,14 @@ describe("profileFormat codec", () => {
     eq(out.snapshot!.agaColors, raw.snapshot!.agaColors);
   });
 
+  it("round-trips whether the snapshot is the frame-start state", () => {
+    const raw = sampleRaw(true);
+    raw.snapshot!.atFrameStart = true;
+    expect(decodeCapture(encodeCapture([raw])).raws[0].snapshot!.atFrameStart).toBe(true);
+    // Documents written before the flag existed carry post-capture snapshots: absent means false.
+    expect(decodeCapture(encodeCapture([sampleRaw(true)])).raws[0].snapshot!.atFrameStart).toBe(false);
+  });
+
   it("yields fresh, 4-byte-alignable profile bytes (Uint32Array view works)", () => {
     const { raws: [raw] } = decodeCapture(encodeCapture([sampleRaw(false)]));
     expect(raw.profile.data.byteOffset).toBe(0);

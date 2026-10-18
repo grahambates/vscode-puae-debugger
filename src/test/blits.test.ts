@@ -154,3 +154,41 @@ describe("getBlits: registers set before the capture", () => {
     expect(b.unseen).not.toContain("BLTDPTH");
   });
 });
+
+describe("getBlits: frame-start register baseline", () => {
+  const baseline = () => {
+    const regs = new Uint16Array(256);
+    regs[BLTCON0 >> 1] = 0x0100; // D only, clear
+    regs[0x066 >> 1] = 40; // BLTDMOD
+    regs[BLTAPTH >> 1] = 0x0002; // a stale A pointer — the blitter advances these, so never seeded
+    return regs;
+  };
+
+  it("fills in registers the CPU set before the frame", () => {
+    const g = grid(8);
+    regWrite(g, 0, BLTDPTH, 0x0001);
+    regWrite(g, 1, BLTDPTL, 0x0000);
+    regWrite(g, 2, BLTSIZE, (1 << 6) | 1);
+    const [b] = getBlits(g, baseline()).blits;
+    expect(b.con0).toBe(0x0100);
+    expect(b.mod[3]).toBe(40);
+    expect(blitLabel(b)).toBe("Clear ---D 16x1px");
+    expect(b.unseen).toEqual([]);
+  });
+
+  it("does not seed pointers, which the blitter itself moves", () => {
+    const g = grid(8);
+    regWrite(g, 0, BLTCON0, 0x0900); // A and D
+    regWrite(g, 1, BLTSIZE, (1 << 6) | 1);
+    const [b] = getBlits(g, baseline()).blits;
+    expect(b.ptr[0]).toBe(0);
+    expect(b.unseen).toEqual(expect.arrayContaining(["BLTAPTH", "BLTDPTH"]));
+  });
+
+  it("lets a write in the frame override the baseline", () => {
+    const g = grid(8);
+    regWrite(g, 0, BLTCON0, 0x09f0);
+    regWrite(g, 1, BLTSIZE, (1 << 6) | 1);
+    expect(getBlits(g, baseline()).blits[0].con0).toBe(0x09f0);
+  });
+});

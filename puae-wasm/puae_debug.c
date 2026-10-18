@@ -282,6 +282,8 @@ static evt_t    g_wprofStartCycles;
  * legitimate cycle count right after a reset. */
 static evt_t    g_wprofEndCycles;
 static int      g_wprofEndValid;
+/* Whether the frame-start memory/register baseline is current — see wasm_profile_capture_baseline. */
+static int      g_wprofBaseValid;
 static uint64_t g_wprofFrameCycles;
 /* When 0, wasm_profile_instrHook still records profile samples but skips the
  * register snapshot.  Cleared by wasm_profile_emit_frame_marker(), so that only
@@ -468,6 +470,7 @@ wasm_profile_prepare(int numFrames)
 	g_wprofArmPending      = 1;
 	g_wprofNumFrames       = numFrames;
 	g_wprofFrameMarkersEmitted = 0;
+	g_wprofBaseValid       = 0; /* a stale baseline from an earlier capture must never be served for this one */
 	g_wprofMarkersAllowed  = 0;
 	/* Force CE blitter for the capture frame so every D-channel write (including fill
 	 * mode, which the fast blitter never records) appears in the DMA grid.  The
@@ -2193,6 +2196,66 @@ puae_hsync_notify(void)
 	}
 }
 
+// puae_debug: the profiler's memory-reconstruction baseline. Reconstruction (the profile viewer's
+// reconstruct.ts) rebuilds memory at any cycle of a captured frame as "state at the frame's start,
+// plus every bus write up to that cycle" — so it needs the frame-start state, not the state
+// whenever the snapshot RPC happens to run. Reading live memory after the capture (as the RPC
+// originally did) gave the frame-END values, so every address written later in the frame showed
+// its future value from the first cycle on.
+//
+// Copied at each true frame boundary while recording: the arm point (frame 0's start) and every
+// inter-frame marker. A multi-frame capture attaches its snapshot to its last frame only, so the
+// buffer ends up holding exactly that frame's start. Invalidated by wasm_profile_prepare().
+static uint8_t  *g_wprofBaseChip, *g_wprofBaseSlow, *g_wprofBaseFast;
+static uint32_t  g_wprofBaseChipCap, g_wprofBaseSlowCap, g_wprofBaseFastCap;
+static uint32_t  g_wprofBaseChipSize, g_wprofBaseSlowSize, g_wprofBaseFastSize;
+static uint8_t   g_wprofBaseCustom[PUAE_CUSTOM_REGS_RAW_SIZE];
+static uint32_t  g_wprofBaseAga[PUAE_AGA_COLOR_COUNT];
+
+/* Copies `size` bytes from `src` into *buf, growing it as needed; size 0 (bank absent) is fine. */
+static int
+wasm_profile_baseline_copy(uint8_t **buf, uint32_t *cap, uint32_t *outSize, const uint8_t *src, uint32_t size)
+{
+	*outSize = 0;
+	if (!src || size == 0) return 1;
+	if (*cap < size) {
+		uint8_t *grown = (uint8_t *)realloc(*buf, size);
+		if (!grown) return 0;
+		*buf = grown;
+		*cap = size;
+	}
+	memcpy(*buf, src, size);
+	*outSize = size;
+	return 1;
+}
+
+static void
+wasm_profile_capture_baseline(void)
+{
+	int ok = 1;
+	ok &= wasm_profile_baseline_copy(&g_wprofBaseChip, &g_wprofBaseChipCap, &g_wprofBaseChipSize,
+		chipmem_bank.baseaddr, (uint32_t)(chipmem_bank.mask + 1));
+	ok &= wasm_profile_baseline_copy(&g_wprofBaseSlow, &g_wprofBaseSlowCap, &g_wprofBaseSlowSize,
+		bogomem_bank.baseaddr, bogomem_bank.baseaddr ? (uint32_t)(bogomem_bank.mask + 1) : 0);
+	ok &= wasm_profile_baseline_copy(&g_wprofBaseFast, &g_wprofBaseFastCap, &g_wprofBaseFastSize,
+		fastmem_bank[0].baseaddr, fastmem_bank[0].baseaddr ? (uint32_t)(fastmem_bank[0].mask + 1) : 0);
+	puae_get_custom_regs_raw(g_wprofBaseCustom);
+	puae_get_aga_colors_raw(g_wprofBaseAga);
+	/* A failed allocation leaves no baseline rather than a partial one: callers fall back to live state. */
+	g_wprofBaseValid = ok;
+}
+
+PUAE_DEBUG_EXPORT int      wasm_profile_baseline_valid(void)     { return g_wprofBaseValid; }
+PUAE_DEBUG_EXPORT uint32_t wasm_profile_baseline_chip_ptr(void)  { return (uint32_t)g_wprofBaseChip; }
+PUAE_DEBUG_EXPORT uint32_t wasm_profile_baseline_chip_size(void) { return g_wprofBaseChipSize; }
+PUAE_DEBUG_EXPORT uint32_t wasm_profile_baseline_slow_ptr(void)  { return (uint32_t)g_wprofBaseSlow; }
+PUAE_DEBUG_EXPORT uint32_t wasm_profile_baseline_slow_size(void) { return g_wprofBaseSlowSize; }
+PUAE_DEBUG_EXPORT uint32_t wasm_profile_baseline_fast_ptr(void)  { return (uint32_t)g_wprofBaseFast; }
+PUAE_DEBUG_EXPORT uint32_t wasm_profile_baseline_fast_size(void) { return g_wprofBaseFastSize; }
+/* Same layout as wasm_get_custom_regs_raw_buf (save_custom: 4-byte header + 256 BE words). */
+PUAE_DEBUG_EXPORT uint32_t wasm_profile_baseline_custom_ptr(void){ return (uint32_t)g_wprofBaseCustom; }
+PUAE_DEBUG_EXPORT uint32_t wasm_profile_baseline_aga_ptr(void)   { return (uint32_t)g_wprofBaseAga; }
+
 // Arms/advances CPU-sample profiler-capture state exactly at a true frame boundary — kept
 // separate from puae_debug_frame_boundary_notify() below (whose own original, still-active job is
 // replay/stepBackFrame scanning) so the two unrelated responsibilities sharing this one precise
@@ -2219,6 +2282,7 @@ wasm_profile_on_frame_boundary(void)
 		g_wprofArmPending = 0;
 		record_dma_reset(1); /* alloc if needed, toggle buffer, set debug_dma=1 */
 		debug_copper      = 1;
+		wasm_profile_capture_baseline(); /* frame 0's start state — see g_wprofBaseValid */
 	} else if (g_wprofMarkersAllowed && g_wprofFrameMarkersEmitted < g_wprofNumFrames - 1) {
 		// Every true boundary after the first one (consumed above as frame 0's start) splits the
 		// previous frame from the next — see g_wprofNumFrames's comment. The last boundary
@@ -2230,6 +2294,7 @@ wasm_profile_on_frame_boundary(void)
 		if (wasm_profile_emit_frame_marker(g_wprofFrameMarkersEmitted + 1)) {
 			g_wprofFrameMarkersEmitted++;
 		}
+		wasm_profile_capture_baseline(); /* this frame's start; the last one copied is the last frame's */
 	} else if (g_wprofMarkersAllowed) {
 		/* Every frame asked for has now been marked off, so this boundary is the end of the last
 		 * one. Stop here rather than letting the counted retro_run() call keep recording for the

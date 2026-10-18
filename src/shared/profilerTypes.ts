@@ -175,9 +175,13 @@ export interface ICopperModel {
 // over this). Retained extension-side this phase; shipped to the webview when a
 // reconstruction consumer (memory/screen/blitter view) is built.
 export interface DmaSnapshot {
-  chip: Uint8Array; // chip RAM at capture start
-  slow: Uint8Array; // slow/bogo RAM at capture start (may be empty)
-  custom: Uint16Array; // custom-register file at capture start (256 regs; for DMACON/reconstruction)
+  // All of this is the state at the START of the frame it's attached to (the last frame of a
+  // multi-frame capture) — when `atFrameStart` is set. Captures from before that was recorded
+  // C-side carry the state after the capture instead, which reconstruction can't correct for.
+  chip: Uint8Array; // chip RAM
+  slow: Uint8Array; // slow/bogo RAM (may be empty)
+  custom: Uint16Array; // custom-register file (256 regs; for DMACON/reconstruction)
+  atFrameStart?: boolean;
   // AGA's full 256-entry, 24-bit-per-channel palette (0x00RRGGBB) at capture start — absent
   // outside AGA mode. Already fully reconstructed C-side (BPLCON3 LOCT/bank-select applied),
   // unlike `custom`'s COLOR00-31 window, which only ever reflects one bank at 4-bit precision.

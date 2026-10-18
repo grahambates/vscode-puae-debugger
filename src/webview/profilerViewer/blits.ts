@@ -139,12 +139,25 @@ function blitRegsUsed(con0: number, con0Seen: boolean): string[] {
   return names;
 }
 
-// Reconstruct every blit in the captured frame from the DMA grid.
-export function getBlits(dma: IDmaModel): BlitResult {
+// Registers only the CPU (or copper) ever writes, so a frame-start value holds until the next
+// write. Pointers and data registers are left out: the blitter itself advances/overwrites them,
+// so a frame-start value is only right until the first blit that uses that channel.
+const SEEDABLE = ["BLTCON0", "BLTCON1", "BLTAFWM", "BLTALWM", "BLTAMOD", "BLTBMOD", "BLTCMOD", "BLTDMOD"];
+
+// Reconstruct every blit in the captured frame from the DMA grid. `frameStartRegs` — the custom
+// register file at the frame's start (DmaSnapshot.custom, only when atFrameStart) — seeds the
+// registers set before the capture, which the grid alone can't see (the LIMITATION above).
+export function getBlits(dma: IDmaModel, frameStartRegs?: Uint16Array): BlitResult {
   const { owner, flags, addr, value } = dma;
   const N = owner.length;
   const regs = new Uint16Array(256); // shadow register file (intra-frame writes only)
   const written = new Uint8Array(256); // which shadow entries a write has actually set
+  if (frameStartRegs && frameStartRegs.length >= 256) {
+    for (const name of SEEDABLE) {
+      regs[R[name] >> 1] = frameStartRegs[R[name] >> 1];
+      written[R[name] >> 1] = 1;
+    }
+  }
   const regL = (off: number): number => (((regs[off >> 1] << 16) | regs[(off + 2) >> 1]) >>> 0);
 
   const blits: Blit[] = [];

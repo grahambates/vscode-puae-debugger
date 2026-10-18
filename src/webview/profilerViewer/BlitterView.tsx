@@ -30,7 +30,8 @@ export function BlitterView({
   const model = getProfileModel();
   const dma = model?.dma;
   const symbolize = useMemo(() => createSymbolizer(model?.symbols), [model]);
-  const blitResult = useMemo(() => (dma ? getBlits(dma) : { blits: [] as Blit[], fastBlitter: false }), [dma]);
+  const blitBaseline = model?.dmaSnapshot?.atFrameStart ? model.dmaSnapshot.custom : undefined; // see getBlits
+  const blitResult = useMemo(() => (dma ? getBlits(dma, blitBaseline) : { blits: [] as Blit[], fastBlitter: false }), [dma, blitBaseline]);
   const blits = blitResult.blits;
   const rowRefs = useRef<(HTMLDivElement | null)[]>([]);
 
