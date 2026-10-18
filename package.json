@@ -2,7 +2,7 @@
   "name": "puae-debugger",
   "displayName": "PUAE Amiga Debugger and Profiler",
   "description": "Debug and profile Amiga programs with an integrated PUAE (WinUAE-derived) emulator",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "author": "Graham Bates",
   "publisher": "gigabates",
   "license": "GPL-2.0-only",
