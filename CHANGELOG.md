@@ -26,6 +26,7 @@
 - A data breakpoint hit by a copper write now names the copper MOVE that made it; it pointed at the instruction after it.
 - A Kickstart ROM dumped "doubled" to 512KB (the usual form of 1.3 dumps) wasn't recognised, so ROM code had no symbol names in the debugger, profiler or MCP tools.
 - Continuing after a reverse step (or reverse continue / step back a frame) ran one frame too many before the next frame ended.
+- Stepping back — most reliably a frame forward and then a frame back — could leave the wrong picture on screen (a later frame, or a blank one) instead of the one shown at that point.
 - MCP: `~` in paths (including `PUAE_KICKSTART_ROM`) is expanded; screenshots and profile captures no longer require debug information; `profile_dump` no longer returns a stale analysis after a capture is rewritten to the same file; `emulator_continue` with nothing armed reports the frames it ran rather than a missed breakpoint.
 
 ## 1.0.0

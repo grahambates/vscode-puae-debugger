@@ -417,6 +417,28 @@ export function setupRpcDispatcher(
     if (snapshotHistory.length > MAX_SNAPSHOT_HISTORY) snapshotHistory.shift();
   }
 
+  // Lands exactly on `target` (an instrCount), from the newest checkpoint whose replay also leaves
+  // the right picture on screen. PUAE never draws the first frame after a restore (its
+  // request_reset_drawing — see wasm_end_next_frame_at_boundary in puae_debug.c), so a replay
+  // that presents only that frame leaves the framebuffer holding whatever came last: a picture from
+  // later in time, or none. That's exactly what stepping forward a frame and straight back did —
+  // the newest checkpoint is the one taken just before the forward step. So when the replay from
+  // the newest checkpoint presents fewer than two frames (the undrawn one plus one real), go back
+  // one more checkpoint: a replay from there draws the frame that was on screen at `target`.
+  // wasm_get_frame_count counts frames presented during a video replay.
+  function landAt(target: bigint): void {
+    let i = snapshotHistory.length - 1;
+    while (i > 0 && snapshotHistory[i].instrCount > target) i--;
+    for (; i >= 0; i--) {
+      const entry = snapshotHistory[i];
+      restoreCheckpoint(M, entry);
+      const presentedBefore = M._wasm_get_frame_count();
+      replayInstructionsVideo(M, target - entry.instrCount);
+      if (M._wasm_get_frame_count() - presentedBefore >= 2) return;
+    }
+    // History doesn't reach far enough back to draw that frame; the CPU state is still exact.
+  }
+
   function getCpuInfo(): PuaeRpcResult<"getCpuInfo"> {
     const n = M._wasm_read_regs();
     const ptr = M._wasm_get_reg_buf();
@@ -1144,11 +1166,7 @@ export function setupRpcDispatcher(
           const current = readInstrCount(M);
           const target = current - BigInt(Math.max(1, args.count ?? 1));
           if (target < snapshotHistory[0].instrCount) return false;
-          let i = snapshotHistory.length - 1;
-          while (snapshotHistory[i].instrCount > target) i--;
-          const entry = snapshotHistory[i];
-          restoreCheckpoint(M, entry);
-          replayInstructionsVideo(M, target - entry.instrCount);
+          landAt(target);
           return true;
         });
         break;
@@ -1178,8 +1196,7 @@ export function setupRpcDispatcher(
             if (typeof globalThis.drawCurrentFrame === "function") globalThis.drawCurrentFrame();
             await new Promise(r => setTimeout(r, 0)); // yield for canvas repaint
             if (match !== null) {
-              restoreCheckpoint(M, entry);
-              replayInstructionsVideo(M, match - entry.instrCount);
+              landAt(match);
               return true;
             }
           }
@@ -1216,8 +1233,7 @@ export function setupRpcDispatcher(
             restoreCheckpoint(M, entry);
             const match = replayScanFrame(M, target - entry.instrCount);
             if (match !== null) {
-              restoreCheckpoint(M, entry);
-              replayInstructionsVideo(M, match - entry.instrCount);
+              landAt(match);
               postMessage({ type: "emulator-state", state: "stopped", message: getCurrentStopMessage(M) });
               return true;
             }

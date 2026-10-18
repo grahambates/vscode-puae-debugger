@@ -192,6 +192,24 @@ check("capture symbolicates to real function names", /WaitRaster/.test(dump.cont
     listing.content?.[0]?.text);
 }
 
+// Stepping forward a frame and straight back must show the picture that was on screen before the
+// forward step. PUAE never draws the first frame after a restore, so a rewind replaying from the
+// checkpoint taken just before the forward step used to leave a later picture (or none) on screen.
+{
+  const tutorial = path.join(repoRoot, "src", "test", "fixtures", "amigaPrograms", "tutorial");
+  const launch = await callTool("emulator_launch", { program: tutorial, kickstartRom: romPath });
+  const session = /Session (s\d+)/.exec(launch.content?.[0]?.text ?? "")?.[1];
+  const before = path.join(outDir, "frame-before.png");
+  const after = path.join(outDir, "frame-after-back.png");
+  await callTool("emulator_screenshot", { session, frames: 30, out: before });
+  await callTool("emulator_continue", { session, maxFrames: 1 });
+  await callTool("emulator_reverse", { session, mode: "frame" });
+  await callTool("emulator_screenshot", { session, frames: 0, out: after });
+  check("a frame forward then a frame back shows the picture from before the forward step",
+    fs.existsSync(before) && fs.existsSync(after) && fs.readFileSync(before).equals(fs.readFileSync(after)));
+  await callTool("emulator_close", { session });
+}
+
 // --- argument handling ---
 const missing = await callTool("emulator_screenshot", { program: "/definitely/not/here.exe", kickstartRom: romPath });
 check("a missing program is an isError result, not a crash", missing.isError === true,
