@@ -15,7 +15,7 @@ import { MAX_CAPTURE_FRAMES } from "../shared/profilerTypes";
 import { parseHunks } from "../amigaHunkParser";
 import { sourceMapFromHunks } from "../amigaHunkSourceMap";
 import { describe as describeAddress, resolveBreakpointSpec } from "../mcp/breakpointSpec";
-import { emulatorTools, exceptionVectors, watchAdds, writeRequest } from "../mcp/emulatorTools";
+import { emulatorTools, exceptionVectors, inputActions, watchAdds, writeRequest } from "../mcp/emulatorTools";
 import type { HeadlessSession } from "../mcp/emulatorSession";
 import { encodePng } from "../mcp/png";
 import { expandHome } from "../mcp/paths";
@@ -47,6 +47,7 @@ describe("emulator MCP tools", () => {
       "emulator_continue",
       "emulator_step",
       "emulator_inspect",
+      "emulator_input",
       "emulator_watch",
       "emulator_write",
       "emulator_disassemble",
@@ -350,5 +351,27 @@ describe("exception stops", () => {
 
   it("rejects an unknown exception before anything boots", async () => {
     await expect(runTool("emulator_launch", { program: "/tmp/x", exceptions: ["segfault"] })).rejects.toThrow(/Unknown exception "segfault"/);
+  });
+});
+
+describe("emulator_input actions", () => {
+  it("resolves mouse buttons and key names, in order", () => {
+    const actions = inputActions({
+      actions: [{ move: [40, -10] }, { click: "left" }, { key: "a" }, { keyDown: "shiftleft" }, { key: "5" }, { keyUp: "Esc" }, { wait: 50 }],
+    });
+    expect(actions.map((a) => a.label)).toEqual([
+      "move 40,-10", "click left", "key KeyA", "keyDown ShiftLeft", "key Digit5", "keyUp Escape", "wait 50",
+    ]);
+    expect(actions[1]).toMatchObject({ kind: "click", button: 0 });
+    expect(actions[2]).toMatchObject({ kind: "key", code: 97 }); // RETROK_a
+  });
+
+  it("rejects what it can't play, before anything runs", () => {
+    expect(() => inputActions({ actions: [] })).toThrow(/non-empty/);
+    expect(() => inputActions({ actions: [{ key: "Banana" }] })).toThrow(/unknown key "Banana"/);
+    expect(() => inputActions({ actions: [{ click: "left", key: "a" }] })).toThrow(/exactly one/);
+    expect(() => inputActions({ actions: [{ click: "fourth" }] })).toThrow(/left", "right" or "middle/);
+    expect(() => inputActions({ actions: [{ move: [1.5, 2] }] })).toThrow(/\[dx, dy\]/);
+    expect(() => inputActions({ actions: [{ joystick: "up" }] })).toThrow(/unknown action "joystick"/);
   });
 });

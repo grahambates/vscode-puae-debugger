@@ -18,6 +18,11 @@ executable; if the debug info lives in an ELF built alongside it, pass that as `
 A stripped binary works too — breakpoints and memory reads then take addresses or hunk symbols,
 not `file:line`, and the launch says so.
 
+The program is injected straight into RAM once exec is ready, not loaded by AmigaDOS. So it
+can't rely on the OS beyond ROM calls that work in isolation (memory allocation, say) — no DOS,
+no input handling, no libraries that need the OS running. That's expected, not a bug: a program
+that needs them won't behave as it does from a boot disk.
+
 ## The loop
 
 ```
@@ -101,6 +106,11 @@ emulator_snapshot { "restore": "before" }   ← and try the next idea from the s
 - **"Stopped … in frame N of this run"** means during that frame, not after N whole frames.
 - **Positions are colour clocks.** A line is 227 of them, and a copper WAIT's horizontal value is
   in the same unit as the hpos of any `line:hpos` in a reply.
-- **No input yet.** There is no way to send mouse, keyboard or joystick events, so code that
-  waits for input won't get past that point; put a breakpoint after it and move the PC with
-  `emulator_write { "registers": { "pc": "<label>" } }` if you need to skip the wait.
+- **Input runs frames.** `emulator_input` plays mouse and keyboard actions in order — e.g.
+  `[{ "click": "left" }]` for the click most demos exit on, then `emulator_continue` to check the
+  exit path runs cleanly. Input is read once per frame, so every action runs frames and a
+  breakpoint can fire mid-click; the reply then says what is still held down. There's no joystick
+  yet. Keys reach code that reads the keyboard itself (the CIA-A serial port, handshaking each
+  byte, as demos and games do) — not the OS's input handling, which a fastLoaded program can't
+  use (see Setup). If a wait can't be
+  satisfied, break after it and move the PC with `emulator_write { "registers": { "pc": "<label>" } }`.

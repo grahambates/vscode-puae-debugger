@@ -40,6 +40,9 @@ interface PuaeWasmModule {
   _wasm_is_paused(): number;
   _wasm_memprotect_start_tracking(): number;
   _wasm_memprotect_seed_libraries(): void;
+  _wasm_set_mouse_delta(dx: number, dy: number): void;
+  _wasm_set_mouse_button(button: number, pressed: number): void;
+  _wasm_key_event(down: number, code: number, character: number, mod: number): void;
   [key: string]: unknown;
 }
 
@@ -260,6 +263,27 @@ export class HeadlessEmulator extends WebviewEmulator {
     const ptr = this.module._wasm_get_fb_rgba();
     const rgba = this.module.HEAPU8.slice(ptr, ptr + width * height * 4);
     return { rgba, width, height };
+  }
+
+  // --- Input ---
+  // Straight into frontend_shim.c's input state, exactly as the webview's mouseCapture.ts and
+  // keyboardCapture.ts feed it. None of it takes effect until a frame runs: the core polls input
+  // once per frame (retro_run -> update_input), so a press and release with no frame in between
+  // is never seen.
+
+  /** Relative movement, accumulated until the next poll. */
+  public mouseMove(dx: number, dy: number): void {
+    this.module._wasm_set_mouse_delta(dx | 0, dy | 0);
+  }
+
+  /** `button` as DOM MouseEvent.button: 0 left, 1 middle, 2 right. */
+  public mouseButton(button: number, down: boolean): void {
+    this.module._wasm_set_mouse_button(button, down ? 1 : 0);
+  }
+
+  /** `code` is a RETROK_* value (see src/shared/retroKeys.ts). */
+  public key(code: number, down: boolean): void {
+    this.module._wasm_key_event(down ? 1 : 0, code, 0, 0);
   }
 
   /** The whole machine's state, for restoring later with `loadState`. */

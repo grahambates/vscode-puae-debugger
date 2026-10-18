@@ -111,6 +111,23 @@ export interface StopState {
   detail?: string;
 }
 
+/** One step of emulator_input, already resolved (key names to RETROK_* codes). */
+export type InputAction = { label: string } & (
+  | { kind: "click" | "press" | "release"; button: number }
+  | { kind: "key" | "keyDown" | "keyUp"; code: number; name: string }
+  | { kind: "move"; dx: number; dy: number }
+  | { kind: "wait"; frames: number }
+);
+
+/** DOM MouseEvent.button numbering, which wasm_set_mouse_button takes. */
+export const MOUSE_BUTTONS: Record<string, number> = { left: 0, middle: 1, right: 2 };
+const MOUSE_BUTTON_NAMES = ["left", "middle", "right"];
+// How long a click or a key tap is held, and then released, in frames. One frame can be missed by
+// a program that polls in its vertical-blank interrupt; two is reliably seen by either.
+const INPUT_HOLD_FRAMES = 2;
+// Mouse counts per frame for a long move: comfortably inside the 8-bit counters' ±127.
+const MOUSE_STEP = 32;
+
 export interface SnapshotInfo {
   name: string;
   /** Frames run since launch when it was taken. */
@@ -144,6 +161,8 @@ export class HeadlessSession {
   /** Armed breakpoints, by address, with how each was asked for. */
   private readonly breakpoints = new Map<number, string>();
   private exceptionStops = new Set<number>();
+  /** Mouse buttons and keys currently held down by emulator_input. */
+  private readonly held = new Set<string>();
   private readonly snapshots = new Map<string, SnapshotInfo & { state: { data: Uint8Array; instrCount: string } }>();
   private framesRun = 0;
 
@@ -375,6 +394,82 @@ export class HeadlessSession {
     const words = await this.emulator.readMemory(copperPc - 4, 4);
     const word1 = words.readUInt16BE(0);
     return (word1 & 1) === 0 && (word1 & 0x1fe) === (addr & 0x1fe) ? copperPc - 4 : undefined;
+  }
+
+  // --- Input ---
+
+  /**
+   * Plays `actions` in order, running real frames as it goes — the core only polls input once per
+   * frame, so a press, a hold and a release each need frames of their own. Stops at once if a
+   * breakpoint, watch or exception fires mid-way (the rest of the actions are not played), and
+   * reports anything still held down then: a button left pressed stays pressed.
+   */
+  public async input(actions: InputAction[]): Promise<{ played: string[]; stop?: StopState; held: string[] }> {
+    const played: string[] = [];
+    const run = async (frames: number): Promise<StopState | undefined> => {
+      const state = await this.continueUntilStop(frames);
+      return state.stopped ? state : undefined;
+    };
+    const finish = (stop?: StopState) => ({ played, stop, held: [...this.held].sort() });
+
+    for (const action of actions) {
+      let stop: StopState | undefined;
+      switch (action.kind) {
+        case "click":
+        case "key": {
+          this.setInput(action, true);
+          stop = await run(INPUT_HOLD_FRAMES);
+          if (!stop) {
+            this.setInput(action, false);
+            stop = await run(INPUT_HOLD_FRAMES);
+          }
+          break;
+        }
+        case "press":
+        case "keyDown":
+          this.setInput(action, true);
+          stop = await run(1);
+          break;
+        case "release":
+        case "keyUp":
+          this.setInput(action, false);
+          stop = await run(1);
+          break;
+        case "move": {
+          // The Amiga's mouse counters are 8-bit: much more than ±127 in one frame reads as
+          // movement the other way. Spread a long move over frames instead.
+          const steps = Math.max(1, Math.ceil(Math.max(Math.abs(action.dx), Math.abs(action.dy)) / MOUSE_STEP));
+          let sentX = 0;
+          let sentY = 0;
+          for (let i = 1; i <= steps && !stop; i++) {
+            const x = Math.round((action.dx * i) / steps);
+            const y = Math.round((action.dy * i) / steps);
+            this.emulator.mouseMove(x - sentX, y - sentY);
+            sentX = x;
+            sentY = y;
+            stop = await run(1);
+          }
+          break;
+        }
+        case "wait":
+          stop = await run(action.frames);
+          break;
+      }
+      played.push(action.label);
+      if (stop) return finish(stop);
+    }
+    return finish();
+  }
+
+  private setInput(action: InputAction, down: boolean): void {
+    if (action.kind === "click" || action.kind === "press" || action.kind === "release") {
+      this.emulator.mouseButton(action.button, down);
+      const name = `mouse ${MOUSE_BUTTON_NAMES[action.button]}`;
+      if (down) this.held.add(name); else this.held.delete(name);
+    } else if (action.kind === "key" || action.kind === "keyDown" || action.kind === "keyUp") {
+      this.emulator.key(action.code, down);
+      if (down) this.held.add(action.name); else this.held.delete(action.name);
+    }
   }
 
   // --- Snapshots ---

@@ -34,8 +34,11 @@ import {
   InspectResult,
   LaunchOptions,
   StopState,
+  InputAction,
+  MOUSE_BUTTONS,
   WriteRequest,
 } from "./emulatorSession";
+import { CODE_TO_RETROK } from "../shared/retroKeys";
 import { ToolDefinition } from "./jsonRpc";
 import { expandHome } from "./paths";
 import { SessionRegistry } from "./sessionRegistry";
@@ -156,6 +159,71 @@ export function watchAdds(args: Record<string, unknown>): { address: string; len
     if (!WATCH_KINDS.includes(on)) throw new Error(`add[${i}].on must be one of ${WATCH_KINDS.join(", ")}`);
     const length = w.length === undefined ? undefined : boundedNumber(w, "length", 1, MAX_WATCH_BYTES);
     return { address: requireString(w, "address"), length, on };
+  });
+}
+
+// Long enough for a scripted interaction; past that it belongs in several calls with a look between.
+const MAX_INPUT_ACTIONS = 100;
+const KEY_ALIASES: Record<string, string> = { return: "Enter", esc: "Escape", del: "Delete", " ": "Space" };
+
+/** A key name as a RETROK_* code: the DOM KeyboardEvent.code name ("Space", "F1", "KeyA"), any case, or a single letter/digit. */
+function resolveKey(name: string, where: string): { code: number; name: string } {
+  const lower = name.toLowerCase();
+  const candidates = [
+    name,
+    KEY_ALIASES[lower],
+    Object.keys(CODE_TO_RETROK).find((k) => k.toLowerCase() === lower),
+    /^[a-z]$/i.test(name) ? `Key${name.toUpperCase()}` : undefined,
+    /^[0-9]$/.test(name) ? `Digit${name}` : undefined,
+  ];
+  for (const c of candidates) {
+    if (c !== undefined && CODE_TO_RETROK[c] !== undefined) return { code: CODE_TO_RETROK[c], name: c };
+  }
+  throw new Error(
+    `${where}: unknown key "${name}". Use a key name like Space, Enter, Escape, F1, ArrowLeft, ShiftLeft, ` +
+      `a single letter or digit, or one of: ${Object.keys(CODE_TO_RETROK).join(", ")}`,
+  );
+}
+
+/** emulator_input's `actions`, validated and resolved, before anything runs. */
+export function inputActions(args: Record<string, unknown>): InputAction[] {
+  const v = args.actions;
+  if (!Array.isArray(v) || v.length === 0) throw new Error(`"actions" must be a non-empty array`);
+  if (v.length > MAX_INPUT_ACTIONS) throw new Error(`"actions" is capped at ${MAX_INPUT_ACTIONS} per call`);
+  return v.map((entry, i): InputAction => {
+    const where = `actions[${i}]`;
+    if (typeof entry !== "object" || entry === null || Array.isArray(entry)) throw new Error(`${where} must be an object`);
+    const keys = Object.keys(entry);
+    if (keys.length !== 1) throw new Error(`${where} must have exactly one of: click, press, release, move, key, keyDown, keyUp, wait`);
+    const kind = keys[0];
+    const value = (entry as Record<string, unknown>)[kind];
+    switch (kind) {
+      case "click":
+      case "press":
+      case "release": {
+        const button = MOUSE_BUTTONS[String(value).toLowerCase()];
+        if (button === undefined) throw new Error(`${where}.${kind} must be "left", "right" or "middle"`);
+        return { kind, button, label: `${kind} ${String(value).toLowerCase()}` };
+      }
+      case "key":
+      case "keyDown":
+      case "keyUp": {
+        if (typeof value !== "string") throw new Error(`${where}.${kind} must be a key name`);
+        const key = resolveKey(value, `${where}.${kind}`);
+        return { kind, ...key, label: `${kind} ${key.name}` };
+      }
+      case "move": {
+        const [dx, dy] = Array.isArray(value) ? value : [];
+        if (!Number.isInteger(dx) || !Number.isInteger(dy)) throw new Error(`${where}.move must be [dx, dy] in mouse counts, e.g. [40, -10]`);
+        return { kind, dx, dy, label: `move ${dx},${dy}` };
+      }
+      case "wait": {
+        const frames = boundedNumber({ wait: value }, "wait", 1, MAX_WARMUP_FRAMES);
+        return { kind, frames, label: `wait ${frames}` };
+      }
+      default:
+        throw new Error(`${where}: unknown action "${kind}" — use click, press, release, move, key, keyDown, keyUp or wait`);
+    }
   });
 }
 
@@ -619,6 +687,65 @@ export function emulatorTools(ctx: EmulatorToolContext): ToolDefinition[] {
           sections.push(`Copper list from ${copperAt ?? "COP1LC"} (${formatAddress(start)}), as the copper would run it:\n${listing}`);
         }
         return sections.join("\n\n");
+      },
+    },
+    {
+      name: "emulator_input",
+      description:
+        "Send mouse and keyboard input to a session, as a sequence of actions played in order: " +
+        'click/press/release a mouse button ("left", "right", "middle"), move the mouse by [dx, dy] ' +
+        "counts, tap/hold/release a key, and wait a number of frames. The program sees it exactly " +
+        "as real input — e.g. the left click that exits most demos, to check it shuts down cleanly. " +
+        "Every action runs real frames (input is only read once per frame), so breakpoints, watches " +
+        "and exception stops still fire; if one does, the rest of the actions are skipped and anything " +
+        "still held is reported. Keys are named like the browser's KeyboardEvent.code: Space, Enter, " +
+        "Escape, F1, ArrowLeft, ShiftLeft, KeyA — or just a letter or digit. No joystick yet. The " +
+        "program is injected into RAM, not loaded by AmigaDOS, so it can't rely on the OS beyond " +
+        "ROM calls that work in isolation: keys reach code that reads the keyboard itself (the " +
+        "CIA-A serial port, handshaking each byte, as demos and games do), not the OS's input handling.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          ...SESSION_PROPERTY,
+          actions: {
+            type: "array",
+            description:
+              'Played in order, e.g. [{ "move": [40, 0] }, { "click": "left" }, { "wait": 50 }] or ' +
+              '[{ "keyDown": "ShiftLeft" }, { "key": "a" }, { "keyUp": "ShiftLeft" }]. A click or key tap ' +
+              `holds for 2 frames and releases for 2. Max ${MAX_INPUT_ACTIONS} actions.`,
+            items: {
+              type: "object",
+              properties: {
+                click: { type: "string", enum: ["left", "right", "middle"] },
+                press: { type: "string", enum: ["left", "right", "middle"] },
+                release: { type: "string", enum: ["left", "right", "middle"] },
+                move: { type: "array", items: { type: "integer" }, description: "[dx, dy] in mouse counts; long moves are spread across frames." },
+                key: { type: "string", description: "Tap a key." },
+                keyDown: { type: "string", description: "Hold a key (e.g. a modifier) until keyUp." },
+                keyUp: { type: "string" },
+                wait: { type: "integer", description: "Run this many frames with input as it is." },
+              },
+              additionalProperties: false,
+            },
+          },
+        },
+        required: ["session", "actions"],
+        additionalProperties: false,
+      },
+      run: async (args) => {
+        const session = registry.get(requireString(args, "session"));
+        const actions = inputActions(args);
+        const result = await session.input(actions);
+        const lines = [`Played ${result.played.length} of ${actions.length} action(s): ${result.played.join(", ")}.`];
+        if (result.stop) {
+          lines.push(formatStop(result.stop, 0, true, true)); // only reached when something stopped it
+          if (actions.length > result.played.length) lines.push(`Not played: ${actions.slice(result.played.length).map((a) => a.label).join(", ")}.`);
+        } else {
+          const where = await session.inspect([]);
+          lines.push(`Now at ${where.location}, frame ${session.frame} of the session.`);
+        }
+        if (result.held.length) lines.push(`Still held down: ${result.held.join(", ")} — release them, or they stay pressed.`);
+        return lines.join("\n");
       },
     },
     {
