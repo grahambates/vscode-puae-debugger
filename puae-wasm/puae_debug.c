@@ -2789,10 +2789,32 @@ puae_debug_memhook_afterRead(uint32_t addr24, uint32_t value, uint32_t sizeBits)
 	puae_debug_watchpointRead(addr24, value, sizeBits);
 }
 
+// puae_debug: serial output capture. Every CPU write to SERDAT ($DFF030) is a character sent out of
+// the serial port — which is where exec's RawPutChar, and so the KPrintF/kprintf debug idiom, sends
+// its output. PUAE's own serial device is real (serial_host.c models the transmit timing, so
+// RawPutChar's busy-wait completes) but sends the bytes nowhere a frontend can see; this keeps them.
+// Not recorded during a rewind's replay, which re-executes history that was already captured.
+#define PUAE_SERIAL_CAPTURE_SIZE 65536
+static uint8_t  g_serialCapture[PUAE_SERIAL_CAPTURE_SIZE];
+static uint32_t g_serialCaptureLen;
+static uint32_t g_serialCaptureDropped;
+
+PUAE_DEBUG_EXPORT uint32_t wasm_serial_get_ptr(void)     { return (uint32_t)g_serialCapture; }
+PUAE_DEBUG_EXPORT uint32_t wasm_serial_get_len(void)     { return g_serialCaptureLen; }
+PUAE_DEBUG_EXPORT uint32_t wasm_serial_get_dropped(void) { return g_serialCaptureDropped; }
+PUAE_DEBUG_EXPORT void     wasm_serial_clear(void)       { g_serialCaptureLen = 0; g_serialCaptureDropped = 0; }
+
 PUAE_DEBUG_EXPORT void
 puae_debug_memhook_afterWrite(uint32_t addr24, uint32_t value, uint32_t oldValue, uint32_t sizeBits, int oldValueValid, uint32_t source)
 {
 	addr24 &= 0x00ffffffu;
+	if (addr24 == 0xdff030u && source == 0 && !puae_debug_replayMode) {
+		if (g_serialCaptureLen < PUAE_SERIAL_CAPTURE_SIZE) {
+			g_serialCapture[g_serialCaptureLen++] = (uint8_t)(value & 0xffu); /* 8 data bits; bit 8+ is the stop bit */
+		} else {
+			g_serialCaptureDropped++;
+		}
+	}
 	puae_debug_watchpointWrite(addr24, value, oldValue, sizeBits, oldValueValid, source);
 	puae_debug_memprotectCheckWrite(addr24, value, sizeBits, source);
 }

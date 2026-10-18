@@ -88,6 +88,15 @@ actually reaches" means it didn't; `emulator_disassemble` at the current PC show
 spinning in. With nothing armed, `emulator_continue { "maxFrames": 50 }` is simply the way to run
 50 frames — that reply isn't a failure.
 
+## printf-style output
+
+Anything the program writes to the serial port — `kprintf`/`KPrintF`, which go through exec's
+`RawPutChar`, or a direct write to SERDAT — is captured and shown in the reply of whatever ran
+frames (`emulator_continue`, `emulator_step`, `emulator_input`, `emulator_screenshot`,
+`emulator_capture_profile`), as "Serial output since the last call". So a quick check needs no
+breakpoint at all: print the values, run, read the reply. `RawPutChar` is a ROM call that works
+without the rest of the OS, so it's usable under fastLoad.
+
 ## Going back in time
 
 `emulator_reverse` rewinds a session exactly — registers, memory and screen as they were: `step`
@@ -121,13 +130,18 @@ emulator_snapshot { "restore": "before" }   ← and try the next idea from the s
 - **Write-only custom registers can't be read from memory.** Reading `$DFF180` returns the bus,
   not COLOR00. `emulator_inspect`'s `chipset` reports the emulator's own copy, which is right.
 - **"Stopped … in frame N of this run"** means during that frame, not after N whole frames.
+- **Library calls are named from the machine, not a table.** `emulator_disassemble` shows
+  `jsr -198(a6)` as `exec.library AllocMem` by reading the library base in `a6` and its jump table;
+  `-> $xxxxxx (RAM, patched)` means something has SetFunction'd that entry, and a bare offset with
+  a ROM address means the ROM has no symbol for it. No annotation means `a6` couldn't be pinned
+  down from the listing — not that it isn't a library call.
 - **Positions are colour clocks.** A line is 227 of them, and a copper WAIT's horizontal value is
   in the same unit as the hpos of any `line:hpos` in a reply.
-- **Input runs frames.** `emulator_input` plays mouse and keyboard actions in order — e.g.
-  `[{ "click": "left" }]` for the click most demos exit on, then `emulator_continue` to check the
-  exit path runs cleanly. Input is read once per frame, so every action runs frames and a
-  breakpoint can fire mid-click; the reply then says what is still held down. There's no joystick
-  yet. Keys reach code that reads the keyboard itself (the CIA-A serial port, handshaking each
+- **Input runs frames.** `emulator_input` plays mouse, keyboard and joystick actions in order —
+  e.g. `[{ "click": "left" }]` for the click most demos exit on, then `emulator_continue` to check
+  the exit path runs cleanly; `joyPress`/`joyTap` drive the joystick port (up, down, left, right,
+  fire, fire2). Input is read once per frame, so every action runs frames and a breakpoint can
+  fire mid-click; the reply then says what is still held down. Keys reach code that reads the keyboard itself (the CIA-A serial port, handshaking each
   byte, as demos and games do) — not the OS's input handling, which a fastLoaded program can't
   use (see Setup). If a wait can't be
   satisfied, break after it and move the PC with `emulator_write { "registers": { "pc": "<label>" } }`.

@@ -378,13 +378,21 @@ describe("emulator_input actions", () => {
     expect(actions[2]).toMatchObject({ kind: "key", code: 97 }); // RETROK_a
   });
 
+  it("resolves joystick directions and buttons to RetroPad bits", () => {
+    const actions = inputActions({ actions: [{ joyPress: "Right" }, { joyTap: "fire" }, { joyRelease: "right" }] });
+    expect(actions.map((a) => a.label)).toEqual(["joyPress right", "joyTap fire", "joyRelease right"]);
+    expect(actions[0]).toMatchObject({ kind: "joyPress", bit: 7 }); // RETRO_DEVICE_ID_JOYPAD_RIGHT
+    expect(actions[1]).toMatchObject({ kind: "joyTap", bit: 0 }); // B: the Amiga's fire button
+    expect(() => inputActions({ actions: [{ joyTap: "jump" }] })).toThrow(/up, down, left, right, fire2|fire, up/);
+  });
+
   it("rejects what it can't play, before anything runs", () => {
     expect(() => inputActions({ actions: [] })).toThrow(/non-empty/);
     expect(() => inputActions({ actions: [{ key: "Banana" }] })).toThrow(/unknown key "Banana"/);
     expect(() => inputActions({ actions: [{ click: "left", key: "a" }] })).toThrow(/exactly one/);
     expect(() => inputActions({ actions: [{ click: "fourth" }] })).toThrow(/left", "right" or "middle/);
     expect(() => inputActions({ actions: [{ move: [1.5, 2] }] })).toThrow(/\[dx, dy\]/);
-    expect(() => inputActions({ actions: [{ joystick: "up" }] })).toThrow(/unknown action "joystick"/);
+    expect(() => inputActions({ actions: [{ joystick: "up" }] })).toThrow(/unknown action "joystick"/); // it's joyPress/joyTap
   });
 });
 

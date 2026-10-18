@@ -158,6 +158,40 @@ check("capture symbolicates to real function names", /WaitRaster/.test(dump.cont
   await callTool("emulator_close", { session });
 }
 
+// Serial output: the kprintf fixture prints through exec's RawPutChar, i.e. SERDAT, and the reply
+// to anything that ran frames carries it.
+{
+  const kprintf = path.join(repoRoot, "src", "test", "fixtures", "amigaPrograms", "simple_c", "06_kprintf", "simple_c.exe");
+  const shot = await callTool("emulator_screenshot", { program: kprintf, kickstartRom: romPath, frames: 20, out: path.join(outDir, "kprintf.png") });
+  check("serial output (kprintf) appears in the reply", /Hallo, wie gehts\?/.test(shot.content?.[0]?.text ?? ""), shot.content?.[0]?.text);
+}
+
+// Joystick: holding fire on the joystick port clears CIA-A PRA bit 7 (/FIR1).
+{
+  const launch = await callTool("emulator_launch", { program, kickstartRom: romPath });
+  const session = /Session (s\d+)/.exec(launch.content?.[0]?.text ?? "")?.[1];
+  await callTool("emulator_continue", { session, maxFrames: 10 });
+  const pra = async () => {
+    const text = (await callTool("emulator_inspect", { session, memory: [{ address: "0xbfe001", bytes: 1 }] })).content?.[0]?.text ?? "";
+    return parseInt(/0x00bfe001\s+([0-9a-f]{2})/.exec(text)?.[1] ?? "-1", 16);
+  };
+  const idle = await pra();
+  await callTool("emulator_input", { session, actions: [{ joyPress: "fire" }, { wait: 2 }] });
+  const held = await pra();
+  await callTool("emulator_input", { session, actions: [{ joyRelease: "fire" }, { wait: 2 }] });
+  check("joystick fire reaches the Amiga (CIA-A bit 7 low while held)", (idle & 0x80) !== 0 && held >= 0 && (held & 0x80) === 0,
+    `idle=${idle.toString(16)} held=${held.toString(16)}`);
+  await callTool("emulator_close", { session });
+}
+
+// Library calls are named from the live library base and its jump table — and the doubled 512KB
+// Kickstart 1.3 dump this test boots is recognised, so ROM targets have names.
+{
+  const listing = await callTool("emulator_disassemble", { program, kickstartRom: romPath, count: 12 });
+  check("library calls are named (exec.library AllocMem)", /jsr -198\(a6\)\s+; exec\.library AllocMem/.test(listing.content?.[0]?.text ?? ""),
+    listing.content?.[0]?.text);
+}
+
 // --- argument handling ---
 const missing = await callTool("emulator_screenshot", { program: "/definitely/not/here.exe", kickstartRom: romPath });
 check("a missing program is an isError result, not a crash", missing.isError === true,

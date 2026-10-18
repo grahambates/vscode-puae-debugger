@@ -43,6 +43,11 @@ interface PuaeWasmModule {
   _wasm_set_mouse_delta(dx: number, dy: number): void;
   _wasm_set_mouse_button(button: number, pressed: number): void;
   _wasm_key_event(down: number, code: number, character: number, mod: number): void;
+  _wasm_set_joypad(port: number, bits: number): void;
+  _wasm_serial_get_ptr(): number;
+  _wasm_serial_get_len(): number;
+  _wasm_serial_get_dropped(): number;
+  _wasm_serial_clear(): void;
   _wasm_read_cycle_count(): void;
   _wasm_get_cycle_count_hi(): number;
   _wasm_get_cycle_count_lo(): number;
@@ -317,6 +322,28 @@ export class HeadlessEmulator extends WebviewEmulator {
   /** `button` as DOM MouseEvent.button: 0 left, 1 middle, 2 right. */
   public mouseButton(button: number, down: boolean): void {
     this.module._wasm_set_mouse_button(button, down ? 1 : 0);
+  }
+
+  /**
+   * The joystick on the Amiga's joystick port (game port 1), as a RetroPad bitmask
+   * (RETRO_DEVICE_ID_JOYPAD_*: B=0 is fire, A=8 the second button, UP/DOWN/LEFT/RIGHT=4..7).
+   */
+  public joystick(bits: number): void {
+    this.module._wasm_set_joypad(0, bits);
+  }
+
+  /**
+   * Serial output since the last call — every byte the program wrote to SERDAT, which is where
+   * exec's RawPutChar (and so kprintf) sends it — and how many bytes were dropped because the
+   * 64KB capture buffer filled in between. Clears the buffer.
+   */
+  public takeSerial(): { bytes: Uint8Array; dropped: number } {
+    const len = this.module._wasm_serial_get_len();
+    const ptr = this.module._wasm_serial_get_ptr();
+    const bytes = this.module.HEAPU8.slice(ptr, ptr + len);
+    const dropped = this.module._wasm_serial_get_dropped();
+    this.module._wasm_serial_clear();
+    return { bytes, dropped };
   }
 
   /** `code` is a RETROK_* value (see src/shared/retroKeys.ts). */

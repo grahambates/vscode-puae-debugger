@@ -29,8 +29,23 @@ export interface KickstartSymbolModule {
 export function kickstartSymbolModule(
   romBuffer: Buffer,
 ): KickstartSymbolModule | undefined {
-  const sha1 = crypto.createHash("sha1").update(romBuffer).digest("hex");
-  return buildModule(sha1, romBuffer.length);
+  const rom = singleImage(romBuffer);
+  const sha1 = crypto.createHash("sha1").update(rom).digest("hex");
+  return buildModule(sha1, rom.length);
+}
+
+/**
+ * A 256KB ROM is commonly dumped "doubled" to 512KB — the same image twice, as it appears in the
+ * 512KB ROM space — and so hashes to something no symbol table knows (Kickstart 1.3 is the usual
+ * case). Identify such a dump by one copy. The code runs from the upper copy, at the 256KB ROM's
+ * own base, which is what that size gives buildModule.
+ */
+export function singleImage(romBuffer: Buffer): Buffer {
+  const half = romBuffer.length / 2;
+  if (romBuffer.length === 524288 && romBuffer.subarray(0, half).equals(romBuffer.subarray(half))) {
+    return romBuffer.subarray(half);
+  }
+  return romBuffer;
 }
 
 /**

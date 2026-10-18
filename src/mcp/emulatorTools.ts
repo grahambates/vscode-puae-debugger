@@ -35,6 +35,7 @@ import {
   LaunchOptions,
   StopState,
   InputAction,
+  JOYSTICK_BITS,
   MOUSE_BUTTONS,
   WriteRequest,
 } from "./emulatorSession";
@@ -223,7 +224,7 @@ export function inputActions(args: Record<string, unknown>): InputAction[] {
     const where = `actions[${i}]`;
     if (typeof entry !== "object" || entry === null || Array.isArray(entry)) throw new Error(`${where} must be an object`);
     const keys = Object.keys(entry);
-    if (keys.length !== 1) throw new Error(`${where} must have exactly one of: click, press, release, move, key, keyDown, keyUp, wait`);
+    if (keys.length !== 1) throw new Error(`${where} must have exactly one of: click, press, release, move, key, keyDown, keyUp, joyTap, joyPress, joyRelease, wait`);
     const kind = keys[0];
     const value = (entry as Record<string, unknown>)[kind];
     switch (kind) {
@@ -241,6 +242,14 @@ export function inputActions(args: Record<string, unknown>): InputAction[] {
         const key = resolveKey(value, `${where}.${kind}`);
         return { kind, ...key, label: `${kind} ${key.name}` };
       }
+      case "joyTap":
+      case "joyPress":
+      case "joyRelease": {
+        const name = String(value).toLowerCase();
+        const bit = JOYSTICK_BITS[name];
+        if (bit === undefined) throw new Error(`${where}.${kind} must be one of: ${Object.keys(JOYSTICK_BITS).join(", ")}`);
+        return { kind, bit, name, label: `${kind} ${name}` };
+      }
       case "move": {
         const [dx, dy] = Array.isArray(value) ? value : [];
         if (!Number.isInteger(dx) || !Number.isInteger(dy)) throw new Error(`${where}.move must be [dx, dy] in mouse counts, e.g. [40, -10]`);
@@ -251,7 +260,7 @@ export function inputActions(args: Record<string, unknown>): InputAction[] {
         return { kind, frames, label: `wait ${frames}` };
       }
       default:
-        throw new Error(`${where}: unknown action "${kind}" — use click, press, release, move, key, keyDown, keyUp or wait`);
+        throw new Error(`${where}: unknown action "${kind}" — use click, press, release, move, key, keyDown, keyUp, joyTap, joyPress, joyRelease or wait`);
     }
   });
 }
@@ -364,6 +373,21 @@ async function withSession<T>(
   } finally {
     session.dispose();
   }
+}
+
+// Serial output appended to a reply: enough for a page of kprintf, not a flood.
+const MAX_SERIAL_CHARS = 4000;
+
+/** Serial output since the last call, as a block to append to a reply, or "" when there was none. */
+function serialNote(session: HeadlessSession): string {
+  const { text, dropped } = session.takeSerial();
+  if (!text && !dropped) return "";
+  const shown = text.length > MAX_SERIAL_CHARS ? text.slice(0, MAX_SERIAL_CHARS) : text;
+  const cut = text.length - shown.length;
+  return "\nSerial output since the last call (kprintf and anything else written to SERDAT):\n" +
+    shown.replace(/\n$/, "") +
+    (cut ? `\n… ${cut} more character(s) not shown` : "") +
+    (dropped ? `\n… and ${dropped} byte(s) lost — the 64KB capture buffer filled between calls` : "");
 }
 
 function formatStop(stop: StopState, budget: number, armed: boolean, catchesCrashes: boolean): string {
@@ -597,7 +621,8 @@ export function emulatorTools(ctx: EmulatorToolContext): ToolDefinition[] {
         "Resume a session and run until a breakpoint or a watchpoint (see emulator_watch) fires, or until `maxFrames` " +
         "emulated frames have passed — whichever comes first, so this can't hang on a program " +
         "that never reaches the breakpoint. Reports where it stopped and why. Follow with " +
-        "emulator_inspect to read registers, the call stack and memory at that point.",
+        "emulator_inspect to read registers, the call stack and memory at that point. Anything the " +
+        "program printed to the serial port meanwhile (kprintf) is included in the reply.",
       inputSchema: {
         type: "object",
         properties: {
@@ -620,7 +645,8 @@ export function emulatorTools(ctx: EmulatorToolContext): ToolDefinition[] {
         const extra = await session.setBreakpoints(stringArray(args, "breakpoints"));
         const budget = boundedNumber(args, "maxFrames", 100, MAX_WARMUP_FRAMES);
         const stop = await session.continueUntilStop(budget);
-        return (extra.length ? `Added breakpoints: ${extra.join("; ")}\n` : "") + formatStop(stop, budget, session.hasStopConditions, session.listExceptionStops().length > 0);
+        return (extra.length ? `Added breakpoints: ${extra.join("; ")}\n` : "") +
+          formatStop(stop, budget, session.hasStopConditions, session.listExceptionStops().length > 0) + serialNote(session);
       },
     },
     {
@@ -642,7 +668,7 @@ export function emulatorTools(ctx: EmulatorToolContext): ToolDefinition[] {
         const session = registry.get(requireString(args, "session"));
         const count = boundedNumber(args, "count", 1, MAX_STEP_INSTRUCTIONS);
         const stop = await session.step(count);
-        return `Stepped ${count} instruction(s). Now at ${stop.location}.`;
+        return `Stepped ${count} instruction(s). Now at ${stop.location}.` + serialNote(session);
       },
     },
     {
@@ -761,14 +787,15 @@ export function emulatorTools(ctx: EmulatorToolContext): ToolDefinition[] {
     {
       name: "emulator_input",
       description:
-        "Send mouse and keyboard input to a session, as a sequence of actions played in order: " +
+        "Send mouse, keyboard and joystick input to a session, as a sequence of actions played in order: " +
         'click/press/release a mouse button ("left", "right", "middle"), move the mouse by [dx, dy] ' +
-        "counts, tap/hold/release a key, and wait a number of frames. The program sees it exactly " +
+        "counts, tap/hold/release a key, tap/hold/release a joystick direction or button on the " +
+        "joystick port (up, down, left, right, fire, fire2), and wait a number of frames. The program sees it exactly " +
         "as real input — e.g. the left click that exits most demos, to check it shuts down cleanly. " +
         "Every action runs real frames (input is only read once per frame), so breakpoints, watches " +
         "and exception stops still fire; if one does, the rest of the actions are skipped and anything " +
         "still held is reported. Keys are named like the browser's KeyboardEvent.code: Space, Enter, " +
-        "Escape, F1, ArrowLeft, ShiftLeft, KeyA — or just a letter or digit. No joystick yet. The " +
+        "Escape, F1, ArrowLeft, ShiftLeft, KeyA — or just a letter or digit. The " +
         "program is injected into RAM, not loaded by AmigaDOS, so it can't rely on the OS beyond " +
         "ROM calls that work in isolation: keys reach code that reads the keyboard itself (the " +
         "CIA-A serial port, handshaking each byte, as demos and games do), not the OS's input handling.",
@@ -792,6 +819,9 @@ export function emulatorTools(ctx: EmulatorToolContext): ToolDefinition[] {
                 key: { type: "string", description: "Tap a key." },
                 keyDown: { type: "string", description: "Hold a key (e.g. a modifier) until keyUp." },
                 keyUp: { type: "string" },
+                joyTap: { type: "string", enum: Object.keys(JOYSTICK_BITS), description: "Tap a joystick direction or button (joystick port)." },
+                joyPress: { type: "string", enum: Object.keys(JOYSTICK_BITS), description: "Hold a joystick direction or button until joyRelease." },
+                joyRelease: { type: "string", enum: Object.keys(JOYSTICK_BITS) },
                 wait: { type: "integer", description: "Run this many frames with input as it is." },
               },
               additionalProperties: false,
@@ -814,7 +844,7 @@ export function emulatorTools(ctx: EmulatorToolContext): ToolDefinition[] {
           lines.push(`Now at ${where.location}, frame ${session.frame} of the session.`);
         }
         if (result.held.length) lines.push(`Still held down: ${result.held.join(", ")} — release them, or they stay pressed.`);
-        return lines.join("\n");
+        return lines.join("\n") + serialNote(session);
       },
     },
     {
@@ -961,8 +991,9 @@ export function emulatorTools(ctx: EmulatorToolContext): ToolDefinition[] {
         "works for optimised or self-modifying code and for binaries with no source. Lists " +
         "`count` instructions from `address` (default: the session's PC, marked =>), optionally " +
         "`before` instructions leading up to it, or the whole routine with `function`. Branch " +
-        "targets, absolute addresses, custom registers and CIAs are symbolicated, and the source " +
-        "line is shown wherever the debug info has one. Works on a session or one-shot on a " +
+        "targets, absolute addresses, custom registers and CIAs are symbolicated, library calls " +
+        "(jsr -198(a6)) are named from the library's own jump table (exec.library AllocMem), and the " +
+        "source line is shown wherever the debug info has one. Works on a session or one-shot on a " +
         "`program` (paused at its entry point, so it shows the code as loaded, before it runs).",
       inputSchema: {
         type: "object",
@@ -1088,7 +1119,7 @@ export function emulatorTools(ctx: EmulatorToolContext): ToolDefinition[] {
                 ? `Identical to the frame before (marked =): ${repeats.join(", ")}.\n`
                 : "No frame on the sheet is identical to the frame before it.\n") +
               (stoppedEarly ? `Stopped after ${tiles.length} of ${count}: the program hit a breakpoint, a watch or an exception.\n` : "") +
-              "Read that file to see the frames."
+              "Read that file to see the frames." + serialNote(session)
             );
           });
         }
@@ -1101,7 +1132,7 @@ export function emulatorTools(ctx: EmulatorToolContext): ToolDefinition[] {
           return (
             `Wrote ${shot.width}x${shot.height} PNG to ${path}\n` +
             (frames > 0 ? `Ran ${frames} frame(s)${stoppedEarly}.\n` : "Captured the session's current frame, without running it on.\n") +
-            "Read that file to see the frame."
+            "Read that file to see the frame." + serialNote(session)
           );
         });
       },
@@ -1154,7 +1185,7 @@ export function emulatorTools(ctx: EmulatorToolContext): ToolDefinition[] {
               : "Captured from where the session was already stopped.\n") +
             "Thumbnails are omitted (headless capture); everything the analysis uses is present.\n\n" +
             `profile_check says:\n${check}\n\n` +
-            `Now call profile_dump with file "${path}" to read the per-function costs.`
+            `Now call profile_dump with file "${path}" to read the per-function costs.` + serialNote(session)
           );
         });
       },

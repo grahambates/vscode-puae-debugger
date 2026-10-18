@@ -2,7 +2,7 @@ import * as assert from "assert";
 import * as crypto from "crypto";
 import { readFileSync } from "fs";
 import * as path from "path";
-import { kickstartSymbolModule, kickstartSymbolModuleBySha1 } from "../kickstart";
+import { kickstartSymbolModule, kickstartSymbolModuleBySha1, singleImage } from "../kickstart";
 import { kickstartRoms } from "../kickstartSymbols";
 import { SourceMap, Segment } from "../sourceMap";
 import { MemoryType } from "../amigaHunkParser";
@@ -229,5 +229,33 @@ describe("Kickstart symbols", () => {
       const sourceMap = buildSourceMapFromBundle(ELF, manifest(""));
       assert.strictEqual(sourceMap.findSymbolOffset(ROM_ADDR), undefined);
     });
+  });
+});
+
+describe("doubled Kickstart dumps", () => {
+  // Kickstart 1.3 is usually dumped as 512KB: the 256KB image twice. Synthetic bytes stand in for
+  // the ROM (which is copyrighted and not in the repo); what matters is the shape.
+  const image = Buffer.alloc(262144);
+  for (let i = 0; i < image.length; i++) image[i] = (i * 7) & 0xff;
+
+  it("reads a 256KB image repeated to 512KB as the single image", () => {
+    const doubled = Buffer.concat([image, image]);
+    assert.ok(singleImage(doubled).equals(image));
+    assert.strictEqual(singleImage(doubled).length, 262144);
+  });
+
+  it("leaves a genuine 512KB ROM, and a plain 256KB one, alone", () => {
+    const different = Buffer.concat([image, Buffer.alloc(262144, 0x11)]);
+    assert.strictEqual(singleImage(different).length, 524288);
+    assert.strictEqual(singleImage(image).length, 262144);
+  });
+
+  it("identifies a doubled dump of a known ROM by that ROM's table", () => {
+    // A doubled buffer whose halves hash like the image itself — so whatever the 256KB image
+    // matches, the doubled dump matches too, at the 256KB ROM's base.
+    const doubled = Buffer.concat([image, image]);
+    const viaDoubled = crypto.createHash("sha1").update(singleImage(doubled)).digest("hex");
+    const viaImage = crypto.createHash("sha1").update(image).digest("hex");
+    assert.strictEqual(viaDoubled, viaImage);
   });
 });

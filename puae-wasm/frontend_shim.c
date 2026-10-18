@@ -312,7 +312,24 @@ void wasm_key_event(int down, unsigned code, unsigned character, unsigned mod) {
 
 static void shim_input_poll(void) {}
 
+// --- Joystick input ---
+// RetroPad button state per libretro port, as a RETRO_DEVICE_ID_JOYPAD_* bitmask, set by JS
+// (wasm_set_joypad). libretro port 0 is the Amiga's joystick port (game port 1) and port 1 its
+// mouse port (game port 0) — libretro-core.c's retro_set_controller_port_device maps them that
+// way. The core only reads a port whose device is a joypad, so wasm_boot declares port 0 one.
+static uint16_t g_joypadBits[2] = {0, 0};
+
+EMSCRIPTEN_KEEPALIVE
+void wasm_set_joypad(int port, unsigned bits) {
+    if (port >= 0 && port < 2) g_joypadBits[port] = (uint16_t)bits;
+}
+
 static int16_t shim_input_state(unsigned port, unsigned device, unsigned index, unsigned id) {
+    if (device == RETRO_DEVICE_JOYPAD && port < 2) {
+        // The mapper asks either for the whole mask at once or one button at a time.
+        if (id == RETRO_DEVICE_ID_JOYPAD_MASK) return (int16_t)g_joypadBits[port];
+        return (g_joypadBits[port] >> id) & 1;
+    }
     if (port != 0 || device != RETRO_DEVICE_MOUSE) return 0;
     switch (id) {
         case RETRO_DEVICE_ID_MOUSE_X: { int16_t v = g_mouseDx; g_mouseDx = 0; return v; }
@@ -458,6 +475,9 @@ int wasm_boot(const char *adf_path) {
         load_ok = retro_load_game(NULL);
     }
     EM_ASM_({ console.log('[shim] retro_load_game returned', $0); }, load_ok);
+    // A joypad on the Amiga's joystick port, so wasm_set_joypad's state is read at all (the
+    // mapper skips ports with no device). With nothing pressed it changes nothing.
+    if (load_ok) retro_set_controller_port_device(0, RETRO_DEVICE_JOYPAD);
 
     return load_ok;
 }
