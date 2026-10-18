@@ -47,6 +47,7 @@ describe("emulator MCP tools", () => {
       "emulator_continue",
       "emulator_step",
       "emulator_inspect",
+      "emulator_reverse",
       "emulator_input",
       "emulator_watch",
       "emulator_write",

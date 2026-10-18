@@ -45,8 +45,9 @@ deterministic: the same program and arguments give the same result, and a rerun 
 instruction and zero divide, so just `emulator_continue`. The stop names the exception and the
 PC, and `emulator_inspect` gives registers and the call stack. Two things to know:
 - For **bus and address errors** the PC a 68000 records has run ahead of the faulting
-  instruction (prefetch) — the culprit is usually one or two instructions *before* it. Look with
-  `emulator_disassemble { "address": "<pc>", "before": 8 }`.
+  instruction (prefetch) — the culprit is usually one or two instructions *before* it. Don't
+  guess: `emulator_reverse { "mode": "step" }` goes back one instruction from the stop to the
+  faulting instruction itself, with the registers it executed with (an odd address in `a0`, say).
 - **Privilege violation is off by default** because exec's `Supervisor()` raises it on purpose.
   Turn it on (`emulator_breakpoints { "exceptions": [...] }`) only if the program itself runs in
   user mode and you suspect it.
@@ -86,6 +87,16 @@ should arrive. "Still running after N frames … check the breakpoint is somewhe
 actually reaches" means it didn't; `emulator_disassemble` at the current PC shows what it's
 spinning in. With nothing armed, `emulator_continue { "maxFrames": 50 }` is simply the way to run
 50 frames — that reply isn't a failure.
+
+## Going back in time
+
+`emulator_reverse` rewinds a session exactly — registers, memory and screen as they were: `step`
+back N instructions (from a crash or a watch hit to what led to it), `continue` back to the last
+time a breakpoint was hit, or `frame` back to the start of the current frame. It replays from
+checkpoints taken at each continue/step and every emulated second, so it can't reach further back
+than the oldest of those (about 40), and a snapshot restore starts a fresh history. Running forward
+again from a rewound point is deterministic: it repeats exactly what happened the first time
+unless you change something with `emulator_write`.
 
 ## Testing an idea without rebuilding
 

@@ -147,6 +147,12 @@ interface CheckpointEntry {
 function restoreCheckpoint(M: PuaeModule, entry: CheckpointEntry): void {
   restoreSnapshot(M, entry.bytes);
   writeInstrCount(M, entry.instrCount);
+  // PUAE never presents the first frame after a restore, so the next forward retro_run() would
+  // run on through two frames — after a snapshot restore and a rewind alike. End it at the true
+  // frame boundary instead (see wasm_end_next_frame_at_boundary in puae_debug.c). A rewind's own
+  // instruction replay runs in replay mode, which the flag ignores, so it lands on the first real
+  // frame forward. Absent from older wasm builds.
+  if (typeof M._wasm_end_next_frame_at_boundary === "function") M._wasm_end_next_frame_at_boundary();
 }
 
 // Runs forward exactly `count` retired instructions from the current state
@@ -1131,10 +1137,12 @@ export function setupRpcDispatcher(
         // and replaying forward the remaining (usually small) instruction
         // count. Returns false if the target predates the oldest checkpoint
         // still in history.
+        // `count` (default 1) steps back that many instructions in one restore + replay, rather
+        // than one round trip each.
         rpcRequest(() => {
           if (snapshotHistory.length === 0) return false;
           const current = readInstrCount(M);
-          const target = current - 1n;
+          const target = current - BigInt(Math.max(1, args.count ?? 1));
           if (target < snapshotHistory[0].instrCount) return false;
           let i = snapshotHistory.length - 1;
           while (snapshotHistory[i].instrCount > target) i--;
@@ -1465,10 +1473,6 @@ export function setupRpcDispatcher(
         rpcRequest(() => {
           const bytes = args.data instanceof ArrayBuffer ? new Uint8Array(args.data) : args.data;
           restoreCheckpoint(M, { bytes, pc: 0, instrCount: BigInt(args.instrCount ?? "0") });
-          // PUAE never presents the first frame after a restore, so the next retro_run() would
-          // run on through two frames; end it at the true frame boundary instead (see
-          // wasm_end_next_frame_at_boundary in puae_debug.c). Absent from older wasm builds.
-          if (typeof M._wasm_end_next_frame_at_boundary === "function") M._wasm_end_next_frame_at_boundary();
           // The rewind history recorded since that state belongs to a timeline that no longer
           // exists; stepping back into it would land somewhere this machine never was.
           snapshotHistory.length = 0;

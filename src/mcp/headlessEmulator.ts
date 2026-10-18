@@ -43,6 +43,9 @@ interface PuaeWasmModule {
   _wasm_set_mouse_delta(dx: number, dy: number): void;
   _wasm_set_mouse_button(button: number, pressed: number): void;
   _wasm_key_event(down: number, code: number, character: number, mod: number): void;
+  _wasm_read_cycle_count(): void;
+  _wasm_get_cycle_count_hi(): number;
+  _wasm_get_cycle_count_lo(): number;
   [key: string]: unknown;
 }
 
@@ -57,7 +60,7 @@ interface RpcDispatcherModule {
     module: PuaeWasmModule,
     postMessage: (message: unknown) => void,
     options?: { usesDh0?: boolean },
-  ): { handleMessage(message: unknown): void };
+  ): { handleMessage(message: unknown): void; pushSnapshot(): void };
   isExecReady(module: PuaeWasmModule): boolean;
   getCurrentStopMessage(module: PuaeWasmModule): StopMessage;
 }
@@ -132,6 +135,9 @@ const DEFAULT_CONFIG_LINES = [
   "blitter_cycle_exact=true",
 ];
 
+// One emulated second, as app.ts's CHECKPOINT_INTERVAL_FRAMES.
+const CHECKPOINT_INTERVAL_FRAMES = 50;
+
 // Ceiling on the boot warm-up, matching app.ts's own. Kickstart needs ~150 ticks to clear CIA-A
 // OVL and initialise exec.library's allocator; 1000 is ~20 emulated seconds.
 const MAX_WARMUP_TICKS = 1000;
@@ -146,6 +152,10 @@ export class HeadlessEmulator extends WebviewEmulator {
     super(rootDir);
     this.attachHost(inProcessHost);
   }
+
+  // Set right after construction (the dispatcher needs the host this constructor attaches).
+  private dispatcher!: { pushSnapshot(): void };
+  private framesSinceCheckpoint = 0;
 
   /**
    * Boots a machine and warms it up to the same "exec.library is ready" point app.ts's fastLoad
@@ -204,7 +214,9 @@ export class HeadlessEmulator extends WebviewEmulator {
 
     const host = new InProcessHost();
     const emulator = new HeadlessEmulator(rootDir, module, host, rpcModule);
-    host.attachDispatcher(rpcModule.setupRpcDispatcher(module, (message) => host.deliver(message)));
+    const dispatcher = rpcModule.setupRpcDispatcher(module, (message) => host.deliver(message));
+    host.attachDispatcher(dispatcher);
+    emulator.dispatcher = dispatcher;
     return emulator;
   }
 
@@ -218,15 +230,41 @@ export class HeadlessEmulator extends WebviewEmulator {
    * This is the headless stand-in for app.ts's render loop, minus the wall-clock scheduling: it
    * runs the emulator as fast as this process can, and every frame it is asked for.
    */
-  public runFrames(frames: number): number {
+  public runFrames(frames: number, onFrameEnd?: () => void): number {
     let ran = 0;
     for (let i = 0; i < frames; i++) {
       if (this.module._wasm_is_paused()) break;
       this.module._wasm_tick();
       ran++;
+      if (this.module._wasm_is_paused()) break; // stopped mid-frame: not a frame end
+      onFrameEnd?.();
+      // A rewind checkpoint every emulated second, as app.ts's render loop takes in the webview —
+      // without them, stepping back inside a long run has only the run's start to replay from.
+      if (++this.framesSinceCheckpoint >= CHECKPOINT_INTERVAL_FRAMES) {
+        this.framesSinceCheckpoint = 0;
+        this.dispatcher.pushSnapshot();
+      }
     }
     this.invalidateCache();
     return ran;
+  }
+
+  /** Emulated CPU cycles since boot (colour clocks) — part of the machine state, so a rewind or restore puts it back too. */
+  public cycles(): number {
+    this.module._wasm_read_cycle_count();
+    const hi = this.module._wasm_get_cycle_count_hi() >>> 0;
+    const lo = this.module._wasm_get_cycle_count_lo() >>> 0;
+    return hi * 2 ** 32 + lo;
+  }
+
+  /** Steps back `count` instructions in one restore + replay. False when history doesn't reach that far. */
+  public async stepBackInstructions(count: number): Promise<boolean> {
+    this.invalidateCache();
+    try {
+      return await this.sendRpcCommand("stepBack", { count });
+    } finally {
+      this.invalidateCache();
+    }
   }
 
   public isPaused(): boolean {

@@ -11,6 +11,7 @@
 - `emulator_breakpoints`: list and remove breakpoints, and choose which exceptions stop the session. Sessions now stop on bus error, address error, illegal instruction and zero divide by default.
 - `emulator_snapshot`: save and restore a session's whole machine state; a `start` snapshot is taken at launch.
 - `emulator_input`: mouse clicks and movement and keyboard keys, played as a sequence of actions over real frames.
+- `emulator_reverse`: go back in a session by instructions, to the last breakpoint hit, or to the start of the frame — e.g. from a crash straight to the faulting instruction.
 - `emulator_screenshot` can lay several frames out on one contact sheet (`count`, `every`), each labelled with its frame number and marked when identical to the frame before it.
 - `profile_dump` (and `profile dump` on the CLI) gains total time including callees (`sort`), the call tree (`callTree`), every call path into a function (`callers`), the flame graph as text by raster line (`flame`, `lines`), blits (`blits`) and the executed copper trace (`copper`). `profile_check` and `profile_dump` report repeated frames — where the picture didn't change — and how long each picture stayed on screen.
 - `profile_dump`'s per-instruction listing (`instructions`) prints the same readable disassembly as `emulator_disassemble` — hex addresses and immediates, branch targets, and symbols, custom registers and CIAs named — including for captures saved earlier.
@@ -21,6 +22,7 @@
 - Profiler memory reconstruction (Memory, Screen and the DMA tooltip's register state) started from the state after the capture rather than at the frame's start, so values written later in the frame appeared from its first cycle. The Blitter view now also fills in blitter registers set before the frame. Captures saved by earlier versions keep the old behaviour.
 - A capture of a program with no debug information can be opened in the profiler.
 - A data breakpoint hit by a copper write now names the copper MOVE that made it; it pointed at the instruction after it.
+- Continuing after a reverse step (or reverse continue / step back a frame) ran one frame too many before the next frame ended.
 - MCP: `~` in paths (including `PUAE_KICKSTART_ROM`) is expanded; screenshots and profile captures no longer require debug information; `profile_dump` no longer returns a stale analysis after a capture is rewritten to the same file; `emulator_continue` with nothing armed reports the frames it ran rather than a missed breakpoint.
 
 ## 1.0.0

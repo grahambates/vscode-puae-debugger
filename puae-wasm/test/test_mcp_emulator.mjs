@@ -144,6 +144,20 @@ check("capture symbolicates to real function names", /WaitRaster/.test(dump.cont
   await callTool("emulator_close", { session });
 }
 
+// Reverse execution lands exactly: forward N instructions then back N is where it started.
+{
+  const launch = await callTool("emulator_launch", { program, kickstartRom: romPath, breakpoints: ["WaitRaster"] });
+  const session = /Session (s\d+)/.exec(launch.content?.[0]?.text ?? "")?.[1];
+  await callTool("emulator_continue", { session, maxFrames: 30 });
+  const regs = async () => ((await callTool("emulator_inspect", { session })).content?.[0]?.text ?? "").split("\n").filter((l) => /^(d0|a0|pc)=/.test(l)).join("\n");
+  const before = await regs();
+  await callTool("emulator_step", { session, count: 7 });
+  const back = await callTool("emulator_reverse", { session, mode: "step", count: 7 });
+  check("emulator_reverse steps back", back.isError !== true && /Went back 7 instructions/.test(back.content?.[0]?.text ?? ""), back.content?.[0]?.text);
+  check("stepping back lands exactly where stepping forward started", before.length > 0 && (await regs()) === before);
+  await callTool("emulator_close", { session });
+}
+
 // --- argument handling ---
 const missing = await callTool("emulator_screenshot", { program: "/definitely/not/here.exe", kickstartRom: romPath });
 check("a missing program is an isError result, not a crash", missing.isError === true,

@@ -2332,9 +2332,10 @@ wasm_profile_on_frame_boundary(void)
 // reset_drawing() is never presented: unlockscr() — the only thing that sets libretro_frame_end —
 // doesn't run for it, so the first retro_run() after a restore runs straight on into a second
 // frame (measured: 142101 cycles, exactly two PAL frames, where a normal tick is 71051). That made
-// "run N frames" after a restore run N+1. Armed by wasm_end_next_frame_at_boundary() — only from
-// the MCP server's loadState, never from the debugger's rewind, whose instruction replay must not
-// be cut short at a boundary (and replay mode is excluded below regardless).
+// "run N frames" after a restore run N+1. Armed by wasm_end_next_frame_at_boundary() after every
+// restore (rpc.ts's restoreCheckpoint: snapshot restores and rewinds alike). A rewind's instruction
+// replay must not be cut short at a boundary, so replay mode is excluded below: the flag waits for
+// the first real frame forward.
 static int puae_debug_endFrameAtBoundaryOnce;
 
 PUAE_DEBUG_EXPORT void

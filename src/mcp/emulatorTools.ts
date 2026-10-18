@@ -68,6 +68,11 @@ const MAX_COPPER_INSTRUCTIONS = 4096;
 // 16 frames keeps the height there too.
 const MAX_SHEET_FRAMES = 16;
 const SHEET_COLUMNS = 4;
+// Stepping back is one restore plus a replay of up to the gap to the checkpoint, so a large count
+// costs about what running that far forward does. A few frames' worth of instructions is plenty.
+const MAX_REVERSE_INSTRUCTIONS = 100000;
+// Each repeat of reverse-continue/frame is its own restore-and-scan.
+const MAX_REVERSE_REPEATS = 50;
 // Enough for any one routine; past that the reader wants a profile, not a listing.
 const MAX_DISASSEMBLE_INSTRUCTIONS = 1000;
 
@@ -705,6 +710,52 @@ export function emulatorTools(ctx: EmulatorToolContext): ToolDefinition[] {
           sections.push(`Copper list from ${copperAt ?? "COP1LC"} (${formatAddress(start)}), as the copper would run it:\n${listing}`);
         }
         return sections.join("\n\n");
+      },
+    },
+    {
+      name: "emulator_reverse",
+      description:
+        "Go back in time in a session. `step` goes back `count` instructions — e.g. from a crash or " +
+        "a watch hit to the instructions that led to it; `continue` goes back to the most recent " +
+        "time a breakpoint was hit (breakpoints only, not watches or exceptions); `frame` goes back to " +
+        "the start of the current frame. Lands exactly, by restoring a checkpoint and replaying " +
+        "forward, so registers, memory and the screen are as they were. History reaches back to the " +
+        "oldest checkpoint — taken at each continue/step and every emulated second of running, up " +
+        "to 40 — and starts afresh after a snapshot restore.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          ...SESSION_PROPERTY,
+          mode: { type: "string", enum: ["step", "continue", "frame"], description: 'What to go back by (default "step").' },
+          count: {
+            type: "number",
+            description: `How many: instructions for step (default 1, max ${MAX_REVERSE_INSTRUCTIONS}), breakpoint hits or frames otherwise (default 1, max ${MAX_REVERSE_REPEATS}).`,
+          },
+        },
+        required: ["session"],
+        additionalProperties: false,
+      },
+      run: async (args) => {
+        const session = registry.get(requireString(args, "session"));
+        const mode = args.mode === undefined ? "step" : args.mode;
+        if (mode !== "step" && mode !== "continue" && mode !== "frame") throw new Error(`"mode" must be "step", "continue" or "frame"`);
+        const count = boundedNumber(args, "count", 1, mode === "step" ? MAX_REVERSE_INSTRUCTIONS : MAX_REVERSE_REPEATS);
+        const { done, reachedStart, state } = await session.reverse(mode, count);
+        const what = mode === "step" ? "instruction" : mode === "continue" ? "breakpoint hit" : "frame";
+        const lines: string[] = [];
+        if (reachedStart && mode === "step") {
+          lines.push(`Can't go back ${count} instruction(s): that's further than the rewind history reaches. Nothing moved.`);
+        } else if (reachedStart && mode === "continue") {
+          lines.push(done
+            ? `Went back ${done} breakpoint hit(s); no earlier hit in the rewind history, so it stopped at the oldest checkpoint.`
+            : "No breakpoint hit in the rewind history — back at the oldest checkpoint instead.");
+        } else if (reachedStart) {
+          lines.push(done ? `Went back ${done} of ${count} frame(s); the rewind history ends there.` : "No earlier frame start in the rewind history. Nothing moved.");
+        } else {
+          lines.push(`Went back ${done} ${what}${done === 1 ? "" : "s"}.`);
+        }
+        lines.push(`Now at ${state.location}, frame ${session.frame} of the session.`);
+        return lines.join("\n");
       },
     },
     {

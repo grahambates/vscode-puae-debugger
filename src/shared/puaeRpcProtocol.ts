@@ -100,7 +100,7 @@ export interface PuaeRpcProtocol {
   disassembleCopper: { args: { address: number; count: number }; result: never };
   getCpuTrace: { args: { count?: number }; result: CpuTraceItem[] };
   getCallstack: { args: undefined; result: number[] };
-  stepBack: { args: undefined; result: boolean };
+  stepBack: { args: { count?: number } | undefined; result: boolean };
   continueReverse: { args: undefined; result: boolean };
   stepBackFrame: { args: undefined; result: boolean };
   profileSetUnwind: {

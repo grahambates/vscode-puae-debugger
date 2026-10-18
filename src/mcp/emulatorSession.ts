@@ -186,7 +186,9 @@ export class HeadlessSession {
       hasSourceInfo: boolean;
       kickstart?: { sha1: string; name: string };
     },
-  ) {}
+  ) {
+    this.launchCycles = emulator.cycles();
+  }
 
   /** Boots a machine, injects `program`, and leaves it paused at the program's entry point. */
   public static async launch(options: LaunchOptions): Promise<HeadlessSession> {
@@ -294,7 +296,7 @@ export class HeadlessSession {
     let skipped = 0;
     for (;;) {
       await this.emulator.run();
-      ran += this.emulator.runFrames(frames - ran);
+      ran += this.emulator.runFrames(frames - ran, () => this.recordFrameEnd());
       if (!this.emulator.isPaused()) {
         await this.emulator.pause(true);
         this.framesRun += ran;
@@ -398,7 +400,8 @@ export class HeadlessSession {
         : `raised by the instruction at ${describeAddress(pc, this.sourceMap)}`;
       state.detail = `${exceptionLabel(vector)} (vector ${vector}) ${where}. ` +
         "The CPU has already entered the exception handler, which is why it's stopped there. " +
-        `emulator_disassemble { "address": "${formatAddr(pc)}", "before": 8 } shows the code leading up to it.`;
+        'emulator_reverse { "mode": "step" } goes back to the faulting instruction itself, with the ' +
+        `registers it saw; emulator_disassemble { "address": "${formatAddr(pc)}", "before": 8 } shows the code leading up to it.`;
     } else if (stop?.name === "WATCHPOINT_REACHED") {
       const p = stop.payload as Record<string, number | undefined>;
       const watchAddress = p.pc ?? 0;
@@ -437,6 +440,59 @@ export class HeadlessSession {
       previous = fb.rgba;
     }
     return { tiles, stoppedEarly: false };
+  }
+
+  // --- Reverse execution ---
+
+  /**
+   * Goes back in time: `step` back `count` instructions; `continue` back to the most recent time a
+   * breakpoint was hit (`count` times); `frame` back to the start of the current frame (`count`
+   * times). Built on the dispatcher's rewind history — checkpoints taken at each continue/step and
+   * every emulated second of running, replayed forward to land exactly — so it can't reach past
+   * the oldest checkpoint, or past a snapshot restore, which starts a new history.
+   */
+  public async reverse(mode: "step" | "continue" | "frame", count: number): Promise<{ done: number; reachedStart: boolean; state: StopState }> {
+    let done = 0;
+    let reachedStart = false;
+    if (mode === "step") {
+      if (await this.emulator.stepBackInstructions(count)) done = count;
+      else reachedStart = true;
+    } else {
+      for (; done < count; done++) {
+        const ok = mode === "continue" ? await this.emulator.continueReverse() : await this.emulator.stepBackFrame();
+        if (!ok) {
+          reachedStart = true;
+          break;
+        }
+      }
+    }
+    // Nothing from the abandoned future should be reported as a stop now.
+    this.emulator.consumeStopMessage();
+    this.framesRun = this.frameAt(this.emulator.cycles());
+    return { done, reachedStart, state: await this.describeStop(0, mode === "continue" && !reachedStart ? "BREAKPOINT_REACHED" : "REVERSE") };
+  }
+
+  /** The cycle count at the end of each completed frame since launch, ascending. */
+  private readonly frameEnds: number[] = [];
+  private readonly launchCycles: number;
+
+  private recordFrameEnd(frames = 1): void {
+    const now = this.emulator.cycles();
+    // Running forward again after a rewind re-runs frames already recorded; drop the old ends.
+    while (this.frameEnds.length && this.frameEnds[this.frameEnds.length - 1] >= now) this.frameEnds.pop();
+    for (let i = 0; i < frames; i++) this.frameEnds.push(now);
+  }
+
+  /**
+   * The session's frame number at `cycles`, counted as everywhere else: frames completed since
+   * launch, plus the one in progress if it's partway through one. Exact, since the cycle count is
+   * restored with the machine state.
+   */
+  private frameAt(cycles: number): number {
+    let completed = 0;
+    while (completed < this.frameEnds.length && this.frameEnds[completed] <= cycles) completed++;
+    const lastEnd = completed > 0 ? this.frameEnds[completed - 1] : this.launchCycles;
+    return completed + (cycles > lastEnd ? 1 : 0);
   }
 
   // --- Input ---
@@ -917,6 +973,10 @@ export class HeadlessSession {
     if (!raws || raws.length === 0) throw new Error("Capture produced no frames");
     // Plus the one unrecorded frame wasm_profile_start runs first to reach a frame boundary.
     this.framesRun += raws.length + 1;
+    // The profiler runs these frames itself, not through runFrames, so only the capture's end is
+    // recorded — counted as all of its frames, so frame numbers after it stay right, but a rewind
+    // landing inside a captured span gets the frame before the capture, not its own.
+    this.recordFrameEnd(raws.length + 1);
     const bytes = encodeCapture(raws, {
       elf: this.info.debugBytes,
       programName: this.info.programName,
