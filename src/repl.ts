@@ -349,7 +349,7 @@ ${ansi.section("Examples:")}
   ${ansi.variable("main")} + ${ansi.number("0x10")}        - Symbol address + offset
 `;
 
-export const initOutput = `${ansi.title("VSCode PUAE Debugger by Graham Bates (gigabates/DESiRE)")}
+export const initOutput = `${ansi.title("PUAE Debugger")}
 Emulation powered by PUAE (libretro-uae), derived from WinUAE by Toni Wilen and contributors.
 https://github.com/libretro/libretro-uae — GPLv2
 
