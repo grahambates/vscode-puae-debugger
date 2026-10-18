@@ -269,6 +269,16 @@ static uint32_t  g_wprofRegSampleCount;
 int             g_wprofActive;             /* non-static: read by wasm_profile_start */
 static uint32_t g_wprofStartAddr;
 static uint32_t g_wprofEndAddr;
+/* The program's own memory, as [start, end) pairs (one per hunk/section): what gets sampled,
+ * when set — wasm_profile_set_ranges. Not the single start..end span above, which stays the
+ * DWARF unwind table's extent: a program's hunks can sit far apart (chip and slow RAM, say),
+ * and a span covering them would take in whatever else is in between, OS code included. And
+ * not just CODE hunks either: code can be generated at run time into DATA or BSS, and is then
+ * the program's as much as anything. 0 ranges = gate on start..end as before. */
+#define WASM_PROFILE_MAX_RANGES 64
+static uint32_t g_wprofRanges[WASM_PROFILE_MAX_RANGES * 2];
+static uint32_t g_wprofRangeCount;
+static uint32_t g_wprofRangesLo, g_wprofRangesHi; /* bounding box, to reject most PCs in one test */
 static uint64_t g_wprofTotalInstrs;
 static uint64_t g_wprofInRangeInstrs;
 static evt_t    g_wprofLastCycle;
@@ -507,6 +517,17 @@ wasm_profile_finish(int numFrames)
 	 * out of the whole capture. */
 }
 
+static inline int
+wasm_profile_pc_in_range(uint32_t pc24)
+{
+	if (g_wprofRangeCount == 0) return pc24 >= g_wprofStartAddr && pc24 < g_wprofEndAddr;
+	if (pc24 < g_wprofRangesLo || pc24 >= g_wprofRangesHi) return 0;
+	for (uint32_t i = 0; i < g_wprofRangeCount; i++) {
+		if (pc24 >= g_wprofRanges[i * 2] && pc24 < g_wprofRanges[i * 2 + 1]) return 1;
+	}
+	return 0;
+}
+
 static void
 wasm_profile_instrHook(uint32_t pc24)
 {
@@ -514,7 +535,7 @@ wasm_profile_instrHook(uint32_t pc24)
 	if (puae_debug_replayMode) return;
 
 	g_wprofTotalInstrs++;
-	if (pc24 < g_wprofStartAddr || pc24 >= g_wprofEndAddr) return;
+	if (!wasm_profile_pc_in_range(pc24)) return;
 	g_wprofInRangeInstrs++;
 
 	/* puae_debug_instructionHook fires BEFORE an instruction executes and consumes cycles (see
@@ -659,6 +680,27 @@ wasm_profile_set_unwind(const void *data, uint32_t len, uint32_t startAddr, uint
 	}
 	g_wprofStartAddr = startAddr;
 	g_wprofEndAddr   = endAddr;
+	g_wprofRangeCount = 0; /* until wasm_profile_set_ranges says otherwise */
+}
+
+/* What to sample: `count` [start, end) pairs — see g_wprofRanges. Call after
+ * wasm_profile_set_unwind, which resets them. Pairs past WASM_PROFILE_MAX_RANGES are dropped. */
+PUAE_DEBUG_EXPORT void
+wasm_profile_set_ranges(const uint32_t *pairs, uint32_t count)
+{
+	if (count > WASM_PROFILE_MAX_RANGES) count = WASM_PROFILE_MAX_RANGES;
+	g_wprofRangeCount = 0;
+	g_wprofRangesLo = 0xffffffffu;
+	g_wprofRangesHi = 0;
+	for (uint32_t i = 0; i < count && pairs; i++) {
+		uint32_t lo = pairs[i * 2], hi = pairs[i * 2 + 1];
+		if (hi <= lo) continue;
+		g_wprofRanges[g_wprofRangeCount * 2] = lo;
+		g_wprofRanges[g_wprofRangeCount * 2 + 1] = hi;
+		g_wprofRangeCount++;
+		if (lo < g_wprofRangesLo) g_wprofRangesLo = lo;
+		if (hi > g_wprofRangesHi) g_wprofRangesHi = hi;
+	}
 }
 
 PUAE_DEBUG_EXPORT uint32_t *

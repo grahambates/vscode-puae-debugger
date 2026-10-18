@@ -1259,6 +1259,16 @@ export function setupRpcDispatcher(
         if (ptr) M.HEAPU8.set(bytes, ptr);
         M._wasm_profile_set_unwind(ptr, bytes.length, args.startAddr >>> 0, args.endAddr >>> 0);
         if (ptr) M._free(ptr);
+        // What to sample: [start, end) per program hunk/section (see wasm_profile_set_ranges).
+        // Without it, the emulator samples startAddr..endAddr.
+        const ranges = args.ranges ?? [];
+        if (ranges.length && typeof M._wasm_profile_set_ranges === "function") {
+          const pairs = new Uint32Array(ranges.flatMap(([lo, hi]) => [lo >>> 0, hi >>> 0]));
+          const rptr = M._malloc(pairs.byteLength);
+          M.HEAPU8.set(new Uint8Array(pairs.buffer), rptr);
+          M._wasm_profile_set_ranges(rptr, ranges.length);
+          M._free(rptr);
+        }
         rpcRequest(() => ({ ok: true }));
         break;
       }

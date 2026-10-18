@@ -104,7 +104,9 @@ export interface PuaeRpcProtocol {
   continueReverse: { args: undefined; result: boolean };
   stepBackFrame: { args: undefined; result: boolean };
   profileSetUnwind: {
-    args: { data: Uint8Array; startAddr: number; endAddr: number };
+    // ranges: [start, end) per program hunk/section — what gets sampled. Without it,
+    // startAddr..endAddr is.
+    args: { data: Uint8Array; startAddr: number; endAddr: number; ranges?: [number, number][] };
     result: RpcOk;
   };
   startProfiling: { args: { numFrames: number }; result: RpcOk };
@@ -171,6 +173,7 @@ export interface PuaeDispatcherArgs {
   size: number;
   startAddr: number;
   endAddr: number;
+  ranges?: [number, number][];
   numFrames?: number;
   frameIdx?: number;
   instrCount?: string;

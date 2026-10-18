@@ -933,6 +933,17 @@ export class ProfilerManager {
     const sourceMap = this.getSourceMap();
     if (!sourceMap) throw new Error("Profiler: no source map (is a program loaded with DWARF info?)");
 
+    // What gets sampled: every hunk/section the program loaded, not only its code. Code can be
+    // generated at run time into DATA or BSS (unrolled or self-modifying routines), and outside
+    // these ranges it would be invisible, its time folded into whatever jumped to it. One range
+    // per hunk rather than one span over them all: hunks can sit far apart (chip and slow RAM),
+    // and a span would take in the OS code between them. The Kickstart ROM is registered as a
+    // segment too, for symbols (see addSymbolModule), and is left out.
+    const ranges = sourceMap
+      .getSegmentsInfo()
+      .filter((s) => s.name !== "kickstart" && s.size > 0)
+      .map((s): [number, number] => [s.address >>> 0, (s.address + s.size) >>> 0]);
+
     const rows = sourceMap.getUnwindRows();
     const table = buildUnwindTable(rows);
     if (table) {
@@ -941,22 +952,20 @@ export class ProfilerManager {
         data: table.buffer,
         startAddr: table.startAddr,
         endAddr: table.endAddr,
+        ranges,
       });
     } else {
-      // Assembly / hunk with no DWARF: upload an EMPTY table (which makes the emulator
-      // fall back to runtime branch-stack unwinding — JSR/BSR/RTS/RTE tracking) plus the
-      // code range, derived from the loaded CODE segment(s), for the in-range sample gate
-      // and the branch-stack seeding scan. Segment names are like "0: CODE CHIP".
-      const segs = sourceMap.getSegmentsInfo();
-      const code = segs.filter((s) => /code/i.test(s.name));
-      const ranges = code.length ? code : segs.slice(0, 1);
-      if (ranges.length === 0) throw new Error("Profiler: no loaded code segment");
-      const startAddr = Math.min(...ranges.map((s) => s.address));
-      const endAddr = Math.max(...ranges.map((s) => s.address + s.size));
+      // Assembly / hunk with no DWARF: upload an EMPTY table, which makes the emulator fall
+      // back to runtime branch-stack unwinding (JSR/BSR/RTS/RTE tracking). start..end is then
+      // only reported back, as the capture's address range: the span of what's sampled.
+      if (ranges.length === 0) throw new Error("Profiler: no loaded program segment");
+      const startAddr = Math.min(...ranges.map(([lo]) => lo));
+      const endAddr = Math.max(...ranges.map(([, hi]) => hi));
       await rpc.sendRpcCommand("profileSetUnwind", {
         data: new Uint8Array(0),
         startAddr,
         endAddr,
+        ranges,
       });
     }
 
