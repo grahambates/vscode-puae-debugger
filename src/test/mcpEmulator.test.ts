@@ -15,7 +15,7 @@ import { MAX_CAPTURE_FRAMES } from "../shared/profilerTypes";
 import { parseHunks } from "../amigaHunkParser";
 import { sourceMapFromHunks } from "../amigaHunkSourceMap";
 import { describe as describeAddress, resolveBreakpointSpec } from "../mcp/breakpointSpec";
-import { emulatorTools, writeRequest } from "../mcp/emulatorTools";
+import { emulatorTools, watchAdds, writeRequest } from "../mcp/emulatorTools";
 import type { HeadlessSession } from "../mcp/emulatorSession";
 import { encodePng } from "../mcp/png";
 import { expandHome } from "../mcp/paths";
@@ -45,6 +45,7 @@ describe("emulator MCP tools", () => {
       "emulator_continue",
       "emulator_step",
       "emulator_inspect",
+      "emulator_watch",
       "emulator_write",
       "emulator_disassemble",
       "emulator_close",
@@ -324,5 +325,16 @@ describe("emulator_write arguments", () => {
     expect(() => writeRequest({ memory: [{ address: "x", bytes: "4e7" }] })).toThrow(/whole bytes/);
     expect(() => writeRequest({ memory: [{ address: "x", bytes: "4e71", value: 1 }] })).toThrow(/not both/);
     expect(() => writeRequest({ registers: { d0: true } })).toThrow(/registers\.d0 must be/);
+  });
+});
+
+describe("emulator_watch arguments", () => {
+  it("defaults to watching writes", () => {
+    expect(watchAdds({ add: [{ address: "COP1LC" }] })).toEqual([{ address: "COP1LC", length: undefined, on: "write" }]);
+  });
+
+  it("rejects an unknown access kind and an oversized range", () => {
+    expect(() => watchAdds({ add: [{ address: "x", on: "execute" }] })).toThrow(/write, read, access/);
+    expect(() => watchAdds({ add: [{ address: "x", length: 1 << 21 }] })).toThrow(/capped/);
   });
 });

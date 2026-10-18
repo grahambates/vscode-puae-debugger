@@ -288,6 +288,13 @@ export function getCurrentStopMessage(M: PuaeModule): StopMessage {
       payload: {
         pc: buf[1] >>> 0,
         vector: 0,
+        // The access itself (puae_debug_watchbreak_t's access_* / value / old_value fields):
+        // which address within the watched block, read or write, and what moved.
+        addr: buf[8] >>> 0,
+        accessKind: buf[9] >>> 0,
+        sizeBits: buf[10] >>> 0,
+        value: buf[11] >>> 0,
+        oldValue: buf[13] >>> 0 ? buf[12] >>> 0 : undefined,
         source: buf[14] >>> 0,
         cpuPc: buf[15] >>> 0,
         copperPc: buf[17] >>> 0 ? buf[16] >>> 0 : undefined,

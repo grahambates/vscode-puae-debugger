@@ -30,6 +30,7 @@ import { HeadlessSession, InspectResult, LaunchOptions, StopState, WriteRequest 
 import { ToolDefinition } from "./jsonRpc";
 import { expandHome } from "./paths";
 import { SessionRegistry } from "./sessionRegistry";
+import { WatchKind } from "./watchpoints";
 
 /** Environment variable naming the Kickstart ROM, so callers needn't repeat it on every call. */
 const ROM_ENV_VAR = "PUAE_KICKSTART_ROM";
@@ -105,6 +106,24 @@ function memoryReads(args: Record<string, unknown>): { address: string; bytes: n
     const read = entry as Record<string, unknown>;
     const bytes = boundedNumber(read, "bytes", 64, MAX_MEMORY_BYTES);
     return { address: requireString(read, "address"), bytes };
+  });
+}
+
+// A screen buffer or a large table; past that the alignment split needs more slots than exist.
+const MAX_WATCH_BYTES = 1 << 20;
+const WATCH_KINDS: WatchKind[] = ["write", "read", "access"];
+
+export function watchAdds(args: Record<string, unknown>): { address: string; length?: number; on: WatchKind }[] {
+  const v = args.add;
+  if (v === undefined || v === null) return [];
+  if (!Array.isArray(v)) throw new Error(`"add" must be an array`);
+  return v.map((entry, i) => {
+    if (typeof entry !== "object" || entry === null) throw new Error(`add[${i}] must be an object`);
+    const w = entry as Record<string, unknown>;
+    const on = (w.on ?? "write") as WatchKind;
+    if (!WATCH_KINDS.includes(on)) throw new Error(`add[${i}].on must be one of ${WATCH_KINDS.join(", ")}`);
+    const length = w.length === undefined ? undefined : boundedNumber(w, "length", 1, MAX_WATCH_BYTES);
+    return { address: requireString(w, "address"), length, on };
   });
 }
 
@@ -223,7 +242,10 @@ function formatStop(stop: StopState, budget: number): string {
     return `Still running after ${stop.framesRun} frame(s) — nothing stopped it. Now at ${stop.location}.\n` +
       `Raise maxFrames (currently ${budget}) or check the breakpoint is somewhere this program actually reaches.`;
   }
-  return `Stopped: ${stop.reason} after ${stop.framesRun} frame(s), at ${stop.location}.`;
+  // The frame a stop lands in counts as run, so "in frame N" — not "after N frames", which
+  // reads as N whole frames having gone by.
+  return `Stopped: ${stop.reason} in frame ${stop.framesRun} of this run, at ${stop.location}.` +
+    (stop.detail ? `\n${stop.detail}` : "");
 }
 
 // Classic hex dump: 16 bytes a line, address on the left, printable ASCII on the right. The ASCII
@@ -345,7 +367,7 @@ export function emulatorTools(ctx: EmulatorToolContext): ToolDefinition[] {
     {
       name: "emulator_continue",
       description:
-        "Resume a session and run until a breakpoint fires, or until `maxFrames` " +
+        "Resume a session and run until a breakpoint or a watchpoint (see emulator_watch) fires, or until `maxFrames` " +
         "emulated frames have passed — whichever comes first, so this can't hang on a program " +
         "that never reaches the breakpoint. Reports where it stopped and why. Follow with " +
         "emulator_inspect to read registers, the call stack and memory at that point.",
@@ -461,6 +483,78 @@ export function emulatorTools(ctx: EmulatorToolContext): ToolDefinition[] {
           sections.push(`Copper list from ${copperAt ?? "COP1LC"} (${formatAddress(start)}), as the copper would run it:\n${listing}`);
         }
         return sections.join("\n\n");
+      },
+    },
+    {
+      name: "emulator_watch",
+      description:
+        "Arm or remove watchpoints on a session: stop the next emulator_continue as soon as " +
+        "something writes (or reads) an address range or a custom register. The tool for " +
+        "memory corruption — 'what is overwriting this?' — and for 'who sets COP1LC/DMACON?'. A " +
+        "hit reports the access (value, old value, exact address) and who made it: the CPU with " +
+        "its PC, the copper with its list address, or blitter/disk DMA. Watch from the entry " +
+        "point by arming right after emulator_launch. The range is watched exactly, not rounded " +
+        "up. Always replies with the watches now armed; call with neither add nor remove to list them.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          ...SESSION_PROPERTY,
+          add: {
+            type: "array",
+            description: 'Watches to arm, e.g. [{ "address": "player_x", "length": 2 }, { "address": "COP1LC" }, { "address": "0x40000", "length": 1024, "on": "access" }].',
+            items: {
+              type: "object",
+              properties: {
+                address: {
+                  type: "string",
+                  description: "Address, symbol, file:line, or a custom register by name (COLOR00, DMACON, COP1LC — pointer pairs without the H/L).",
+                },
+                length: {
+                  type: "number",
+                  description: `Bytes to watch from there (default 1, or the register's size). Max ${MAX_WATCH_BYTES}.`,
+                },
+                on: {
+                  type: "string",
+                  enum: ["write", "read", "access"],
+                  description: 'Which accesses stop (default "write").',
+                },
+              },
+              required: ["address"],
+              additionalProperties: false,
+            },
+          },
+          remove: {
+            type: "array",
+            items: { type: "number" },
+            description: "Ids of watches to remove (from an earlier reply).",
+          },
+        },
+        required: ["session"],
+        additionalProperties: false,
+      },
+      run: async (args) => {
+        const session = registry.get(requireString(args, "session"));
+        const adds = watchAdds(args);
+        const removes = args.remove === undefined ? [] : args.remove;
+        if (!Array.isArray(removes) || removes.some((id) => typeof id !== "number")) {
+          throw new Error(`"remove" must be an array of watch ids`);
+        }
+        const lines: string[] = [];
+        for (const id of removes as number[]) {
+          const removed = await session.removeWatch(id);
+          lines.push(`Removed #${removed.id} (${removed.description}).`);
+        }
+        for (const add of adds) {
+          const entry = await session.addWatch(add.address, add.length, add.on);
+          const slots = entry.blocks.length > 1 ? ` [${entry.blocks.length} slots]` : "";
+          lines.push(`Armed #${entry.id}: ${entry.description}${slots}.`);
+        }
+        const armed = session.listWatches();
+        lines.push(armed.length
+          ? "Watches armed:\n" + armed.map((w) => `  #${w.id} ${w.description}`).join("\n")
+          : "No watches armed.");
+        if (adds.length) lines.push(`Run emulator_continue { "session": "${requireString(args, "session")}" } to stop on the first hit.`);
+        return lines.join("\n");
       },
     },
     {

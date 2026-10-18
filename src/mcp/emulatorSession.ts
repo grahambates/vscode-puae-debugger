@@ -22,6 +22,7 @@ import { ProfilerManager } from "../profilerManager";
 import { SourceMap } from "../sourceMap";
 import { describe as describeAddress, formatAddress as formatAddr, resolveBreakpointSpec } from "./breakpointSpec";
 import { DecodedLine, decodeRange, formatListing } from "./disassembly";
+import { alignedBlocks, Block, customRegisterRange, describeHit, WATCHPOINT_SLOTS, WatchKind } from "./watchpoints";
 import { formatChipset, walkCopperList } from "./chipset";
 import { isCustomRegisterAddress } from "../hardware";
 import { CUSTOM_REGISTER_OFFSETS, customRegisterName } from "../webview/shared/customRegisters";
@@ -83,6 +84,16 @@ export interface StopState {
   pc: number;
   /** Human-readable: address, enclosing symbol and source line, as far as the debug info goes. */
   location: string;
+  /** For a watchpoint stop: what was accessed, by whom, and the value. */
+  detail?: string;
+}
+
+export interface WatchEntry {
+  id: number;
+  description: string;
+  start: number;
+  length: number;
+  blocks: Block[];
 }
 
 export interface InspectResult {
@@ -93,6 +104,9 @@ export interface InspectResult {
 }
 
 export class HeadlessSession {
+  private readonly watches = new Map<number, WatchEntry>();
+  private nextWatchId = 1;
+
   private constructor(
     private readonly emulator: HeadlessEmulator,
     private readonly sourceMap: SourceMap,
@@ -197,7 +211,13 @@ export class HeadlessSession {
   public async run(frames: number): Promise<number> {
     await this.emulator.run();
     const ran = this.emulator.runFrames(frames);
-    if (!this.emulator.isPaused()) await this.emulator.pause(true);
+    if (this.emulator.isPaused()) {
+      // Stopped early on a breakpoint/watch. The caller reports that as a short run; consume the
+      // stop so a later emulator_continue doesn't attribute it to its own run.
+      this.emulator.consumeStopMessage();
+    } else {
+      await this.emulator.pause(true);
+    }
     return ran;
   }
 
@@ -227,7 +247,88 @@ export class HeadlessSession {
     // Consumed once per stop (see consumeStopMessage), so read it here and carry it in the
     // returned state rather than asking again later.
     const stop = hitBreakpoint ? this.emulator.consumeStopMessage() : undefined;
-    return this.describeStop(ran, hitBreakpoint ? stop?.name ?? "BREAKPOINT_REACHED" : undefined);
+    const state = await this.describeStop(ran, hitBreakpoint ? stop?.name ?? "BREAKPOINT_REACHED" : undefined);
+    if (stop?.name === "WATCHPOINT_REACHED") {
+      const p = stop.payload as Record<string, number | undefined>;
+      const watchAddress = p.pc ?? 0;
+      const watch = this.listWatches().find((w) => w.blocks.some((b) => b.address === watchAddress));
+      state.detail = `${watch ? `watch #${watch.id} (${watch.description}): ` : ""}` +
+        describeHit({ ...p, watchAddress, copperInstruction: await this.copperMoveBefore(p.copperPc, p.addr) }, this.sourceMap);
+    }
+    return state;
+  }
+
+  /**
+   * The copper instruction behind a copper-sourced write: the copper's list pointer has moved on
+   * past it by the time the write lands, so check the instruction one back really is a MOVE to
+   * the register that was written. Undefined when it isn't (a pointer that advanced differently
+   * than assumed shouldn't be reported as certain).
+   */
+  private async copperMoveBefore(copperPc: number | undefined, addr: number | undefined): Promise<number | undefined> {
+    if (copperPc === undefined || addr === undefined || copperPc < 4) return undefined;
+    const words = await this.emulator.readMemory(copperPc - 4, 4);
+    const word1 = words.readUInt16BE(0);
+    return (word1 & 1) === 0 && (word1 & 0x1fe) === (addr & 0x1fe) ? copperPc - 4 : undefined;
+  }
+
+  // --- Watchpoints ---
+
+  /**
+   * Arms a watch on `spec` — an address/symbol/file:line (`length` bytes, default the natural
+   * size: 2 for a custom register, else 1) or a custom register by name (COLOR00, COP1LC).
+   * Returns its description; the id is for removing it later.
+   */
+  public async addWatch(spec: string, length: number | undefined, kind: WatchKind): Promise<WatchEntry> {
+    // A program symbol wins over a custom-register name, in the unlikely case both exist.
+    const custom = this.sourceMap.getSymbols()[spec] === undefined ? customRegisterRange(spec) : undefined;
+    const start = custom ? custom.address : resolveBreakpointSpec(spec, this.sourceMap).address;
+    const size = length ?? custom?.size ?? 1;
+    const blocks = alignedBlocks(start, size);
+    const used = [...this.watches.values()].flatMap((w) => w.blocks);
+    if (used.length + blocks.length > WATCHPOINT_SLOTS) {
+      throw new Error(
+        `Watching ${size} bytes at ${formatAddr(start)} needs ${blocks.length} watchpoint slot(s); ` +
+          `${WATCHPOINT_SLOTS - used.length} of ${WATCHPOINT_SLOTS} are free. Remove a watch or narrow the range.`,
+      );
+    }
+    // The RPC keys watchpoints by block address and silently ignores a second one at the same
+    // address, so an overlap would quietly keep the first watch's read/write kind.
+    const clash = blocks.find((b) => used.some((u) => u.address === b.address));
+    if (clash) {
+      const owner = [...this.watches.values()].find((w) => w.blocks.some((b) => b.address === clash.address))!;
+      throw new Error(`Overlaps watch #${owner.id} (${owner.description}); remove that one first.`);
+    }
+    for (const block of blocks) {
+      await this.emulator.setWatchpoint(block.address, 0, {
+        read: kind !== "write",
+        write: kind !== "read",
+        length: block.size,
+      });
+    }
+    const label = custom ? spec.toUpperCase() : describeAddress(start, this.sourceMap);
+    const entry: WatchEntry = {
+      id: this.nextWatchId++,
+      description: `${kind} ${label}${size > 1 ? `, ${size} bytes` : ""}`,
+      start,
+      length: size,
+      blocks,
+    };
+    this.watches.set(entry.id, entry);
+    return entry;
+  }
+
+  public async removeWatch(id: number): Promise<WatchEntry> {
+    const entry = this.watches.get(id);
+    if (!entry) {
+      throw new Error(`No watch #${id}. Armed: ${this.listWatches().map((w) => `#${w.id}`).join(", ") || "none"}`);
+    }
+    for (const block of entry.blocks) await this.emulator.removeWatchpoint(block.address);
+    this.watches.delete(id);
+    return entry;
+  }
+
+  public listWatches(): WatchEntry[] {
+    return [...this.watches.values()];
   }
 
   /** Single-steps `count` instructions, stopping early if something else halts execution. */
@@ -395,6 +496,9 @@ export class HeadlessSession {
     const name = customRegisterName(address & 0x1fe) ?? label;
     if (bytes.length === 2) await this.emulator.pokeCustom16(address, bytes.readUInt16BE(0));
     else await this.emulator.pokeCustom32(address, bytes.readUInt32BE(0));
+    // The poke goes through the CPU's write path, so a watch on this register fires on our own
+    // write. Drop that hit, or the next emulator_continue would report it as the program's.
+    if (this.watches.size) this.emulator.consumeStopMessage();
     // Most custom registers are write-only, so there's no reading back the address itself; the
     // emulator's own shadow copy, where it exposes one, is the honest "did it take" answer.
     const regs = await this.emulator.getAllCustomRegisters();

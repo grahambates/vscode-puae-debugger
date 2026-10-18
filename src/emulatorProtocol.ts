@@ -161,6 +161,8 @@ export interface StopMessage {
     addr?: number;
     value?: number;
     sizeBits?: number;
+    /** Watchpoint hits: 1 = read, 2 = write (PUAE_WATCH_ACCESS_*). PUAE-only. */
+    accessKind?: number;
     /** 0 = CPU, 1 = DMA/Copper. PUAE-only. */
     source?: number;
     /** CPU PC at the moment of the watchpoint hit. PUAE-only. */
