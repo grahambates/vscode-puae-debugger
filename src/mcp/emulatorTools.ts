@@ -44,6 +44,10 @@ const MAX_STEP_INSTRUCTIONS = 1000;
 // Enough for a structure, a copper list or a sprite; past that a hex dump stops being readable
 // and the answer belongs in a capture instead.
 const MAX_MEMORY_BYTES = 4096;
+// A full-screen gradient or per-line palette list runs to a few hundred instructions; the default
+// covers that, and the cap keeps a list with no end marker from flooding the reply.
+const DEFAULT_COPPER_INSTRUCTIONS = 512;
+const MAX_COPPER_INSTRUCTIONS = 4096;
 
 export interface EmulatorToolContext {
   /** Package root — the directory holding `puae/` and `out/`. */
@@ -354,7 +358,10 @@ export function emulatorTools(ctx: EmulatorToolContext): ToolDefinition[] {
         "Read the state of a paused session: all CPU registers, the call stack (symbolicated), " +
         "the current source location, and optionally hex dumps of memory. Memory addresses take " +
         "the same forms as breakpoints — an address, or a symbol name to dump that variable or " +
-        "buffer without looking its address up first.",
+        "buffer without looking its address up first. Set `chipset` for the custom chips " +
+        "decoded (beam position, DMACON, INTENA/INTREQ, BPLCONx, bitplane/sprite/copper/blitter " +
+        "pointers, colours) and `copper` for the active copper list disassembled — on an Amiga " +
+        "that is usually where a display bug actually is.",
       inputSchema: {
         type: "object",
         properties: {
@@ -372,6 +379,25 @@ export function emulatorTools(ctx: EmulatorToolContext): ToolDefinition[] {
               additionalProperties: false,
             },
           },
+          chipset: {
+            type: "boolean",
+            description: "Include the custom-chip registers, grouped and decoded, with chip pointers symbolicated.",
+          },
+          copper: {
+            type: "boolean",
+            description:
+              "Include the copper list starting at COP1LC (where the copper restarts each frame), decoded one " +
+              "instruction a line. Follows COPJMP1/2 and stops at the end marker or a loop; WAITs past line 255 " +
+              "are annotated with the real line.",
+          },
+          copperAt: {
+            type: "string",
+            description: "Decode a copper list from this address or symbol instead of COP1LC — e.g. one the program has built but not installed yet. Implies `copper`.",
+          },
+          copperMax: {
+            type: "number",
+            description: `Most copper instructions to list (default ${DEFAULT_COPPER_INSTRUCTIONS}, max ${MAX_COPPER_INSTRUCTIONS}).`,
+          },
         },
         required: ["session"],
         additionalProperties: false,
@@ -379,7 +405,18 @@ export function emulatorTools(ctx: EmulatorToolContext): ToolDefinition[] {
       run: async (args) => {
         const session = registry.get(requireString(args, "session"));
         const reads = memoryReads(args);
-        return formatInspect(await session.inspect(reads));
+        const copperAt = optionalString(args, "copperAt");
+        const wantCopper = args.copper === true || copperAt !== undefined;
+        const copperMax = boundedNumber(args, "copperMax", DEFAULT_COPPER_INSTRUCTIONS, MAX_COPPER_INSTRUCTIONS);
+        const sections = [formatInspect(await session.inspect(reads))];
+        if (args.chipset === true) {
+          sections.push("Custom chips:\n" + (await session.chipset()));
+        }
+        if (wantCopper) {
+          const { start, listing } = await session.copperList(copperAt, copperMax);
+          sections.push(`Copper list from ${copperAt ?? "COP1LC"} (${formatAddress(start)}), as the copper would run it:\n${listing}`);
+        }
+        return sections.join("\n\n");
       },
     },
     {

@@ -103,12 +103,53 @@ export interface FrameAnalysis {
   stalls?: StallAnalysis;
   /** Present only when per-instruction detail was requested for a named function. */
   instructionDetail?: InstructionAnalysis;
+  /**
+   * The screen output is byte-identical to the previous frame's — the profiler filmstrip's "="
+   * badge. Never true for frame 0 (nothing earlier in the capture to compare against).
+   */
+  duplicateOfPrevious: boolean;
+}
+
+/**
+ * How often the picture actually changed across a multi-frame capture. Repeated frames are the
+ * only program-independent sign of a missed frame: an effect that normally updates every frame
+ * and then shows the same picture twice didn't finish in time. There's no other useful
+ * definition of an application "frame" to measure against.
+ */
+export interface ScreenUpdates {
+  /** Frames compared — every frame after the first. */
+  compared: number;
+  /** Indices of frames identical to the frame before. */
+  repeats: number[];
+  /**
+   * How many frames each picture stayed on screen, as { frames held: occurrences }. Only holds
+   * bounded by a change at both ends — the first and last pictures may have started before the
+   * capture or carried on after it, so their lengths aren't known.
+   */
+  holds: Record<number, number>;
+  /** Display refresh rate, for turning hold lengths into an update rate. */
+  refreshHz: number;
+}
+
+export function summariseScreenUpdates(duplicates: boolean[], refreshHz: number): ScreenUpdates | undefined {
+  if (duplicates.length < 2) return undefined;
+  const repeats: number[] = [];
+  const changes: number[] = [];
+  for (let i = 1; i < duplicates.length; i++) (duplicates[i] ? repeats : changes).push(i);
+  const holds: Record<number, number> = {};
+  for (let k = 1; k < changes.length; k++) {
+    const held = changes[k] - changes[k - 1];
+    holds[held] = (holds[held] ?? 0) + 1;
+  }
+  return { compared: duplicates.length - 1, repeats, holds, refreshHz };
 }
 
 export interface ProfileAnalysis {
   manifest: ProfileManifest;
   frames: FrameAnalysis[];
   findings: ProfileFinding[];
+  /** Multi-frame captures only. */
+  screenUpdates?: ScreenUpdates;
   /**
    * The function name `--instructions` asked for, if any. Carried so a report can distinguish
    * "this frame didn't run that function" from "no detail was requested" — the two look identical
@@ -297,6 +338,8 @@ export function analyseFrame(model: IProfileModel, index: number): FrameAnalysis
     anchoredSamples,
     functions: [...byFn.values()].sort((a, b) => b.selfCycles - a.selfCycles),
     dmaOwners,
+    // Lives on the raw capture, not the model — analyseProfile fills it in.
+    duplicateOfPrevious: false,
   };
 }
 
@@ -578,6 +621,7 @@ export function analyseProfile(file: Uint8Array, opts: { stalls?: boolean; instr
   const { frames, manifest } = loadProfile(file);
   const analysed = frames.map((f, i) => {
     const a = analyseFrame(f.model, i);
+    a.duplicateOfPrevious = f.raw.duplicateOfPrevious === true;
     if (opts.stalls) a.stalls = analyseStalls(f.model.disassembly, a.zeroCostSamples);
     return a;
   });
@@ -611,5 +655,9 @@ export function analyseProfile(file: Uint8Array, opts: { stalls?: boolean; instr
 
   const rank: Record<Severity, number> = { error: 0, warning: 1, info: 2 };
   findings.sort((a, b) => rank[a.severity] - rank[b.severity] || (a.frame ?? -1) - (b.frame ?? -1));
-  return { manifest, frames: analysed, findings, instructionQuery: opts.instructions };
+  const screenUpdates = summariseScreenUpdates(
+    analysed.map((f) => f.duplicateOfPrevious),
+    manifest.meta.isPAL ? 50 : 60,
+  );
+  return { manifest, frames: analysed, findings, screenUpdates, instructionQuery: opts.instructions };
 }

@@ -70,6 +70,15 @@ frame-0 disassembly limit below before concluding a function is missing):
 (that `lsr.w` is not a slow instruction — it is a 10-cycle instruction that spent 14.5 cycles per
 execution blocked on the bus, which is a completely different fix.)
 
+**"Does it drop frames?" is answered by repeated frames, not by cycle counts.** Every frame of a
+capture fills the whole 71051-colour-clock budget whatever the program does — idle time is spent
+in a wait loop, so it's sampled too — and a program has no "application frame" to measure
+against. What *is* observable is the screen: `check` and `dump` mark each frame whose picture is
+byte-identical to the previous one (the filmstrip's `=` badge) and summarise how long each
+picture stayed up, e.g. `held for: 1 frame ×40 (50 fps), 2 frames ×3 (25 fps)` — a 50fps effect
+that missed three updates. Capture enough frames to see the pattern (tens, not one), then compare
+the frames around a repeat. A static screen repeats every frame and says nothing about timing.
+
 If `check` reports nothing, the numbers below can be read at face value. If it reports
 something, **fix or account for the finding before trusting anything downstream of it** — an
 over-budget frame's per-function percentages are not "slightly off," they're derived from a

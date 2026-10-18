@@ -21,6 +21,7 @@ import { encodeCapture } from "../profileFormat";
 import { ProfilerManager } from "../profilerManager";
 import { SourceMap } from "../sourceMap";
 import { describe as describeAddress, resolveBreakpointSpec } from "./breakpointSpec";
+import { formatChipset, walkCopperList } from "./chipset";
 import { HeadlessEmulator } from "./headlessEmulator";
 import { encodePng } from "./png";
 import * as path from "path";
@@ -220,6 +221,32 @@ export class HeadlessSession {
       callstack,
       memory,
     };
+  }
+
+  /** Custom-chip registers, grouped and decoded, with chip pointers symbolicated. */
+  public async chipset(): Promise<string> {
+    const regs = await this.emulator.getAllCustomRegisters();
+    return formatChipset(regs, (address) => describeAddress(address, this.sourceMap));
+  }
+
+  /**
+   * The copper list decoded as the copper would run it: from `start` (an address or symbol — a
+   * list the program has built but not installed yet) or else COP1LC, where the copper restarts
+   * every frame.
+   */
+  public async copperList(start: string | undefined, maxInstructions: number): Promise<{ start: number; listing: string }> {
+    const regs = await this.emulator.getAllCustomRegisters();
+    const address = start !== undefined
+      ? resolveBreakpointSpec(start, this.sourceMap).address
+      : Number(regs.COP1LC?.value ?? NaN);
+    if (!Number.isFinite(address)) throw new Error("COP1LC isn't available from this emulator build");
+    const listing = await walkCopperList((a, n) => this.emulator.readMemory(a, n), {
+      start: address,
+      cop2lc: Number(regs.COP2LC?.value ?? 0),
+      maxInstructions,
+      describeAddress: (a) => describeAddress(a, this.sourceMap),
+    });
+    return { start: address, listing };
   }
 
   /**

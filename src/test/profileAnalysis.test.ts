@@ -1,6 +1,6 @@
 import { readFileSync } from "fs";
 import * as path from "path";
-import { analyseFrame, analyseInstructions, analyseProfile, checkFrame, FrameAnalysis, ProfileFinding, ProfileRequestError, selectInstructionDetail } from "../profileAnalysis";
+import { analyseFrame, analyseInstructions, analyseProfile, checkFrame, FrameAnalysis, ProfileFinding, ProfileRequestError, selectInstructionDetail, summariseScreenUpdates } from "../profileAnalysis";
 import { BusOwner, Category, DMA_CODE, IDisassembledFunction, IProfileModel } from "../shared/profilerTypes";
 
 // Minimal synthetic model: root -> "hot" (2 samples, 10 cycles each) and root -> "cold" (2
@@ -117,6 +117,7 @@ function baseFrame(overrides: Partial<FrameAnalysis> = {}): FrameAnalysis {
     cyclePct: 100,
     zeroCostSamples: 0,
     registerSamples: 0,
+    duplicateOfPrevious: false,
     dmaSlots: 71051,
     // Healthy by low-anchor-rate's measure: the matcher used most of the fetch cells the grid
     // offered it (3000/5000). The sample count is deliberately far higher than either — a cached
@@ -433,3 +434,23 @@ describe("selectInstructionDetail", () => {
   });
 });
 
+
+describe("summariseScreenUpdates", () => {
+  it("has nothing to say about a single frame", () => {
+    expect(summariseScreenUpdates([false], 50)).toBeUndefined();
+  });
+
+  it("lists repeats and how long each bounded picture was held", () => {
+    // Changes at 1,2,3,5,6,8: holds 1,1,2,1,2. Frame 0 and the trailing frames are unbounded.
+    const dup = [false, false, false, false, true, false, false, true, false, true];
+    const su = summariseScreenUpdates(dup, 50)!;
+    expect(su.compared).toBe(9);
+    expect(su.repeats).toEqual([4, 7, 9]);
+    expect(su.holds).toEqual({ 1: 3, 2: 2 });
+  });
+
+  it("reads a steady half-rate effect as a single hold length", () => {
+    const dup = Array.from({ length: 11 }, (_, i) => i > 0 && i % 2 === 0);
+    expect(summariseScreenUpdates(dup, 50)!.holds).toEqual({ 2: 4 });
+  });
+});

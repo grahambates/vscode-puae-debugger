@@ -3,15 +3,43 @@
 // terminal and a number a model reads over MCP should never be formatted differently, or a
 // conversation about one won't transfer to the other.
 
-import { FrameAnalysis, InstructionAnalysis, ProfileAnalysis, StallAnalysis } from "./profileAnalysis";
+import { FrameAnalysis, InstructionAnalysis, ProfileAnalysis, ScreenUpdates, StallAnalysis } from "./profileAnalysis";
 
 export function pct(v: number): string {
   return `${v.toFixed(1)}%`;
 }
 
+// Repeated frames, summarised as how long each picture stayed up — which reads straight off as
+// an update rate ("held 1 frame ×40, 2 frames ×3" is a 50fps effect that dropped three updates).
+function renderScreenUpdates(su: ScreenUpdates): string[] {
+  const out = ["", "Screen updates (byte-exact framebuffer comparison, the filmstrip's \"=\" badge):"];
+  const changes = su.compared - su.repeats.length;
+  if (changes === 0) {
+    out.push(`  the picture never changed after frame 0 — a static screen, so repeats say nothing about timing here`);
+    return out;
+  }
+  if (su.repeats.length === 0) {
+    out.push(`  every frame's picture differs from the one before — no repeated frames`);
+    return out;
+  }
+  const shown = su.repeats.slice(0, 20).join(", ") + (su.repeats.length > 20 ? `, … (${su.repeats.length} total)` : "");
+  out.push(`  ${su.repeats.length} of ${su.compared} frames repeated the previous frame's picture: ${shown}`);
+  const holds = Object.entries(su.holds).map(([held, count]) => [Number(held), count] as const).sort((a, b) => a[0] - b[0]);
+  if (holds.length) {
+    const rate = (held: number) => `${+(su.refreshHz / held).toFixed(1)} fps`;
+    out.push(`  each picture held for: ${holds.map(([held, n]) => `${held} frame${held === 1 ? "" : "s"} ×${n} (${rate(held)})`).join(", ")}`);
+  }
+  out.push(
+    "  In an effect that otherwise updates at a steady rate, a longer hold is a missed update: the",
+    "  work behind it overran. Compare the frames just before a repeat with their neighbours.",
+  );
+  return out;
+}
+
 function dumpFrame(f: FrameAnalysis, limit: number, out: string[], instructionQuery?: string): void {
   out.push("");
-  out.push(`Frame ${f.index}: ${f.samples} samples, ${f.cycles} cycles = ${pct(f.cyclePct)} of ${f.frameCycles} color clocks`);
+  out.push(`Frame ${f.index}: ${f.samples} samples, ${f.cycles} cycles = ${pct(f.cyclePct)} of ${f.frameCycles} color clocks` +
+    (f.duplicateOfPrevious ? ` — same picture as frame ${f.index - 1}` : ""));
   const detail = [`zero-cost samples: ${f.zeroCostSamples}`];
   if (f.registerSamples) detail.push(`register trace: ${f.registerSamples}`);
   if (f.dmaSlots) detail.push(`fetch cells: ${f.fetchCells}`, `anchored: ${f.anchoredSamples}`);
@@ -112,6 +140,7 @@ export function renderDump(a: ProfileAnalysis, frame: number | undefined, limit:
   if (m.meta.capturedAt) out.push(`captured ${new Date(m.meta.capturedAt).toISOString()}`);
   out.push(`address range 0x${m.meta.start.toString(16)}-0x${m.meta.end.toString(16)}, ${m.meta.total} instructions executed (${m.meta.inRange} in range)`);
   if (m.kickstart.name) out.push(`kickstart ${m.kickstart.name}`);
+  if (a.screenUpdates) out.push(...renderScreenUpdates(a.screenUpdates));
 
   const frames = frame === undefined ? a.frames : a.frames.filter((f) => f.index === frame);
   if (frames.length === 0) {
@@ -126,8 +155,10 @@ export function renderDump(a: ProfileAnalysis, frame: number | undefined, limit:
 export function renderCheck(a: ProfileAnalysis): string {
   const out: string[] = [];
   for (const f of a.frames) {
-    out.push(`frame ${f.index}: ${String(f.samples).padStart(7)} samples  ${String(f.cycles).padStart(7)} cycles  ${pct(f.cyclePct).padStart(7)} of frame`);
+    out.push(`frame ${f.index}: ${String(f.samples).padStart(7)} samples  ${String(f.cycles).padStart(7)} cycles  ${pct(f.cyclePct).padStart(7)} of frame` +
+      (f.duplicateOfPrevious ? "  = previous picture" : ""));
   }
+  if (a.screenUpdates) out.push(...renderScreenUpdates(a.screenUpdates));
   out.push("");
   if (a.findings.length === 0) {
     out.push("OK — no findings.");
