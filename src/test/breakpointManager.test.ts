@@ -3,6 +3,7 @@ import * as assert from "assert";
 import * as sinon from "sinon";
 import { BreakpointManager } from "../breakpointManager";
 import { Emulator } from "../emulator";
+import { copperMoveBefore } from "../hardware";
 
 /**
  * Minimal fake satisfying only the Emulator methods BreakpointManager
@@ -128,13 +129,15 @@ describe("BreakpointManager - logpoints", () => {
 });
 
 describe("BreakpointManager - copper-sourced watchpoint attribution", () => {
-  it("includes the copper's pc and source line for a copper-sourced register write", async () => {
-    const { emulator } = createFakeEmulator(true);
+  it("names the copper MOVE that wrote the register, one instruction behind the list pointer", async () => {
+    const { fake, emulator } = createFakeEmulator(true);
+    // MOVE #$0F00,COLOR00 at $3FFC; the copper's list pointer has already moved on to $4000.
+    (fake as Record<string, unknown>).readMemory = sinon.stub().withArgs(0x3ffc, 2).resolves(Buffer.from([0x01, 0x80]));
     const sourceMap = createFakeSourceMap();
     sourceMap.lookupAddress = sinon
       .stub()
-      .withArgs(0x4000)
-      .returns({ path: "/copperlist.s", line: 42 });
+      .withArgs(0x3ffc)
+      .returns({ path: "/copperlist.s", line: 41 });
     const bpManager = new BreakpointManager(emulator, sourceMap);
 
     const result = await bpManager.handleBreakpointStop({
@@ -144,8 +147,24 @@ describe("BreakpointManager - copper-sourced watchpoint attribution", () => {
     });
 
     assert.ok(result.text?.includes("from the Copper"));
-    assert.ok(result.text?.includes("copperLoc=0x00004000"));
-    assert.ok(result.text?.includes("copperlist.s:42"));
+    assert.ok(result.text?.includes("copperLoc=0x00003ffc"));
+    assert.ok(result.text?.includes("copperlist.s:41"));
+  });
+
+  it("shows the raw list pointer, as such, when the MOVE can't be confirmed", async () => {
+    const { fake, emulator } = createFakeEmulator(true);
+    // The instruction before the pointer is a WAIT, not a MOVE to COLOR00.
+    (fake as Record<string, unknown>).readMemory = sinon.stub().resolves(Buffer.from([0x2c, 0x07]));
+    const bpManager = new BreakpointManager(emulator, createFakeSourceMap());
+
+    const result = await bpManager.handleBreakpointStop({
+      hasMessage: true,
+      name: "WATCHPOINT_REACHED",
+      payload: { pc: 0xdff180, vector: 0, source: 1, cpuPc: 0x1234, copperPc: 0x4000 },
+    });
+
+    assert.ok(result.text?.includes("copper list pointer=0x00004000"));
+    assert.ok(!result.text?.includes("copperLoc="));
   });
 
   it("omits the copper pc/source-line for a Blitter/disk-sourced chip RAM write", async () => {
@@ -161,5 +180,20 @@ describe("BreakpointManager - copper-sourced watchpoint attribution", () => {
 
     assert.ok(result.text?.includes("from the Blitter/disk DMA"));
     assert.ok(!result.text?.includes("copperlist.s"));
+  });
+});
+
+describe("copperMoveBefore", () => {
+  const read = (bytes: number[]) => async () => Uint8Array.from(bytes);
+
+  it("returns the MOVE one instruction behind the pointer when it targets the written register", async () => {
+    assert.strictEqual(await copperMoveBefore(0x4000, 0xdff180, read([0x01, 0x80])), 0x3ffc);
+  });
+
+  it("refuses a MOVE to a different register, a WAIT, or an unreadable address", async () => {
+    assert.strictEqual(await copperMoveBefore(0x4000, 0xdff180, read([0x01, 0x82])), undefined);
+    assert.strictEqual(await copperMoveBefore(0x4000, 0xdff180, read([0x2c, 0x07])), undefined);
+    assert.strictEqual(await copperMoveBefore(0x4000, 0xdff180, async () => { throw new Error("no"); }), undefined);
+    assert.strictEqual(await copperMoveBefore(undefined, 0xdff180, read([0x01, 0x80])), undefined);
   });
 });

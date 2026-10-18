@@ -42,6 +42,8 @@ import { CODE_TO_RETROK } from "../shared/retroKeys";
 import { ToolDefinition } from "./jsonRpc";
 import { expandHome } from "./paths";
 import { SessionRegistry } from "./sessionRegistry";
+import { composeSheet } from "./contactSheet";
+import { encodePng } from "./png";
 import { WatchKind } from "./watchpoints";
 
 /** Environment variable naming the Kickstart ROM, so callers needn't repeat it on every call. */
@@ -61,6 +63,11 @@ const MAX_MEMORY_BYTES = 4096;
 // covers that, and the cap keeps a list with no end marker from flooding the reply.
 const DEFAULT_COPPER_INSTRUCTIONS = 512;
 const MAX_COPPER_INSTRUCTIONS = 4096;
+// A contact sheet's limits: 4 columns of half-size (360px) tiles stays under ~1600px, the size
+// image viewers — including the ones models read screenshots through — start shrinking at, and
+// 16 frames keeps the height there too.
+const MAX_SHEET_FRAMES = 16;
+const SHEET_COLUMNS = 4;
 // Enough for any one routine; past that the reader wants a profile, not a listing.
 const MAX_DISASSEMBLE_INSTRUCTIONS = 1000;
 
@@ -950,7 +957,9 @@ export function emulatorTools(ctx: EmulatorToolContext): ToolDefinition[] {
         "whether a change altered the picture — without a person watching a screen. The program " +
         "is injected into RAM and run for `frames` frames (raise that if the effect needs time to " +
         "appear); the PNG is written to disk and its path returned, so it can then be read as an " +
-        "image. Needs a Kickstart ROM.",
+        "image. Set `count` for several frames on one contact sheet — every `every` frames from " +
+        "there, each labelled with its frame number and marked = when identical to the frame before " +
+        "it — to see an animation, or a glitch that lasts one frame. Needs a Kickstart ROM.",
       inputSchema: {
         type: "object",
         properties: {
@@ -960,6 +969,21 @@ export function emulatorTools(ctx: EmulatorToolContext): ToolDefinition[] {
             description: `Emulated frames to run before capturing the screen (default 50, one PAL frame is 20ms). Max ${MAX_WARMUP_FRAMES}.`,
           },
           out: { type: "string", description: "Where to write the PNG. Defaults to a temp file." },
+          count: {
+            type: "number",
+            description: `Frames to put on a contact sheet (default 1: a single screenshot). Max ${MAX_SHEET_FRAMES}, which keeps the sheet small enough to read without being shrunk.`,
+          },
+          every: {
+            type: "number",
+            description: "Frames between the ones on the sheet (default 1: consecutive frames, to catch a one-frame glitch; e.g. 10 to watch a slower animation).",
+          },
+          size: {
+            type: "string",
+            enum: ["half", "full"],
+            description:
+              'Contact-sheet tile size. "half" (default) keeps every pixel of a lores, non-interlaced screen ' +
+              '(the framebuffer doubles lores horizontally); use "full" for hires or interlaced screens.',
+          },
         },
         additionalProperties: false,
       },
@@ -968,6 +992,32 @@ export function emulatorTools(ctx: EmulatorToolContext): ToolDefinition[] {
         // message, not a machine (and the wait that comes with one).
         // 0 frames is meaningful on a session: screenshot exactly where it is stopped now.
         const frames = boundedNumber(args, "frames", args.session ? 0 : 50, MAX_WARMUP_FRAMES, 0);
+        const count = boundedNumber(args, "count", 1, MAX_SHEET_FRAMES);
+        const every = boundedNumber(args, "every", 1, MAX_WARMUP_FRAMES);
+        const size = args.size === undefined ? "half" : args.size;
+        if (size !== "half" && size !== "full") throw new Error(`"size" must be "half" or "full"`);
+        if (count > 1) {
+          return withSession(ctx, registry, args, async (session) => {
+            const { tiles, stoppedEarly } = await session.frameSequence(frames, count, every);
+            if (tiles.length === 0) {
+              return "Stopped before the first frame on the sheet — the program hit a breakpoint, a watch or an exception. Nothing written.";
+            }
+            // Full-size tiles are 720px: two to a row keeps the same ~1600px width limit.
+            const sheet = composeSheet(tiles, { half: size === "half", columns: size === "half" ? SHEET_COLUMNS : 2 });
+            const name = optionalString(args, "program") ?? `session-${optionalString(args, "session")}`;
+            const path = writeOutput(optionalPath(args, "out"), name, ".png", encodePng(sheet.rgba, sheet.width, sheet.height));
+            const repeats = tiles.filter((t) => t.repeated).map((t) => t.frame);
+            return (
+              `Wrote a ${sheet.width}x${sheet.height} contact sheet of ${tiles.length} frame(s) to ${path}\n` +
+              `Frames ${tiles.map((t) => t.frame).join(", ")} (frame numbers count from the launch; ${every === 1 ? "consecutive" : `every ${every}`}).\n` +
+              (repeats.length
+                ? `Identical to the frame before (marked =): ${repeats.join(", ")}.\n`
+                : "No frame on the sheet is identical to the frame before it.\n") +
+              (stoppedEarly ? `Stopped after ${tiles.length} of ${count}: the program hit a breakpoint, a watch or an exception.\n` : "") +
+              "Read that file to see the frames."
+            );
+          });
+        }
         return withSession(ctx, registry, args, async (session) => {
           const ran = frames > 0 ? await session.run(frames) : 0;
           const shot = session.screenshot();

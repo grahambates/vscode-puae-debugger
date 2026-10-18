@@ -63,7 +63,10 @@ reading the code it points at. Ranges are watched exactly (split into aligned bl
 all), and a custom register can be named directly (`COP1LC`, `DMACON`). Expect early hits from
 Kickstart itself — `AllocMem` clearing memory it hands out is a write too.
 
-**The screen is wrong.** `emulator_screenshot` on the session to see it, then
+**The screen is wrong.** `emulator_screenshot` on the session to see it. For something that
+moves, or a glitch that lasts one frame, `{ "count": 8 }` puts consecutive frames on one contact
+sheet, each labelled with its frame number and marked `=` when identical to the frame before;
+`every` spaces them out for a slower animation. Then
 `emulator_inspect { "chipset": true, "copper": true }`:
 - `chipset` decodes DMACON, INTENA/INTREQ, BPLCONx, display window, bitplane/sprite/blitter
   pointers and the colours. It warns when DMAEN is off — a channel bit set under a cleared master

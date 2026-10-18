@@ -24,10 +24,11 @@ import { describe as describeAddress, formatAddress as formatAddr, resolveBreakp
 import { DecodedLine, decodeRange, formatListing } from "./disassembly";
 import { alignedBlocks, Block, customRegisterRange, describeHit, WATCHPOINT_SLOTS, WatchKind } from "./watchpoints";
 import { formatChipset, walkCopperList } from "./chipset";
-import { isCustomRegisterAddress } from "../hardware";
+import { copperMoveBefore, isCustomRegisterAddress } from "../hardware";
 import { CUSTOM_REGISTER_OFFSETS, customRegisterName } from "../webview/shared/customRegisters";
 import { HeadlessEmulator } from "./headlessEmulator";
 import { encodePng } from "./png";
+import { SheetTile } from "./contactSheet";
 import * as path from "path";
 
 export interface LaunchOptions {
@@ -378,22 +379,37 @@ export class HeadlessSession {
       const watchAddress = p.pc ?? 0;
       const watch = this.listWatches().find((w) => w.blocks.some((b) => b.address === watchAddress));
       state.detail = `${watch ? `watch #${watch.id} (${watch.description}): ` : ""}` +
-        describeHit({ ...p, watchAddress, copperInstruction: await this.copperMoveBefore(p.copperPc, p.addr) }, this.sourceMap);
+        describeHit({ ...p, watchAddress, copperInstruction: await copperMoveBefore(p.copperPc, p.addr, (a, n) => this.emulator.readMemory(a, n)) }, this.sourceMap);
     }
     return state;
   }
 
   /**
-   * The copper instruction behind a copper-sourced write: the copper's list pointer has moved on
-   * past it by the time the write lands, so check the instruction one back really is a MOVE to
-   * the register that was written. Undefined when it isn't (a pointer that advanced differently
-   * than assumed shouldn't be reported as certain).
+   * `count` frames for a contact sheet: the first after `warmup` frames, then one every `every`
+   * frames. Each is checked against the frame immediately before it (not the previous sample), so
+   * "repeated" means the picture really didn't change from one frame to the next. Stops early,
+   * with what it has, if a breakpoint, watch or exception halts the run.
    */
-  private async copperMoveBefore(copperPc: number | undefined, addr: number | undefined): Promise<number | undefined> {
-    if (copperPc === undefined || addr === undefined || copperPc < 4) return undefined;
-    const words = await this.emulator.readMemory(copperPc - 4, 4);
-    const word1 = words.readUInt16BE(0);
-    return (word1 & 1) === 0 && (word1 & 0x1fe) === (addr & 0x1fe) ? copperPc - 4 : undefined;
+  public async frameSequence(warmup: number, count: number, every: number): Promise<{ tiles: SheetTile[]; stoppedEarly: boolean }> {
+    const tiles: SheetTile[] = [];
+    let previous: Uint8Array | undefined;
+    const grab = () => this.emulator.readFramebuffer();
+    const advance = async (frames: number): Promise<boolean> => {
+      if (frames === 0) return true;
+      if (frames > 1) {
+        if ((await this.run(frames - 1)) < frames - 1) return false;
+        previous = grab().rgba;
+      }
+      return (await this.run(1)) === 1;
+    };
+    for (let i = 0; i < count; i++) {
+      if (!(await advance(i === 0 ? warmup : every))) return { tiles, stoppedEarly: true };
+      const fb = grab();
+      const repeated = previous !== undefined && Buffer.compare(previous, fb.rgba) === 0;
+      tiles.push({ rgba: fb.rgba, width: fb.width, height: fb.height, frame: this.framesRun, repeated });
+      previous = fb.rgba;
+    }
+    return { tiles, stoppedEarly: false };
   }
 
   // --- Input ---

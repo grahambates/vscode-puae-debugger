@@ -325,3 +325,27 @@ export const customAddresses: Record<string, CustomAddress> = {
   // BPLHPT: { writeAddress: 0xdff1ec, long: true }, // UHRES: no real handler in PUAE either
   FMODE: { writeAddress: 0xdff1fc, long: false }, // Not actually AGA-#ifdef-gated in PUAE despite the name
 };
+
+/**
+ * The copper MOVE behind a copper-sourced custom-register write. The copper's list pointer (the
+ * `copperPc` a watchpoint hit reports) has already moved on past that instruction by the time the
+ * write lands, so the culprit is the instruction one back — but that's only reported once the
+ * words there really are a MOVE to the register that was written. Undefined otherwise, including
+ * when memory can't be read: an unconfirmed guess must not be presented as the instruction.
+ */
+export async function copperMoveBefore(
+  copperPc: number | undefined,
+  writtenAddress: number | undefined,
+  readMemory: (address: number, count: number) => Promise<Uint8Array>,
+): Promise<number | undefined> {
+  if (copperPc === undefined || writtenAddress === undefined || copperPc < 4) return undefined;
+  let words: Uint8Array;
+  try {
+    words = await readMemory(copperPc - 4, 2);
+  } catch {
+    return undefined;
+  }
+  if (words.length < 2) return undefined;
+  const word1 = (words[0] << 8) | words[1];
+  return (word1 & 1) === 0 && (word1 & 0x1fe) === (writtenAddress & 0x1fe) ? copperPc - 4 : undefined;
+}

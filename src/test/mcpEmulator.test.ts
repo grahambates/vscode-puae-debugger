@@ -375,3 +375,11 @@ describe("emulator_input actions", () => {
     expect(() => inputActions({ actions: [{ joystick: "up" }] })).toThrow(/unknown action "joystick"/);
   });
 });
+
+describe("emulator_screenshot contact sheet arguments", () => {
+  it("caps the sheet and checks the size before booting anything", async () => {
+    process.env.PUAE_KICKSTART_ROM = "/nonexistent.rom";
+    await expect(runTool("emulator_screenshot", { program: "/tmp/x", count: 17 })).rejects.toThrow(/capped at 16/);
+    await expect(runTool("emulator_screenshot", { program: "/tmp/x", count: 4, size: "huge" })).rejects.toThrow(/"half" or "full"/);
+  });
+});

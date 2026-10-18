@@ -9,6 +9,7 @@ import { formatHex } from "./numbers";
 import {
   customAddresses,
   exceptionBreakpointFilters,
+  copperMoveBefore,
   isCustomRegisterAddress,
   MEMORY_PROTECTION_VECTOR,
 } from "./hardware";
@@ -851,20 +852,25 @@ export class BreakpointManager {
         : message.payload.source === 0
           ? " from the CPU"
           : "";
-      // copperPc, when present, is the actual Copper list address that wrote
-      // the register — unlike cpuPc/"concurrent pc" (whatever the CPU
-      // happens to be running at the same time), this is the real cause, so
-      // it gets its own unqualified "pc=" label plus a source-line if one
-      // resolves.
+      // copperPc, when present, is the Copper's list pointer at the moment of the write — unlike
+      // cpuPc/"concurrent pc" (whatever the CPU happens to be running at the same time), it
+      // leads to the real cause. But the pointer has already moved past the MOVE that wrote the
+      // register, so the instruction itself is one back: copperMoveBefore confirms that, and only
+      // then is it labelled as the copper's location, with its source line. Unconfirmed, the raw
+      // pointer is still shown, as what it is.
       const copperPc = isCopper ? message.payload.copperPc : undefined;
+      const writtenAddress = message.payload.addr ?? message.payload.pc;
+      const copperMove = await copperMoveBefore(copperPc, writtenAddress, (a, n) => this.emulator.readMemory(a, n));
       const copperLoc =
-        copperPc !== undefined ? this.sourceMap.lookupAddress(copperPc) : undefined;
+        copperMove !== undefined ? this.sourceMap.lookupAddress(copperMove) : undefined;
       const copperLabel =
-        copperPc !== undefined
-          ? ` (copperLoc=${formatHex(copperPc)}${
+        copperMove !== undefined
+          ? ` (copperLoc=${formatHex(copperMove)}${
               copperLoc ? ` ${basename(copperLoc.path)}:${copperLoc.line}` : ""
             })`
-          : "";
+          : copperPc !== undefined
+            ? ` (copper list pointer=${formatHex(copperPc)})`
+            : "";
       const pcLabel = isDma ? "concurrent pc" : "pc";
       const result: BreakpointStopResult = {
         reason: "data breakpoint",
