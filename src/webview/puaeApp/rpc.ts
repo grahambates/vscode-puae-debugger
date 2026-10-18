@@ -426,6 +426,15 @@ export function setupRpcDispatcher(
   // the newest checkpoint presents fewer than two frames (the undrawn one plus one real), go back
   // one more checkpoint: a replay from there draws the frame that was on screen at `target`.
   // wasm_get_frame_count counts frames presented during a video replay.
+  //
+  // Known, not fixed: restoring a checkpoint taken at the end of a frame step (a retro_run() that
+  // returned on libretro_frame_end) and replaying runs 4-7 CPU cycles later than the original
+  // execution did. Restores taken mid-frame (breakpoint/step stops) are exact. The drift dies out
+  // on its own within about two frames. Event phases restore identically; the visible differences
+  // straight after a restore are the CPU's ird (restore_cpu_finish -> fill_prefetch_quick rewrites
+  // ir/irc/ird), the CIA TOD latch and keyboard state. The likely cause is core timing state the
+  // savestate doesn't capture; not pinned down. Replaying at least two frames, as below, lets the
+  // drift die out before landing — in testing, landings matched forward execution exactly.
   function landAt(target: bigint): void {
     let i = snapshotHistory.length - 1;
     while (i > 0 && snapshotHistory[i].instrCount > target) i--;
