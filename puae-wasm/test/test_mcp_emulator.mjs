@@ -123,6 +123,27 @@ check("capture symbolicates to real function names", /WaitRaster/.test(dump.cont
     JSON.stringify(meta));
 }
 
+// A restore must not cost an extra frame: PUAE never presents the first frame after a restore,
+// so without ending that frame at the true boundary, "run N frames" after a restore ran N+1.
+// Rerunning from the launch snapshot must therefore land on exactly the same picture.
+{
+  const launch = await callTool("emulator_launch", { program, kickstartRom: romPath });
+  const session = /Session (s\d+)/.exec(launch.content?.[0]?.text ?? "")?.[1];
+  const first = path.join(outDir, "rerun-a.png");
+  const second = path.join(outDir, "rerun-b.png");
+  await callTool("emulator_screenshot", { session, frames: 20, out: first });
+  await callTool("emulator_snapshot", { session, restore: "start" });
+  await callTool("emulator_screenshot", { session, frames: 20, out: second });
+  check("a rerun from the launch snapshot reproduces the same frame",
+    fs.existsSync(first) && fs.existsSync(second) && fs.readFileSync(first).equals(fs.readFileSync(second)));
+  // ...and a one-shot screenshot at the same frame agrees with the session's.
+  const oneShot = path.join(outDir, "oneshot.png");
+  await callTool("emulator_screenshot", { program, kickstartRom: romPath, frames: 20, out: oneShot });
+  check("a one-shot screenshot matches a session's at the same frame",
+    fs.existsSync(oneShot) && fs.readFileSync(oneShot).equals(fs.readFileSync(first)));
+  await callTool("emulator_close", { session });
+}
+
 // --- argument handling ---
 const missing = await callTool("emulator_screenshot", { program: "/definitely/not/here.exe", kickstartRom: romPath });
 check("a missing program is an isError result, not a crash", missing.isError === true,

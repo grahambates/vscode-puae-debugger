@@ -333,7 +333,18 @@ describe("emulator_write arguments", () => {
 
 describe("emulator_watch arguments", () => {
   it("defaults to watching writes", () => {
-    expect(watchAdds({ add: [{ address: "COP1LC" }] })).toEqual([{ address: "COP1LC", length: undefined, on: "write" }]);
+    expect(watchAdds({ add: [{ address: "COP1LC" }] })).toEqual([{ address: "COP1LC", length: undefined, on: "write", condition: undefined }]);
+  });
+
+  it("parses value conditions in the forms a value is written", () => {
+    const cond = (equals: unknown) => watchAdds({ add: [{ address: "x", length: 2, equals }] })[0].condition;
+    expect(cond(5)).toEqual({ equals: 5 });
+    expect(cond("0x8000")).toEqual({ equals: 0x8000 });
+    expect(cond("$1f")).toEqual({ equals: 0x1f });
+    expect(cond("-1")).toEqual({ equals: -1 });
+    expect(watchAdds({ add: [{ address: "x", changes: true }] })[0].condition).toEqual({ changes: true });
+    expect(() => watchAdds({ add: [{ address: "x", equals: 1, changes: true }] })).toThrow(/not both/);
+    expect(() => watchAdds({ add: [{ address: "x", equals: "five" }] })).toThrow(/integer, or a hex string/);
   });
 
   it("rejects an unknown access kind and an oversized range", () => {

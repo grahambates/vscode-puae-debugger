@@ -7,7 +7,7 @@
 - `emulator_inspect` decodes the custom chips (`chipset`: beam position, DMACON, INTENA/INTREQ, BPLCONx, bitplane/sprite/copper/blitter pointers, colours) and the copper list in memory (`copper`/`copperAt`), following COPJMPs and labelling WAITs past line 255.
 - `emulator_disassemble`: 68000 disassembly around the PC, an address, a symbol or a source line, or a whole routine — with branch targets, custom registers, CIAs and symbols resolved.
 - `emulator_write`: change memory, CPU registers and custom registers in a paused session; every write is read back.
-- `emulator_watch`: watchpoints on exact address ranges or named custom registers, reporting the value written and who wrote it (CPU and PC, the copper MOVE, or blitter/disk DMA).
+- `emulator_watch`: watchpoints on exact address ranges or named custom registers, reporting the value written and who wrote it (CPU and PC, the copper MOVE, or blitter/disk DMA). A watch can be conditional — stop when the value becomes X (`equals`) or only when it actually changes (`changes`) — judged on the whole value after the write, whatever size the write was.
 - `emulator_breakpoints`: list and remove breakpoints, and choose which exceptions stop the session. Sessions now stop on bus error, address error, illegal instruction and zero divide by default.
 - `emulator_snapshot`: save and restore a session's whole machine state; a `start` snapshot is taken at launch.
 - `emulator_input`: mouse clicks and movement and keyboard keys, played as a sequence of actions over real frames.

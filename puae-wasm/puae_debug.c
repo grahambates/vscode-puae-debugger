@@ -2327,11 +2327,33 @@ wasm_profile_on_frame_boundary(void)
 // is suppressed then). Used by puae_debug_replay_scan_frame to find the most
 // recent frame boundary within a replayed range, for stepBackFrame — and by
 // wasm_profile_on_frame_boundary() above for exact profiler-capture timing.
+// puae_debug: one-shot "end the current retro_run() at the next true frame boundary". After a
+// savestate restore, libretro-core.c sets request_reset_drawing, and the frame drawn after that
+// reset_drawing() is never presented: unlockscr() — the only thing that sets libretro_frame_end —
+// doesn't run for it, so the first retro_run() after a restore runs straight on into a second
+// frame (measured: 142101 cycles, exactly two PAL frames, where a normal tick is 71051). That made
+// "run N frames" after a restore run N+1. Armed by wasm_end_next_frame_at_boundary() — only from
+// the MCP server's loadState, never from the debugger's rewind, whose instruction replay must not
+// be cut short at a boundary (and replay mode is excluded below regardless).
+static int puae_debug_endFrameAtBoundaryOnce;
+
+PUAE_DEBUG_EXPORT void
+wasm_end_next_frame_at_boundary(void)
+{
+	puae_debug_endFrameAtBoundaryOnce = 1;
+}
+
 PUAE_DEBUG_EXPORT void
 puae_debug_frame_boundary_notify(void)
 {
 	if (puae_debug_replayMode && puae_debug_scanFrameMode) {
 		puae_debug_scanLastMatch = puae_debug_instrCount;
+	}
+	if (puae_debug_endFrameAtBoundaryOnce && !puae_debug_replayMode) {
+		/* Exactly what unlockscr() (libretro-glue.c) does to end a frame. */
+		puae_debug_endFrameAtBoundaryOnce = 0;
+		libretro_frame_end = true;
+		set_special(1);
 	}
 	wasm_profile_on_frame_boundary();
 }

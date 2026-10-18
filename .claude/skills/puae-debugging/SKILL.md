@@ -59,7 +59,10 @@ the value, the old value, the exact address and **who** wrote it:
   has moved on by the time the write lands);
 - blitter or disk DMA, for chip RAM.
 For a DMA write the CPU's PC is reported only as "meanwhile" — it is *not* the cause, so don't go
-reading the code it points at. Ranges are watched exactly (split into aligned blocks; 64 slots in
+reading the code it points at. When the variable is written constantly and only one value is the
+bug, make the watch conditional: `{ "address": "lives", "length": 2, "equals": -1 }` stops only
+when it becomes -1, and `"changes": true` skips writes of the value it already holds. Both judge
+the whole value after the write, so a byte written into a word counts. Ranges are watched exactly (split into aligned blocks; 64 slots in
 all), and a custom register can be named directly (`COP1LC`, `DMACON`). Expect early hits from
 Kickstart itself — `AllocMem` clearing memory it hands out is a write too.
 

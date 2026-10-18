@@ -1465,6 +1465,10 @@ export function setupRpcDispatcher(
         rpcRequest(() => {
           const bytes = args.data instanceof ArrayBuffer ? new Uint8Array(args.data) : args.data;
           restoreCheckpoint(M, { bytes, pc: 0, instrCount: BigInt(args.instrCount ?? "0") });
+          // PUAE never presents the first frame after a restore, so the next retro_run() would
+          // run on through two frames; end it at the true frame boundary instead (see
+          // wasm_end_next_frame_at_boundary in puae_debug.c). Absent from older wasm builds.
+          if (typeof M._wasm_end_next_frame_at_boundary === "function") M._wasm_end_next_frame_at_boundary();
           // The rewind history recorded since that state belongs to a timeline that no longer
           // exists; stepping back into it would land somewhere this machine never was.
           snapshotHistory.length = 0;

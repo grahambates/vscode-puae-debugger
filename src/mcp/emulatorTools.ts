@@ -44,7 +44,7 @@ import { expandHome } from "./paths";
 import { SessionRegistry } from "./sessionRegistry";
 import { composeSheet } from "./contactSheet";
 import { encodePng } from "./png";
-import { WatchKind } from "./watchpoints";
+import { WatchCondition, WatchKind } from "./watchpoints";
 
 /** Environment variable naming the Kickstart ROM, so callers needn't repeat it on every call. */
 const ROM_ENV_VAR = "PUAE_KICKSTART_ROM";
@@ -155,7 +155,19 @@ function describeExceptions(vectors: number[]): string {
 const MAX_WATCH_BYTES = 1 << 20;
 const WATCH_KINDS: WatchKind[] = ["write", "read", "access"];
 
-export function watchAdds(args: Record<string, unknown>): { address: string; length?: number; on: WatchKind }[] {
+/** A number, "0x"/"$" hex or decimal string (negative allowed) — the forms a value is written in. */
+function parseValue(v: unknown, where: string): number {
+  if (typeof v === "number" && Number.isInteger(v)) return v;
+  if (typeof v === "string") {
+    const t = v.trim();
+    const hex = /^(?:0x|\$)([0-9a-f]+)$/i.exec(t);
+    if (hex) return parseInt(hex[1], 16);
+    if (/^-?\d+$/.test(t)) return parseInt(t, 10);
+  }
+  throw new Error(`${where} must be an integer, or a hex string like "0x1f" or "$1f"`);
+}
+
+export function watchAdds(args: Record<string, unknown>): { address: string; length?: number; on: WatchKind; condition?: WatchCondition }[] {
   const v = args.add;
   if (v === undefined || v === null) return [];
   if (!Array.isArray(v)) throw new Error(`"add" must be an array`);
@@ -165,7 +177,12 @@ export function watchAdds(args: Record<string, unknown>): { address: string; len
     const on = (w.on ?? "write") as WatchKind;
     if (!WATCH_KINDS.includes(on)) throw new Error(`add[${i}].on must be one of ${WATCH_KINDS.join(", ")}`);
     const length = w.length === undefined ? undefined : boundedNumber(w, "length", 1, MAX_WATCH_BYTES);
-    return { address: requireString(w, "address"), length, on };
+    if (w.equals !== undefined && w.changes !== undefined) throw new Error(`add[${i}]: pass "equals" or "changes", not both`);
+    if (w.changes !== undefined && w.changes !== true) throw new Error(`add[${i}].changes must be true when given`);
+    const condition: WatchCondition | undefined = w.equals !== undefined
+      ? { equals: parseValue(w.equals, `add[${i}].equals`) }
+      : w.changes === true ? { changes: true } : undefined;
+    return { address: requireString(w, "address"), length, on, condition };
   });
 }
 
@@ -467,14 +484,8 @@ export function emulatorTools(ctx: EmulatorToolContext): ToolDefinition[] {
         try {
           armed = await session.setBreakpoints(stringArray(args, "breakpoints"));
           await session.setExceptionStops(exceptions);
-          // So the program can be rerun from its entry point without relaunching. Restored at once
-          // as well: the machine state a restore produces is exact, but from the paused launch
-          // point the first frame run straight after boot reaches one frame less far than the first
-          // frame run after a restore (measured: a fresh run's frame 31 is pixel- and register-
-          // identical to a restored run's frame 30). Starting the session from the restored state
-          // keeps "frame N" meaning the same in the original run and in every rerun.
+          // So the program can be rerun from its entry point without relaunching.
           await session.saveSnapshot("start");
-          await session.restoreSnapshot("start");
         } catch (error) {
           session.dispose();
           throw error;
@@ -764,7 +775,9 @@ export function emulatorTools(ctx: EmulatorToolContext): ToolDefinition[] {
         "hit reports the access (value, old value, exact address) and who made it: the CPU with " +
         "its PC, the copper with its list address, or blitter/disk DMA. Watch from the entry " +
         "point by arming right after emulator_launch. The range is watched exactly, not rounded " +
-        "up. Always replies with the watches now armed; call with neither add nor remove to list them.",
+        "up. `equals` or `changes` makes a watch conditional — stop when the value becomes X, or only " +
+        "when it really changes — judged on the value after the write, whatever size the write was. " +
+        "Always replies with the watches now armed; call with neither add nor remove to list them.",
       inputSchema: {
         type: "object",
         properties: {
@@ -787,6 +800,16 @@ export function emulatorTools(ctx: EmulatorToolContext): ToolDefinition[] {
                   type: "string",
                   enum: ["write", "read", "access"],
                   description: 'Which accesses stop (default "write").',
+                },
+                equals: {
+                  type: ["integer", "string"],
+                  description:
+                    "Stop only when a write leaves the watched value equal to this (a 1, 2 or 4 byte watch). " +
+                    'Judged on the whole value after the write, so a byte write into a word counts. E.g. 0, -1, "0x8000".',
+                },
+                changes: {
+                  type: "boolean",
+                  description: "Stop only when a write actually changes the watched value — skipping writes of the value it already holds.",
                 },
               },
               required: ["address"],
@@ -815,7 +838,7 @@ export function emulatorTools(ctx: EmulatorToolContext): ToolDefinition[] {
           lines.push(`Removed #${removed.id} (${removed.description}).`);
         }
         for (const add of adds) {
-          const entry = await session.addWatch(add.address, add.length, add.on);
+          const entry = await session.addWatch(add.address, add.length, add.on, add.condition);
           const slots = entry.blocks.length > 1 ? ` [${entry.blocks.length} slots]` : "";
           lines.push(`Armed #${entry.id}: ${entry.description}${slots}.`);
         }

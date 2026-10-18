@@ -114,3 +114,50 @@ export function describeHit(hit: WatchHit, sourceMap?: SourceMap): string {
   }
   return text;
 }
+
+/** `equals`: the value becomes this. `changes`: the value is different after the write than before. */
+export type WatchCondition = { equals: number } | { changes: true };
+
+/**
+ * Whether a write meets a watch's condition — judged on the watched VALUE as it is after the
+ * write, not on the write itself. The emulator's own value test compares the access at the
+ * access's width, which is wrong for a variable: a `clr.b` of a word's low byte would match
+ * "== 0" while the word isn't 0, and a `move.l` across it would never match. So the write's own
+ * bytes are patched into the watched bytes — as its new and its old value — which also makes the
+ * answer independent of whether the hit fires before or after the store lands.
+ *
+ * `memory` is the watched range as read now; undefined for a custom register, which is write-only
+ * and always written whole, so the write's value is the register's value.
+ */
+export function conditionMet(
+  condition: WatchCondition,
+  start: number,
+  length: number,
+  memory: Uint8Array | undefined,
+  hit: { addr?: number; sizeBits?: number; value?: number; oldValue?: number },
+): boolean {
+  let after: number;
+  let before: number | undefined;
+  if (!memory) {
+    after = (hit.value ?? 0) & 0xffff;
+    before = hit.oldValue !== undefined ? hit.oldValue & 0xffff : undefined;
+  } else {
+    const n = (hit.sizeBits || 16) / 8;
+    const patched = (value: number) => {
+      const out = Uint8Array.from(memory);
+      for (let i = 0; i < n; i++) {
+        const at = (hit.addr ?? start) + i - start;
+        if (at >= 0 && at < out.length) out[at] = (value >>> ((n - 1 - i) * 8)) & 0xff;
+      }
+      return out.reduce((acc, b) => acc * 256 + b, 0);
+    };
+    after = patched(hit.value ?? 0);
+    before = hit.oldValue !== undefined ? patched(hit.oldValue) : undefined;
+  }
+  if ("equals" in condition) {
+    const mask = length === 4 ? 0xffffffff : (1 << (length * 8)) - 1;
+    return after === ((condition.equals & mask) >>> 0);
+  }
+  // Without the old value there's no telling it didn't change; stopping is the safe answer.
+  return before === undefined || before !== after;
+}

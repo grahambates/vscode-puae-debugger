@@ -1,6 +1,6 @@
 // Tests for the MCP watchpoint helpers: exact range coverage and hit reporting.
 
-import { alignedBlocks, customRegisterRange, describeHit } from "../mcp/watchpoints";
+import { alignedBlocks, conditionMet, customRegisterRange, describeHit } from "../mcp/watchpoints";
 
 describe("alignedBlocks", () => {
   const covered = (blocks: { address: number; size: number }[]) => blocks.reduce((n, b) => n + b.size, 0);
@@ -57,5 +57,41 @@ describe("describeHit with a confirmed copper instruction", () => {
   it("names the MOVE itself rather than the advanced list pointer", () => {
     const text = describeHit({ watchAddress: 0xdff180, addr: 0xdff180, accessKind: 2, sizeBits: 16, value: 1, source: 1, copperPc: 0xc8c, copperInstruction: 0xc88 });
     expect(text).toMatch(/by the copper MOVE at 0x00000c88/);
+  });
+});
+
+describe("conditionMet", () => {
+  const word = (hi: number, lo: number) => Uint8Array.from([hi, lo]);
+
+  it("judges a word variable by its whole value after a byte write into it", () => {
+    // Word at $100 holds $1200; a byte write of $00 to its low byte leaves $1200 — not 0.
+    const hit = { addr: 0x101, sizeBits: 8, value: 0x00, oldValue: 0x00 };
+    expect(conditionMet({ equals: 0 }, 0x100, 2, word(0x12, 0x00), hit)).toBe(false);
+    // ...and a byte write of $07 into a word that is otherwise 0 makes it $0007.
+    expect(conditionMet({ equals: 7 }, 0x100, 2, word(0, 0), { addr: 0x101, sizeBits: 8, value: 7, oldValue: 0 })).toBe(true);
+  });
+
+  it("matches a long write that covers the watched word", () => {
+    // move.l #$00050009,$FE: the word at $100 is the long's low half.
+    const hit = { addr: 0xfe, sizeBits: 32, value: 0x00050009, oldValue: 0 };
+    expect(conditionMet({ equals: 9 }, 0x100, 2, word(0, 0), hit)).toBe(true);
+  });
+
+  it("gives the same answer whether memory already holds the new value or the old one", () => {
+    const hit = { addr: 0x100, sizeBits: 16, value: 5, oldValue: 4 };
+    expect(conditionMet({ equals: 5 }, 0x100, 2, word(0, 4), hit)).toBe(true);
+    expect(conditionMet({ equals: 5 }, 0x100, 2, word(0, 5), hit)).toBe(true);
+  });
+
+  it("counts a write of the value already there as no change", () => {
+    expect(conditionMet({ changes: true }, 0x100, 2, word(0, 0), { addr: 0x101, sizeBits: 8, value: 0, oldValue: 0 })).toBe(false);
+    expect(conditionMet({ changes: true }, 0x100, 2, word(0, 0), { addr: 0x101, sizeBits: 8, value: 1, oldValue: 0 })).toBe(true);
+    // No old value recorded: can't rule a change out, so stop.
+    expect(conditionMet({ changes: true }, 0x100, 2, word(0, 0), { addr: 0x101, sizeBits: 8, value: 0 })).toBe(true);
+  });
+
+  it("takes a custom register's value from the write, and masks negatives to the width", () => {
+    expect(conditionMet({ equals: 0x0f00 }, 0xdff180, 2, undefined, { value: 0x0f00, sizeBits: 16 })).toBe(true);
+    expect(conditionMet({ equals: -1 }, 0x100, 2, word(0, 0), { addr: 0x100, sizeBits: 16, value: 0xffff, oldValue: 0 })).toBe(true);
   });
 });

@@ -22,7 +22,7 @@ import { ProfilerManager } from "../profilerManager";
 import { SourceMap } from "../sourceMap";
 import { describe as describeAddress, formatAddress as formatAddr, resolveBreakpointSpec } from "./breakpointSpec";
 import { DecodedLine, decodeRange, formatListing } from "./disassembly";
-import { alignedBlocks, Block, customRegisterRange, describeHit, WATCHPOINT_SLOTS, WatchKind } from "./watchpoints";
+import { alignedBlocks, Block, conditionMet, customRegisterRange, describeHit, WATCHPOINT_SLOTS, WatchCondition, WatchKind } from "./watchpoints";
 import { formatChipset, walkCopperList } from "./chipset";
 import { copperMoveBefore, isCustomRegisterAddress } from "../hardware";
 import { CUSTOM_REGISTER_OFFSETS, customRegisterName } from "../webview/shared/customRegisters";
@@ -110,6 +110,8 @@ export interface StopState {
   location: string;
   /** For a watchpoint stop: what was accessed, by whom, and the value. */
   detail?: string;
+  /** Writes to conditional watches that didn't meet their condition and were run past. */
+  skippedWrites?: number;
 }
 
 /** One step of emulator_input, already resolved (key names to RETROK_* codes). */
@@ -147,6 +149,10 @@ export interface WatchEntry {
   start: number;
   length: number;
   blocks: Block[];
+  /** Stop only when this holds for the watched value after the write. */
+  condition?: WatchCondition;
+  /** A custom register: write-only, so its value comes from the write itself, not memory. */
+  custom: boolean;
 }
 
 export interface InspectResult {
@@ -269,17 +275,40 @@ export class HeadlessSession {
    * that follows describe the frame this call ended on, rather than one somewhere after it.
    */
   public async run(frames: number): Promise<number> {
-    await this.emulator.run();
-    const ran = this.emulator.runFrames(frames);
-    this.framesRun += ran;
-    if (this.emulator.isPaused()) {
-      // Stopped early on a breakpoint/watch. The caller reports that as a short run; consume the
-      // stop so a later emulator_continue doesn't attribute it to its own run.
-      this.emulator.consumeStopMessage();
-    } else {
-      await this.emulator.pause(true);
+    // A stop here is reported by the caller as a short run; it has been consumed, so a later
+    // emulator_continue won't attribute it to its own run.
+    return (await this.runFrames(frames)).ran;
+  }
+
+  /**
+   * Runs up to `frames` frames and leaves the machine paused, returning how far it got and what
+   * stopped it, if anything. Every frame-running path goes through here, so a conditional watch
+   * behaves the same under continue, screenshots and input: a hit whose condition isn't met is
+   * resumed silently and only counted.
+   *
+   * Frames are counted the way runFrames counts them — a frame a stop lands in counts as run — so
+   * after a skipped hit that partial frame is un-counted: the next tick finishes it.
+   */
+  private async runFrames(frames: number): Promise<{ ran: number; stop?: ReturnType<HeadlessEmulator["consumeStopMessage"]>; skipped: number }> {
+    let ran = 0;
+    let skipped = 0;
+    for (;;) {
+      await this.emulator.run();
+      ran += this.emulator.runFrames(frames - ran);
+      if (!this.emulator.isPaused()) {
+        await this.emulator.pause(true);
+        this.framesRun += ran;
+        return { ran, skipped };
+      }
+      const stop = this.emulator.consumeStopMessage();
+      if (stop.name === "WATCHPOINT_REACHED" && !(await this.watchConditionMet(stop.payload as Record<string, number | undefined>))) {
+        skipped++;
+        ran--;
+        continue;
+      }
+      this.framesRun += ran;
+      return { ran, stop, skipped };
     }
-    return ran;
   }
 
   // --- Interactive debugging ---
@@ -351,15 +380,11 @@ export class HeadlessSession {
    * program that never reaches the breakpoint it was given.
    */
   public async continueUntilStop(maxFrames: number): Promise<StopState> {
-    await this.emulator.run();
-    const ran = this.emulator.runFrames(maxFrames);
-    this.framesRun += ran;
-    const hitBreakpoint = this.emulator.isPaused();
-    if (!hitBreakpoint) await this.emulator.pause(true);
-    // Consumed once per stop (see consumeStopMessage), so read it here and carry it in the
-    // returned state rather than asking again later.
-    const stop = hitBreakpoint ? this.emulator.consumeStopMessage() : undefined;
-    const state = await this.describeStop(ran, hitBreakpoint ? stop?.name ?? "BREAKPOINT_REACHED" : undefined);
+    // The stop is consumed once (see consumeStopMessage), so it's carried in the returned state
+    // rather than asked for again later.
+    const { ran, stop, skipped } = await this.runFrames(maxFrames);
+    const state = await this.describeStop(ran, stop ? stop.name ?? "BREAKPOINT_REACHED" : undefined);
+    if (skipped) state.skippedWrites = skipped;
     if (stop?.name === "CATCHPOINT_REACHED") {
       const p = stop.payload as Record<string, number | undefined>;
       const vector = p.vector ?? 0;
@@ -379,7 +404,9 @@ export class HeadlessSession {
       const watchAddress = p.pc ?? 0;
       const watch = this.listWatches().find((w) => w.blocks.some((b) => b.address === watchAddress));
       state.detail = `${watch ? `watch #${watch.id} (${watch.description}): ` : ""}` +
-        describeHit({ ...p, watchAddress, copperInstruction: await copperMoveBefore(p.copperPc, p.addr, (a, n) => this.emulator.readMemory(a, n)) }, this.sourceMap);
+        describeHit({ ...p, watchAddress, copperInstruction: await copperMoveBefore(p.copperPc, p.addr, (a, n) => this.emulator.readMemory(a, n)) }, this.sourceMap) +
+        // Counted across every conditional watch, not just the one that fired.
+        (skipped ? ` (${skipped} earlier write${skipped === 1 ? "" : "s"} to conditional watches didn't meet their condition)` : "");
     }
     return state;
   }
@@ -548,11 +575,19 @@ export class HeadlessSession {
    * size: 2 for a custom register, else 1) or a custom register by name (COLOR00, COP1LC).
    * Returns its description; the id is for removing it later.
    */
-  public async addWatch(spec: string, length: number | undefined, kind: WatchKind): Promise<WatchEntry> {
+  public async addWatch(spec: string, length: number | undefined, kind: WatchKind, condition?: WatchCondition): Promise<WatchEntry> {
     // A program symbol wins over a custom-register name, in the unlikely case both exist.
     const custom = this.sourceMap.getSymbols()[spec] === undefined ? customRegisterRange(spec) : undefined;
     const start = custom ? custom.address : resolveBreakpointSpec(spec, this.sourceMap).address;
     const size = length ?? custom?.size ?? 1;
+    if (condition) {
+      // A condition is about one value: a byte, word or long, written.
+      if (kind !== "write") throw new Error(`A value condition needs a write watch (got "${kind}").`);
+      if (custom && size !== 2) {
+        throw new Error(`${spec.toUpperCase()} is a pointer pair, written as two separate words — a value condition can't see the whole pointer at either write. Watch it without a condition.`);
+      }
+      if (![1, 2, 4].includes(size)) throw new Error(`A value condition needs a 1, 2 or 4 byte watch, not ${size} bytes.`);
+    }
     const blocks = alignedBlocks(start, size);
     const used = [...this.watches.values()].flatMap((w) => w.blocks);
     if (used.length + blocks.length > WATCHPOINT_SLOTS) {
@@ -576,15 +611,38 @@ export class HeadlessSession {
       });
     }
     const label = custom ? spec.toUpperCase() : describeAddress(start, this.sourceMap);
+    const when = condition === undefined ? ""
+      : "equals" in condition ? `, when it becomes $${(condition.equals >>> 0).toString(16).padStart(size * 2, "0")}`
+      : ", when its value changes";
     const entry: WatchEntry = {
       id: this.nextWatchId++,
-      description: `${kind} ${label}${size > 1 ? `, ${size} bytes` : ""}`,
+      description: `${kind} ${label}${size > 1 ? `, ${size} bytes` : ""}${when}`,
       start,
       length: size,
       blocks,
+      condition,
+      custom: !!custom,
     };
     this.watches.set(entry.id, entry);
     return entry;
+  }
+
+  /**
+   * Whether a watch hit meets its watch's condition — evaluated on the watched VALUE as it is
+   * after the write, not on the write itself. The emulator's own value test compares the access at
+   * the access's width, which is wrong for a variable: a `clr.b` of a word's low byte would match
+   * "== 0" while the word isn't 0, and a `move.l` across it would never match. So the watched
+   * bytes are read and the write's own bytes patched in — before and after — which also makes
+   * the answer independent of whether the hit fires before or after the store lands.
+   */
+  /** Whether a watch hit meets its watch's condition — see conditionMet in watchpoints.ts. */
+  private async watchConditionMet(p: Record<string, number | undefined>): Promise<boolean> {
+    const watchAddress = p.pc ?? 0;
+    const watch = this.listWatches().find((w) => w.blocks.some((b) => b.address === watchAddress));
+    if (!watch?.condition) return true;
+    // A custom register is write-only: there's nothing to read back, and it's written whole anyway.
+    const memory = watch.custom ? undefined : new Uint8Array(await this.emulator.readMemory(watch.start, watch.length));
+    return conditionMet(watch.condition, watch.start, watch.length, memory, p);
   }
 
   public async removeWatch(id: number): Promise<WatchEntry> {
