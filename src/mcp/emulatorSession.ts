@@ -68,6 +68,7 @@ export class HeadlessSession {
       baseDir: string;
       segmentOffsets: number[];
       entryPoint: number;
+      hasSourceInfo: boolean;
       kickstart?: { sha1: string; name: string };
     },
   ) {}
@@ -102,25 +103,22 @@ export class HeadlessSession {
     }
     const segmentOffsets = loaded.allocations.map((a) => a.address);
 
-    // Same format detection and fallbacks as DebugAdapter.attach(): the container and, within
-    // ELF, the debug format are decided by the file's bytes, never its extension.
+    // Same format detection as DebugAdapter.attach(): the container and, within ELF, the debug
+    // format are decided by the file's bytes, never its extension. Unlike the debugger, debug
+    // info is optional here — a screenshot or a capture of a stripped binary needs none — so
+    // anything without it falls back to the hunk file's own symbols, if any, and bare addresses.
     const baseDir = path.dirname(path.dirname(options.program));
-    let sourceMap: SourceMap;
+    let sourceMap: SourceMap | undefined;
     if (container === "elf") {
       const dwarf = parseDwarf(debugBytes);
       if (hasDwarfSections(dwarf)) {
         sourceMap = sourceMapFromDwarf(dwarf, segmentOffsets, baseDir);
       } else if (hasElfStabsSections(dwarf)) {
         sourceMap = sourceMapFromElfStabs(dwarf, extractElfStabs(debugBytes, dwarf), segmentOffsets);
-      } else {
-        emulator.dispose();
-        throw new Error(
-          `${debugProgramPath} is an ELF file with neither DWARF (.debug_info) nor GNU stabs debug sections`,
-        );
       }
-    } else {
-      sourceMap = sourceMapFromHunks(hunks, segmentOffsets);
     }
+    sourceMap ??= sourceMapFromHunks(hunks, segmentOffsets, { requireDebugInfo: false });
+    const hasSourceInfo = sourceMap.getSourceFiles().length > 0;
     // Lets ROM/OS leaves in a capture resolve to "[Kick] <name>" instead of a bare address.
     if (kickstartSymbols) {
       sourceMap.addSymbolModule(kickstartSymbols.segment, kickstartSymbols.symbols);
@@ -138,12 +136,18 @@ export class HeadlessSession {
       baseDir,
       segmentOffsets,
       entryPoint: loaded.entryPoint,
+      hasSourceInfo,
       kickstart: kickstartSymbols ? { sha1: kickstartSymbols.sha1, name: kickstartSymbols.name } : undefined,
     });
   }
 
   public get entryPoint(): number {
     return this.info.entryPoint;
+  }
+
+  /** False for a stripped binary: source-line breakpoints won't resolve, only addresses/symbols. */
+  public get hasSourceInfo(): boolean {
+    return this.info.hasSourceInfo;
   }
 
   public get segmentOffsets(): number[] {

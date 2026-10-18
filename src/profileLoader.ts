@@ -26,7 +26,8 @@ export function buildSourceMapFromBundle(program: Uint8Array, manifest: ProfileM
   const isElf = program.length >= 4 && ELF_MAGIC.every((b, i) => program[i] === b);
   const sourceMap = isElf
     ? sourceMapFromDwarf(parseDwarf(buf), segmentOffsets, baseDir)
-    : sourceMapFromHunks(parseHunks(buf), segmentOffsets);
+    // A capture of a stripped binary still loads; its functions just show as addresses.
+    : sourceMapFromHunks(parseHunks(buf), segmentOffsets, { requireDebugInfo: false });
 
   const kick = kickstartSymbolModuleBySha1(manifest.kickstart.sha1);
   if (kick) {

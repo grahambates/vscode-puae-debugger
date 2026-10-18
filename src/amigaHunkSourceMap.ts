@@ -24,11 +24,15 @@ import { parseStabs, StabVariable, buildStabVariable } from "./stabsParser";
  *
  * @param hunks Array of parsed Amiga hunks containing debug info
  * @param offsets Memory offset addresses where hunks are loaded
+ * @param options.requireDebugInfo Throw if there's no line info (default). Callers that can
+ *   work from addresses alone — a headless screenshot, a capture of a stripped binary — pass
+ *   false and get a map with whatever HUNK_SYMBOL symbols exist and no source lines.
  * @returns SourceMap instance for address-to-source resolution
  */
 export function sourceMapFromHunks(
   hunks: Hunk[],
   offsets: number[],
+  { requireDebugInfo = true }: { requireDebugInfo?: boolean } = {},
 ): SourceMap {
   const symbols: Record<string, number> = {};
   const locations: Location[] = [];
@@ -99,7 +103,7 @@ export function sourceMapFromHunks(
   }
 
   // Ensure we found some debug info
-  if (!sources.size) {
+  if (requireDebugInfo && !sources.size) {
     throw new Error(
       "Source map error: No debug information found in hunk executable",
     );

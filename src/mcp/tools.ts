@@ -17,6 +17,7 @@ import { analyseProfile } from "../profileAnalysis";
 import { renderCheck, renderDump } from "../profileReport";
 import { emulatorTools, EmulatorToolContext } from "./emulatorTools";
 import { ToolDefinition } from "./jsonRpc";
+import { expandHome } from "./paths";
 
 function requireString(args: Record<string, unknown>, key: string): string {
   const v = args[key];
@@ -38,7 +39,8 @@ let cache:
   | { file: string; stalls: boolean; instructions?: string; analysis: ReturnType<typeof analyseProfile> }
   | undefined;
 
-function load(file: string, stalls: boolean, instructions?: string): ReturnType<typeof analyseProfile> {
+function load(rawFile: string, stalls: boolean, instructions?: string): ReturnType<typeof analyseProfile> {
+  const file = expandHome(rawFile);
   if (cache && cache.file === file && cache.stalls === stalls && cache.instructions === instructions) {
     return cache.analysis;
   }

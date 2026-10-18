@@ -8,6 +8,7 @@
 // depends on — is covered by puae-wasm/test/test_mcp_emulator.mjs, which skips without a ROM.
 
 import { readFileSync } from "fs";
+import { homedir } from "os";
 import * as path from "path";
 import { inflateSync } from "zlib";
 import { MAX_CAPTURE_FRAMES } from "../shared/profilerTypes";
@@ -17,6 +18,7 @@ import { describe as describeAddress, resolveBreakpointSpec } from "../mcp/break
 import { emulatorTools } from "../mcp/emulatorTools";
 import type { HeadlessSession } from "../mcp/emulatorSession";
 import { encodePng } from "../mcp/png";
+import { expandHome } from "../mcp/paths";
 import { SessionRegistry } from "../mcp/sessionRegistry";
 import { buildTools } from "../mcp/tools";
 
@@ -264,5 +266,37 @@ describe("session registry", () => {
     } finally {
       spy.mockRestore();
     }
+  });
+});
+
+describe("paths", () => {
+  it("expands a leading ~ to the home directory", () => {
+    expect(expandHome("~/Documents/WinUAE/Kickstarts/Kick13.rom")).toBe(
+      path.join(homedir(), "Documents/WinUAE/Kickstarts/Kick13.rom"),
+    );
+    expect(expandHome("~")).toBe(homedir());
+  });
+
+  it("leaves other paths alone", () => {
+    expect(expandHome("/abs/kick.rom")).toBe("/abs/kick.rom");
+    expect(expandHome("rel/~/kick.rom")).toBe("rel/~/kick.rom");
+    expect(expandHome("~user/kick.rom")).toBe("~user/kick.rom");
+  });
+});
+
+describe("stripped programs", () => {
+  // A screenshot or a capture needs no symbols, so a binary without line info must still load.
+  const hunks = parseHunks(readFileSync(path.join(__dirname, "fixtures/amigaPrograms/gencop")))
+    .map((h) => ({ ...h, lineDebugInfo: [], stabs: [] }));
+
+  it("is still rejected by default, as the debugger expects", () => {
+    expect(() => sourceMapFromHunks(hunks, [0xc02140])).toThrow(/No debug information/);
+  });
+
+  it("yields an address-only map when debug info is optional", () => {
+    const sourceMap = sourceMapFromHunks(hunks, [0xc02140], { requireDebugInfo: false });
+    expect(sourceMap.getSourceFiles()).toEqual([]);
+    expect(resolveBreakpointSpec("0xc02280", sourceMap).address).toBe(0xc02280);
+    expect(() => describeAddress(0xc02280, sourceMap)).not.toThrow();
   });
 });

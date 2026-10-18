@@ -28,6 +28,7 @@ import { MAX_CAPTURE_FRAMES } from "../shared/profilerTypes";
 import { formatAddress } from "./breakpointSpec";
 import { HeadlessSession, InspectResult, LaunchOptions, StopState } from "./emulatorSession";
 import { ToolDefinition } from "./jsonRpc";
+import { expandHome } from "./paths";
 import { SessionRegistry } from "./sessionRegistry";
 
 /** Environment variable naming the Kickstart ROM, so callers needn't repeat it on every call. */
@@ -60,6 +61,15 @@ function optionalString(args: Record<string, unknown>, key: string): string | un
   if (v === undefined || v === null) return undefined;
   if (typeof v !== "string") throw new Error(`"${key}" must be a string`);
   return v;
+}
+
+function requirePath(args: Record<string, unknown>, key: string): string {
+  return expandHome(requireString(args, key));
+}
+
+function optionalPath(args: Record<string, unknown>, key: string): string | undefined {
+  const v = optionalString(args, key);
+  return v === undefined ? undefined : expandHome(v);
 }
 
 function boundedNumber(args: Record<string, unknown>, key: string, fallback: number, max: number, min = 1): number {
@@ -97,10 +107,11 @@ function memoryReads(args: Record<string, unknown>): { address: string; bytes: n
  * fastLoad injection needs a real ROM, and PUAE's built-in AROS fallback isn't one.
  */
 function resolveRom(args: Record<string, unknown>): string {
-  const explicit = optionalString(args, "kickstartRom");
+  const explicit = optionalPath(args, "kickstartRom");
   if (explicit) return explicit;
+  // Expanded too: `claude mcp add -e VAR=~/...` quotes the value, so no shell expands it.
   const fromEnv = process.env[ROM_ENV_VAR];
-  if (fromEnv) return fromEnv;
+  if (fromEnv) return expandHome(fromEnv);
   throw new Error(
     `No Kickstart ROM: pass "kickstartRom", or set ${ROM_ENV_VAR} in this server's environment ` +
       `(e.g. claude mcp add puae -e ${ROM_ENV_VAR}=/path/to/kick31.rom -- npx -y puae-debugger mcp). ` +
@@ -122,8 +133,8 @@ function configLines(args: Record<string, unknown>): string | undefined {
 function launchOptions(ctx: EmulatorToolContext, args: Record<string, unknown>): LaunchOptions {
   return {
     rootDir: ctx.rootDir,
-    program: requireString(args, "program"),
-    debugProgram: optionalString(args, "debugProgram"),
+    program: requirePath(args, "program"),
+    debugProgram: optionalPath(args, "debugProgram"),
     kickstartRom: resolveRom(args),
     extraConfig: configLines(args),
   };
@@ -275,6 +286,9 @@ export function emulatorTools(ctx: EmulatorToolContext): ToolDefinition[] {
         const id = registry.add(session, requireString(args, "program"));
         return (
           `Session ${id} — paused at entry point ${formatAddress(session.entryPoint)}, before the first instruction.\n` +
+          (session.hasSourceInfo
+            ? ""
+            : "No source-level debug info: breakpoints and memory reads take addresses or hunk symbols only, not file:line.\n") +
           (armed.length ? `Breakpoints: ${armed.join("; ")}\n` : "No breakpoints set.\n") +
           `Continue with emulator_continue { "session": "${id}" }; close it with emulator_close when done.`
         );
@@ -283,7 +297,7 @@ export function emulatorTools(ctx: EmulatorToolContext): ToolDefinition[] {
     {
       name: "emulator_continue",
       description:
-        "Resume a session and run until a breakpoint (or watchpoint) fires, or until `maxFrames` " +
+        "Resume a session and run until a breakpoint fires, or until `maxFrames` " +
         "emulated frames have passed — whichever comes first, so this can't hang on a program " +
         "that never reaches the breakpoint. Reports where it stopped and why. Follow with " +
         "emulator_inspect to read registers, the call stack and memory at that point.",
@@ -418,7 +432,7 @@ export function emulatorTools(ctx: EmulatorToolContext): ToolDefinition[] {
           const ran = frames > 0 ? await session.run(frames) : 0;
           const shot = session.screenshot();
           const name = optionalString(args, "program") ?? `session-${optionalString(args, "session")}`;
-          const path = writeOutput(optionalString(args, "out"), name, ".png", shot.png);
+          const path = writeOutput(optionalPath(args, "out"), name, ".png", shot.png);
           const stoppedEarly = ran < frames ? ` (stopped after ${ran} — the program hit a breakpoint or halted)` : "";
           return (
             `Wrote ${shot.width}x${shot.height} PNG to ${path}\n` +
@@ -463,7 +477,7 @@ export function emulatorTools(ctx: EmulatorToolContext): ToolDefinition[] {
           const ran = warmupFrames > 0 ? await session.run(warmupFrames) : 0;
           const capture = await session.captureProfile(frames);
           const name = optionalString(args, "program") ?? `session-${optionalString(args, "session")}`;
-          const path = writeOutput(optionalString(args, "out"), name, ".puaeprofile", capture.bytes);
+          const path = writeOutput(optionalPath(args, "out"), name, ".puaeprofile", capture.bytes);
           // Verified here rather than left for the caller: a capture whose frames don't add up is
           // not worth reasoning about, and the alternative — the model reading the numbers first
           // and validating afterwards, if at all — is exactly the failure this check exists for.
