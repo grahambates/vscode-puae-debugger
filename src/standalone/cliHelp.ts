@@ -18,7 +18,7 @@ Usage:
   puae-debugger [options]                 Start the debug adapter + emulator UI server (default)
   puae-debugger profile <dump|check> ...  Inspect a saved .puaeprofile capture
   puae-debugger mcp                       Serve the emulator and profile analysis over MCP (stdio)
-  puae-debugger skill install [...]       Install the puae-profiling skill into .claude/skills
+  puae-debugger skill install [...]       Install the puae-profiling and puae-debugging skills
 
 Server options:
   --port N        DAP port to listen on (default 4711)

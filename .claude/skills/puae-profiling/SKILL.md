@@ -17,7 +17,9 @@ that don't live in any one comment.
 
 ```
 npx puae-debugger profile check <file.puaeprofile> [--json]
-npx puae-debugger profile dump  <file.puaeprofile> [--frame N] [--functions N] [--stalls] [--json]
+npx puae-debugger profile dump  <file.puaeprofile> [--frame N] [--functions N] [--sort self|total]
+                                [--tree] [--callers NAME] [--flame] [--lines FROM-TO] [--blits]
+                                [--copper] [--instructions NAME] [--stalls] [--json]
 ```
 
 (Working inside a checkout of the debugger itself? `node out/standalone.js profile ...` is the
@@ -36,7 +38,8 @@ rather than a number of frames in, `emulator_launch` + `emulator_continue` stop 
 first, and `emulator_capture_profile` then records from exactly that state via its `session`
 argument. Everything below applies unchanged to a capture made
 this way, with one exception: it carries no filmstrip thumbnails, which nothing in the analysis
-uses.
+uses. (For *behaviour* rather than cost — a crash, a corrupted variable, a wrong screen — the
+**puae-debugging** skill covers the rest of those emulator tools.)
 
 Run `check` **before** reading any per-function percentage by eye, and before proposing an
 optimization based on what a flame graph looks like. A profile's numbers are easy to rationalize
@@ -68,11 +71,13 @@ folding, and the DMA bus use within just those lines).
 
 **`--blits` lists every blit** (the Blitter view): start and end as `line:hpos`, duration in
 slots, operation and size, minterm, symbolicated channel pointers and modulos, and which CPU
-function started it. Blitter registers are write-only and only writes *inside* the captured frame
-are recorded, so a register set once before the capture (a BLTCON0 written at init, say) shows as
-"set before the capture, not recorded" — and with BLTCON0 unknown the operation prints as `?`.
-Don't reason from those fields; recapture from a point where the program writes them, or read
-them live with `emulator_inspect { chipset: true }`.
+function started it. Blitter registers are write-only, so a value the program set *before* the
+frame comes from the capture's frame-start register snapshot — for BLTCON0/1, the masks and the
+modulos, which only the CPU writes. Channel pointers can't be filled in that way (the blitter
+advances them as it runs), so an unwritten pointer is listed as "set before the capture, not
+recorded"; so is everything in a capture made before the snapshot was recorded at the frame's
+start, where an unknown BLTCON0 prints the operation as `?`. Don't reason from those fields;
+recapture with the current build, or read the registers live with `emulator_inspect { chipset: true }`.
 
 **`--copper` is what the copper actually did** this frame: each executed instruction with its
 `line:hpos`, and for every WAIT how long it really waited. That differs from decoding the list
@@ -207,8 +212,8 @@ that can drift from it.
 `--json` is the widest view the CLI gives: the whole `ProfileAnalysis`, not just what the text
 report prints, so reach for it before concluding the tool can't answer the question — and note
 that per-instruction detail only appears in it when `--instructions` asked for it, so an absence
-in the JSON is not evidence the data doesn't exist. Beyond that (a specific DMA cell, the copper
-trace, register values at one sample) you need the debugger's own sources checked out, where
+in the JSON is not evidence the data doesn't exist. Beyond that (a specific DMA cell, register
+values at one sample) you need the debugger's own sources checked out, where
 `loadProfile`/`decodeCapture` can be called from a small Node script. **Do not hand-parse the gzip/manifest/section format instead** — that reimplementation is
 exactly what used to happen before this tool existed, and it's how a decode mistake gets mistaken
 for a data bug. Ask for the numbers you need to be added to `dump` rather than reconstructing

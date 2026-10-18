@@ -27,6 +27,6 @@ Initial release.
 ### Standalone CLI (`npm install -g puae-debugger`)
 
 - Standalone DAP server for nvim-dap, Emacs `dap-mode` and other DAP clients, serving the emulator and tool panels to a browser tab.
-- `profile dump|check` for inspecting and verifying `.puaeprofile` captures from the command line.
-- `mcp` server exposing a headless emulator (screenshots, profile capture, breakpoints, stepping, inspection) and profile analysis to MCP clients.
-- `skill install` for the `puae-profiling` Claude Code skill.
+- `profile dump|check` for inspecting and verifying `.puaeprofile` captures from the command line: self and total time, call tree and callers, the flame graph as text by raster line, blits, the executed copper trace, and repeated-frame detection.
+- `mcp` server exposing a headless emulator and profile analysis to MCP clients: screenshots and profile capture; sessions with breakpoints, exception stops, watchpoints, stepping and snapshots; registers, memory, decoded chipset state, copper lists and disassembly; and writes to memory, CPU and custom registers.
+- `skill install` for the `puae-profiling` and `puae-debugging` Claude Code skills.

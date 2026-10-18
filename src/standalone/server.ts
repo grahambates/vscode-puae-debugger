@@ -37,7 +37,7 @@ if (process.argv[2] === "profile") {
   process.exit(runProfileCli(process.argv.slice(3)));
 }
 
-// `puae-debugger skill install` — copies the packaged puae-profiling skill into a project's
+// `puae-debugger skill install` — copies the packaged skills (puae-profiling, puae-debugging) into a project's
 // .claude/skills (see skillCli.ts). Same reasoning as `profile` above: no DAP/HTTP server, no
 // emulator, so it's dispatched before any of that starts.
 if (process.argv[2] === "skill") {

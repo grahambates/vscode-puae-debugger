@@ -45,6 +45,7 @@
     "puae/puae.wasm",
     "puae/vscodeDefaultTheme.css",
     ".claude/skills/puae-profiling/SKILL.md",
+    ".claude/skills/puae-debugging/SKILL.md",
     "THIRD_PARTY_NOTICES.md",
     "LICENSES/",
     "CHANGELOG.md"
