@@ -3,7 +3,7 @@
 // terminal and a number a model reads over MCP should never be formatted differently, or a
 // conversation about one won't transfer to the other.
 
-import { CallerPath, CallTreeNode, FlameBox, FlameView, FrameAnalysis, InstructionAnalysis, ProfileAnalysis, ScreenUpdates, StallAnalysis } from "./profileAnalysis";
+import { BlitAnalysis, CallerPath, CallTreeNode, FlameBox, FlameView, FrameAnalysis, InstructionAnalysis, ProfileAnalysis, ScreenUpdates, StallAnalysis } from "./profileAnalysis";
 
 export function pct(v: number): string {
   return `${v.toFixed(1)}%`;
@@ -170,6 +170,43 @@ export function renderFlame(v: FlameView, frameIndex: number, label: (fn: { name
   return out;
 }
 
+function renderBlits(b: BlitAnalysis, frameCycles: number, frameIndex: number): string[] {
+  const out = [
+    "",
+    `  Blits, frame ${frameIndex}: ${b.blits.length} blit(s); the blitter had the bus for ${b.busySlots} slots ` +
+      `(${pct(frameCycles > 0 ? (b.busySlots / frameCycles) * 100 : 0)} of the frame).`,
+  ];
+  if (b.fastBlitter) {
+    out.push("  NOTE: BLTSIZE was written but no blitter bus cycles were captured — a fast (non-cycle-exact) blitter, so start/end times are estimates.");
+  }
+  if (b.blits.length === 0) return out;
+  if (b.blits.some((blit) => blit.unseen.length)) {
+    out.push("  Blitter registers are write-only and only writes inside the frame are recorded: a value set before the capture shows as 0 and is listed as unrecorded.");
+  }
+  out.push("", `  ${"#".padStart(3)}  ${"start".padStart(7)}  ${"end".padStart(7)}  ${"slots".padStart(6)}  ${"operation".padEnd(26)}${"minterm".padEnd(22)}started by`);
+  for (const blit of b.blits) {
+    const end = blit.finished ? lastPos(blit.endSlot + 1) : "running>";
+    const slots = blit.finished ? String(blit.endSlot - blit.startSlot) : "-";
+    out.push(
+      `  ${String(blit.index).padStart(3)}  ${linePos(blit.startSlot).padStart(7)}  ${end.padStart(7)}  ${slots.padStart(6)}  ` +
+      `${blit.label.padEnd(26)}${`${blit.minterm} ${blit.mintermExpr}`.padEnd(22)}${blit.startedBy ?? "?"}`,
+    );
+    const chans = blit.channels.map((c) => {
+      const what = c.ptr ?? `literal ${c.literal}`;
+      const extra = [c.modulo ? `mod ${c.modulo}` : "", c.shift ? `shift ${c.shift}` : ""].filter(Boolean).join(", ");
+      return `${c.label.replace("Source ", "").replace("Destination", "D")}=${what}${extra ? ` (${extra})` : ""}`;
+    });
+    if (blit.unseen.includes("BLTCON0")) {
+      out.push(`  ${"".padStart(3)}  operation and channels unknown: BLTCON0 was set before the capture`);
+    } else if (chans.length) {
+      out.push(`  ${"".padStart(3)}  ${chans.join("  ")}`);
+    }
+    const other = blit.unseen.filter((r) => r !== "BLTCON0");
+    if (other.length) out.push(`  ${"".padStart(3)}  set before the capture, not recorded: ${other.join(" ")}`);
+  }
+  return out;
+}
+
 function renderCallers(paths: CallerPath[], query: string, frameIndex: number): string[] {
   const out = ["", `  Calls into ${query}, frame ${frameIndex} (cycles including what it calls, by call path)`];
   if (paths.length === 0) {
@@ -225,6 +262,7 @@ function dumpFrame(
   if (f.callTree) out.push(...renderCallTree(f.callTree, f.cycles, f.index, label));
   if (f.callers) out.push(...renderCallers(f.callers, callersQuery ?? "", f.index));
   if (f.flame) out.push(...renderFlame(f.flame, f.index, label));
+  if (f.blits) out.push(...renderBlits(f.blits, f.cycles, f.index));
   if (f.stalls) out.push(...renderStalls(f.stalls, limit, f.index));
   if (f.instructionDetail) {
     out.push(...renderInstructions(f.instructionDetail, f.index));

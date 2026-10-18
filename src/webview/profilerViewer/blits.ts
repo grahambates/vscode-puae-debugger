@@ -46,6 +46,10 @@ export interface Blit {
   dat: number[]; // [A,B,C] data registers (literal value shown for a disabled channel; D has none)
   mod: number[]; // [A,B,C,D] modulos (signed)
   mode: BlitMode;
+  // Blitter registers not written in the captured frame before this blit started — they were
+  // set before the capture, so their fields above read 0 rather than the real value (see the
+  // LIMITATION note in this file's header). Empty when everything the blit uses was seen.
+  unseen: string[];
 }
 
 // Result of reconstructing one capture's blits.
@@ -122,11 +126,25 @@ export function channelStrideBytes(blit: Blit, modulo: number): number {
     : Math.min(512, Math.max(1, Math.abs(blit.width * 2 + modulo)));
 }
 
+// The registers a blit's reconstruction depends on. With BLTCON0 itself unseen the channel
+// enables are unknown, so every channel's registers count.
+function blitRegsUsed(con0: number, con0Seen: boolean): string[] {
+  const names = ["BLTCON0", "BLTCON1"];
+  for (let c = 0; c < 4; c++) {
+    if (con0Seen && !(con0 & USE[c])) continue;
+    const ch = "ABCD"[c];
+    names.push(`BLT${ch}PTH`, `BLT${ch}PTL`, `BLT${ch}MOD`);
+  }
+  if (!con0Seen || con0 & USE[0]) names.push("BLTAFWM", "BLTALWM");
+  return names;
+}
+
 // Reconstruct every blit in the captured frame from the DMA grid.
 export function getBlits(dma: IDmaModel): BlitResult {
   const { owner, flags, addr, value } = dma;
   const N = owner.length;
   const regs = new Uint16Array(256); // shadow register file (intra-frame writes only)
+  const written = new Uint8Array(256); // which shadow entries a write has actually set
   const regL = (off: number): number => (((regs[off >> 1] << 16) | regs[(off + 2) >> 1]) >>> 0);
 
   const blits: Blit[] = [];
@@ -142,6 +160,7 @@ export function getBlits(dma: IDmaModel): BlitResult {
     if (f & DMA_WRITE && dmaIsCustomReg(owner[i], f, addr[i])) {
       const reg = addr[i] & 0x1fe;
       regs[reg >> 1] = value[i];
+      written[reg >> 1] = 1;
 
       const ocs = reg === R.BLTSIZE;
       const ecs = reg === R.BLTSIZH;
@@ -172,6 +191,7 @@ export function getBlits(dma: IDmaModel): BlitResult {
           dat: DAT.map((o) => regs[o >> 1]),
           mod: MOD.map((o) => coerce16(regs[o >> 1])),
           mode: modeOf(con1),
+          unseen: blitRegsUsed(con0, !!written[R.BLTCON0 >> 1]).filter((name) => !written[R[name] >> 1]),
         });
         lastDWrite.push(-1);
         lastCell.push(-1);

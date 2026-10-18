@@ -130,3 +130,27 @@ describe("blitTooltip", () => {
     expect(blitTooltip(blit).size).toBe("32x3px");
   });
 });
+
+describe("getBlits: registers set before the capture", () => {
+  it("lists the registers a blit uses that weren't written in the frame", () => {
+    const g = grid(16);
+    regWrite(g, 0, BLTCON0, 0x0100); // D only, minterm 0: a clear
+    regWrite(g, 1, BLTDPTH, 0x0001);
+    regWrite(g, 2, BLTDPTL, 0x0000);
+    regWrite(g, 3, BLTSIZE, (1 << 6) | 1);
+    const [b] = getBlits(g).blits;
+    // Only D is enabled, so A/B/C's registers don't count; BLTCON1 and BLTDMOD were never written.
+    expect(b.unseen).toEqual(["BLTCON1", "BLTDMOD"]);
+  });
+
+  it("treats every channel as unknown when BLTCON0 itself was never written", () => {
+    const g = grid(8);
+    regWrite(g, 0, BLTDPTH, 0x0001);
+    regWrite(g, 1, BLTDPTL, 0x0000);
+    regWrite(g, 2, BLTSIZE, (1 << 6) | 1);
+    const [b] = getBlits(g).blits;
+    expect(b.unseen).toContain("BLTCON0");
+    expect(b.unseen).toContain("BLTAPTH");
+    expect(b.unseen).not.toContain("BLTDPTH");
+  });
+});

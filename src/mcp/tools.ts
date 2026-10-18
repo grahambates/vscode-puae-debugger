@@ -125,6 +125,13 @@ export const TOOLS: ToolDefinition[] = [
             "start and end as raster line:hpos — positioned exactly as the profiler's flame graph draws them. " +
             "Answers timing questions: does DrawBars finish before line 44, what runs during the blit.",
         },
+        blits: {
+          type: "boolean",
+          description:
+            "Include every blit (the profiler's Blitter view): start and end as raster line:hpos, duration, " +
+            "operation and size, channels, minterm, symbolicated pointers and modulos, and which CPU function " +
+            "started it. Read with the DMA census: a frame can be blitter-bound with the CPU mostly waiting.",
+        },
         lines: {
           type: "string",
           description: 'Zoom the flame graph to raster lines "FROM-TO" (e.g. "40-80"), with finer folding and the DMA bus use in that window. Implies flame.',
@@ -153,7 +160,8 @@ export const TOOLS: ToolDefinition[] = [
       if (sort !== "self" && sort !== "total") throw new Error(`"sort" must be "self" or "total"`);
       const lines = args.lines === undefined ? undefined : parseLineRange(requireString(args, "lines"));
       const flame = lines ?? args.flame === true;
-      return renderDump(load(file, { stalls, instructions, callTree, callers, flame }), frame, functions ?? 12, sort);
+      const blits = args.blits === true;
+      return renderDump(load(file, { stalls, instructions, callTree, callers, flame, blits }), frame, functions ?? 12, sort);
     },
   },
 ];

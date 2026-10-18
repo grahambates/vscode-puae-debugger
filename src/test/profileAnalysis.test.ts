@@ -1,7 +1,7 @@
 import { readFileSync } from "fs";
 import * as path from "path";
-import { analyseFrame, analyseInstructions, analyseProfile, buildCallTree, buildFlame, callersOf, checkFrame, FlameBox, parseLineRange, FrameAnalysis, ProfileFinding, ProfileRequestError, selectInstructionDetail, summariseScreenUpdates } from "../profileAnalysis";
-import { BusOwner, Category, DMA_CODE, IDisassembledFunction, IProfileModel } from "../shared/profilerTypes";
+import { analyseBlits, analyseFrame, analyseInstructions, analyseProfile, buildCallTree, buildFlame, callersOf, checkFrame, FlameBox, parseLineRange, FrameAnalysis, ProfileFinding, ProfileRequestError, selectInstructionDetail, summariseScreenUpdates } from "../profileAnalysis";
+import { BusOwner, Category, DMA_CODE, DMA_WRITE, IDisassembledFunction, IProfileModel } from "../shared/profilerTypes";
 import { loadProfile } from "../profileLoader";
 import { renderFlame } from "../profileReport";
 import { createTopDownGraph } from "../webview/profilerViewer/topDownGraph";
@@ -595,5 +595,36 @@ describe("flame graph rendering", () => {
     ).join("\n");
     expect(text).toMatch(/×5 \[compute, WaitBlit\], every ~8\.0 lines — first one:/);
     expect(text.match(/ compute$/gm)).toHaveLength(1); // the example iteration only
+  });
+});
+
+describe("analyseBlits", () => {
+  // twoFunctionModel's 30 cycles spread over a 30-slot grid: hot runs slots 0-19, cold 20-29.
+  function modelWithBlit(writeCon0: boolean): IProfileModel {
+    const model = twoFunctionModel();
+    const n = 30;
+    const dma = { owner: new Uint8Array(n), flags: new Uint8Array(n), addr: new Uint32Array(n), value: new Uint16Array(n) };
+    const write = (i: number, off: number, value: number) => {
+      dma.owner[i] = BusOwner.CPU; dma.flags[i] = DMA_WRITE; dma.addr[i] = 0xdff000 + off; dma.value[i] = value;
+    };
+    if (writeCon0) write(0, 0x040, 0x0100);
+    write(1, 0x054, 0x0001);
+    write(2, 0x056, 0x0000);
+    write(3, 0x058, (1 << 6) | 1);
+    for (let i = 4; i < 8; i++) { dma.owner[i] = BusOwner.BLITTER; dma.flags[i] = DMA_WRITE; }
+    return { ...model, dma };
+  }
+
+  it("names the function that started the blit and its timing", () => {
+    const b = analyseBlits(modelWithBlit(true))!;
+    expect(b.busySlots).toBe(4);
+    expect(b.blits[0]).toMatchObject({ startSlot: 3, endSlot: 7, finished: true, startedBy: "hot", label: "Clear ---D 16x1px" });
+  });
+
+  it("refuses to describe an operation whose BLTCON0 it never saw", () => {
+    const blit = analyseBlits(modelWithBlit(false))!.blits[0];
+    expect(blit.label).toBe("? 16x1px");
+    expect(blit.minterm).toBe("?");
+    expect(blit.unseen).toContain("BLTCON0");
   });
 });

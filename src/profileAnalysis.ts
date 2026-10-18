@@ -18,7 +18,9 @@
 //   - registers-truncated    → the register cap that used to stop profile recording outright
 //   - frame-short            → the profile buffer running out mid-capture
 
-import { buildColumns, buildSampleSlots } from "./webview/profilerViewer/columns";
+import { buildColumns, buildSampleSlots, columnIndexAtX } from "./webview/profilerViewer/columns";
+import { blitLabel, blitTooltip, getBlits } from "./webview/profilerViewer/blits";
+import { createSymbolizer } from "./webview/profilerViewer/symbols";
 import { BusOwner, DMA_HPOS, IComputedNode, IDisassembledFunction, ILocation, IProfileModel, REG_COUNT } from "./shared/profilerTypes";
 import { loadProfile } from "./profileLoader";
 import { ProfileManifest } from "./profileFormat";
@@ -126,6 +128,38 @@ export interface FlameView {
   dma: DmaOwnerCount[];
 }
 
+/** One blitter operation, as the profiler's Blitter view reconstructs it from the DMA grid. */
+export interface BlitSummary {
+  index: number;
+  /** "Blit ABCD 64x32px", "Clear --CD 320x256px", "Line A-CD 120px" — the view's own label. */
+  label: string;
+  startSlot: number;
+  /** The final D write; equal to startSlot if no blitter cycles were seen after the start. */
+  endSlot: number;
+  /** False when the blit was still running when the frame ended (or the capture had no blitter cycles). */
+  finished: boolean;
+  minterm: string; // "$ca"
+  mintermExpr: string; // "AB + ĀC"
+  /** The CPU function running when BLTSIZE was written — the code that started this blit. */
+  startedBy?: string;
+  /** Channel pointers and modulos, for the channels that take part; symbolicated where possible. */
+  channels: { label: string; ptr?: string; literal?: string; modulo: number; shift?: number }[];
+  /**
+   * Registers last written before the capture began, so the values above read 0 for them rather
+   * than what the blitter actually used (the registers are write-only; only writes inside the
+   * frame are recorded). With BLTCON0 here, the operation and channels themselves are unknown.
+   */
+  unseen: string[];
+}
+
+export interface BlitAnalysis {
+  blits: BlitSummary[];
+  /** Slots the blitter owned the bus this frame. */
+  busySlots: number;
+  /** BLTSIZE writes but no blitter bus cycles: a fast (non-cycle-exact) blitter; timings are estimates. */
+  fastBlitter: boolean;
+}
+
 /** One call path into a function, and the cycles spent in it (including callees) via that path. */
 export interface CallerPath {
   path: string[]; // outermost first, ending with the function itself
@@ -162,6 +196,8 @@ export interface FrameAnalysis {
   callers?: CallerPath[];
   /** Present only when the flame graph was requested. */
   flame?: FlameView;
+  /** Present only when blits were requested and the capture has a DMA grid. */
+  blits?: BlitAnalysis;
   /**
    * The screen output is byte-identical to the previous frame's — the profiler filmstrip's "="
    * badge. Never true for frame 0 (nothing earlier in the capture to compare against).
@@ -467,6 +503,59 @@ export function buildFlame(model: IProfileModel, lines?: { from: number; to: num
     dma.sort((a, b) => b.cells - a.cells);
   }
   return { start: winStart, end: winEnd, minSlots, boxes: top, folded: sortFolded(topFolded), anchored, dma };
+}
+
+/**
+ * The frame's blits, reconstructed exactly as the Blitter view does (getBlits over the DMA grid),
+ * plus which CPU function started each — the code that wrote BLTSIZE, from the flame graph's own
+ * column layout at that slot.
+ */
+export function analyseBlits(model: IProfileModel): BlitAnalysis | undefined {
+  if (!model.dma) return undefined;
+  const { blits, fastBlitter } = getBlits(model.dma);
+  const symbolize = createSymbolizer(model.symbols);
+  const pointer = (addr: number) => {
+    const sym = symbolize(addr);
+    return `$${(addr >>> 0).toString(16).padStart(6, "0")}${sym ? ` (${sym})` : ""}`;
+  };
+  const columns = buildColumns(model);
+  const slots = model.dma.owner.length;
+  const leafAt = (slot: number): string | undefined => {
+    const col = columns[columnIndexAtX(columns, (slot + 0.5) / slots)];
+    let cell = col?.rows[col.rows.length - 1];
+    if (typeof cell === "number") cell = columns[cell].rows[col.rows.length - 1];
+    return (cell as ILocation | undefined)?.callFrame.functionName;
+  };
+  let busySlots = 0;
+  for (const o of model.dma.owner) if (o === BusOwner.BLITTER) busySlots++;
+  return {
+    fastBlitter,
+    busySlots,
+    blits: blits.map((blit, index) => {
+      const tip = blitTooltip(blit);
+      // Without BLTCON0 the operation, channels and minterm are all reconstructed from a 0 that
+      // was never written; only the size (from BLTSIZE itself) is known.
+      const opKnown = !blit.unseen.includes("BLTCON0");
+      return {
+        index,
+        label: opKnown ? blitLabel(blit) : `? ${tip.size}`,
+        startSlot: blit.startSlot,
+        endSlot: blit.endSlot,
+        finished: blit.finished,
+        minterm: opKnown ? tip.mintermHex : "?",
+        mintermExpr: opKnown ? tip.mintermExpr : "",
+        startedBy: leafAt(blit.startSlot),
+        channels: tip.channels.map((c) => ({
+          label: c.label,
+          ptr: c.ptr !== undefined ? pointer(c.ptr) : undefined,
+          literal: c.literal !== undefined ? `$${c.literal.toString(16).padStart(4, "0")}` : undefined,
+          modulo: c.modulo,
+          shift: c.shift,
+        })),
+        unseen: [...new Set(blit.unseen.map((r) => r.replace(/PT[HL]$/, "PT")))],
+      };
+    }),
+  };
 }
 
 /** "40-80" or "44" as an inclusive range of raster lines, for zooming the flame graph. */
@@ -886,6 +975,7 @@ export function analyseProfile(
     callers?: string;
     /** The flame graph: the whole frame (true), or just these raster lines. */
     flame?: boolean | { from: number; to: number };
+    blits?: boolean;
   } = {},
 ): ProfileAnalysis {
   const { frames, manifest } = loadProfile(file);
@@ -895,6 +985,7 @@ export function analyseProfile(
     if (opts.stalls) a.stalls = analyseStalls(f.model.disassembly, a.zeroCostSamples);
     if (opts.callTree) a.callTree = buildCallTree(f.model);
     if (opts.flame) a.flame = buildFlame(f.model, opts.flame === true ? undefined : opts.flame);
+    if (opts.blits) a.blits = analyseBlits(f.model);
     return a;
   });
   let callersName: string | undefined;

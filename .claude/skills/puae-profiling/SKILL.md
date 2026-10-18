@@ -66,6 +66,14 @@ DMA-anchored layout the flame graph draws. Short boxes fold into `+ name ×count
 repeating loop body prints once as `×N [...], every ~K lines`. `--lines 40-80` zooms in (finer
 folding, and the DMA bus use within just those lines).
 
+**`--blits` lists every blit** (the Blitter view): start and end as `line:hpos`, duration in
+slots, operation and size, minterm, symbolicated channel pointers and modulos, and which CPU
+function started it. Blitter registers are write-only and only writes *inside* the captured frame
+are recorded, so a register set once before the capture (a BLTCON0 written at init, say) shows as
+"set before the capture, not recorded" — and with BLTCON0 unknown the operation prints as `?`.
+Don't reason from those fields; recapture from a point where the program writes them, or read
+them live with `emulator_inspect { chipset: true }`.
+
 **`--instructions <function>` goes a level deeper**, and is the answer to "which instruction in
 this routine costs the time" — cycles, hits and cycles-per-execution for every instruction in
 one function, in address order, plus (on a 68000 capture) the datasheet cost of each and the
