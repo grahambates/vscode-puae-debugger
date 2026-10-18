@@ -7,8 +7,10 @@ description: Debug an Amiga program by running it in the PUAE emulator through t
 
 This is a **playbook**: which tool answers which question, and which of their answers can't be
 taken at face value. It assumes the `puae-debugger` MCP server is registered (`npx puae-debugger
-mcp`). For "why is this slow", use the **puae-profiling** skill instead — this one is about
-behaviour, not cost.
+mcp`). It's about behaviour; for cost — "why is this slow", does it fit in a frame, did an
+optimization help — use the **puae-profiling** skill. That one also captures profiles with
+these same tools (`emulator_capture_profile`), including from a session you've already run to
+the interesting point here, so a debugging session can go straight on to measuring.
 
 ## Setup
 

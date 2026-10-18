@@ -1,17 +1,46 @@
 ---
 name: puae-profiling
-description: Investigate a .puaeprofile capture from the PUAE Amiga debugger/profiler — diagnose why a routine or frame is slow, verify a suspicious flame-graph reading, or check a capture is trustworthy before drawing conclusions from it. Use whenever a .puaeprofile file, a profiler/flame-graph reading, or "why is this function/frame slow" comes up in an Amiga project.
+description: Profile an Amiga program with the PUAE debugger — capture frames with the puae-debugger MCP tools or read a .puaeprofile saved from the profiler, then diagnose why a routine or frame is slow, verify a suspicious flame-graph reading, check a capture is trustworthy, or measure whether an optimization helped. Use whenever "why is this function/frame slow", frame-rate or overrun questions, a .puaeprofile file or a profiler/flame-graph reading comes up in an Amiga project.
 ---
 
-# Profiling .puaeprofile captures
+# Profiling Amiga programs with puae-debugger
 
 This is a **playbook**, not a format spec. It assumes only that the `puae-debugger` npm package
-is available (`npx puae-debugger ...`) and that you have a `.puaeprofile` file captured from the
-PUAE debugger's profiler — you do not need its source checked out. If you do have it, the
-container layout, sample encoding and DMA grid format are documented as header comments in
-`src/profileFormat.ts`, `src/profilerManager.ts` (`decodeProfileStream`, `buildProfileModel`) and
-`src/shared/dma.ts`; this file is instead about what to do with a capture, and the physical facts
-that don't live in any one comment.
+is available (`npx puae-debugger ...`) — you do not need its source checked out. If you do have
+it, the container layout, sample encoding and DMA grid format are documented as header comments
+in `src/profileFormat.ts`, `src/profilerManager.ts` (`decodeProfileStream`, `buildProfileModel`)
+and `src/shared/dma.ts`; this file is instead about what to do with a capture, and the physical
+facts that don't live in any one comment.
+
+## Getting a capture
+
+Everything below works on a `.puaeprofile` file, which comes from one of two places:
+
+- **The user saved one** from the profiler panel in VS Code or the standalone debugger. Use it
+  as is.
+- **You make one** with the `puae-debugger` MCP server (`npx puae-debugger mcp`), when it's
+  registered and you have the program. Don't ask for a capture you can make yourself.
+
+Making one: `emulator_capture_profile` boots a machine headlessly, injects the program and
+records frames to a `.puaeprofile` (`emulator_screenshot` does the same for the picture, when
+the question is what the program draws rather than what it costs). Both need a Kickstart ROM —
+`PUAE_KICKSTART_ROM` in the server's environment, or a `kickstartRom` argument.
+- **Choose the frames.** `warmupFrames` runs past loading/setup before recording starts; without
+  it you may capture nothing but the intro. When "the interesting frame" is a place in the code
+  or a moment in the program rather than a number of frames in, get there in a session first —
+  `emulator_launch`, then `emulator_continue` to a breakpoint, or `emulator_input` to press past
+  a title screen — and pass `session` to `emulator_capture_profile` to record from exactly that
+  state. The **puae-debugging** skill covers those session tools.
+- **Measure a change.** Capturing runs the session on, so save the starting point first:
+  `emulator_snapshot { "save": "before" }`, capture, then `{ "restore": "before" }`,
+  `emulator_write` the patch (a constant, a table, a few bytes of code) and capture again. Or
+  rebuild and capture the new binary with the same arguments. The emulator is deterministic, so
+  the two captures differ only by the change, and their `profile_dump` numbers compare directly.
+- Several frames at once (`frames`, up to 100) is how to see a cadence: routines that run every
+  other frame, and repeated frames where the picture didn't change (see `check`/`dump` below).
+
+A capture made this way is the same format as a saved one, with one exception: it carries no
+filmstrip thumbnails, which nothing in the analysis uses.
 
 ## First move, always: `profile check`, not a hand read
 
@@ -25,21 +54,8 @@ npx puae-debugger profile dump  <file.puaeprofile> [--frame N] [--functions N] [
 (Working inside a checkout of the debugger itself? `node out/standalone.js profile ...` is the
 same binary before packaging. And if the `puae-debugger` MCP server is registered, its
 `profile_check`/`profile_dump` tools are the same two commands with the same output — use those
-instead of shelling out, and read the rest of this file as guidance on what they return.)
-
-**No capture yet, but you have the program?** Make one rather than asking for it: the MCP
-server's `emulator_capture_profile` boots a machine headlessly, injects the program and records
-frames to a `.puaeprofile` you can then read with everything below (`emulator_screenshot` does
-the same for the picture, when the question is what the program draws rather than what it
-costs). Both need a Kickstart ROM — `PUAE_KICKSTART_ROM` in the server's environment, or a
-`kickstartRom` argument. `warmupFrames` runs past loading/setup before recording starts; without
-it you may capture nothing but the intro. When "the interesting frame" is a place in the code
-rather than a number of frames in, `emulator_launch` + `emulator_continue` stop at a breakpoint
-first, and `emulator_capture_profile` then records from exactly that state via its `session`
-argument. Everything below applies unchanged to a capture made
-this way, with one exception: it carries no filmstrip thumbnails, which nothing in the analysis
-uses. (For *behaviour* rather than cost — a crash, a corrupted variable, a wrong screen — the
-**puae-debugging** skill covers the rest of those emulator tools.)
+instead of shelling out, and read the rest of this file as guidance on what they return.
+`emulator_capture_profile` already runs `check` on what it records and includes the result.)
 
 Run `check` **before** reading any per-function percentage by eye, and before proposing an
 optimization based on what a flame graph looks like. A profile's numbers are easy to rationalize

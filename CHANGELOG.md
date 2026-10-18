@@ -17,7 +17,7 @@
 - `profile_dump` (and `profile dump` on the CLI) gains total time including callees (`sort`), the call tree (`callTree`), every call path into a function (`callers`), the flame graph as text by raster line (`flame`, `lines`), blits (`blits`) and the executed copper trace (`copper`). `profile_check` and `profile_dump` report repeated frames — where the picture didn't change — and how long each picture stayed on screen.
 - `emulator_disassemble` names library calls — `jsr -198(a6)` as `exec.library AllocMem` — from the library base in `a6` and its jump table, so it also shows when a function has been patched.
 - `profile_dump`'s per-instruction listing (`instructions`) prints the same readable disassembly as `emulator_disassemble` — hex addresses and immediates, branch targets, and symbols, custom registers and CIAs named — including for captures saved earlier.
-- `puae-debugging` skill for the emulator tools; `skill install` now installs it alongside `puae-profiling`, leaving already-installed skills alone unless `--force` is given.
+- `puae-debugging` skill for the emulator tools, and `puae-profiling` now covers making captures with them — including from a debugging session, and before/after a change — not just reading saved ones; `skill install` now installs it alongside `puae-profiling`, leaving already-installed skills alone unless `--force` is given.
 
 ### Fixes
 
