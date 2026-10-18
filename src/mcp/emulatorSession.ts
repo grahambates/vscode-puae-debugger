@@ -21,7 +21,7 @@ import { encodeCapture } from "../profileFormat";
 import { ProfilerManager } from "../profilerManager";
 import { SourceMap } from "../sourceMap";
 import { describe as describeAddress, formatAddress as formatAddr, resolveBreakpointSpec } from "./breakpointSpec";
-import { DecodedLine, decodeRange, formatListing } from "./disassembly";
+import { DecodedLine, decodeRange, formatListing, sourceMapSymbolizer } from "./disassembly";
 import { alignedBlocks, Block, conditionMet, customRegisterRange, describeHit, WATCHPOINT_SLOTS, WatchCondition, WatchKind } from "./watchpoints";
 import { formatChipset, walkCopperList } from "./chipset";
 import { copperMoveBefore, isCustomRegisterAddress } from "../hardware";
@@ -715,7 +715,7 @@ export class HeadlessSession {
       const length = this.sourceMap.getSymbolLengths(true)?.[routine.symbol] ?? options.maxInstructions * 2;
       const end = routineStart + length;
       const mem = await read(routineStart, Math.min(length, options.maxInstructions * 10) + 10);
-      const lines = decodeRange(mem, routineStart, routineStart, options.maxInstructions, end, this.sourceMap);
+      const lines = decodeRange(mem, routineStart, routineStart, options.maxInstructions, end, sourceMapSymbolizer(this.sourceMap));
       const last = lines[lines.length - 1];
       if (last && last.address + last.length < end) {
         notes.push(`(${routine.symbol} continues past ${options.maxInstructions} instructions; listing cut short)`);
@@ -732,7 +732,7 @@ export class HeadlessSession {
     let before: DecodedLine[] = [];
     if (options.before > 0) {
       if (fromRoutine) {
-        before = decodeRange(mem, lo, lo, Infinity, address, this.sourceMap);
+        before = decodeRange(mem, lo, lo, Infinity, address, sourceMapSymbolizer(this.sourceMap));
         const last = before[before.length - 1];
         if (last && last.address + last.length !== address) {
           notes.push(`(decoding from ${routine!.symbol} doesn't land on ${formatAddr(address)} — it's mid-instruction, or the routine holds data)`);
@@ -741,7 +741,7 @@ export class HeadlessSession {
         // Try starts from furthest back to nearest; the first whose decode lands exactly on the
         // address is plausibly in sync. Not guaranteed — data or a coincidental alignment can fool it.
         for (let start = lo; start < address; start += 2) {
-          const attempt = decodeRange(mem, lo, start, Infinity, address, this.sourceMap);
+          const attempt = decodeRange(mem, lo, start, Infinity, address, sourceMapSymbolizer(this.sourceMap));
           const last = attempt[attempt.length - 1];
           if (last && last.address + last.length === address) { before = attempt; break; }
         }
@@ -751,7 +751,7 @@ export class HeadlessSession {
       }
       before = before.slice(-options.before);
     }
-    const after = decodeRange(mem, lo, address, options.count, Infinity, this.sourceMap);
+    const after = decodeRange(mem, lo, address, options.count, Infinity, sourceMapSymbolizer(this.sourceMap));
     return { listing: formatListing([...before, ...after], pc, this.sourceMap), notes };
   }
 

@@ -22,6 +22,7 @@ import { buildColumns, buildSampleSlots, columnIndexAtX } from "./webview/profil
 import { blitLabel, blitTooltip, getBlits } from "./webview/profilerViewer/blits";
 import { createSymbolizer } from "./webview/profilerViewer/symbols";
 import { disassembleCopperInstruction } from "./shared/copperDisassembler";
+import { formatInstruction } from "./m68kDisassembly";
 import { BusOwner, DMA_HPOS, IComputedNode, IDisassembledFunction, ILocation, IProfileModel, REG_COUNT } from "./shared/profilerTypes";
 import { loadProfile } from "./profileLoader";
 import { ProfileManifest } from "./profileFormat";
@@ -525,6 +526,26 @@ export function buildFlame(model: IProfileModel, lines?: { from: number; to: num
     dma.sort((a, b) => b.cells - a.cells);
   }
   return { start: winStart, end: winEnd, minSlots, boxes: top, folded: sortFolded(topFolded), anchored, dma };
+}
+
+/**
+ * Replaces each instruction's text — m68kdecode's raw rendering, as stored in the capture — with
+ * the readable form emulator_disassemble prints: absolute addresses and immediates in hex, branch
+ * targets instead of displacements, and symbols, custom registers and CIAs named. Re-decoded from
+ * the instruction's own stored bytes, so it applies to captures saved before this existed.
+ *
+ * Display only: the datasheet timings were computed from the raw text first (68kcounter parses
+ * that syntax), and are left exactly as they were.
+ */
+function formatInstructionText(detail: InstructionAnalysis, model: IProfileModel): void {
+  const fn = model.disassembly?.find((f) => f.address === detail.address);
+  if (!fn) return;
+  const bytes = new Map(fn.instructions.map((ins) => [ins.address, ins.hex]));
+  const symbolize = createSymbolizer(model.symbols);
+  for (const ins of detail.instructions) {
+    const hex = bytes.get(ins.address);
+    if (hex) ins.text = formatInstruction(hex, ins.address, symbolize);
+  }
 }
 
 /**
@@ -1066,7 +1087,10 @@ export function analyseProfile(
       })),
       opts.instructions,
     );
-    details.forEach((d, i) => { analysed[i].instructionDetail = d; });
+    details.forEach((d, i) => {
+      if (d) formatInstructionText(d, frames[i].model);
+      analysed[i].instructionDetail = d;
+    });
   }
   const findings: ProfileFinding[] = [];
 

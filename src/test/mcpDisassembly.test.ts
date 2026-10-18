@@ -4,7 +4,8 @@ import { readFileSync } from "fs";
 import * as path from "path";
 import { parseHunks } from "../amigaHunkParser";
 import { sourceMapFromHunks } from "../amigaHunkSourceMap";
-import { decodeLine, decodeRange, formatListing } from "../mcp/disassembly";
+import { decodeLine, decodeRange, formatListing, sourceMapSymbolizer } from "../mcp/disassembly";
+import { formatInstruction } from "../m68kDisassembly";
 
 const bytes = (hex: string) => new Uint8Array(Buffer.from(hex.replace(/\s/g, ""), "hex"));
 
@@ -52,11 +53,20 @@ describe("formatListing", () => {
 
   it("labels symbols, marks the PC and shows source lines as they change", () => {
     const start = sourceMap.getSymbols()["moveloop"];
-    const lines = decodeRange(code, BASE, start, 4, Infinity, sourceMap);
+    const lines = decodeRange(code, BASE, start, 4, Infinity, sourceMapSymbolizer(sourceMap));
     const listing = formatListing(lines, lines[1].address, sourceMap);
     const rows = listing.split("\n");
     expect(rows[0]).toBe("moveloop:");
     expect(rows[2].startsWith("=>")).toBe(true);
     expect(rows[1]).toMatch(/gencop\.s:\d+/);
+  });
+});
+
+describe("formatInstruction", () => {
+  it("formats one instruction from its stored hex bytes, as profile_dump's listing does", () => {
+    // The capture stores bytes as space-separated hex pairs.
+    expect(formatInstruction("22 39 00 df f0 04", 0xc022ae)).toBe("move.l $dff004,d1  ; VPOSR");
+    expect(formatInstruction("66 f2", 0xc022ba, (a) => (a === 0xc022ae ? "WaitRaster" : undefined))).toBe("bne.b $c022ae  ; WaitRaster");
+    expect(formatInstruction("4e 75", 0x1000)).toBe("rts");
   });
 });

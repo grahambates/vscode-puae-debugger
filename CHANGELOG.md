@@ -13,6 +13,7 @@
 - `emulator_input`: mouse clicks and movement and keyboard keys, played as a sequence of actions over real frames.
 - `emulator_screenshot` can lay several frames out on one contact sheet (`count`, `every`), each labelled with its frame number and marked when identical to the frame before it.
 - `profile_dump` (and `profile dump` on the CLI) gains total time including callees (`sort`), the call tree (`callTree`), every call path into a function (`callers`), the flame graph as text by raster line (`flame`, `lines`), blits (`blits`) and the executed copper trace (`copper`). `profile_check` and `profile_dump` report repeated frames — where the picture didn't change — and how long each picture stayed on screen.
+- `profile_dump`'s per-instruction listing (`instructions`) prints the same readable disassembly as `emulator_disassemble` — hex addresses and immediates, branch targets, and symbols, custom registers and CIAs named — including for captures saved earlier.
 - `puae-debugging` skill for the emulator tools; `skill install` now installs it alongside `puae-profiling`, leaving already-installed skills alone unless `--force` is given.
 
 ### Fixes
