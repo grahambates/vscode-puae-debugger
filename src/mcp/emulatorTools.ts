@@ -26,7 +26,16 @@ import { analyseProfile } from "../profileAnalysis";
 import { renderCheck } from "../profileReport";
 import { MAX_CAPTURE_FRAMES } from "../shared/profilerTypes";
 import { formatAddress } from "./breakpointSpec";
-import { HeadlessSession, InspectResult, LaunchOptions, StopState, WriteRequest } from "./emulatorSession";
+import {
+  DEFAULT_EXCEPTION_STOPS,
+  EXCEPTIONS,
+  exceptionLabel,
+  HeadlessSession,
+  InspectResult,
+  LaunchOptions,
+  StopState,
+  WriteRequest,
+} from "./emulatorSession";
 import { ToolDefinition } from "./jsonRpc";
 import { expandHome } from "./paths";
 import { SessionRegistry } from "./sessionRegistry";
@@ -107,6 +116,29 @@ function memoryReads(args: Record<string, unknown>): { address: string; bytes: n
     const bytes = boundedNumber(read, "bytes", 64, MAX_MEMORY_BYTES);
     return { address: requireString(read, "address"), bytes };
   });
+}
+
+const EXCEPTIONS_PROPERTY = {
+  type: "array",
+  items: { type: "string", enum: Object.keys(EXCEPTIONS) },
+  description:
+    `Exceptions that stop the session at the faulting instruction — the complete set, replacing the current one ([] for none). ` +
+    `Default: ${Object.entries(EXCEPTIONS).filter(([, e]) => e.default).map(([n]) => n).join(", ")}. ` +
+    "privilege_violation is off by default because exec's Supervisor() raises it on purpose.",
+} as const;
+
+/** The `exceptions` argument as vector numbers, or undefined if it wasn't given. */
+export function exceptionVectors(args: Record<string, unknown>): number[] | undefined {
+  if (args.exceptions === undefined || args.exceptions === null) return undefined;
+  return stringArray(args, "exceptions").map((name) => {
+    const e = EXCEPTIONS[name.toLowerCase()];
+    if (!e) throw new Error(`Unknown exception "${name}" — one of ${Object.keys(EXCEPTIONS).join(", ")}`);
+    return e.vector;
+  });
+}
+
+function describeExceptions(vectors: number[]): string {
+  return vectors.length ? vectors.map(exceptionLabel).join(", ") : "no exceptions (a crash won't stop the session)";
 }
 
 // A screen buffer or a large table; past that the alignment split needs more slots than exist.
@@ -237,8 +269,14 @@ async function withSession<T>(
   }
 }
 
-function formatStop(stop: StopState, budget: number): string {
+function formatStop(stop: StopState, budget: number, armed: boolean, catchesCrashes: boolean): string {
   if (!stop.stopped) {
+    // With nothing armed, running the whole budget is the expected outcome — the normal way to
+    // reach "frame 50" — not a breakpoint that was missed.
+    if (!armed) {
+      return `Ran ${stop.framesRun} frame(s) with no breakpoints or watches armed` +
+        `${catchesCrashes ? ", and no crash" : ""}. Now at ${stop.location}.`;
+    }
     return `Still running after ${stop.framesRun} frame(s) — nothing stopped it. Now at ${stop.location}.\n` +
       `Raise maxFrames (currently ${budget}) or check the breakpoint is somewhere this program actually reaches.`;
   }
@@ -330,7 +368,9 @@ export function emulatorTools(ctx: EmulatorToolContext): ToolDefinition[] {
         "machine keeps its state between calls — this is what to use to run to a breakpoint and " +
         "examine registers and memory there. Set `breakpoints` now or pass them to " +
         "emulator_continue later; either takes an address (0x2140), a symbol name (draw_sprite) " +
-        "or a source line (main.s:42). Call emulator_close when finished. Needs a Kickstart ROM.",
+        "or a source line (main.s:42). A crash (bus/address error, illegal instruction, zero " +
+        "divide) stops the session at the faulting instruction; change that with `exceptions`. " +
+        "Call emulator_close when finished. Needs a Kickstart ROM.",
       inputSchema: {
         type: "object",
         properties: {
@@ -340,15 +380,26 @@ export function emulatorTools(ctx: EmulatorToolContext): ToolDefinition[] {
             items: { type: "string" },
             description: 'Breakpoints to arm before the program runs, e.g. ["draw_sprite", "main.s:42", "0x2140"].',
           },
+          exceptions: EXCEPTIONS_PROPERTY,
         },
         required: ["program"],
         additionalProperties: false,
       },
       run: async (args) => {
+        const exceptions = exceptionVectors(args) ?? DEFAULT_EXCEPTION_STOPS;
         const session = await HeadlessSession.launch(launchOptions(ctx, args));
         let armed: string[] = [];
         try {
           armed = await session.setBreakpoints(stringArray(args, "breakpoints"));
+          await session.setExceptionStops(exceptions);
+          // So the program can be rerun from its entry point without relaunching. Restored at once
+          // as well: the machine state a restore produces is exact, but from the paused launch
+          // point the first frame run straight after boot reaches one frame less far than the first
+          // frame run after a restore (measured: a fresh run's frame 31 is pixel- and register-
+          // identical to a restored run's frame 30). Starting the session from the restored state
+          // keeps "frame N" meaning the same in the original run and in every rerun.
+          await session.saveSnapshot("start");
+          await session.restoreSnapshot("start");
         } catch (error) {
           session.dispose();
           throw error;
@@ -360,8 +411,93 @@ export function emulatorTools(ctx: EmulatorToolContext): ToolDefinition[] {
             ? ""
             : "No source-level debug info: breakpoints and memory reads take addresses or hunk symbols only, not file:line.\n") +
           (armed.length ? `Breakpoints: ${armed.join("; ")}\n` : "No breakpoints set.\n") +
+          `Stops on: ${describeExceptions(session.listExceptionStops())}.\n` +
+          `Snapshot "start" saved here — emulator_snapshot { "restore": "start" } reruns from the entry point.\n` +
           `Continue with emulator_continue { "session": "${id}" }; close it with emulator_close when done.`
         );
+      },
+    },
+    {
+      name: "emulator_snapshot",
+      description:
+        "Save and restore a session's whole machine state, to try several experiments from the " +
+        "same point: save, change something with emulator_write, run on and look; then restore " +
+        "and try the next idea — no relaunch, no re-running to get back there. A snapshot named " +
+        '"start" is saved at launch, so { "restore": "start" } reruns the program from its entry ' +
+        "point. Restoring keeps the current breakpoints, watches and exception stops (they're " +
+        "debugger state, not machine state). Always replies with the snapshots held.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          ...SESSION_PROPERTY,
+          save: { type: "string", description: "Save the current state under this name (replacing one of the same name)." },
+          restore: { type: "string", description: "Restore the state saved under this name." },
+          delete: { type: "string", description: "Delete the snapshot with this name." },
+        },
+        required: ["session"],
+        additionalProperties: false,
+      },
+      run: async (args) => {
+        const session = registry.get(requireString(args, "session"));
+        const save = optionalString(args, "save");
+        const restore = optionalString(args, "restore");
+        const del = optionalString(args, "delete");
+        if ([save, restore, del].filter((v) => v !== undefined).length > 1) {
+          throw new Error(`Pass one of "save", "restore" or "delete" per call.`);
+        }
+        const lines: string[] = [];
+        if (save !== undefined) {
+          const s = await session.saveSnapshot(save);
+          lines.push(`Saved "${s.name}" at frame ${s.frame}, ${s.location}.`);
+        } else if (restore !== undefined) {
+          const s = await session.restoreSnapshot(restore);
+          lines.push(`Restored "${s.name}": back at frame ${s.frame}, ${s.location}.`);
+        } else if (del !== undefined) {
+          session.deleteSnapshot(del);
+          lines.push(`Deleted "${del}".`);
+        }
+        const held = session.listSnapshots();
+        lines.push(held.length
+          ? "Snapshots:\n" + held.map((s) => `  ${s.name}: frame ${s.frame}, ${s.location} (${(s.bytes / 1048576).toFixed(1)}MB)`).join("\n")
+          : "No snapshots held.");
+        return lines.join("\n");
+      },
+    },
+    {
+      name: "emulator_breakpoints",
+      description:
+        "Add or remove a session's breakpoints, and choose which exceptions stop it. Always " +
+        "replies with everything that can currently stop the session — breakpoints, exception " +
+        "stops and watches — so call it with no changes to see that. Breakpoints take an address, " +
+        'symbol or file:line; remove them by the same spec, or "all".',
+      inputSchema: {
+        type: "object",
+        properties: {
+          ...SESSION_PROPERTY,
+          add: { type: "array", items: { type: "string" }, description: "Breakpoints to arm." },
+          remove: { type: "array", items: { type: "string" }, description: 'Breakpoints to remove, or ["all"].' },
+          exceptions: EXCEPTIONS_PROPERTY,
+        },
+        required: ["session"],
+        additionalProperties: false,
+      },
+      run: async (args) => {
+        const session = registry.get(requireString(args, "session"));
+        const exceptions = exceptionVectors(args);
+        const lines: string[] = [];
+        const removed = await session.removeBreakpoints(stringArray(args, "remove"));
+        if (removed.length) lines.push(`Removed: ${removed.join("; ")}`);
+        const added = await session.setBreakpoints(stringArray(args, "add"));
+        if (added.length) lines.push(`Added: ${added.join("; ")}`);
+        if (exceptions) await session.setExceptionStops(exceptions);
+        const breakpoints = session.listBreakpoints();
+        const watches = session.listWatches();
+        lines.push(
+          breakpoints.length ? `Breakpoints:\n${breakpoints.map((b) => `  ${b}`).join("\n")}` : "Breakpoints: none",
+          `Exception stops: ${describeExceptions(session.listExceptionStops())}`,
+          watches.length ? `Watches:\n${watches.map((w) => `  #${w.id} ${w.description}`).join("\n")}` : "Watches: none (see emulator_watch)",
+        );
+        return lines.join("\n");
       },
     },
     {
@@ -393,7 +529,7 @@ export function emulatorTools(ctx: EmulatorToolContext): ToolDefinition[] {
         const extra = await session.setBreakpoints(stringArray(args, "breakpoints"));
         const budget = boundedNumber(args, "maxFrames", 100, MAX_WARMUP_FRAMES);
         const stop = await session.continueUntilStop(budget);
-        return (extra.length ? `Added breakpoints: ${extra.join("; ")}\n` : "") + formatStop(stop, budget);
+        return (extra.length ? `Added breakpoints: ${extra.join("; ")}\n` : "") + formatStop(stop, budget, session.hasStopConditions, session.listExceptionStops().length > 0);
       },
     },
     {

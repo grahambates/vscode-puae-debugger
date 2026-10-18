@@ -15,7 +15,7 @@ import { MAX_CAPTURE_FRAMES } from "../shared/profilerTypes";
 import { parseHunks } from "../amigaHunkParser";
 import { sourceMapFromHunks } from "../amigaHunkSourceMap";
 import { describe as describeAddress, resolveBreakpointSpec } from "../mcp/breakpointSpec";
-import { emulatorTools, watchAdds, writeRequest } from "../mcp/emulatorTools";
+import { emulatorTools, exceptionVectors, watchAdds, writeRequest } from "../mcp/emulatorTools";
 import type { HeadlessSession } from "../mcp/emulatorSession";
 import { encodePng } from "../mcp/png";
 import { expandHome } from "../mcp/paths";
@@ -42,6 +42,8 @@ describe("emulator MCP tools", () => {
   it("serves the emulator tools alongside the analysis tools, capture first", () => {
     expect(buildTools(CTX).map((t) => t.name)).toEqual([
       "emulator_launch",
+      "emulator_snapshot",
+      "emulator_breakpoints",
       "emulator_continue",
       "emulator_step",
       "emulator_inspect",
@@ -336,5 +338,17 @@ describe("emulator_watch arguments", () => {
   it("rejects an unknown access kind and an oversized range", () => {
     expect(() => watchAdds({ add: [{ address: "x", on: "execute" }] })).toThrow(/write, read, access/);
     expect(() => watchAdds({ add: [{ address: "x", length: 1 << 21 }] })).toThrow(/capped/);
+  });
+});
+
+describe("exception stops", () => {
+  it("maps names to vectors, and an absent argument to no change", () => {
+    expect(exceptionVectors({ exceptions: ["address_error", "ILLEGAL_INSTRUCTION"] })).toEqual([3, 4]);
+    expect(exceptionVectors({ exceptions: [] })).toEqual([]);
+    expect(exceptionVectors({})).toBeUndefined();
+  });
+
+  it("rejects an unknown exception before anything boots", async () => {
+    await expect(runTool("emulator_launch", { program: "/tmp/x", exceptions: ["segfault"] })).rejects.toThrow(/Unknown exception "segfault"/);
   });
 });

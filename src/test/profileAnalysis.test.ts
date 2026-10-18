@@ -1,7 +1,10 @@
 import { readFileSync } from "fs";
 import * as path from "path";
-import { analyseFrame, analyseInstructions, analyseProfile, checkFrame, FrameAnalysis, ProfileFinding, ProfileRequestError, selectInstructionDetail, summariseScreenUpdates } from "../profileAnalysis";
+import { analyseFrame, analyseInstructions, analyseProfile, buildCallTree, buildFlame, callersOf, checkFrame, FlameBox, parseLineRange, FrameAnalysis, ProfileFinding, ProfileRequestError, selectInstructionDetail, summariseScreenUpdates } from "../profileAnalysis";
 import { BusOwner, Category, DMA_CODE, IDisassembledFunction, IProfileModel } from "../shared/profilerTypes";
+import { loadProfile } from "../profileLoader";
+import { renderFlame } from "../profileReport";
+import { createTopDownGraph } from "../webview/profilerViewer/topDownGraph";
 
 // Minimal synthetic model: root -> "hot" (2 samples, 10 cycles each) and root -> "cold" (2
 // samples, 5 cycles each). No `dma`, so buildColumns falls back to plain cycle-cost fractions —
@@ -208,8 +211,8 @@ describe("checkFrame", () => {
     const findings: ProfileFinding[] = [];
     checkFrame(baseFrame({
       functions: [
-        { name: "WaitRaster", samples: 500, selfCycles: 10000, selfPct: 14.5, widthPct: 91.5 },
-        { name: "FillMask", samples: 200, selfCycles: 15000, selfPct: 21.0, widthPct: 0.5 },
+        { name: "WaitRaster", samples: 500, selfCycles: 10000, selfPct: 14.5, totalCycles: 10000, totalPct: 14.5, widthPct: 91.5 },
+        { name: "FillMask", samples: 200, selfCycles: 15000, selfPct: 21.0, totalCycles: 15000, totalPct: 21.0, widthPct: 0.5 },
       ],
     }), false, findings);
     const codes = codesOf(findings).filter((c) => c === "width-vs-cycles");
@@ -220,7 +223,7 @@ describe("checkFrame", () => {
   it("does not flag width-vs-cycles within the divergence tolerance", () => {
     const findings: ProfileFinding[] = [];
     checkFrame(baseFrame({
-      functions: [{ name: "main", samples: 500, selfCycles: 10000, selfPct: 40, widthPct: 41.5 }],
+      functions: [{ name: "main", samples: 500, selfCycles: 10000, selfPct: 40, totalCycles: 10000, totalPct: 40, widthPct: 41.5 }],
     }), false, findings);
     expect(codesOf(findings)).not.toContain("width-vs-cycles");
   });
@@ -452,5 +455,145 @@ describe("summariseScreenUpdates", () => {
   it("reads a steady half-rate effect as a single hold length", () => {
     const dup = Array.from({ length: 11 }, (_, i) => i > 0 && i % 2 === 0);
     expect(summariseScreenUpdates(dup, 50)!.holds).toEqual({ 2: 4 });
+  });
+});
+
+// main (no self time) -> fib -> fib (recursion), and main -> helper. Cycles: outer fib 5 self,
+// inner fib 15, helper 10 — 30 in all.
+function recursiveModel(): IProfileModel {
+  const loc = (id: number, functionName: string) => ({
+    id, selfTime: 0, aggregateTime: 0, category: Category.User, address: 0x1000 * id,
+    callFrame: { functionName, url: "a.c", scriptId: "0", lineNumber: id, columnNumber: 0 },
+  });
+  return {
+    nodes: [
+      { id: 0, selfTime: 0, aggregateTime: 30, children: [1], locationId: 0 },
+      { id: 1, selfTime: 0, aggregateTime: 30, children: [2, 4], locationId: 1, parent: 0 },
+      { id: 2, selfTime: 5, aggregateTime: 20, children: [3], locationId: 2, parent: 1 },
+      { id: 3, selfTime: 15, aggregateTime: 15, children: [], locationId: 2, parent: 2 },
+      { id: 4, selfTime: 10, aggregateTime: 10, children: [], locationId: 3, parent: 1 },
+    ],
+    locations: [loc(0, "(all)"), loc(1, "main"), loc(2, "fib"), loc(3, "helper")],
+    samples: [0, 2, 3, 4],
+    timeDeltas: [5, 15, 10],
+    pcs: [0x2000, 0x2004, 0x3000],
+    duration: 30,
+    cyclesPerMicroSecond: 3.546895,
+  };
+}
+
+describe("inclusive time", () => {
+  const f = analyseFrame(recursiveModel(), 0);
+  const fn = (name: string) => f.functions.find((x) => x.name === name)!;
+
+  it("lists a function that only calls others, with its callees' time as its total", () => {
+    expect(fn("main")).toMatchObject({ selfCycles: 0, totalCycles: 30, samples: 0 });
+    expect(fn("main").totalPct).toBeCloseTo(100, 6);
+  });
+
+  it("counts a recursive function once per path, not once per level", () => {
+    // 20, not 20 + 15: the inner call's time is already inside the outer one's.
+    expect(fn("fib")).toMatchObject({ selfCycles: 20, totalCycles: 20 });
+  });
+
+  it("gives a leaf a total equal to its self time", () => {
+    expect(fn("helper")).toMatchObject({ selfCycles: 10, totalCycles: 10 });
+  });
+});
+
+describe("call tree and callers", () => {
+  it("builds the top-down tree, children by cost", () => {
+    const tree = buildCallTree(recursiveModel());
+    expect(tree.totalCycles).toBe(30);
+    const main = tree.children[0];
+    expect(main.name).toBe("main");
+    expect(main.children.map((c) => [c.name, c.totalCycles])).toEqual([["fib", 20], ["helper", 10]]);
+    expect(main.children[0].children[0]).toMatchObject({ name: "fib", selfCycles: 15, totalCycles: 15 });
+  });
+
+  it("reports each call path into a function once, at its outermost occurrence", () => {
+    const paths = callersOf(recursiveModel(), "fib", 30);
+    expect(paths).toEqual([{ path: ["main", "fib"], cycles: 20, pct: (20 / 30) * 100 }]);
+  });
+});
+
+describe("call tree against the profiler's Time view", () => {
+  // The Time view's own builder, run on the same real capture: the text tree must not disagree
+  // with what the user sees in the UI.
+  it("matches createTopDownGraph node for node", () => {
+    const { frames } = loadProfile(new Uint8Array(readFileSync(path.join(__dirname, "fixtures/profiles/template.puaeprofile"))));
+    const model = frames[0].model;
+    const ui = createTopDownGraph(model);
+    const cpu = model.dma ? Object.values(ui.children).find((c) => c.callFrame.functionName === "CPU")! : ui;
+    const flatten = (name: string, total: number, kids: [string, number, unknown][]): string[] => [`${name}:${total}`, ...kids.flatMap(([n, t, k]) => flatten(n, t, k as [string, number, unknown][]))];
+    type UiNode = { callFrame: { functionName: string }; aggregateTime: number; children: Record<number, UiNode> };
+    const fromUi = (n: UiNode): [string, number, unknown][] =>
+      Object.values(n.children).map((c) => [c.callFrame.functionName, c.aggregateTime, fromUi(c)] as [string, number, unknown]);
+    const ours = (n: ReturnType<typeof buildCallTree>): [string, number, unknown][] =>
+      n.children.map((c) => [c.name, c.totalCycles, ours(c)] as [string, number, unknown]);
+    const sortAll = (xs: string[]) => [...xs].sort();
+    expect(sortAll(flatten("root", 0, ours(buildCallTree(model))))).toEqual(sortAll(flatten("root", 0, fromUi(cpu as unknown as UiNode))));
+  });
+});
+
+describe("flame graph as text", () => {
+  // No DMA grid in these models, so positions are cycle-cost fractions spread over a PAL frame.
+  const FRAME = 227 * 313;
+
+  it("nests boxes by call depth, in time order", () => {
+    const v = buildFlame(recursiveModel());
+    expect(v.anchored).toBe(false);
+    expect(v.boxes.map((b) => b.name)).toEqual(["main"]);
+    const main = v.boxes[0];
+    expect(main.children.map((b) => b.name)).toEqual(["fib", "helper"]);
+    const outerFib = main.children[0];
+    expect(outerFib.start).toBeCloseTo(0, 6);
+    expect(outerFib.end).toBeCloseTo((20 / 30) * FRAME, 6);
+    expect(outerFib.children.map((b) => b.name)).toEqual(["fib"]);
+  });
+
+  it("clips to a window of lines and says which boxes run past it", () => {
+    const v = buildFlame(recursiveModel(), { from: 100, to: 120 });
+    expect(v.start).toBe(100 * 227);
+    expect(v.end).toBe(121 * 227);
+    const main = v.boxes[0];
+    expect(main).toMatchObject({ startsBefore: true, endsAfter: true, start: 100 * 227, end: 121 * 227 });
+  });
+
+  it("folds boxes too short to matter into their parent, by function", () => {
+    const model = recursiveModel();
+    // helper becomes 1 cycle of 20001 — far under the 0.5% folding threshold.
+    model.timeDeltas = [5000, 15000, 1];
+    model.duration = 20001;
+    model.nodes[2].aggregateTime = 20000; model.nodes[2].selfTime = 5000;
+    model.nodes[3].aggregateTime = 15000; model.nodes[3].selfTime = 15000;
+    model.nodes[4].aggregateTime = 1; model.nodes[4].selfTime = 1;
+    const main = buildFlame(model).boxes[0];
+    expect(main.children.map((b) => b.name)).toEqual(["fib"]);
+    expect(main.folded).toEqual([{ name: "helper", count: 1, slots: expect.any(Number) }]);
+  });
+
+  it("parses a line range and rejects nonsense", () => {
+    expect(parseLineRange("40-80")).toEqual({ from: 40, to: 80 });
+    expect(parseLineRange("44")).toEqual({ from: 44, to: 44 });
+    expect(() => parseLineRange("80-40")).toThrow(ProfileRequestError);
+    expect(() => parseLineRange("0-400")).toThrow(/within 0-312/);
+  });
+});
+
+describe("flame graph rendering", () => {
+  const box = (name: string, start: number, len: number, children: FlameBox[] = []): FlameBox =>
+    ({ name, start, end: start + len, children, folded: [] });
+
+  it("collapses a repeating sequence of calls into one entry with its period", () => {
+    // A loop body of two calls, every 8 lines, five times; the wait drifts by a few slots.
+    const body = [0, 1, 2, 3, 4].flatMap((i) => [box("compute", 1000 + i * 8 * 227, 900), box("WaitBlit", 1950 + i * 8 * 227, 57 + i * 2)]);
+    const text = renderFlame(
+      { start: 0, end: 227 * 313, minSlots: 10, anchored: true, dma: [], folded: [], boxes: [box("main", 0, 227 * 313, body)] },
+      0,
+      (fn) => fn.name,
+    ).join("\n");
+    expect(text).toMatch(/×5 \[compute, WaitBlit\], every ~8\.0 lines — first one:/);
+    expect(text.match(/ compute$/gm)).toHaveLength(1); // the example iteration only
   });
 });

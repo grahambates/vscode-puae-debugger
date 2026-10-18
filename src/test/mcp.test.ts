@@ -128,7 +128,7 @@ describe("MCP tools", () => {
     const r = await realCall("profile_dump", { file: FIXTURE, frame: 0, functions: 2 }) as any;
     const text = r.result.content[0].text as string;
     expect(text).toMatch(/Frame 0:/);
-    expect(text).toMatch(/self%\s+width%/);
+    expect(text).toMatch(/self%\s+total\s+total%\s+width%/);
     expect(text).toMatch(/more \(use --functions 0\)/); // the cap was applied
   });
 

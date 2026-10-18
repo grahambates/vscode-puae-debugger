@@ -43,6 +43,29 @@ export interface LaunchOptions {
   extraConfig?: string;
 }
 
+/**
+ * Exceptions that stop a session, by name — the 68k vectors that mean "this program crashed".
+ * The defaults match the debugger's own exception filters (`exceptionBreakpointFilters`).
+ * Privilege violation is off by default there and here: exec's Supervisor() raises it on purpose.
+ */
+export const EXCEPTIONS: Record<string, { vector: number; label: string; default: boolean }> = {
+  bus_error: { vector: 2, label: "Bus error", default: true },
+  address_error: { vector: 3, label: "Address error", default: true },
+  illegal_instruction: { vector: 4, label: "Illegal instruction", default: true },
+  zero_divide: { vector: 5, label: "Zero divide", default: true },
+  chk: { vector: 6, label: "CHK out of bounds", default: false },
+  trapv: { vector: 7, label: "TRAPV overflow", default: false },
+  privilege_violation: { vector: 8, label: "Privilege violation", default: false },
+  line_a: { vector: 10, label: "Line-A emulator", default: false },
+  line_f: { vector: 11, label: "Line-F emulator", default: false },
+};
+
+export const DEFAULT_EXCEPTION_STOPS = Object.values(EXCEPTIONS).filter((e) => e.default).map((e) => e.vector);
+
+export function exceptionLabel(vector: number): string {
+  return Object.values(EXCEPTIONS).find((e) => e.vector === vector)?.label ?? `Exception`;
+}
+
 export interface WriteRequest {
   /** `bytes` as given, or `value` encoded big-endian at `size` bytes. */
   memory: { address: string; value?: string | number; size?: 1 | 2 | 4; bytes?: Buffer }[];
@@ -88,6 +111,18 @@ export interface StopState {
   detail?: string;
 }
 
+export interface SnapshotInfo {
+  name: string;
+  /** Frames run since launch when it was taken. */
+  frame: number;
+  location: string;
+  bytes: number;
+}
+
+// Each is a full machine state — ~1.6MB on a default A500, up to ~10MB with fast RAM — on top of
+// the dispatcher's own rewind history, so a handful is plenty for comparing experiments.
+const MAX_SNAPSHOTS = 16;
+
 export interface WatchEntry {
   id: number;
   description: string;
@@ -106,6 +141,11 @@ export interface InspectResult {
 export class HeadlessSession {
   private readonly watches = new Map<number, WatchEntry>();
   private nextWatchId = 1;
+  /** Armed breakpoints, by address, with how each was asked for. */
+  private readonly breakpoints = new Map<number, string>();
+  private exceptionStops = new Set<number>();
+  private readonly snapshots = new Map<string, SnapshotInfo & { state: { data: Uint8Array; instrCount: string } }>();
+  private framesRun = 0;
 
   private constructor(
     private readonly emulator: HeadlessEmulator,
@@ -211,6 +251,7 @@ export class HeadlessSession {
   public async run(frames: number): Promise<number> {
     await this.emulator.run();
     const ran = this.emulator.runFrames(frames);
+    this.framesRun += ran;
     if (this.emulator.isPaused()) {
       // Stopped early on a breakpoint/watch. The caller reports that as a short run; consume the
       // stop so a later emulator_continue doesn't attribute it to its own run.
@@ -228,10 +269,60 @@ export class HeadlessSession {
     const descriptions: string[] = [];
     for (const spec of specs) {
       const resolved = resolveBreakpointSpec(spec, this.sourceMap);
-      await this.emulator.setBreakpoint(resolved.address);
+      if (!this.breakpoints.has(resolved.address)) {
+        await this.emulator.setBreakpoint(resolved.address);
+        this.breakpoints.set(resolved.address, resolved.description);
+      }
       descriptions.push(resolved.description);
     }
     return descriptions;
+  }
+
+  /**
+   * Removes breakpoints by the same specs they were set with (or any spec resolving to the same
+   * address), or every one for "all". Returns what was removed.
+   */
+  public async removeBreakpoints(specs: string[]): Promise<string[]> {
+    const addresses = specs.includes("all")
+      ? [...this.breakpoints.keys()]
+      : specs.map((spec) => {
+          const address = resolveBreakpointSpec(spec, this.sourceMap).address;
+          if (!this.breakpoints.has(address)) {
+            throw new Error(`No breakpoint at ${spec} (${formatAddr(address)}). Set: ${this.listBreakpoints().join("; ") || "none"}`);
+          }
+          return address;
+        });
+    const removed: string[] = [];
+    for (const address of addresses) {
+      await this.emulator.removeBreakpoint(address);
+      removed.push(this.breakpoints.get(address)!);
+      this.breakpoints.delete(address);
+    }
+    return removed;
+  }
+
+  public listBreakpoints(): string[] {
+    return [...this.breakpoints.values()];
+  }
+
+  /** Replaces the set of exception vectors that stop execution. */
+  public async setExceptionStops(vectors: number[]): Promise<void> {
+    for (const vector of this.exceptionStops) {
+      if (!vectors.includes(vector)) await this.emulator.removeCatchpoint(vector);
+    }
+    for (const vector of vectors) {
+      if (!this.exceptionStops.has(vector)) await this.emulator.setCatchpoint(vector);
+    }
+    this.exceptionStops = new Set(vectors);
+  }
+
+  public listExceptionStops(): number[] {
+    return [...this.exceptionStops].sort((a, b) => a - b);
+  }
+
+  /** Whether anything the caller armed — not just the crash catchers — could stop a run. */
+  public get hasStopConditions(): boolean {
+    return this.breakpoints.size > 0 || this.watches.size > 0;
   }
 
   /**
@@ -242,13 +333,28 @@ export class HeadlessSession {
   public async continueUntilStop(maxFrames: number): Promise<StopState> {
     await this.emulator.run();
     const ran = this.emulator.runFrames(maxFrames);
+    this.framesRun += ran;
     const hitBreakpoint = this.emulator.isPaused();
     if (!hitBreakpoint) await this.emulator.pause(true);
     // Consumed once per stop (see consumeStopMessage), so read it here and carry it in the
     // returned state rather than asking again later.
     const stop = hitBreakpoint ? this.emulator.consumeStopMessage() : undefined;
     const state = await this.describeStop(ran, hitBreakpoint ? stop?.name ?? "BREAKPOINT_REACHED" : undefined);
-    if (stop?.name === "WATCHPOINT_REACHED") {
+    if (stop?.name === "CATCHPOINT_REACHED") {
+      const p = stop.payload as Record<string, number | undefined>;
+      const vector = p.vector ?? 0;
+      const pc = p.pc ?? 0;
+      // Bus and address errors are group-0 exceptions: the PC a 68000 records for them has run
+      // ahead of the faulting instruction (prefetch), typically by 2-10 bytes. Saying "raised by
+      // the instruction at" would point at an innocent one.
+      const where = vector === 2 || vector === 3
+        ? `reported at ${describeAddress(pc, this.sourceMap)} — on a 68000 that PC runs ahead of the ` +
+          "faulting instruction (prefetch), so the culprit is usually one or two instructions before it"
+        : `raised by the instruction at ${describeAddress(pc, this.sourceMap)}`;
+      state.detail = `${exceptionLabel(vector)} (vector ${vector}) ${where}. ` +
+        "The CPU has already entered the exception handler, which is why it's stopped there. " +
+        `emulator_disassemble { "address": "${formatAddr(pc)}", "before": 8 } shows the code leading up to it.`;
+    } else if (stop?.name === "WATCHPOINT_REACHED") {
       const p = stop.payload as Record<string, number | undefined>;
       const watchAddress = p.pc ?? 0;
       const watch = this.listWatches().find((w) => w.blocks.some((b) => b.address === watchAddress));
@@ -269,6 +375,59 @@ export class HeadlessSession {
     const words = await this.emulator.readMemory(copperPc - 4, 4);
     const word1 = words.readUInt16BE(0);
     return (word1 & 1) === 0 && (word1 & 0x1fe) === (addr & 0x1fe) ? copperPc - 4 : undefined;
+  }
+
+  // --- Snapshots ---
+
+  /**
+   * Saves the whole machine under `name` (replacing one of the same name), so an experiment —
+   * a patched variable, a forced register, a different input — can be rewound and tried again
+   * from exactly the same point instead of relaunching and re-running to it.
+   */
+  public async saveSnapshot(name: string): Promise<SnapshotInfo> {
+    if (!this.snapshots.has(name) && this.snapshots.size >= MAX_SNAPSHOTS) {
+      throw new Error(`Already holding ${MAX_SNAPSHOTS} snapshots (${[...this.snapshots.keys()].join(", ")}); delete one first.`);
+    }
+    const state = await this.emulator.saveState();
+    const pc = parseInt((await this.emulator.getCpuInfo()).pc, 16);
+    const info: SnapshotInfo = {
+      name,
+      frame: this.framesRun,
+      location: describeAddress(pc, this.sourceMap),
+      bytes: state.data.length,
+    };
+    this.snapshots.set(name, { ...info, state });
+    return info;
+  }
+
+  /**
+   * Puts the machine back exactly as it was at `name`. Breakpoints, watches and exception stops
+   * are debugger state, not machine state, so they stay as they are now.
+   */
+  public async restoreSnapshot(name: string): Promise<SnapshotInfo> {
+    const snapshot = this.snapshots.get(name);
+    if (!snapshot) {
+      throw new Error(`No snapshot "${name}". Saved: ${[...this.snapshots.keys()].join(", ") || "none"}`);
+    }
+    await this.emulator.loadState(snapshot.state);
+    // A stop pending from before the restore belongs to the abandoned timeline.
+    this.emulator.consumeStopMessage();
+    this.framesRun = snapshot.frame;
+    const { state: _state, ...info } = snapshot;
+    return info;
+  }
+
+  public deleteSnapshot(name: string): void {
+    if (!this.snapshots.delete(name)) throw new Error(`No snapshot "${name}"`);
+  }
+
+  public listSnapshots(): SnapshotInfo[] {
+    return [...this.snapshots.values()].map(({ state: _state, ...info }) => info);
+  }
+
+  /** Frames run since launch, as of the current state — restoring a snapshot winds it back too. */
+  public get frame(): number {
+    return this.framesRun;
   }
 
   // --- Watchpoints ---
@@ -587,6 +746,8 @@ export class HeadlessSession {
     await this.profiler.capture(frames);
     const raws = this.profiler.getAllRaw();
     if (!raws || raws.length === 0) throw new Error("Capture produced no frames");
+    // Plus the one unrecorded frame wasm_profile_start runs first to reach a frame boundary.
+    this.framesRun += raws.length + 1;
     const bytes = encodeCapture(raws, {
       elf: this.info.debugBytes,
       programName: this.info.programName,

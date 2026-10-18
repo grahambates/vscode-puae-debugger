@@ -1445,6 +1445,19 @@ export function setupRpcDispatcher(
         rpcRequest(() => ({ data: readWasmBuffer(agaPtr, 256 * 4) }));
         break;
       }
+      case "saveState":
+        rpcRequest(() => ({ data: captureSnapshot(M), instrCount: readInstrCount(M).toString() }));
+        break;
+      case "loadState":
+        rpcRequest(() => {
+          const bytes = args.data instanceof ArrayBuffer ? new Uint8Array(args.data) : args.data;
+          restoreCheckpoint(M, { bytes, pc: 0, instrCount: BigInt(args.instrCount ?? "0") });
+          // The rewind history recorded since that state belongs to a timeline that no longer
+          // exists; stepping back into it would land somewhere this machine never was.
+          snapshotHistory.length = 0;
+          return { ok: true };
+        });
+        break;
       default:
         message.command satisfies never;
     }

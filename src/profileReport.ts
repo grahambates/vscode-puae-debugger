@@ -3,7 +3,7 @@
 // terminal and a number a model reads over MCP should never be formatted differently, or a
 // conversation about one won't transfer to the other.
 
-import { FrameAnalysis, InstructionAnalysis, ProfileAnalysis, ScreenUpdates, StallAnalysis } from "./profileAnalysis";
+import { CallerPath, CallTreeNode, FlameBox, FlameView, FrameAnalysis, InstructionAnalysis, ProfileAnalysis, ScreenUpdates, StallAnalysis } from "./profileAnalysis";
 
 export function pct(v: number): string {
   return `${v.toFixed(1)}%`;
@@ -36,7 +36,158 @@ function renderScreenUpdates(su: ScreenUpdates): string[] {
   return out;
 }
 
-function dumpFrame(f: FrameAnalysis, limit: number, out: string[], instructionQuery?: string): void {
+/**
+ * A function's display name: bare, unless another function in the frame shares it (the profiler
+ * keys functions by name *and* source file, so one name can be two rows), in which case the
+ * file's basename tells them apart.
+ */
+function labeller(names: { name: string; file?: string }[]): (fn: { name: string; file?: string }) => string {
+  const files = new Map<string, Set<string>>();
+  for (const { name, file } of names) {
+    const set = files.get(name) ?? new Set<string>();
+    set.add(file ?? "");
+    files.set(name, set);
+  }
+  return ({ name, file }) => ((files.get(name)?.size ?? 0) > 1 && file ? `${name} (${file.split(/[\\/]/).pop()})` : name);
+}
+
+// Below this share of the frame a call is folded into its parent's "+N smaller" line: a tree of
+// every 0.01% leaf buries the shape it exists to show.
+const TREE_MIN_PCT = 1;
+
+function renderCallTree(root: CallTreeNode, frameCycles: number, frameIndex: number, label: (fn: CallTreeNode) => string): string[] {
+  const out = ["", `  Call tree, frame ${frameIndex} (total% includes callees; calls under ${TREE_MIN_PCT}% of the frame folded)`, ""];
+  const share = (c: number) => (frameCycles > 0 ? (c / frameCycles) * 100 : 0);
+  out.push(`  ${"total%".padStart(7)}${"self%".padStart(8)}  function`);
+  const visit = (node: CallTreeNode, depth: number) => {
+    const shown = node.children.filter((c) => share(c.totalCycles) >= TREE_MIN_PCT);
+    for (const child of shown) {
+      out.push(`  ${pct(share(child.totalCycles)).padStart(7)}${pct(share(child.selfCycles)).padStart(8)}  ${"  ".repeat(depth)}${label(child)}`);
+      visit(child, depth + 1);
+    }
+    const folded = node.children.length - shown.length;
+    if (folded > 0) {
+      const cycles = node.children.filter((c) => !shown.includes(c)).reduce((n, c) => n + c.totalCycles, 0);
+      out.push(`  ${pct(share(cycles)).padStart(7)}${"".padStart(8)}  ${"  ".repeat(depth)}+${folded} smaller call${folded === 1 ? "" : "s"}`);
+    }
+  };
+  visit(root, 0);
+  return out;
+}
+
+const LINE_SLOTS = 227; // DMA_HPOS: colour clocks per raster line
+
+/** A slot as "line:hpos", the position a copper WAIT or a raster check would name. */
+function linePos(slot: number): string {
+  const s = Math.round(slot);
+  return `${Math.floor(s / LINE_SLOTS)}:${String(s % LINE_SLOTS).padStart(3, "0")}`;
+}
+
+/** The last slot a box covers — its end is exclusive, and line 313 doesn't exist. */
+function lastPos(end: number): string {
+  return linePos(Math.max(0, Math.round(end) - 1));
+}
+
+export function renderFlame(v: FlameView, frameIndex: number, label: (fn: { name: string; file?: string }) => string): string[] {
+  const window = v.end - v.start;
+  const lines = `lines ${linePos(v.start).split(":")[0]}-${linePos(v.end - 1).split(":")[0]}`;
+  const out = [
+    "",
+    `  Flame graph, frame ${frameIndex}, ${lines} — boxes in time order, nested by call depth; ` +
+      `positions are line:hpos (colour clocks), ${v.anchored ? "anchored to the DMA grid as the flame graph draws them" : "from cycle costs (no DMA grid to anchor to)"}.`,
+    `  Boxes under ${(v.minSlots / LINE_SLOTS).toFixed(1)} lines are folded into "+" summaries; < and > mark a box that started before or runs past the window.`,
+  ];
+  if (v.dma.length) out.push(`  DMA bus in this window: ${v.dma.map((o) => `${o.name} ${pct(o.pct)}`).join("  ")}`);
+  out.push("", `  ${"start".padStart(9)}  ${"end".padStart(8)}  ${"slots".padStart(6)}${"%win".padStart(7)}  function`);
+  const share = (slots: number) => pct(window > 0 ? (slots / window) * 100 : 0);
+  const folded = (fs: FlameView["folded"], depth: number) => {
+    for (const f of fs) {
+      out.push(`  ${"".padStart(9)}  ${"".padStart(8)}  ${String(Math.round(f.slots)).padStart(6)}${share(f.slots).padStart(7)}  ` +
+        `${"  ".repeat(depth)}+ ${f.name} ×${f.count}`);
+    }
+  };
+  // Same function, same callees, about the same length: one iteration of a loop, repeated. Shown
+  // once with a count and its period, or a loop calling a helper per line is a page per frame.
+  // Folded calls are left out: they're under the threshold by definition, and an occasional one
+  // (an interrupt landing in one iteration) shouldn't break the run.
+  const shape = (b: FlameBox): string => `${b.name}(${b.children.map(shape).join(",")})`;
+  const similar = (a: FlameBox, b: FlameBox) => {
+    const la = a.end - a.start;
+    const lb = b.end - b.start;
+    // 10%, or a few instructions' worth for a short box — a blitter wait drifts by a handful of
+    // slots from one iteration to the next without being a different kind of iteration.
+    return shape(a) === shape(b) && Math.abs(la - lb) <= Math.max(Math.max(la, lb) * 0.1, 16);
+  };
+  // A loop body is often several calls (compute, then wait for the blitter), so look for a
+  // repeating sequence of up to MAX_PERIOD siblings, not just one function repeated.
+  const MAX_PERIOD = 4;
+  const repeatsAt = (boxes: FlameBox[], i: number, period: number): number => {
+    let n = 1;
+    for (;;) {
+      const base = i + n * period;
+      if (base + period > boxes.length) return n;
+      for (let k = 0; k < period; k++) if (!similar(boxes[i + k], boxes[base + k])) return n;
+      n++;
+    }
+  };
+  const visitAll = (boxes: FlameBox[], depth: number) => {
+    for (let i = 0; i < boxes.length; ) {
+      let best = { period: 1, count: 1 };
+      for (let period = 1; period <= MAX_PERIOD; period++) {
+        const count = repeatsAt(boxes, i, period);
+        if (count >= 2 && count * period > best.count * best.period) best = { period, count };
+      }
+      if (best.count < 2) {
+        visit(boxes[i], depth);
+        i++;
+        continue;
+      }
+      const run = boxes.slice(i, i + best.count * best.period);
+      const first = run[0];
+      const last = run[run.length - 1];
+      const busy = run.reduce((n, b) => n + (b.end - b.start), 0);
+      const period = (boxes[i + (best.count - 1) * best.period].start - first.start) / (best.count - 1) / LINE_SLOTS;
+      const names = run.slice(0, best.period).map(label).join(", ");
+      out.push(
+        `  ${linePos(first.start).padStart(9)}  ${lastPos(last.end).padStart(8)}  ${String(Math.round(busy)).padStart(6)}${share(busy).padStart(7)}  ` +
+        `${"  ".repeat(depth)}×${best.count} ${best.period > 1 ? `[${names}]` : names}, every ~${period.toFixed(1)} lines — first one:`,
+      );
+      for (const b of run.slice(0, best.period)) visit(b, depth);
+      i += run.length;
+    }
+  };
+  const visit = (box: FlameBox, depth: number) => {
+    const slots = box.end - box.start;
+    out.push(
+      `  ${((box.startsBefore ? "<" : "") + linePos(box.start)).padStart(9)}  ${(lastPos(box.end) + (box.endsAfter ? ">" : "")).padStart(8)}  ` +
+      `${String(Math.round(slots)).padStart(6)}${share(slots).padStart(7)}  ${"  ".repeat(depth)}${label(box)}`,
+    );
+    visitAll(box.children, depth + 1);
+    folded(box.folded, depth + 1);
+  };
+  visitAll(v.boxes, 0);
+  folded(v.folded, 0);
+  return out;
+}
+
+function renderCallers(paths: CallerPath[], query: string, frameIndex: number): string[] {
+  const out = ["", `  Calls into ${query}, frame ${frameIndex} (cycles including what it calls, by call path)`];
+  if (paths.length === 0) {
+    out.push(`  not executed in frame ${frameIndex}.`);
+    return out;
+  }
+  for (const p of paths) out.push(`  ${String(p.cycles).padStart(9)}${pct(p.pct).padStart(8)}  ${p.path.join(" > ")}`);
+  return out;
+}
+
+function dumpFrame(
+  f: FrameAnalysis,
+  limit: number,
+  out: string[],
+  instructionQuery?: string,
+  sort: "self" | "total" = "self",
+  callersQuery?: string,
+): void {
   out.push("");
   out.push(`Frame ${f.index}: ${f.samples} samples, ${f.cycles} cycles = ${pct(f.cyclePct)} of ${f.frameCycles} color clocks` +
     (f.duplicateOfPrevious ? ` — same picture as frame ${f.index - 1}` : ""));
@@ -49,20 +200,31 @@ function dumpFrame(f: FrameAnalysis, limit: number, out: string[], instructionQu
     out.push(`  DMA bus: ${f.dmaOwners.map((o) => `${o.name} ${pct(o.pct)}`).join("  ")}`);
   }
 
-  const fns = limit > 0 ? f.functions.slice(0, limit) : f.functions;
+  const sorted = sort === "total"
+    ? [...f.functions].sort((a, b) => b.totalCycles - a.totalCycles)
+    : f.functions;
+  const fns = limit > 0 ? sorted.slice(0, limit) : sorted;
   if (fns.length === 0) return;
+  const label = labeller(f.functions);
   out.push("");
-  out.push(`  ${"function".padEnd(36)}${"self".padStart(9)}${"self%".padStart(8)}${"width%".padStart(8)}${"samples".padStart(9)}`);
+  out.push(
+    `  ${"function".padEnd(36)}${"self".padStart(9)}${"self%".padStart(8)}${"total".padStart(9)}${"total%".padStart(8)}` +
+    `${"width%".padStart(8)}${"samples".padStart(9)}`,
+  );
   for (const fn of fns) {
     // width% is only meaningful against a DMA grid; without one it degenerates to self%.
     out.push(
-      `  ${fn.name.slice(0, 35).padEnd(36)}${String(fn.selfCycles).padStart(9)}` +
-      `${pct(fn.selfPct).padStart(8)}${pct(fn.widthPct).padStart(8)}${String(fn.samples).padStart(9)}`,
+      `  ${label(fn).slice(0, 35).padEnd(36)}${String(fn.selfCycles).padStart(9)}${pct(fn.selfPct).padStart(8)}` +
+      `${String(fn.totalCycles).padStart(9)}${pct(fn.totalPct).padStart(8)}` +
+      `${pct(fn.widthPct).padStart(8)}${String(fn.samples).padStart(9)}`,
     );
   }
   if (limit > 0 && f.functions.length > limit) {
     out.push(`  … ${f.functions.length - limit} more (use --functions 0)`);
   }
+  if (f.callTree) out.push(...renderCallTree(f.callTree, f.cycles, f.index, label));
+  if (f.callers) out.push(...renderCallers(f.callers, callersQuery ?? "", f.index));
+  if (f.flame) out.push(...renderFlame(f.flame, f.index, label));
   if (f.stalls) out.push(...renderStalls(f.stalls, limit, f.index));
   if (f.instructionDetail) {
     out.push(...renderInstructions(f.instructionDetail, f.index));
@@ -133,7 +295,7 @@ function renderStalls(st: StallAnalysis, limit: number, frameIndex: number): str
   return out;
 }
 
-export function renderDump(a: ProfileAnalysis, frame: number | undefined, limit: number): string {
+export function renderDump(a: ProfileAnalysis, frame: number | undefined, limit: number, sort: "self" | "total" = "self"): string {
   const out: string[] = [];
   const m = a.manifest;
   out.push(`${m.program.name ?? "(unnamed program)"} — ${m.frameCount} frame(s), ${m.meta.isPAL ? "PAL" : "NTSC"}`);
@@ -148,7 +310,7 @@ export function renderDump(a: ProfileAnalysis, frame: number | undefined, limit:
     out.push(`No such frame ${frame} (capture has ${a.frames.length}).`);
     return out.join("\n");
   }
-  for (const f of frames) dumpFrame(f, limit, out, a.instructionQuery);
+  for (const f of frames) dumpFrame(f, limit, out, a.instructionQuery, sort, a.callersOf);
   return out.join("\n");
 }
 

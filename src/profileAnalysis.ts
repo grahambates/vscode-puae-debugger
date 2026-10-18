@@ -19,7 +19,7 @@
 //   - frame-short            → the profile buffer running out mid-capture
 
 import { buildColumns, buildSampleSlots } from "./webview/profilerViewer/columns";
-import { BusOwner, IDisassembledFunction, IProfileModel, REG_COUNT } from "./shared/profilerTypes";
+import { BusOwner, DMA_HPOS, IComputedNode, IDisassembledFunction, ILocation, IProfileModel, REG_COUNT } from "./shared/profilerTypes";
 import { loadProfile } from "./profileLoader";
 import { ProfileManifest } from "./profileFormat";
 import { datasheetApplicability, theoreticalTiming } from "./theoreticalTimings";
@@ -77,7 +77,60 @@ export interface FunctionCost {
   samples: number;
   selfCycles: number;
   selfPct: number; // share of the frame's total sampled cycles
+  /**
+   * Including everything it called — the profiler's top-down Time view. Counted once per call
+   * path even when the function recurses, so it never exceeds the frame.
+   */
+  totalCycles: number;
+  totalPct: number;
   widthPct: number; // share of the flame graph's width (should track selfPct)
+}
+
+/** One node of the top-down call tree: a function as reached by one particular call path. */
+export interface CallTreeNode {
+  name: string;
+  file?: string;
+  selfCycles: number;
+  totalCycles: number;
+  children: CallTreeNode[]; // descending by totalCycles
+}
+
+/**
+ * One box of the flame graph: a function on the stack continuously from `start` to `end` (DMA
+ * slots from the frame's start — one colour clock each, DMA_HPOS per line), with what it called
+ * nested inside. Boxes too short to matter are folded into `folded`, by function.
+ */
+export interface FlameBox {
+  name: string;
+  file?: string;
+  start: number;
+  end: number;
+  /** Clipped by the window: the function was already running before it, or carries on after. */
+  startsBefore?: boolean;
+  endsAfter?: boolean;
+  children: FlameBox[]; // in time order
+  folded: { name: string; count: number; slots: number }[]; // descending by slots
+}
+
+export interface FlameView {
+  /** The window shown, in slots: the whole frame, or the lines asked for. */
+  start: number;
+  end: number;
+  /** Boxes shorter than this many slots were folded. */
+  minSlots: number;
+  boxes: FlameBox[];
+  folded: { name: string; count: number; slots: number }[];
+  /** Whether positions come from the DMA grid (as the flame graph draws them) or from cycle costs. */
+  anchored: boolean;
+  /** Bus use within the window — the flame graph's DMA strip, summed. */
+  dma: DmaOwnerCount[];
+}
+
+/** One call path into a function, and the cycles spent in it (including callees) via that path. */
+export interface CallerPath {
+  path: string[]; // outermost first, ending with the function itself
+  cycles: number;
+  pct: number; // of the frame
 }
 
 export interface DmaOwnerCount {
@@ -103,6 +156,12 @@ export interface FrameAnalysis {
   stalls?: StallAnalysis;
   /** Present only when per-instruction detail was requested for a named function. */
   instructionDetail?: InstructionAnalysis;
+  /** Present only when the call tree was requested. Its children are the outermost calls. */
+  callTree?: CallTreeNode;
+  /** Present only when callers were requested: every path into that function this frame. */
+  callers?: CallerPath[];
+  /** Present only when the flame graph was requested. */
+  flame?: FlameView;
   /**
    * The screen output is byte-identical to the previous frame's — the profiler filmstrip's "="
    * badge. Never true for frame 0 (nothing earlier in the capture to compare against).
@@ -156,6 +215,8 @@ export interface ProfileAnalysis {
    * from a frame with no `instructionDetail`.
    */
   instructionQuery?: string;
+  /** The function `callers` resolved to, as the capture spells it. */
+  callersOf?: string;
 }
 
 // Measured cost against datasheet cost, per function — the difference between "this routine is
@@ -261,6 +322,192 @@ function ownerGroup(owner: number): string {
 // Leaf function name for sample k. Reads the model's own symbolication rather than re-deriving
 // it, so names match the viewer exactly (including the "(inlined)" suffix and [Kick]/[IRQ]
 // synthetic labels).
+/** Same keying as the function table's: name plus file, so the two agree on what "a function" is. */
+function functionKey(loc: ILocation): { key: string; name: string; file?: string } {
+  const name = loc.callFrame.functionName;
+  const file = loc.callFrame.url || undefined;
+  return { key: `${name} ${file ?? ""}`, name, file };
+}
+
+/**
+ * Walks the call tree outermost-first, calling `visit` for each node with the path of functions
+ * above it, and whether this is the outermost occurrence of its function on that path — which is
+ * what makes recursion count once rather than once per level.
+ */
+function walkCallTree(
+  model: IProfileModel,
+  visit: (node: IComputedNode, fn: ReturnType<typeof functionKey>, path: string[], outermost: boolean) => void,
+): void {
+  if (model.nodes.length === 0) return;
+  const depthOnPath = new Map<string, number>();
+  const path: string[] = [];
+  const recurse = (id: number) => {
+    const node = model.nodes[id];
+    const loc = model.locations[node.locationId];
+    if (!loc) return;
+    const fn = functionKey(loc);
+    const depth = depthOnPath.get(fn.key) ?? 0;
+    path.push(fn.name);
+    visit(node, fn, path, depth === 0);
+    depthOnPath.set(fn.key, depth + 1);
+    for (const child of node.children) recurse(child);
+    depthOnPath.set(fn.key, depth);
+    path.pop();
+  };
+  for (const child of model.nodes[0].children) recurse(child);
+}
+
+function inclusiveCycles(model: IProfileModel): Map<string, { name: string; file?: string; cycles: number }> {
+  const totals = new Map<string, { name: string; file?: string; cycles: number }>();
+  walkCallTree(model, (node, fn, _path, outermost) => {
+    if (!outermost) return;
+    const e = totals.get(fn.key) ?? { name: fn.name, file: fn.file, cycles: 0 };
+    e.cycles += node.aggregateTime;
+    totals.set(fn.key, e);
+  });
+  return totals;
+}
+
+export function buildCallTree(model: IProfileModel): CallTreeNode {
+  const build = (id: number): CallTreeNode | undefined => {
+    const node = model.nodes[id];
+    const loc = model.locations[node.locationId];
+    if (!loc) return undefined;
+    const { name, file } = functionKey(loc);
+    const children = node.children.map(build).filter((c): c is CallTreeNode => c !== undefined);
+    children.sort((a, b) => b.totalCycles - a.totalCycles);
+    return { name, file, selfCycles: node.selfTime, totalCycles: node.aggregateTime, children };
+  };
+  const top = (model.nodes[0]?.children ?? []).map(build).filter((c): c is CallTreeNode => c !== undefined);
+  top.sort((a, b) => b.totalCycles - a.totalCycles);
+  return { name: "(frame)", selfCycles: 0, totalCycles: top.reduce((n, c) => n + c.totalCycles, 0), children: top };
+}
+
+/** Every call path into `name` (outermost occurrences only), merged and by cost. */
+// Boxes under this share of the window are folded: a hot loop calling a helper per iteration
+// is thousands of boxes, and the shape — which calls happen, how often, at what cost — is the
+// useful part, not each one.
+const FLAME_MIN_FRACTION = 0.005;
+
+/**
+ * The flame graph as boxes, from the same column layout the profiler's flame graph draws
+ * (buildColumns: positions anchored to the DMA grid's instruction fetches where possible), so the
+ * text and the picture can't disagree about when something ran.
+ */
+export function buildFlame(model: IProfileModel, lines?: { from: number; to: number }): FlameView {
+  const columns = buildColumns(model);
+  const totalSlots = model.dma?.owner.length || PAL_FRAME_CCK;
+  const anchored = !!model.dma && model.pcs.length > 0 && buildSampleSlots(model.pcs, model.timeDeltas, model.dma).matched > 0;
+  const winStart = lines ? Math.max(0, lines.from * DMA_HPOS) : 0;
+  const winEnd = lines ? Math.min(totalSlots, (lines.to + 1) * DMA_HPOS) : totalSlots;
+  const minSlots = Math.max(1, (winEnd - winStart) * FLAME_MIN_FRACTION);
+
+  // Every merged run at every depth: a cell that is a location object starts a box; numeric
+  // cells pointing back at it extend it.
+  type Raw = { name: string; file?: string; depth: number; start: number; end: number };
+  const open = new Map<string, Raw>(); // `${depth}:${startColumn}` -> box
+  const raws: Raw[] = [];
+  columns.forEach((col, x) => {
+    col.rows.forEach((cell, depth) => {
+      const startCol = typeof cell === "number" ? cell : x;
+      const key = `${depth}:${startCol}`;
+      let box = open.get(key);
+      if (!box) {
+        const loc = (typeof cell === "number" ? columns[cell].rows[depth] : cell) as ILocation;
+        const { name, file } = functionKey(loc);
+        box = { name, file, depth, start: col.x1 * totalSlots, end: col.x2 * totalSlots };
+        open.set(key, box);
+        raws.push(box);
+      }
+      box.end = Math.max(box.end, col.x2 * totalSlots);
+    });
+  });
+
+  // Clip to the window, then nest by time: sorted by start then depth, each box's parent is the
+  // nearest open box one level up.
+  const inWindow = raws
+    .filter((b) => b.end > winStart && b.start < winEnd)
+    .map((b) => ({ ...b, startsBefore: b.start < winStart, endsAfter: b.end > winEnd, start: Math.max(b.start, winStart), end: Math.min(b.end, winEnd) }))
+    .sort((a, b) => a.start - b.start || a.depth - b.depth);
+  const top: FlameBox[] = [];
+  const topFolded = new Map<string, { name: string; count: number; slots: number }>();
+  const folds = new Map<FlameBox, Map<string, { name: string; count: number; slots: number }>>();
+  const stack: { depth: number; box: FlameBox }[] = [];
+  const minDepth = inWindow.reduce((d, b) => Math.min(d, b.depth), Infinity);
+  for (const raw of inWindow) {
+    while (stack.length && stack[stack.length - 1].depth >= raw.depth) stack.pop();
+    const parent = stack[stack.length - 1]?.box;
+    if (raw.end - raw.start < minSlots) {
+      // A folded box's own callees fold with it: they're inside its time already.
+      if (parent && stack[stack.length - 1].depth !== raw.depth - 1) continue;
+      if (!parent && raw.depth !== minDepth) continue;
+      const target = parent ? (folds.get(parent) ?? folds.set(parent, new Map()).get(parent)!) : topFolded;
+      const f = target.get(raw.name) ?? { name: raw.name, count: 0, slots: 0 };
+      f.count++;
+      f.slots += raw.end - raw.start;
+      target.set(raw.name, f);
+      continue;
+    }
+    if (parent ? stack[stack.length - 1].depth !== raw.depth - 1 : raw.depth !== minDepth) continue; // under a folded box
+    const box: FlameBox = { name: raw.name, file: raw.file, start: raw.start, end: raw.end, children: [], folded: [] };
+    if (raw.startsBefore) box.startsBefore = true;
+    if (raw.endsAfter) box.endsAfter = true;
+    (parent ? parent.children : top).push(box);
+    stack.push({ depth: raw.depth, box });
+  }
+  const sortFolded = (m?: Map<string, { name: string; count: number; slots: number }>) =>
+    [...(m?.values() ?? [])].sort((a, b) => b.slots - a.slots);
+  for (const [box, m] of folds) box.folded = sortFolded(m);
+
+  const dma: DmaOwnerCount[] = [];
+  if (model.dma) {
+    const counts = new Map<string, number>();
+    for (let s = winStart; s < winEnd; s++) counts.set(ownerGroup(model.dma.owner[s]), (counts.get(ownerGroup(model.dma.owner[s])) ?? 0) + 1);
+    for (const [name, cells] of counts) dma.push({ name, cells, pct: (cells / (winEnd - winStart)) * 100 });
+    dma.sort((a, b) => b.cells - a.cells);
+  }
+  return { start: winStart, end: winEnd, minSlots, boxes: top, folded: sortFolded(topFolded), anchored, dma };
+}
+
+/** "40-80" or "44" as an inclusive range of raster lines, for zooming the flame graph. */
+export function parseLineRange(text: string): { from: number; to: number } {
+  const m = /^\s*(\d+)\s*(?:-\s*(\d+)\s*)?$/.exec(text);
+  const from = m ? Number(m[1]) : NaN;
+  const to = m ? Number(m[2] ?? m[1]) : NaN;
+  if (!m || from > to || to >= 313) {
+    throw new ProfileRequestError(`Lines must be "FROM-TO" or "LINE" within 0-312 (a PAL frame), got "${text}".`);
+  }
+  return { from, to };
+}
+
+/**
+ * A function name as the capture spells it: exact match first, else a unique case-insensitive
+ * substring — the same leniency `instructions` gives, and the same refusal to guess between two.
+ */
+function resolveFunctionName(names: string[], query: string): string {
+  const all = [...new Set(names)];
+  if (all.includes(query)) return query;
+  const wanted = query.trim().toLowerCase();
+  const near = all.filter((n) => n.toLowerCase().includes(wanted));
+  if (near.length === 1) return near[0];
+  if (near.length > 1) throw new ProfileRequestError(`"${query}" matches several functions: ${near.slice(0, 12).join(", ")}. Use the exact name.`);
+  throw new ProfileRequestError(`No function "${query}" in this capture. Functions: ${all.slice(0, 20).join(", ")}${all.length > 20 ? ", …" : ""}`);
+}
+
+export function callersOf(model: IProfileModel, name: string, frameCycles: number): CallerPath[] {
+  const byPath = new Map<string, CallerPath>();
+  walkCallTree(model, (node, fn, path, outermost) => {
+    if (!outermost || fn.name !== name) return;
+    const key = path.join("\u0000");
+    const e = byPath.get(key) ?? { path: [...path], cycles: 0, pct: 0 };
+    e.cycles += node.aggregateTime;
+    byPath.set(key, e);
+  });
+  const paths = [...byPath.values()].sort((a, b) => b.cycles - a.cycles);
+  for (const p of paths) p.pct = frameCycles > 0 ? (p.cycles / frameCycles) * 100 : 0;
+  return paths;
+}
+
 function leafOf(model: IProfileModel, k: number): { name: string; file?: string } {
   const node = model.nodes[model.samples[k + 1]];
   const loc = node ? model.locations[node.locationId] : undefined;
@@ -292,13 +539,26 @@ export function analyseFrame(model: IProfileModel, index: number): FrameAnalysis
     const { name, file } = leafOf(model, k);
     const key = `${name} ${file ?? ""}`;
     let e = byFn.get(key);
-    if (!e) { e = { name, file, samples: 0, selfCycles: 0, selfPct: 0, widthPct: 0 }; byFn.set(key, e); }
+    if (!e) { e = { name, file, samples: 0, selfCycles: 0, selfPct: 0, totalCycles: 0, totalPct: 0, widthPct: 0 }; byFn.set(key, e); }
     e.samples++;
     e.selfCycles += cost;
     const col = columns[k];
     if (col) e.widthPct += (col.x2 - col.x1) * 100;
   }
-  for (const e of byFn.values()) e.selfPct = cycles > 0 ? (e.selfCycles / cycles) * 100 : 0;
+  // Inclusive time comes from the call tree, not the samples. A function that only ever calls
+  // others (main, a frame loop) has no self time at all, so it's added here or it would be
+  // missing from the table entirely.
+  for (const [key, inc] of inclusiveCycles(model)) {
+    let e = byFn.get(key);
+    if (!e) { e = { name: inc.name, file: inc.file, samples: 0, selfCycles: 0, selfPct: 0, totalCycles: 0, totalPct: 0, widthPct: 0 }; byFn.set(key, e); }
+    e.totalCycles = inc.cycles;
+  }
+  for (const e of byFn.values()) {
+    e.selfPct = cycles > 0 ? (e.selfCycles / cycles) * 100 : 0;
+    // A leaf the tree doesn't reach (shouldn't happen) still has its own time as a floor.
+    e.totalCycles = Math.max(e.totalCycles, e.selfCycles);
+    e.totalPct = cycles > 0 ? (e.totalCycles / cycles) * 100 : 0;
+  }
 
   // Instruction-fetch cells, and how many samples the layout could actually anchor to one.
   // Recomputing the match count here (rather than plumbing it out of buildSampleSlots) keeps
@@ -617,14 +877,33 @@ export function selectInstructionDetail(
   );
 }
 
-export function analyseProfile(file: Uint8Array, opts: { stalls?: boolean; instructions?: string } = {}): ProfileAnalysis {
+export function analyseProfile(
+  file: Uint8Array,
+  opts: {
+    stalls?: boolean;
+    instructions?: string;
+    callTree?: boolean;
+    callers?: string;
+    /** The flame graph: the whole frame (true), or just these raster lines. */
+    flame?: boolean | { from: number; to: number };
+  } = {},
+): ProfileAnalysis {
   const { frames, manifest } = loadProfile(file);
   const analysed = frames.map((f, i) => {
     const a = analyseFrame(f.model, i);
     a.duplicateOfPrevious = f.raw.duplicateOfPrevious === true;
     if (opts.stalls) a.stalls = analyseStalls(f.model.disassembly, a.zeroCostSamples);
+    if (opts.callTree) a.callTree = buildCallTree(f.model);
+    if (opts.flame) a.flame = buildFlame(f.model, opts.flame === true ? undefined : opts.flame);
     return a;
   });
+  let callersName: string | undefined;
+  if (opts.callers) {
+    // Resolved against every frame's functions at once, like `instructions` below: the routine
+    // may only run in some frames.
+    callersName = resolveFunctionName(analysed.flatMap((a) => a.functions.map((fn) => fn.name)), opts.callers);
+    frames.forEach((f, i) => { analysed[i].callers = callersOf(f.model, callersName!, analysed[i].cycles); });
+  }
   if (opts.instructions) {
     // Resolved across all frames at once, not per frame inside the map above: a function that only
     // runs in a later frame would otherwise abort the whole analysis on the first frame that
@@ -659,5 +938,5 @@ export function analyseProfile(file: Uint8Array, opts: { stalls?: boolean; instr
     analysed.map((f) => f.duplicateOfPrevious),
     manifest.meta.isPAL ? 50 : 60,
   );
-  return { manifest, frames: analysed, findings, screenUpdates, instructionQuery: opts.instructions };
+  return { manifest, frames: analysed, findings, screenUpdates, instructionQuery: opts.instructions, callersOf: callersName };
 }

@@ -48,10 +48,23 @@ layout path (`src/profileAnalysis.ts` in the debugger's own sources) and reports
 disagrees with what's physically possible. Exit code is 1 iff an error-level finding fired, so it
 also works as a gate in a script.
 
-`dump` is the read side — per-frame cost tables (self cycles, flame-graph width, DMA bus
-census) and a manifest summary. Use `--json` for anything you're going to reason over
-programmatically rather than read; use `--frame N` to scope to one frame; `--functions 0` for
-the full function list instead of the default top 12.
+`dump` is the read side — per-frame cost tables (self cycles, total cycles including callees,
+flame-graph width, DMA bus census) and a manifest summary. Use `--json` for anything you're going
+to reason over programmatically rather than read; use `--frame N` to scope to one frame;
+`--functions 0` for the full function list instead of the default top 12.
+
+Self time says where the CPU *is*; total time says which of *your* routines is responsible.
+`--sort total` ranks routines by everything they call — a frame loop with 0% self time can be
+the answer. `--tree` prints the top-down call tree (the profiler's Time view), and
+`--callers NAME` lists every call path into one function with its cost via each — the way to
+find out which caller makes `__udivsi3` or a blitter wait expensive.
+
+**`--flame` is the flame graph as text, and the answer to *when* questions** — "does DrawBars
+finish before line 44", "what is the CPU doing while the blit runs". Boxes are in time order,
+nested by call depth, each with start and end as raster `line:hpos`, positioned from the same
+DMA-anchored layout the flame graph draws. Short boxes fold into `+ name ×count` lines and a
+repeating loop body prints once as `×N [...], every ~K lines`. `--lines 40-80` zooms in (finer
+folding, and the DMA bus use within just those lines).
 
 **`--instructions <function>` goes a level deeper**, and is the answer to "which instruction in
 this routine costs the time" — cycles, hits and cycles-per-execution for every instruction in

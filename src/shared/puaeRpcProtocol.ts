@@ -122,6 +122,11 @@ export interface PuaeRpcProtocol {
   getCopperFrame: { args: { frameIdx: number }; result: RpcBinaryDataBase64 };
   getDmaSnapshot: { args: undefined; result: RpcDmaSnapshot };
   getAgaColors: { args: undefined; result: RpcBinaryData };
+  // Whole-machine save state for the MCP server's snapshots. `instrCount` is the retired-
+  // instruction anchor reverse stepping uses — not part of the libretro state, so it travels
+  // alongside (as a decimal string: it's a 64-bit count).
+  saveState: { args: undefined; result: { data: Uint8Array; instrCount: string } };
+  loadState: { args: { data: Uint8Array; instrCount: string }; result: RpcOk };
 }
 
 export type PuaeRpcCommand = keyof PuaeRpcProtocol;
@@ -165,6 +170,7 @@ export interface PuaeDispatcherArgs {
   endAddr: number;
   numFrames?: number;
   frameIdx?: number;
+  instrCount?: string;
 }
 
 export interface PuaeRpcResponse<K extends PuaeRpcCommand = PuaeRpcCommand> {

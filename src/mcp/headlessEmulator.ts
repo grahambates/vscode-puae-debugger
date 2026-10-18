@@ -262,6 +262,20 @@ export class HeadlessEmulator extends WebviewEmulator {
     return { rgba, width, height };
   }
 
+  /** The whole machine's state, for restoring later with `loadState`. */
+  public async saveState(): Promise<{ data: Uint8Array; instrCount: string }> {
+    return this.sendRpcCommand("saveState");
+  }
+
+  public async loadState(state: { data: Uint8Array; instrCount: string }): Promise<void> {
+    this.invalidateCache();
+    try {
+      await this.sendRpcCommand("loadState", state);
+    } finally {
+      this.invalidateCache();
+    }
+  }
+
   public dispose(): void {
     this.inProcessHost.dispose();
     super.dispose();

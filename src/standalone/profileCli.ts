@@ -9,21 +9,29 @@
 // subcommands never start the DAP server.
 
 import { readFileSync } from "fs";
-import { analyseProfile, ProfileAnalysis, ProfileRequestError } from "../profileAnalysis";
+import { analyseProfile, parseLineRange, ProfileAnalysis, ProfileRequestError } from "../profileAnalysis";
 import { renderCheck, renderDump } from "../profileReport";
 
 const USAGE = `Usage:
-  puae-debugger profile dump  <file.puaeprofile> [--frame N] [--functions N] [--stalls]
+  puae-debugger profile dump  <file.puaeprofile> [--frame N] [--functions N] [--sort self|total]
+                                                  [--tree] [--callers NAME] [--flame]
+                                                  [--lines FROM-TO] [--stalls]
                                                   [--instructions NAME] [--json]
   puae-debugger profile check <file.puaeprofile> [--json]
 
-  dump   Per-frame cost tables: cycles, top functions by self time, DMA bus census.
+  dump   Per-frame cost tables: cycles, top functions by self and total time, DMA bus census.
   check  Verify the capture against physical invariants (frame length, flame-graph
          layout, buffer truncation). Exits 1 if any error-level finding is reported.
 
 Options:
   --frame N            Restrict dump to one frame (default: all).
   --functions N        Functions to list per frame (default: 12, 0 for all).
+  --sort self|total    Order functions by self cycles (default) or total including callees.
+  --tree               Top-down call tree (total% and self% per call path).
+  --callers NAME       Every call path into one function, with its cost via each.
+  --flame              The flame graph as text: call stacks in time order, positions as
+                       raster line:hpos, short boxes folded.
+  --lines FROM-TO      Zoom the flame graph to these raster lines (implies --flame).
   --stalls             Compare measured cost against 68000 datasheet timings (68kcounter)
                        to separate slow instructions from bus-blocked ones. 68000 only.
   --instructions NAME  Per-instruction costs within one function: cycles, hits, cycles
@@ -49,6 +57,11 @@ export function runProfileCli(argv: string[]): number {
   let instructions: string | undefined;
   let frame: number | undefined;
   let limit = 12;
+  let sort: "self" | "total" = "self";
+  let callTree = false;
+  let callers: string | undefined;
+  let flame = false;
+  let lines: string | undefined;
   for (let i = 1; i < argv.length; i++) {
     const arg = argv[i];
     if (arg === "--json") json = true;
@@ -56,6 +69,21 @@ export function runProfileCli(argv: string[]): number {
     else if (arg === "--instructions") {
       instructions = argv[++i];
       if (instructions === undefined) { console.error(`--instructions needs a function name.\n\n${USAGE}`); return 1; }
+    }
+    else if (arg === "--sort") {
+      const v = argv[++i];
+      if (v !== "self" && v !== "total") { console.error(`--sort takes "self" or "total".\n\n${USAGE}`); return 1; }
+      sort = v;
+    }
+    else if (arg === "--tree") callTree = true;
+    else if (arg === "--flame") flame = true;
+    else if (arg === "--lines") {
+      lines = argv[++i];
+      if (!lines) { console.error(`--lines needs a range, e.g. 40-80.\n\n${USAGE}`); return 1; }
+    }
+    else if (arg === "--callers") {
+      callers = argv[++i];
+      if (!callers) { console.error(`--callers needs a function name.\n\n${USAGE}`); return 1; }
     }
     else if (arg === "--frame") frame = Number(argv[++i]);
     else if (arg === "--functions") limit = Number(argv[++i]);
@@ -81,7 +109,8 @@ export function runProfileCli(argv: string[]): number {
 
   let analysis: ProfileAnalysis;
   try {
-    analysis = analyseProfile(bytes, { stalls, instructions });
+    const flameOpt = lines !== undefined ? parseLineRange(lines) : flame;
+    analysis = analyseProfile(bytes, { stalls, instructions, callTree, callers, flame: flameOpt });
   } catch (err) {
     // A request the capture can't satisfy (an unknown --instructions name) is reported on its own
     // terms: its message already names what the capture does contain, and a "could not read"
@@ -110,11 +139,12 @@ export function runProfileCli(argv: string[]): number {
         frames = frames.filter((f) => f.index === frame);
         findings = findings.filter((f) => f.frame === undefined || f.frame === frame);
       }
+      if (sort === "total") frames = frames.map((f) => ({ ...f, functions: [...f.functions].sort((a, b) => b.totalCycles - a.totalCycles) }));
       if (limit > 0) frames = frames.map((f) => ({ ...f, functions: f.functions.slice(0, limit) }));
     }
     console.log(JSON.stringify({ ...analysis, manifest, frames, findings }, null, 2));
   } else {
-    console.log(sub === "dump" ? renderDump(analysis, frame, limit) : renderCheck(analysis));
+    console.log(sub === "dump" ? renderDump(analysis, frame, limit, sort) : renderCheck(analysis));
   }
 
   return sub === "check" && analysis.findings.some((f) => f.severity === "error") ? 1 : 0;

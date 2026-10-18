@@ -75,7 +75,7 @@ describe("runProfileCli", () => {
       const { code, out } = run(["dump", FIXTURE]);
       expect(code).toBe(0);
       expect(out).toContain("Frame 0:");
-      expect(out).toMatch(/function\s+self\s+self%\s+width%\s+samples/);
+      expect(out).toMatch(/function\s+self\s+self%\s+total\s+total%\s+width%\s+samples/);
     });
 
     it("--frame restricts text output to one frame", () => {
