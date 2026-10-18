@@ -55,6 +55,11 @@ export function log(message: string): void {
 export interface ServerInfo {
   name: string;
   version: string;
+  /**
+   * Returned by `initialize` as the server's `instructions`, which clients put in front of the
+   * model. Not part of `serverInfo` itself.
+   */
+  instructions?: string;
 }
 
 // Route one message and produce its response, or undefined when there is nothing to send.
@@ -80,7 +85,8 @@ export async function handleRequest(
       const protocolVersion = SUPPORTED_PROTOCOL_VERSIONS.includes(asked) ? asked : DEFAULT_PROTOCOL_VERSION;
       // Only tools are declared. Advertising capabilities we don't implement (resources, prompts)
       // would invite calls this server can't answer.
-      return ok({ protocolVersion, capabilities: { tools: {} }, serverInfo: info });
+      const { instructions, ...serverInfo } = info;
+      return ok({ protocolVersion, capabilities: { tools: {} }, serverInfo, ...(instructions ? { instructions } : {}) });
     }
     case "notifications/initialized":
     case "notifications/cancelled":

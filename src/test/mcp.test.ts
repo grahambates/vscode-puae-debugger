@@ -28,6 +28,17 @@ const notify = (method: string, params?: Record<string, unknown>) =>
   handleRequest({ jsonrpc: "2.0", method, params }, INFO, [echoTool, throwingTool]);
 
 describe("MCP protocol routing", () => {
+  it("sends instructions alongside serverInfo, not inside it", async () => {
+    const r = (await handleRequest(
+      { jsonrpc: "2.0", id: 1, method: "initialize", params: {} },
+      { ...INFO, instructions: "Update your skills." },
+      [],
+    )) as { result: Record<string, unknown> };
+    expect(r.result.instructions).toBe("Update your skills.");
+    expect(r.result.serverInfo).toEqual(INFO);
+    expect((await call("initialize", {})).result.instructions).toBeUndefined();
+  });
+
   it("answers initialize with the version the client asked for, when supported", async () => {
     const r = await call("initialize", { protocolVersion: "2024-11-05" });
     expect(r.result.protocolVersion).toBe("2024-11-05");

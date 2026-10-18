@@ -15,6 +15,7 @@
 
 import { log, serveStdio } from "./jsonRpc";
 import { buildTools } from "./tools";
+import { outdatedSkills } from "../standalone/skillCli";
 
 /**
  * @param rootDir Package root (the directory holding `puae/` and `out/`), which the
@@ -37,5 +38,26 @@ export function runMcpServer(rootDir: string): void {
   // importing package.json would bundle the whole manifest, and reading it at runtime would mean
   // guessing a path back to the package root that differs between a checkout, an installed
   // package and ts-jest.
-  serveStdio({ name: "puae-debugger", version: __PUAE_DEBUGGER_VERSION__ }, buildTools({ rootDir }));
+  const version = __PUAE_DEBUGGER_VERSION__;
+  serveStdio({ name: "puae-debugger", version, instructions: skillsInstructions(rootDir, version) }, buildTools({ rootDir }));
+}
+
+// The skills installed in a project are copies, so they fall behind this server whenever the
+// package is updated (an npx-launched server is usually the latest; the copies are whatever was
+// installed last). They describe these tools, so an old one can steer the model wrong. Nothing
+// else would notice: say so where the model will see it, once per session.
+function skillsInstructions(rootDir: string, version: string): string | undefined {
+  let notes: string[];
+  try {
+    notes = outdatedSkills(rootDir, version);
+  } catch {
+    return undefined;
+  }
+  if (notes.length === 0) return undefined;
+  for (const note of notes) log(`puae-debugger: outdated skill: ${note}`);
+  return (
+    `Some installed puae-debugger skills are older than this server (${version}) and may describe ` +
+    `its tools wrongly. Tell the user once, early on, and give them the command to update:\n` +
+    notes.map((n) => `- ${n}`).join("\n")
+  );
 }
