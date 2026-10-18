@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 1.1.0
+
 ### MCP server
 
 - `emulator_inspect` decodes the custom chips (`chipset`: beam position, DMACON, INTENA/INTREQ, BPLCONx, bitplane/sprite/copper/blitter pointers, colours) and the copper list in memory (`copper`/`copperAt`), following COPJMPs and labelling WAITs past line 255.
