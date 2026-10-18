@@ -44,6 +44,10 @@ static uint32_t puae_debug_callstack[PUAE_DEBUG_CALLSTACK_MAX];
 static uint32_t puae_debug_callstackSP[PUAE_DEBUG_CALLSTACK_MAX];
 static uint8_t  puae_debug_callstackSuper[PUAE_DEBUG_CALLSTACK_MAX];
 static size_t puae_debug_callstackDepth = 0;
+/* How far above a popped frame's recorded SP A7 may land and still count as having returned from
+ * it, rather than having been moved elsewhere (see puae_debug_instructionHookImpl). A return lands
+ * exactly on it; a caller's argument cleanup or an RTD adds a little. */
+#define PUAE_DEBUG_RETURN_SLACK 1024u
 
 static int puae_debug_stepInstr = 0;
 static int puae_debug_stepInstrAfter = 0;
@@ -2884,14 +2888,36 @@ puae_debug_instructionHookImpl(uaecptr pc, uae_u16 opcode)
 	 * Skipped during replay (see puae_debug_replayMode below): replay re-walks already-executed
 	 * instructions against a callstack built during the original forward pass and must not
 	 * re-mutate it. */
+	/* A return opcode doesn't pop by itself either: an `rts` that isn't a return must not pop
+	 * (`pea label / rts` as a computed jump, or return-threaded code that points A7 at a table of
+	 * routine addresses and runs it with `rts` after `rts`). The RTS/RTR handling below pops only
+	 * a frame whose SP matches; everything else is popped here.
+	 *
+	 * Moving A7 somewhere else entirely (that threaded-code table, a private stack) isn't a
+	 * return either, though A7 may well land above every frame. So frames are popped only when A7
+	 * lands within PUAE_DEBUG_RETURN_SLACK of the outermost frame being popped, as it does after a
+	 * real return (plus a caller's argument cleanup or an RTD); further than that is a stack
+	 * switch, and the frames stay until A7 comes back and they return for real.
+	 *
+	 * A supervisor-mode frame on top while the CPU is in user mode is stale — supervisor code was
+	 * left without returning (e.g. a MOVE to SR) — and is dropped, so it can't block the frames
+	 * under it forever. (The other way round is normal: an exception frame records the
+	 * interrupted user mode, and sits on top while its handler runs in supervisor mode.) */
 	if (!puae_debug_replayMode) {
 		uae_u32 curSp = m68k_areg(regs, 7);
 		int curSuper = regs.s != 0;
-		while (puae_debug_callstackDepth > 0) {
-			size_t top = puae_debug_callstackDepth - 1;
-			if (puae_debug_callstackSuper[top] != curSuper) break;
-			if (curSp < puae_debug_callstackSP[top]) break;
+		while (puae_debug_callstackDepth > 0 && !curSuper &&
+		       puae_debug_callstackSuper[puae_debug_callstackDepth - 1]) {
 			puae_debug_callstackDepth--;
+		}
+		size_t keep = puae_debug_callstackDepth;
+		while (keep > 0 && puae_debug_callstackSuper[keep - 1] == curSuper &&
+		       curSp >= puae_debug_callstackSP[keep - 1]) {
+			keep--;
+		}
+		if (keep < puae_debug_callstackDepth &&
+		    curSp - puae_debug_callstackSP[keep] <= PUAE_DEBUG_RETURN_SLACK) {
+			puae_debug_callstackDepth = keep;
 		}
 	}
 
@@ -2956,8 +2982,21 @@ puae_debug_instructionHookImpl(uaecptr pc, uae_u16 opcode)
 			puae_debug_callstack[puae_debug_callstackDepth++] = pc24;
 		}
 	} else if (opcode == 0x4E75u || opcode == 0x4E74u || opcode == 0x4E73u || opcode == 0x4E77u) {
-		if (puae_debug_callstackDepth > 0) {
-			puae_debug_callstackDepth--;
+		/* An RTS or RTR that really returns from a frame leaves A7 exactly at the SP recorded for
+		 * it (A7 now, plus the return address, plus CCR for RTR). Pop that frame and anything
+		 * above it — frames left stale by a task switch, say, which the A7 check at the top of
+		 * this function can't get past. An `rts` matching no frame isn't a return (a
+		 * `pea label / rts` jump, or return-threaded code) and pops nothing. RTD and RTE, whose
+		 * frame sizes vary, are left to the A7 check. */
+		if (opcode == 0x4E75u || opcode == 0x4E77u) {
+			uae_u32 returnSp = m68k_areg(regs, 7) + (opcode == 0x4E75u ? 4u : 6u);
+			uint8_t curSuper = (uint8_t)(regs.s != 0);
+			for (size_t k = puae_debug_callstackDepth; k > 0; k--) {
+				if (puae_debug_callstackSuper[k - 1] == curSuper && puae_debug_callstackSP[k - 1] == returnSp) {
+					puae_debug_callstackDepth = k - 1;
+					break;
+				}
+			}
 		}
 		if (puae_debug_stepNext) {
 			puae_debug_stepNextSkipOnce = 1;
