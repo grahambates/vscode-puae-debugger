@@ -185,6 +185,36 @@ describe("getBlits: frame-start register baseline", () => {
     expect(b.unseen).toEqual(expect.arrayContaining(["BLTAPTH", "BLTDPTH"]));
   });
 
+  it("shows a blit already running when the frame began, from the frame's start", () => {
+    const g = grid(16);
+    for (let i = 2; i < 6; i++) g.set(i, { owner: BusOwner.BLITTER, flags: i % 2 ? DMA_WRITE : 0 });
+    regWrite(g, 8, BLTSIZE, (1 << 6) | 1); // the next blit, started in this frame
+    g.set(10, { owner: BusOwner.BLITTER, flags: DMA_WRITE });
+    const regs = baseline();
+    regs[0x05c >> 1] = 200; // BLTSIZV
+    regs[0x05e >> 1] = 20; // BLTSIZH
+    regs[BLTDPTH >> 1] = 0x0001;
+    regs[BLTDPTL >> 1] = 0x2340; // where the D pointer had got to
+
+    const { blits } = getBlits(g, regs);
+    expect(blits).toHaveLength(2);
+    const [carried, next] = blits;
+    expect(carried).toMatchObject({ startedBefore: true, startSlot: 0, endSlot: 5, finished: true, width: 20, height: 200, con0: 0x0100 });
+    expect(carried.ptr[3]).toBe(0x12340);
+    expect(carried.unseen).toEqual(["BLTDPTH", "BLTDPTL"]);
+    expect(blitLabel(carried)).toBe("… Clear ---D 320x200px");
+    expect(blitTooltip(carried).startedBefore).toBe(true);
+    expect(next).toMatchObject({ startedBefore: false, startSlot: 8, endSlot: 10 });
+  });
+
+  it("still shows a carried-over blit's span without a frame-start snapshot", () => {
+    const g = grid(8);
+    g.set(3, { owner: BusOwner.BLITTER, flags: DMA_WRITE });
+    const [b] = getBlits(g).blits;
+    expect(b).toMatchObject({ startedBefore: true, startSlot: 0, endSlot: 3, finished: true });
+    expect(blitLabel(b)).toBe("… Blit from an earlier frame");
+  });
+
   it("lets a write in the frame override the baseline", () => {
     const g = grid(8);
     regWrite(g, 0, BLTCON0, 0x09f0);

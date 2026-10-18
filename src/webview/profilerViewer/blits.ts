@@ -33,7 +33,11 @@ export enum BlitMode {
 }
 
 export interface Blit {
-  startSlot: number; // BLTSIZE/BLTSIZH write slot (deterministic anchor)
+  startSlot: number; // BLTSIZE/BLTSIZH write slot (deterministic anchor); 0 if startedBefore
+  // Already running when the frame began: its BLTSIZE write was in an earlier frame, so its
+  // start isn't in the capture. The span runs from slot 0, and the registers are as they were at
+  // the frame's start (see getBlits) — the size and BLTCON, but pointers already advanced.
+  startedBefore: boolean;
   endSlot: number; // final D-write slot (BLIFINALD); last blitter cell if D-disabled; startSlot if none
   finished: boolean; // false => no blitter cells captured after start (ran past frame / fast blitter)
   width: number; // words (BLTSIZH field)
@@ -100,11 +104,15 @@ export function blitVerb(blit: Blit): string {
 // regardless of the line actually drawn. The real, only meaningful dimension for a line is its
 // length in pixels, which BLTSIZE's height field (`blit.height`) DOES hold for line mode.
 function blitSize(blit: Blit): string {
+  if (blit.width === 0) return "size unknown"; // carried over from an earlier frame, with no frame-start snapshot
   return blit.mode === BlitMode.Line ? `${blit.height}px` : `${blit.width * 16}x${blit.height}px`;
 }
 
 export function blitLabel(blit: Blit): string {
-  return `${blitVerb(blit)} ${blitChannels(blit.con0)} ${blitSize(blit)}`;
+  // A leading ellipsis marks a blit continued from the previous frame. Without a frame-start
+  // snapshot (width 0) nothing but its span is known, so don't decode BLTCON0's 0 as a Clear.
+  if (blit.startedBefore && blit.width === 0) return "… Blit from an earlier frame";
+  return `${blit.startedBefore ? "… " : ""}${blitVerb(blit)} ${blitChannels(blit.con0)} ${blitSize(blit)}`;
 }
 
 // A channel's real memory row stride, for lining up the Memory tab's visual view with the
@@ -192,6 +200,7 @@ export function getBlits(dma: IDmaModel, frameStartRegs?: Uint16Array): BlitResu
         const con1 = regs[R.BLTCON1 >> 1];
         blits.push({
           startSlot: i,
+          startedBefore: false,
           endSlot: i,
           finished: false,
           width,
@@ -211,8 +220,41 @@ export function getBlits(dma: IDmaModel, frameStartRegs?: Uint16Array): BlitResu
       }
     }
 
+    // Blitter cycles before any BLTSIZE write in this frame belong to a blit started in an earlier
+    // frame and still running. Its registers are in the frame-start snapshot as they stood when
+    // the frame began: BLTSIZV/BLTSIZH and BLTCON as the blit was started with, but the pointers
+    // have advanced through the blit, so they are not where it started. Without the snapshot
+    // only its span is known.
+    if (owner[i] === BusOwner.BLITTER && !blits.length) {
+      const start = frameStartRegs && frameStartRegs.length >= 256 ? frameStartRegs : undefined;
+      const con0 = regs[R.BLTCON0 >> 1];
+      const con1 = regs[R.BLTCON1 >> 1];
+      const ptrRegs = (name: string) => /^BLT[A-D]PT[HL]$/.test(name);
+      const used = blitRegsUsed(con0, !!written[R.BLTCON0 >> 1]);
+      blits.push({
+        startSlot: 0,
+        startedBefore: true,
+        endSlot: 0,
+        finished: false,
+        width: start ? start[R.BLTSIZH >> 1] & 0x7ff : 0,
+        height: start ? start[R.BLTSIZV >> 1] & 0x7fff : 0,
+        con0,
+        con1,
+        afwm: regs[R.BLTAFWM >> 1],
+        alwm: regs[R.BLTALWM >> 1],
+        // Where it had got to at the frame's start, which still says what it's working on.
+        ptr: PTH.map((o) => (start ? ((start[o >> 1] << 16) | start[(o + 2) >> 1]) >>> 0 : regL(o)) & 0x1ffffe),
+        dat: DAT.map((o) => regs[o >> 1]),
+        mod: MOD.map((o) => coerce16(regs[o >> 1])),
+        mode: modeOf(con1),
+        unseen: used.filter((name) => ptrRegs(name) || !written[R[name] >> 1]),
+      });
+      lastDWrite.push(-1);
+      lastCell.push(-1);
+    }
+
     // Attribute blitter bus cells to the most-recently-started blit (blits are serialized).
-    if (owner[i] === BusOwner.BLITTER && blits.length) {
+    if (owner[i] === BusOwner.BLITTER) {
       blitterCells++;
       const b = blits.length - 1;
       lastCell[b] = i;
@@ -260,6 +302,7 @@ export interface BlitTooltip {
   line?: { start: number; texture: number };
   channels: BlitChannelRow[];
   start: { line: number; colorClock: number; slot: number };
+  startedBefore: boolean; // see Blit.startedBefore — start is then the frame's start, not the blit's
   end?: { line: number; colorClock: number; slot: number; durationSlots: number };
 }
 
@@ -352,6 +395,7 @@ export function blitTooltip(blit: Blit): BlitTooltip {
     line: line ? { start: con0 >>> 12, texture: con1 >>> 12 } : undefined,
     channels,
     start: at(blit.startSlot),
+    startedBefore: blit.startedBefore,
     end: blit.finished
       ? { ...at(blit.endSlot), durationSlots: blit.endSlot - blit.startSlot }
       : undefined,

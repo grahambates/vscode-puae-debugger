@@ -28,6 +28,7 @@
 - A Kickstart ROM dumped "doubled" to 512KB (the usual form of 1.3 dumps) wasn't recognised, so ROM code had no symbol names in the debugger, profiler or MCP tools.
 - Continuing after a reverse step (or reverse continue / step back a frame) ran one frame too many before the next frame ended.
 - Stepping back — most reliably a frame forward and then a frame back — could leave the wrong picture on screen (a later frame, or a blank one) instead of the one shown at that point.
+- A blit already running when a frame began was missing from the flame graph's blitter line, the Blitter view and `profile_dump`'s blits. It's now shown from the frame's start, marked `…`, with its size and operation from the frame-start registers.
 - With the profiler already open, a capture started from the emulator toolbar used the profiler's frame count instead of the one next to the button. Each capture now uses the count in the panel it was started from, and the profiler's field follows it.
 - MCP: `~` in paths (including `PUAE_KICKSTART_ROM`) is expanded; screenshots and profile captures no longer require debug information; `profile_dump` no longer returns a stale analysis after a capture is rewritten to the same file; `emulator_continue` with nothing armed reports the frames it ran rather than a missed breakpoint.
 

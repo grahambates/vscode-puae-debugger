@@ -113,12 +113,16 @@ export function BlitDetailGrid({
         ))}
 
         <span className="tip-label">Start</span>
-        <span className="tip-val">Line {info.start.line}, Color Clock {info.start.colorClock}, DMA Cycle {info.start.slot}</span>
+        <span className="tip-val">
+          {info.startedBefore
+            ? "In an earlier frame — still running when this one began"
+            : `Line ${info.start.line}, Color Clock ${info.start.colorClock}, DMA Cycle ${info.start.slot}`}
+        </span>
         {info.end && (
           <>
             <span className="tip-label">End</span>
             <span className="tip-val">Line {info.end.line}, Color Clock {info.end.colorClock}, DMA Cycle {info.end.slot}</span>
-            <span className="tip-label">Duration</span>
+            <span className="tip-label">{info.startedBefore ? "In this frame" : "Duration"}</span>
             <span className="tip-val">{info.end.durationSlots} DMA Cycles ({formatValue(info.end.durationSlots * 2, displayUnit, timing)})</span>
           </>
         )}

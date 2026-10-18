@@ -77,7 +77,7 @@ export function BlitterView({
             <span className="bv-label">{blitLabel(b)}</span>
             <span className="bv-channels">{blitChannels(b.con0)}</span>
             <span className="bv-pos">
-              {Math.floor(b.startSlot / DMA_HPOS)},{b.startSlot % DMA_HPOS}
+              {b.startedBefore ? "earlier" : `${Math.floor(b.startSlot / DMA_HPOS)},${b.startSlot % DMA_HPOS}`}
             </span>
             {!b.finished && <span className="bv-unfinished">unfinished</span>}
           </div>

@@ -187,10 +187,14 @@ function renderBlits(b: BlitAnalysis, frameCycles: number, frameIndex: number): 
   for (const blit of b.blits) {
     const end = blit.finished ? lastPos(blit.endSlot + 1) : "running>";
     const slots = blit.finished ? String(blit.endSlot - blit.startSlot) : "-";
+    const start = blit.startedBefore ? "earlier" : linePos(blit.startSlot);
     out.push(
-      `  ${String(blit.index).padStart(3)}  ${linePos(blit.startSlot).padStart(7)}  ${end.padStart(7)}  ${slots.padStart(6)}  ` +
-      `${blit.label.padEnd(26)}${`${blit.minterm} ${blit.mintermExpr}`.padEnd(22)}${blit.startedBy ?? "?"}`,
+      `  ${String(blit.index).padStart(3)}  ${start.padStart(7)}  ${end.padStart(7)}  ${slots.padStart(6)}  ` +
+      `${blit.label.padEnd(26)}${`${blit.minterm} ${blit.mintermExpr}`.padEnd(22)}${blit.startedBy ?? (blit.startedBefore ? "(an earlier frame)" : "?")}`,
     );
+    if (blit.startedBefore) {
+      out.push(`  ${"".padStart(3)}  started in an earlier frame and still running at this one's start; slots are those in this frame, and pointers are where it had got to`);
+    }
     const chans = blit.channels.map((c) => {
       const what = c.ptr ?? `literal ${c.literal}`;
       const extra = [c.modulo ? `mod ${c.modulo}` : "", c.shift ? `shift ${c.shift}` : ""].filter(Boolean).join(", ");
@@ -201,7 +205,8 @@ function renderBlits(b: BlitAnalysis, frameCycles: number, frameIndex: number): 
     } else if (chans.length) {
       out.push(`  ${"".padStart(3)}  ${chans.join("  ")}`);
     }
-    const other = blit.unseen.filter((r) => r !== "BLTCON0");
+    // A carried-over blit's pointers are covered by the note above.
+    const other = blit.unseen.filter((r) => r !== "BLTCON0" && !(blit.startedBefore && /^BLT[A-D]PT$/.test(r)));
     if (other.length) out.push(`  ${"".padStart(3)}  set before the capture, not recorded: ${other.join(" ")}`);
   }
   return out;

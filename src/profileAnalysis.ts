@@ -136,6 +136,11 @@ export interface BlitSummary {
   /** "Blit ABCD 64x32px", "Clear --CD 320x256px", "Line A-CD 120px" — the view's own label. */
   label: string;
   startSlot: number;
+  /**
+   * Started in an earlier frame and still running when this one began: startSlot is then 0, the
+   * frame's start, and the channel pointers are where the blit had got to, not where it started.
+   */
+  startedBefore: boolean;
   /** The final D write; equal to startSlot if no blitter cycles were seen after the start. */
   endSlot: number;
   /** False when the blit was still running when the frame ended (or the capture had no blitter cycles). */
@@ -584,13 +589,15 @@ export function analyseBlits(model: IProfileModel): BlitAnalysis | undefined {
       const opKnown = !blit.unseen.includes("BLTCON0");
       return {
         index,
-        label: opKnown ? blitLabel(blit) : `? ${tip.size}`,
+        label: opKnown ? blitLabel(blit) : `${blit.startedBefore ? "… " : ""}? ${tip.size}`,
         startSlot: blit.startSlot,
+        startedBefore: blit.startedBefore,
         endSlot: blit.endSlot,
         finished: blit.finished,
         minterm: opKnown ? tip.mintermHex : "?",
         mintermExpr: opKnown ? tip.mintermExpr : "",
-        startedBy: leafAt(blit.startSlot),
+        // Whatever ran at the frame's start didn't start a blit from an earlier frame.
+        startedBy: blit.startedBefore ? undefined : leafAt(blit.startSlot),
         channels: tip.channels.map((c) => ({
           label: c.label,
           ptr: c.ptr !== undefined ? pointer(c.ptr) : undefined,
