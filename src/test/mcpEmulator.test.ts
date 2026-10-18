@@ -15,7 +15,7 @@ import { MAX_CAPTURE_FRAMES } from "../shared/profilerTypes";
 import { parseHunks } from "../amigaHunkParser";
 import { sourceMapFromHunks } from "../amigaHunkSourceMap";
 import { describe as describeAddress, resolveBreakpointSpec } from "../mcp/breakpointSpec";
-import { emulatorTools } from "../mcp/emulatorTools";
+import { emulatorTools, writeRequest } from "../mcp/emulatorTools";
 import type { HeadlessSession } from "../mcp/emulatorSession";
 import { encodePng } from "../mcp/png";
 import { expandHome } from "../mcp/paths";
@@ -45,6 +45,7 @@ describe("emulator MCP tools", () => {
       "emulator_continue",
       "emulator_step",
       "emulator_inspect",
+      "emulator_write",
       "emulator_disassemble",
       "emulator_close",
       "emulator_screenshot",
@@ -299,5 +300,29 @@ describe("stripped programs", () => {
     expect(sourceMap.getSourceFiles()).toEqual([]);
     expect(resolveBreakpointSpec("0xc02280", sourceMap).address).toBe(0xc02280);
     expect(() => describeAddress(0xc02280, sourceMap)).not.toThrow();
+  });
+});
+
+describe("emulator_write arguments", () => {
+  it("parses memory, custom and register writes", () => {
+    const req = writeRequest({
+      memory: [{ address: "lives", value: 3, size: "w" }, { address: "0x1000", bytes: "4e71 4E75" }],
+      custom: { COLOR00: "0x0f00" },
+      registers: { d0: -1, pc: "main.s:42" },
+    });
+    expect(req.memory[0]).toEqual({ address: "lives", value: 3, size: 2 });
+    expect(req.memory[1].bytes).toEqual(Buffer.from([0x4e, 0x71, 0x4e, 0x75]));
+    expect(req.custom).toEqual([{ name: "COLOR00", value: "0x0f00" }]);
+    expect(req.registers).toEqual([{ name: "d0", value: -1 }, { name: "pc", value: "main.s:42" }]);
+  });
+
+  it("insists on a size for a value, rather than guessing a width", () => {
+    expect(() => writeRequest({ memory: [{ address: "lives", value: 3 }] })).toThrow(/needs "size"/);
+  });
+
+  it("rejects malformed bytes and ambiguous entries", () => {
+    expect(() => writeRequest({ memory: [{ address: "x", bytes: "4e7" }] })).toThrow(/whole bytes/);
+    expect(() => writeRequest({ memory: [{ address: "x", bytes: "4e71", value: 1 }] })).toThrow(/not both/);
+    expect(() => writeRequest({ registers: { d0: true } })).toThrow(/registers\.d0 must be/);
   });
 });

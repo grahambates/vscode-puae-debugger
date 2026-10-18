@@ -26,7 +26,7 @@ import { analyseProfile } from "../profileAnalysis";
 import { renderCheck } from "../profileReport";
 import { MAX_CAPTURE_FRAMES } from "../shared/profilerTypes";
 import { formatAddress } from "./breakpointSpec";
-import { HeadlessSession, InspectResult, LaunchOptions, StopState } from "./emulatorSession";
+import { HeadlessSession, InspectResult, LaunchOptions, StopState, WriteRequest } from "./emulatorSession";
 import { ToolDefinition } from "./jsonRpc";
 import { expandHome } from "./paths";
 import { SessionRegistry } from "./sessionRegistry";
@@ -106,6 +106,48 @@ function memoryReads(args: Record<string, unknown>): { address: string; bytes: n
     const bytes = boundedNumber(read, "bytes", 64, MAX_MEMORY_BYTES);
     return { address: requireString(read, "address"), bytes };
   });
+}
+
+const SIZES = { b: 1, w: 2, l: 4 } as const;
+// Enough for a patch or a small table; anything bigger is a different program, not an experiment.
+const MAX_WRITE_BYTES = 4096;
+
+function writeValue(v: unknown, where: string): string | number {
+  if (typeof v === "number" && Number.isFinite(v)) return v;
+  if (typeof v === "string" && v.trim()) return v;
+  throw new Error(`${where} must be a number or a string (hex, symbol, file:line)`);
+}
+
+function namedValues(args: Record<string, unknown>, key: string): { name: string; value: string | number }[] {
+  const v = args[key];
+  if (v === undefined || v === null) return [];
+  if (typeof v !== "object" || Array.isArray(v)) throw new Error(`"${key}" must be an object of { name: value }`);
+  return Object.entries(v as Record<string, unknown>).map(([name, value]) => ({ name, value: writeValue(value, `${key}.${name}`) }));
+}
+
+export function writeRequest(args: Record<string, unknown>): WriteRequest {
+  const memory = args.memory;
+  if (memory !== undefined && memory !== null && !Array.isArray(memory)) throw new Error(`"memory" must be an array`);
+  return {
+    memory: ((memory as unknown[] | undefined) ?? []).map((entry, i) => {
+      if (typeof entry !== "object" || entry === null) throw new Error(`memory[${i}] must be an object`);
+      const w = entry as Record<string, unknown>;
+      const address = requireString(w, "address");
+      if (w.bytes !== undefined) {
+        if (w.value !== undefined) throw new Error(`memory[${i}]: pass "bytes" or "value", not both`);
+        const hex = String(w.bytes).replace(/\s+/g, "").replace(/^0x/i, "");
+        if (!/^([0-9a-f]{2})+$/i.test(hex)) throw new Error(`memory[${i}].bytes must be whole bytes of hex, e.g. "4e71 4e75"`);
+        if (hex.length / 2 > MAX_WRITE_BYTES) throw new Error(`memory[${i}].bytes is capped at ${MAX_WRITE_BYTES} bytes`);
+        return { address, bytes: Buffer.from(hex, "hex") };
+      }
+      const size = SIZES[w.size as keyof typeof SIZES];
+      // Required rather than guessed: the wrong width silently clobbers a neighbouring variable.
+      if (!size) throw new Error(`memory[${i}]: "value" needs "size" ("b", "w" or "l")`);
+      return { address, value: writeValue(w.value, `memory[${i}].value`), size };
+    }),
+    custom: namedValues(args, "custom"),
+    registers: namedValues(args, "registers"),
+  };
 }
 
 /**
@@ -419,6 +461,59 @@ export function emulatorTools(ctx: EmulatorToolContext): ToolDefinition[] {
           sections.push(`Copper list from ${copperAt ?? "COP1LC"} (${formatAddress(start)}), as the copper would run it:\n${listing}`);
         }
         return sections.join("\n\n");
+      },
+    },
+    {
+      name: "emulator_write",
+      description:
+        "Change a paused session's state — memory, custom-chip registers, CPU registers — then " +
+        "carry on with emulator_continue/step/screenshot. The quickest way to test an idea " +
+        "without a rebuild: set a variable, force a register, patch an instruction, turn a DMA " +
+        "channel off. Every write is read back and reported, so a write that didn't land (ROM, " +
+        "unmapped memory) says so. Values and addresses take numbers, hex (0x/$), symbols or " +
+        "file:line. Memory is written first, then custom registers, then CPU registers, so a PC " +
+        "change applies last. DMACON, INTENA, INTREQ and ADKCON are SET/CLR registers: bit 15 " +
+        "chooses whether the other bits are set or cleared ($8100 enables bitplane DMA, $0100 " +
+        "disables it).",
+      inputSchema: {
+        type: "object",
+        properties: {
+          ...SESSION_PROPERTY,
+          memory: {
+            type: "array",
+            description: 'Memory writes, e.g. [{ "address": "lives", "value": 3, "size": "w" }, { "address": "0xc02140", "bytes": "4e71 4e71" }].',
+            items: {
+              type: "object",
+              properties: {
+                address: { type: "string", description: "Address or symbol." },
+                value: { type: ["number", "string"], description: "Value to write; needs `size`. Number, hex string, negative decimal string, or a symbol (writes its address — e.g. a pointer)." },
+                size: { type: "string", enum: ["b", "w", "l"], description: "Width of `value`: byte, word or long." },
+                bytes: { type: "string", description: "Raw bytes as hex, instead of value/size (spaces allowed)." },
+              },
+              required: ["address"],
+              additionalProperties: false,
+            },
+          },
+          custom: {
+            type: "object",
+            description: 'Custom-chip register writes by name, e.g. { "COLOR00": "0x0f00", "DMACON": "0x0100", "COP1LC": "copperlist" }. Pointer pairs (COP1LC, BPL1PT, SPR0PT, BLTAPT, ...) are written whole.',
+          },
+          registers: {
+            type: "object",
+            description: 'CPU register writes, e.g. { "d0": 5, "a0": "buffer", "pc": "main.s:42" }. d0-d7, a0-a7 (or sp), sr, pc, usp.',
+          },
+        },
+        required: ["session"],
+        additionalProperties: false,
+      },
+      run: async (args) => {
+        const session = registry.get(requireString(args, "session"));
+        const request = writeRequest(args);
+        if (!request.memory.length && !request.custom.length && !request.registers.length) {
+          throw new Error(`Nothing to write: pass "memory", "custom" and/or "registers".`);
+        }
+        const report = await session.write(request);
+        return `Wrote ${report.length} value(s):\n` + report.map((line) => `  ${line}`).join("\n");
       },
     },
     {

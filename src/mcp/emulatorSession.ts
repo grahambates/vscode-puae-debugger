@@ -23,6 +23,8 @@ import { SourceMap } from "../sourceMap";
 import { describe as describeAddress, formatAddress as formatAddr, resolveBreakpointSpec } from "./breakpointSpec";
 import { DecodedLine, decodeRange, formatListing } from "./disassembly";
 import { formatChipset, walkCopperList } from "./chipset";
+import { isCustomRegisterAddress } from "../hardware";
+import { CUSTOM_REGISTER_OFFSETS, customRegisterName } from "../webview/shared/customRegisters";
 import { HeadlessEmulator } from "./headlessEmulator";
 import { encodePng } from "./png";
 import * as path from "path";
@@ -38,6 +40,37 @@ export interface LaunchOptions {
   kickstartRom: string;
   /** Extra `.uae` config lines (cpu_model, chipset, chipmem_size, ...). */
   extraConfig?: string;
+}
+
+export interface WriteRequest {
+  /** `bytes` as given, or `value` encoded big-endian at `size` bytes. */
+  memory: { address: string; value?: string | number; size?: 1 | 2 | 4; bytes?: Buffer }[];
+  /** By HRM name; a pointer pair (COP1LC, BPL1PT) without its H/L suffix writes both halves. */
+  custom: { name: string; value: string | number }[];
+  registers: { name: string; value: string | number }[];
+}
+
+// What the RPC's setRegister accepts (REG_INDEX in src/webview/puaeApp/rpc.ts).
+const WRITABLE_CPU_REGISTERS = new Set([
+  "d0", "d1", "d2", "d3", "d4", "d5", "d6", "d7",
+  "a0", "a1", "a2", "a3", "a4", "a5", "a6", "a7",
+  "sr", "pc", "usp",
+]);
+
+// Bit 15 chooses whether the other bits set or clear — writing $0100 to DMACON *disables*
+// bitplane DMA, which is the opposite of what writing a value usually means.
+const SET_CLR_REGISTERS = new Set(["DMACON", "INTENA", "INTREQ", "ADKCON"]);
+
+function encodeBigEndian(value: number, size: 1 | 2 | 4): Buffer {
+  const out = Buffer.alloc(size);
+  if (size === 1) out.writeUInt8(value & 0xff);
+  else if (size === 2) out.writeUInt16BE(value & 0xffff);
+  else out.writeUInt32BE(value >>> 0);
+  return out;
+}
+
+function hexBytes(bytes: Buffer): string {
+  return bytes.length <= 16 ? bytes.toString("hex").replace(/(..)(?!$)/g, "$1 ") : `${bytes.length} bytes`;
 }
 
 /** Where execution is, and why it stopped there. */
@@ -291,6 +324,86 @@ export class HeadlessSession {
     }
     const after = decodeRange(mem, lo, address, options.count, Infinity, this.sourceMap);
     return { listing: formatListing([...before, ...after], pc, this.sourceMap), notes };
+  }
+
+  /**
+   * Applies writes to memory, custom registers and CPU registers, in that order (so a PC change
+   * comes last, after anything it depends on is in place), and reports each one as it reads back.
+   *
+   * Reading back matters: a write to ROM or to unmapped space is silently dropped by the bus, and
+   * reporting "wrote $0F00" for a write that never landed is how an experiment goes wrong without
+   * anyone noticing.
+   */
+  public async write(request: WriteRequest): Promise<string[]> {
+    const report: string[] = [];
+    const value = (v: string | number) => this.resolveValue(v);
+
+    for (const op of request.memory) {
+      const address = resolveBreakpointSpec(op.address, this.sourceMap).address;
+      const where = describeAddress(address, this.sourceMap);
+      const bytes = op.bytes ?? encodeBigEndian(value(op.value!), op.size!);
+      if (isCustomRegisterAddress(address)) {
+        // Custom registers are word-wide; the byte-wise memory path would split each write in two.
+        report.push(await this.writeCustom(address, bytes, where));
+        continue;
+      }
+      await this.emulator.writeMemory(address, bytes);
+      const back = await this.emulator.readMemory(address, bytes.length);
+      report.push(back.equals(bytes)
+        ? `${where}: wrote ${hexBytes(bytes)}`
+        : `${where}: wrote ${hexBytes(bytes)} but it reads back ${hexBytes(back)} — ROM, unmapped, or not RAM`);
+    }
+
+    for (const op of request.custom) {
+      const name = op.name.toUpperCase();
+      // A 32-bit pointer pair (COP1LC, BPL1PT, ...) is named without its H/L suffix.
+      const word = CUSTOM_REGISTER_OFFSETS[name];
+      const pair = CUSTOM_REGISTER_OFFSETS[`${name}H`];
+      const offset = word ?? pair;
+      if (offset === undefined) {
+        throw new Error(`Unknown custom register "${op.name}" — use its HRM name (COLOR00, DMACON, COP1LC, BPL1PT, ...)`);
+      }
+      const bytes = encodeBigEndian(value(op.value), word === undefined ? 4 : 2);
+      report.push(await this.writeCustom(0xdff000 + offset, bytes, name));
+    }
+
+    for (const op of request.registers) {
+      const name = op.name.toLowerCase() === "sp" ? "a7" : op.name.toLowerCase();
+      if (!WRITABLE_CPU_REGISTERS.has(name)) {
+        throw new Error(`Can't write register "${op.name}" — writable: ${[...WRITABLE_CPU_REGISTERS].join(", ")}`);
+      }
+      const v = value(op.value) >>> 0;
+      await this.emulator.setRegister(name, name === "sr" ? v & 0xffff : v);
+      const now = (await this.emulator.getCpuInfo()) as unknown as Record<string, string>;
+      const shown = name === "pc" ? describeAddress(parseInt(now.pc, 16), this.sourceMap) : now[name];
+      report.push(`${name} = ${shown}`);
+    }
+    return report;
+  }
+
+  /** A number, or an address/symbol/file:line — the same forms breakpoints take — or a negative decimal. */
+  private resolveValue(v: string | number): number {
+    if (typeof v === "number") return v;
+    if (/^-\d+$/.test(v.trim())) return parseInt(v, 10);
+    return resolveBreakpointSpec(v, this.sourceMap).address;
+  }
+
+  private async writeCustom(address: number, bytes: Buffer, label: string): Promise<string> {
+    if (address & 1 || (bytes.length !== 2 && bytes.length !== 4)) {
+      throw new Error(`${label}: custom registers take word (2-byte) or long (4-byte) writes at an even address`);
+    }
+    const name = customRegisterName(address & 0x1fe) ?? label;
+    if (bytes.length === 2) await this.emulator.pokeCustom16(address, bytes.readUInt16BE(0));
+    else await this.emulator.pokeCustom32(address, bytes.readUInt32BE(0));
+    // Most custom registers are write-only, so there's no reading back the address itself; the
+    // emulator's own shadow copy, where it exposes one, is the honest "did it take" answer.
+    const regs = await this.emulator.getAllCustomRegisters();
+    const shadowName = bytes.length === 4 ? name.replace(/H$/, "") : name;
+    const now = regs[shadowName]?.value;
+    const setClr = SET_CLR_REGISTERS.has(name)
+      ? ` (${bytes[0] & 0x80 ? "SET" : "CLR"} write: bit 15 ${bytes[0] & 0x80 ? "set" : "clear"}, so it ${bytes[0] & 0x80 ? "sets" : "clears"} the other bits given)`
+      : "";
+    return `${shadowName}: wrote $${bytes.toString("hex")}${setClr}${now !== undefined ? `, now reads ${now}` : ""}`;
   }
 
   /** Custom-chip registers, grouped and decoded, with chip pointers symbolicated. */
