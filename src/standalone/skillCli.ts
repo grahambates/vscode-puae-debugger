@@ -89,15 +89,16 @@ export function installedState(source: string, installed: string): InstalledStat
 }
 
 /**
- * Returns the process exit code. `packageRoot`, `installRoot` and `version` are parameters for
- * tests; the defaults are the installed package (out/'s parent, as in server.ts), the cwd or home
- * dir, and the package's own version.
+ * Returns the process exit code. `packageRoot`, `installRoot`, `version` and `env` are parameters
+ * for tests; the defaults are the installed package (out/'s parent, as in server.ts), the cwd or
+ * home dir, the package's own version, and the process environment.
  */
 export function runSkillCli(
   argv: string[],
   packageRoot = join(__dirname, ".."),
   installRoot?: string,
   version: string = __PUAE_DEBUGGER_VERSION__,
+  env: NodeJS.ProcessEnv = process.env,
 ): number {
   const sub = argv[0];
   if (!sub || sub === "--help" || sub === "-h") {
@@ -110,7 +111,9 @@ export function runSkillCli(
   }
 
   let global = false;
-  let force = false;
+  // `npm exec puae-debugger skill install --force` never passes --force on: npm takes it as its
+  // own option. It does say so in the environment, though, so honour that as the same thing.
+  let force = env.npm_config_force === "true";
   for (const arg of argv.slice(1)) {
     if (arg === "--global") global = true;
     else if (arg === "--force") force = true;

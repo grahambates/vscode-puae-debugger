@@ -16,7 +16,7 @@ describe("skill install", () => {
   let log: jest.SpyInstance;
   let err: jest.SpyInstance;
   const output = () => [...log.mock.calls, ...err.mock.calls].flat().join("\n");
-  const install = (...args: string[]) => runSkillCli(["install", ...args], PACKAGE_ROOT, root, "2.0.0");
+  const install = (...args: string[]) => runSkillCli(["install", ...args], PACKAGE_ROOT, root, "2.0.0", {});
   beforeEach(() => {
     root = mkdtempSync(path.join(tmpdir(), "skill-test-"));
     log = jest.spyOn(console, "log").mockImplementation(() => {});
@@ -66,6 +66,13 @@ describe("skill install", () => {
     expect(install("--force")).toBe(0);
     expect(readFileSync(`${installed(root, "puae-profiling")}.bak`, "utf8")).toBe(edited);
     expect(installedState(packaged("puae-profiling"), readFileSync(installed(root, "puae-profiling"), "utf8"))).toEqual({ kind: "current" });
+  });
+
+  it("takes --force from npm when `npm exec` kept the flag for itself", () => {
+    install();
+    writeFileSync(installed(root, "puae-profiling"), "edited");
+    expect(runSkillCli(["install"], PACKAGE_ROOT, root, "2.0.0", { npm_config_force: "true" })).toBe(0);
+    expect(readFileSync(`${installed(root, "puae-profiling")}.bak`, "utf8")).toBe("edited");
   });
 
   it("treats an unstamped copy it doesn't recognise as edited", () => {
