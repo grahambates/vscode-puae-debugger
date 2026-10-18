@@ -15,7 +15,8 @@ import { renderCheck, renderDump } from "../profileReport";
 const USAGE = `Usage:
   puae-debugger profile dump  <file.puaeprofile> [--frame N] [--functions N] [--sort self|total]
                                                   [--tree] [--callers NAME] [--flame]
-                                                  [--lines FROM-TO] [--blits] [--stalls]
+                                                  [--lines FROM-TO] [--blits] [--copper]
+                                                  [--stalls]
                                                   [--instructions NAME] [--json]
   puae-debugger profile check <file.puaeprofile> [--json]
 
@@ -31,9 +32,11 @@ Options:
   --callers NAME       Every call path into one function, with its cost via each.
   --flame              The flame graph as text: call stacks in time order, positions as
                        raster line:hpos, short boxes folded.
-  --lines FROM-TO      Zoom the flame graph to these raster lines (implies --flame).
+  --lines FROM-TO      Zoom the flame graph (and --copper) to these raster lines; implies --flame.
   --blits              Every blit: when it ran (line:hpos), size, channels, minterm,
                        pointers, and which CPU function started it.
+  --copper             The copper instructions executed, with line:hpos and how long each
+                       WAIT actually waited.
   --stalls             Compare measured cost against 68000 datasheet timings (68kcounter)
                        to separate slow instructions from bus-blocked ones. 68000 only.
   --instructions NAME  Per-instruction costs within one function: cycles, hits, cycles
@@ -64,6 +67,7 @@ export function runProfileCli(argv: string[]): number {
   let callers: string | undefined;
   let flame = false;
   let blits = false;
+  let copper = false;
   let lines: string | undefined;
   for (let i = 1; i < argv.length; i++) {
     const arg = argv[i];
@@ -81,6 +85,7 @@ export function runProfileCli(argv: string[]): number {
     else if (arg === "--tree") callTree = true;
     else if (arg === "--flame") flame = true;
     else if (arg === "--blits") blits = true;
+    else if (arg === "--copper") copper = true;
     else if (arg === "--lines") {
       lines = argv[++i];
       if (!lines) { console.error(`--lines needs a range, e.g. 40-80.\n\n${USAGE}`); return 1; }
@@ -114,7 +119,7 @@ export function runProfileCli(argv: string[]): number {
   let analysis: ProfileAnalysis;
   try {
     const flameOpt = lines !== undefined ? parseLineRange(lines) : flame;
-    analysis = analyseProfile(bytes, { stalls, instructions, callTree, callers, flame: flameOpt, blits });
+    analysis = analyseProfile(bytes, { stalls, instructions, callTree, callers, flame: flameOpt, blits, copper });
   } catch (err) {
     // A request the capture can't satisfy (an unknown --instructions name) is reported on its own
     // terms: its message already names what the capture does contain, and a "could not read"

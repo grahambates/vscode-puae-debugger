@@ -3,7 +3,7 @@
 // terminal and a number a model reads over MCP should never be formatted differently, or a
 // conversation about one won't transfer to the other.
 
-import { BlitAnalysis, CallerPath, CallTreeNode, FlameBox, FlameView, FrameAnalysis, InstructionAnalysis, ProfileAnalysis, ScreenUpdates, StallAnalysis } from "./profileAnalysis";
+import { BlitAnalysis, CopperTrace, CallerPath, CallTreeNode, FlameBox, FlameView, FrameAnalysis, InstructionAnalysis, ProfileAnalysis, ScreenUpdates, StallAnalysis } from "./profileAnalysis";
 
 export function pct(v: number): string {
   return `${v.toFixed(1)}%`;
@@ -207,6 +207,29 @@ function renderBlits(b: BlitAnalysis, frameCycles: number, frameIndex: number): 
   return out;
 }
 
+// A full-screen gradient or per-line palette list is hundreds of instructions; past this the
+// reader wants a window (`lines`), not more of the list.
+const COPPER_MAX_STEPS = 400;
+
+function renderCopper(c: CopperTrace, frameIndex: number, windowed: boolean): string[] {
+  const out = [
+    "",
+    `  Copper, frame ${frameIndex}: ${c.executed} instruction(s) executed${windowed ? `, ${c.steps.length} in the window` : ""}. ` +
+      "A WAIT shows how long the copper actually waited before its next instruction ran.",
+  ];
+  if (c.steps.length === 0) return out;
+  out.push("", `  ${"at".padStart(7)}  ${"address".padEnd(26)}instruction`);
+  for (const step of c.steps.slice(0, COPPER_MAX_STEPS)) {
+    const where = `$${step.address.toString(16).padStart(6, "0")}${step.symbol ? ` ${step.symbol}` : ""}`;
+    const waited = step.waitedSlots !== undefined ? `   (waited ${step.waitedSlots} slots, ${(step.waitedSlots / LINE_SLOTS).toFixed(1)} lines)` : "";
+    out.push(`  ${linePos(step.slot).padStart(7)}  ${where.padEnd(26)}${step.text}${waited}`);
+  }
+  if (c.steps.length > COPPER_MAX_STEPS) {
+    out.push(`  … ${c.steps.length - COPPER_MAX_STEPS} more; narrow it with lines (e.g. --lines 40-80)`);
+  }
+  return out;
+}
+
 function renderCallers(paths: CallerPath[], query: string, frameIndex: number): string[] {
   const out = ["", `  Calls into ${query}, frame ${frameIndex} (cycles including what it calls, by call path)`];
   if (paths.length === 0) {
@@ -263,6 +286,7 @@ function dumpFrame(
   if (f.callers) out.push(...renderCallers(f.callers, callersQuery ?? "", f.index));
   if (f.flame) out.push(...renderFlame(f.flame, f.index, label));
   if (f.blits) out.push(...renderBlits(f.blits, f.cycles, f.index));
+  if (f.copper) out.push(...renderCopper(f.copper, f.index, f.flame !== undefined && f.flame.end - f.flame.start < f.cycles));
   if (f.stalls) out.push(...renderStalls(f.stalls, limit, f.index));
   if (f.instructionDetail) {
     out.push(...renderInstructions(f.instructionDetail, f.index));

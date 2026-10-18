@@ -74,6 +74,11 @@ are recorded, so a register set once before the capture (a BLTCON0 written at in
 Don't reason from those fields; recapture from a point where the program writes them, or read
 them live with `emulator_inspect { chipset: true }`.
 
+**`--copper` is what the copper actually did** this frame: each executed instruction with its
+`line:hpos`, and for every WAIT how long it really waited. That differs from decoding the list
+in memory (`emulator_inspect { copper: true }`) whenever a SKIP, a jump or a late WAIT changes
+what runs. `--lines` narrows it to a window, together with the flame graph.
+
 **`--instructions <function>` goes a level deeper**, and is the answer to "which instruction in
 this routine costs the time" — cycles, hits and cycles-per-execution for every instruction in
 one function, in address order, plus (on a 68000 capture) the datasheet cost of each and the

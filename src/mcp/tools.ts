@@ -132,9 +132,16 @@ export const TOOLS: ToolDefinition[] = [
             "operation and size, channels, minterm, symbolicated pointers and modulos, and which CPU function " +
             "started it. Read with the DMA census: a frame can be blitter-bound with the CPU mostly waiting.",
         },
+        copper: {
+          type: "boolean",
+          description:
+            "Include the copper instructions actually executed this frame (the profiler's Copper view), each " +
+            "with its raster line:hpos and address, and for every WAIT how long the copper really waited. " +
+            "Shows what the copper did, as opposed to emulator_inspect's copper option, which decodes the list in memory.",
+        },
         lines: {
           type: "string",
-          description: 'Zoom the flame graph to raster lines "FROM-TO" (e.g. "40-80"), with finer folding and the DMA bus use in that window. Implies flame.',
+          description: 'Zoom to raster lines "FROM-TO" (e.g. "40-80"): the flame graph with finer folding and the DMA bus use in that window, and the copper trace if requested. Implies flame.',
         },
         instructions: {
           type: "string",
@@ -161,7 +168,8 @@ export const TOOLS: ToolDefinition[] = [
       const lines = args.lines === undefined ? undefined : parseLineRange(requireString(args, "lines"));
       const flame = lines ?? args.flame === true;
       const blits = args.blits === true;
-      return renderDump(load(file, { stalls, instructions, callTree, callers, flame, blits }), frame, functions ?? 12, sort);
+      const copper = args.copper === true;
+      return renderDump(load(file, { stalls, instructions, callTree, callers, flame, blits, copper }), frame, functions ?? 12, sort);
     },
   },
 ];

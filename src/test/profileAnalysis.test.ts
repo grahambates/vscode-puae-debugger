@@ -1,6 +1,6 @@
 import { readFileSync } from "fs";
 import * as path from "path";
-import { analyseBlits, analyseFrame, analyseInstructions, analyseProfile, buildCallTree, buildFlame, callersOf, checkFrame, FlameBox, parseLineRange, FrameAnalysis, ProfileFinding, ProfileRequestError, selectInstructionDetail, summariseScreenUpdates } from "../profileAnalysis";
+import { analyseBlits, analyseCopper, analyseFrame, analyseInstructions, analyseProfile, buildCallTree, buildFlame, callersOf, checkFrame, FlameBox, parseLineRange, FrameAnalysis, ProfileFinding, ProfileRequestError, selectInstructionDetail, summariseScreenUpdates } from "../profileAnalysis";
 import { BusOwner, Category, DMA_CODE, DMA_WRITE, IDisassembledFunction, IProfileModel } from "../shared/profilerTypes";
 import { loadProfile } from "../profileLoader";
 import { renderFlame } from "../profileReport";
@@ -626,5 +626,50 @@ describe("analyseBlits", () => {
     expect(blit.label).toBe("? 16x1px");
     expect(blit.minterm).toBe("?");
     expect(blit.unseen).toContain("BLTCON0");
+  });
+});
+
+describe("analyseCopper", () => {
+  // MOVE COLOR00 at 0:010, WAIT 44,6 at 0:014, MOVE COLOR00 at 44:012, and one record whose raw
+  // hpos (230) runs past the last slot of its line.
+  function modelWithCopper(): IProfileModel {
+    const rec = [
+      { addr: 0x1000, w1: 0x0180, w2: 0x0f00, vpos: 0, hpos: 10 },
+      { addr: 0x1004, w1: 0x2c07, w2: 0xfffe, vpos: 0, hpos: 14 },
+      { addr: 0x1008, w1: 0x0180, w2: 0x000f, vpos: 44, hpos: 12 },
+      { addr: 0x100c, w1: 0x0182, w2: 0x0fff, vpos: 50, hpos: 230 },
+    ];
+    return {
+      ...twoFunctionModel(),
+      copper: {
+        addr: Uint32Array.from(rec, (r) => r.addr),
+        w1: Uint16Array.from(rec, (r) => r.w1),
+        w2: Uint16Array.from(rec, (r) => r.w2),
+        hpos: Uint16Array.from(rec, (r) => r.hpos),
+        vpos: Uint16Array.from(rec, (r) => r.vpos),
+      },
+    };
+  }
+
+  it("lists executed instructions with their position, and how long each WAIT waited", () => {
+    const c = analyseCopper(modelWithCopper())!;
+    expect(c.executed).toBe(4);
+    expect(c.steps.map((s) => s.text)).toEqual(["MOVE #$F00,COLOR00", "WAIT 44,6", "MOVE #$00F,COLOR00", "MOVE #$FFF,COLOR01"]);
+    expect(c.steps[1]).toMatchObject({ slot: 14, waitedSlots: 44 * 227 + 12 - 14 });
+    expect(c.steps[0].waitedSlots).toBeUndefined();
+  });
+
+  it("clamps an hpos past the end of its line rather than spilling onto the next", () => {
+    expect(analyseCopper(modelWithCopper())!.steps[3].slot).toBe(50 * 227 + 226);
+  });
+
+  it("narrows to a window of lines, still counting the whole frame", () => {
+    const c = analyseCopper(modelWithCopper(), { from: 40, to: 45 })!;
+    expect(c.executed).toBe(4);
+    expect(c.steps.map((s) => s.address)).toEqual([0x1008]);
+  });
+
+  it("is absent when the capture recorded no copper trace", () => {
+    expect(analyseCopper(twoFunctionModel())).toBeUndefined();
   });
 });

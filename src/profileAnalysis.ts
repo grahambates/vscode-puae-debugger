@@ -21,6 +21,7 @@
 import { buildColumns, buildSampleSlots, columnIndexAtX } from "./webview/profilerViewer/columns";
 import { blitLabel, blitTooltip, getBlits } from "./webview/profilerViewer/blits";
 import { createSymbolizer } from "./webview/profilerViewer/symbols";
+import { disassembleCopperInstruction } from "./shared/copperDisassembler";
 import { BusOwner, DMA_HPOS, IComputedNode, IDisassembledFunction, ILocation, IProfileModel, REG_COUNT } from "./shared/profilerTypes";
 import { loadProfile } from "./profileLoader";
 import { ProfileManifest } from "./profileFormat";
@@ -160,6 +161,25 @@ export interface BlitAnalysis {
   fastBlitter: boolean;
 }
 
+/** One executed copper instruction, as the profiler's Copper view lists it. */
+export interface CopperStep {
+  /** DMA slot it executed at: line * DMA_HPOS + hpos. */
+  slot: number;
+  address: number;
+  /** The symbol the instruction sits in (a copper list's label), if any. */
+  symbol?: string;
+  text: string; // "MOVE #$0F00,COLOR00", "WAIT 44,6"
+  /** For a WAIT: slots until the copper's next instruction ran — how long it actually waited. */
+  waitedSlots?: number;
+}
+
+export interface CopperTrace {
+  /** Instructions executed this frame (in the window, when one was given). */
+  steps: CopperStep[];
+  /** Total executed in the whole frame, before any window. */
+  executed: number;
+}
+
 /** One call path into a function, and the cycles spent in it (including callees) via that path. */
 export interface CallerPath {
   path: string[]; // outermost first, ending with the function itself
@@ -198,6 +218,8 @@ export interface FrameAnalysis {
   flame?: FlameView;
   /** Present only when blits were requested and the capture has a DMA grid. */
   blits?: BlitAnalysis;
+  /** Present only when the copper trace was requested and the capture recorded one. */
+  copper?: CopperTrace;
   /**
    * The screen output is byte-identical to the previous frame's — the profiler filmstrip's "="
    * badge. Never true for frame 0 (nothing earlier in the capture to compare against).
@@ -556,6 +578,37 @@ export function analyseBlits(model: IProfileModel): BlitAnalysis | undefined {
       };
     }),
   };
+}
+
+/**
+ * The copper instructions executed this frame, in order — the Copper view's list. A WAIT is
+ * recorded where the copper first reached it (decodeCopperRecords drops the wake-up copy), so
+ * the gap to the next instruction is how long it really waited: the timing fact a copper list
+ * is written around.
+ */
+export function analyseCopper(model: IProfileModel, lines?: { from: number; to: number }): CopperTrace | undefined {
+  const copper = model.copper;
+  if (!copper) return undefined;
+  const symbolize = createSymbolizer(model.symbols);
+  const n = copper.addr.length;
+  // hpos is clamped as the Copper view clamps it: the raw hardware hpos can run past the last
+  // DMA slot of a line, which would otherwise land the instruction on the next line.
+  const slotOf = (i: number) => copper.vpos[i] * DMA_HPOS + Math.min(copper.hpos[i], DMA_HPOS - 1);
+  const steps: CopperStep[] = [];
+  for (let i = 0; i < n; i++) {
+    const line = copper.vpos[i];
+    if (lines && (line < lines.from || line > lines.to)) continue;
+    const ins = disassembleCopperInstruction(copper.addr[i], copper.w1[i], copper.w2[i]);
+    const step: CopperStep = {
+      slot: slotOf(i),
+      address: copper.addr[i],
+      symbol: symbolize(copper.addr[i]),
+      text: `${ins.mnemonic} ${ins.operands}`.trim() + (ins.comment ? `  ; ${ins.comment}` : ""),
+    };
+    if (ins.mnemonic === "WAIT" && i + 1 < n) step.waitedSlots = slotOf(i + 1) - step.slot;
+    steps.push(step);
+  }
+  return { steps, executed: n };
 }
 
 /** "40-80" or "44" as an inclusive range of raster lines, for zooming the flame graph. */
@@ -976,6 +1029,8 @@ export function analyseProfile(
     /** The flame graph: the whole frame (true), or just these raster lines. */
     flame?: boolean | { from: number; to: number };
     blits?: boolean;
+    /** The copper trace, for the whole frame or the `flame` window's lines when one is given. */
+    copper?: boolean;
   } = {},
 ): ProfileAnalysis {
   const { frames, manifest } = loadProfile(file);
@@ -986,6 +1041,7 @@ export function analyseProfile(
     if (opts.callTree) a.callTree = buildCallTree(f.model);
     if (opts.flame) a.flame = buildFlame(f.model, opts.flame === true ? undefined : opts.flame);
     if (opts.blits) a.blits = analyseBlits(f.model);
+    if (opts.copper) a.copper = analyseCopper(f.model, typeof opts.flame === "object" ? opts.flame : undefined);
     return a;
   });
   let callersName: string | undefined;
