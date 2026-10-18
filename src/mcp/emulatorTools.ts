@@ -48,6 +48,8 @@ const MAX_MEMORY_BYTES = 4096;
 // covers that, and the cap keeps a list with no end marker from flooding the reply.
 const DEFAULT_COPPER_INSTRUCTIONS = 512;
 const MAX_COPPER_INSTRUCTIONS = 4096;
+// Enough for any one routine; past that the reader wants a profile, not a listing.
+const MAX_DISASSEMBLE_INSTRUCTIONS = 1000;
 
 export interface EmulatorToolContext {
   /** Package root — the directory holding `puae/` and `out/`. */
@@ -417,6 +419,55 @@ export function emulatorTools(ctx: EmulatorToolContext): ToolDefinition[] {
           sections.push(`Copper list from ${copperAt ?? "COP1LC"} (${formatAddress(start)}), as the copper would run it:\n${listing}`);
         }
         return sections.join("\n\n");
+      },
+    },
+    {
+      name: "emulator_disassemble",
+      description:
+        "Disassemble 68000 code from emulated memory — what is actually there at run time, so it " +
+        "works for optimised or self-modifying code and for binaries with no source. Lists " +
+        "`count` instructions from `address` (default: the session's PC, marked =>), optionally " +
+        "`before` instructions leading up to it, or the whole routine with `function`. Branch " +
+        "targets, absolute addresses, custom registers and CIAs are symbolicated, and the source " +
+        "line is shown wherever the debug info has one. Works on a session or one-shot on a " +
+        "`program` (paused at its entry point, so it shows the code as loaded, before it runs).",
+      inputSchema: {
+        type: "object",
+        properties: {
+          ...COMMON_PROPERTIES,
+          address: {
+            type: "string",
+            description: "Where to start: an address (0xc02140), a symbol (draw_sprite) or a source line (main.s:42). Default: the current PC.",
+          },
+          before: {
+            type: "number",
+            description: `Instructions to show before the address too (default 0, or 5 when listing around the PC). Max ${MAX_DISASSEMBLE_INSTRUCTIONS}.`,
+          },
+          count: {
+            type: "number",
+            description: `Instructions to list from the address (default 20). Max ${MAX_DISASSEMBLE_INSTRUCTIONS}.`,
+          },
+          function: {
+            type: "boolean",
+            description: "List the whole routine enclosing the address, from its symbol to the next, instead of before/count.",
+          },
+        },
+        additionalProperties: false,
+      },
+      run: (args) => {
+        const address = optionalString(args, "address");
+        const before = boundedNumber(args, "before", address === undefined ? 5 : 0, MAX_DISASSEMBLE_INSTRUCTIONS, 0);
+        const count = boundedNumber(args, "count", 20, MAX_DISASSEMBLE_INSTRUCTIONS);
+        const wholeFunction = args.function === true;
+        return withSession(ctx, registry, args, async (session) => {
+          const { listing, notes } = await session.disassemble(address, {
+            before,
+            count,
+            wholeFunction,
+            maxInstructions: MAX_DISASSEMBLE_INSTRUCTIONS,
+          });
+          return [listing, ...notes].join("\n");
+        });
       },
     },
     {

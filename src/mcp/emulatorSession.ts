@@ -20,7 +20,8 @@ import { kickstartSymbolModule } from "../kickstart";
 import { encodeCapture } from "../profileFormat";
 import { ProfilerManager } from "../profilerManager";
 import { SourceMap } from "../sourceMap";
-import { describe as describeAddress, resolveBreakpointSpec } from "./breakpointSpec";
+import { describe as describeAddress, formatAddress as formatAddr, resolveBreakpointSpec } from "./breakpointSpec";
+import { DecodedLine, decodeRange, formatListing } from "./disassembly";
 import { formatChipset, walkCopperList } from "./chipset";
 import { HeadlessEmulator } from "./headlessEmulator";
 import { encodePng } from "./png";
@@ -221,6 +222,75 @@ export class HeadlessSession {
       callstack,
       memory,
     };
+  }
+
+  /**
+   * A disassembly listing around `at` (an address, symbol or file:line; default the PC), or of
+   * the whole routine enclosing it.
+   *
+   * Instructions *before* an address are the hard part: 68k instructions are 2-10 bytes, so
+   * decoding backwards has no reliable starting point. When a routine symbol encloses the address
+   * the listing decodes forward from that symbol, which is aligned by construction; only without
+   * one does it fall back to guessing a start and checking the decode lands on the address.
+   */
+  public async disassemble(
+    at: string | undefined,
+    options: { before: number; count: number; wholeFunction: boolean; maxInstructions: number },
+  ): Promise<{ listing: string; notes: string[] }> {
+    const pc = parseInt((await this.emulator.getCpuInfo()).pc, 16);
+    const address = at !== undefined ? resolveBreakpointSpec(at, this.sourceMap).address : pc;
+    if (address & 1) throw new Error(`${formatAddr(address)} is odd — 68000 instructions are word-aligned`);
+    const routine = this.sourceMap.findSymbolOffset(address, true);
+    const routineStart = routine ? address - routine.offset : undefined;
+    const notes: string[] = [];
+    const read = async (from: number, bytes: number) =>
+      new Uint8Array(await this.emulator.readMemory(from, bytes));
+
+    if (options.wholeFunction) {
+      if (!routine || routineStart === undefined) {
+        throw new Error(`No symbol encloses ${formatAddr(address)}, so there's no routine to list — pass before/count instead.`);
+      }
+      const length = this.sourceMap.getSymbolLengths(true)?.[routine.symbol] ?? options.maxInstructions * 2;
+      const end = routineStart + length;
+      const mem = await read(routineStart, Math.min(length, options.maxInstructions * 10) + 10);
+      const lines = decodeRange(mem, routineStart, routineStart, options.maxInstructions, end, this.sourceMap);
+      const last = lines[lines.length - 1];
+      if (last && last.address + last.length < end) {
+        notes.push(`(${routine.symbol} continues past ${options.maxInstructions} instructions; listing cut short)`);
+      }
+      return { listing: formatListing(lines, pc, this.sourceMap), notes };
+    }
+
+    // Decode forward from the routine start when it's near enough to be worth it; else from a
+    // guessed start far enough back for `before` instructions of the longest kind.
+    const MAX_ROUTINE_LOOKBACK = 4096;
+    const fromRoutine = options.before > 0 && routineStart !== undefined && address - routineStart <= MAX_ROUTINE_LOOKBACK;
+    const lo = options.before === 0 ? address : fromRoutine ? routineStart! : Math.max(0, address - options.before * 10);
+    const mem = await read(lo, address - lo + options.count * 10 + 10);
+    let before: DecodedLine[] = [];
+    if (options.before > 0) {
+      if (fromRoutine) {
+        before = decodeRange(mem, lo, lo, Infinity, address, this.sourceMap);
+        const last = before[before.length - 1];
+        if (last && last.address + last.length !== address) {
+          notes.push(`(decoding from ${routine!.symbol} doesn't land on ${formatAddr(address)} — it's mid-instruction, or the routine holds data)`);
+        }
+      } else {
+        // Try starts from furthest back to nearest; the first whose decode lands exactly on the
+        // address is plausibly in sync. Not guaranteed — data or a coincidental alignment can fool it.
+        for (let start = lo; start < address; start += 2) {
+          const attempt = decodeRange(mem, lo, start, Infinity, address, this.sourceMap);
+          const last = attempt[attempt.length - 1];
+          if (last && last.address + last.length === address) { before = attempt; break; }
+        }
+        notes.push(before.length
+          ? "(no enclosing symbol: the lines before the target were decoded from a guessed start and may be misaligned)"
+          : "(no enclosing symbol, and no start before the target decodes cleanly onto it; listing from the target only)");
+      }
+      before = before.slice(-options.before);
+    }
+    const after = decodeRange(mem, lo, address, options.count, Infinity, this.sourceMap);
+    return { listing: formatListing([...before, ...after], pc, this.sourceMap), notes };
   }
 
   /** Custom-chip registers, grouped and decoded, with chip pointers symbolicated. */

@@ -45,6 +45,7 @@ describe("emulator MCP tools", () => {
       "emulator_continue",
       "emulator_step",
       "emulator_inspect",
+      "emulator_disassemble",
       "emulator_close",
       "emulator_screenshot",
       "emulator_capture_profile",
