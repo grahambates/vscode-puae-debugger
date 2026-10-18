@@ -93,22 +93,20 @@ export abstract class ProfilerViewerProvider {
     return true;
   }
 
-  // `numFrames`, if given, is how many frames the very first capture of a freshly opened panel
-  // should record — e.g. from a frame-count field next to the emulator toolbar's capture button
-  // (invalid/omitted values fall back to the usual default of 1, same as before this param
-  // existed). Ignored whenever a panel is already open: it already has its own frame-count field
-  // as the source of truth for the next capture, which this must not silently override (e.g. the
-  // toolbar field left at its own default of 1 would otherwise clobber a larger count the user
-  // had already set from inside the panel).
+  // `numFrames`, if given, is how many frames to capture — from the frame-count field next to the
+  // emulator toolbar's capture button, which wins over the panel's own field when that's where
+  // the capture was triggered (the panel's field then follows it, on the captureResult). Omitted
+  // (the command palette/debug toolbar, which have no field) or invalid, it's the count of the
+  // panel's last capture, or 1 for a fresh panel.
   public async show(numFrames?: number): Promise<void> {
+    const clamped = clampNumFrames(numFrames);
     if (this.host) {
       this.host.reveal();
-      await this.capture();
+      await this.capture(clamped);
       return;
     }
 
     this.resetCapture();
-    const clamped = clampNumFrames(numFrames);
     // Consumed by the "ready" handler below once the webview mounts — can't call capture()
     // directly here since no host/webview exists yet to send "capturing"/results to.
     this.pendingNumFrames = clamped;
@@ -132,15 +130,16 @@ export abstract class ProfilerViewerProvider {
   private async handleMessage(message: ProfilerInboundMessage): Promise<void> {
     if (message.command === "ready") {
       this.symbolsSent = false;
-      // The webview's own frame-count field always mounts showing pendingNumFrames (baked into
-      // #root by buildProfilerHtml) or 1 — mirror whichever it is here so a later plain
-      // "capture" message (no count of its own) matches what's on screen.
-      this.numFrames = this.pendingNumFrames ?? 1;
+      // The webview's frame-count field mounts showing pendingNumFrames (baked into #root by
+      // buildProfilerHtml) or 1, then follows the re-posted capture below if there is one —
+      // mirror that here so a capture with no count of its own (the command palette) matches
+      // what's on screen.
+      this.numFrames = this.pendingNumFrames ?? (this.lastFrames.length || 1);
       this.pendingNumFrames = undefined;
       if (this.lastFrames.length > 0) this.postResult(this.lastFrames, this.lastBulkUris);
       else await this.capture();
     } else if (message.command === "capture") {
-      await this.capture();
+      await this.capture(clampNumFrames(message.numFrames));
     } else if (message.command === "setNumFrames") {
       const n = clampNumFrames(message.numFrames);
       if (n !== undefined) this.numFrames = n;
@@ -176,8 +175,9 @@ export abstract class ProfilerViewerProvider {
     this.post({ command: "rangeResult", model: stripped });
   }
 
-  private async capture(): Promise<void> {
+  private async capture(numFrames?: number): Promise<void> {
     if (this.capturing) return;
+    if (numFrames !== undefined) this.numFrames = numFrames;
     this.capturing = true;
     this.post({ command: "capturing" });
     try {

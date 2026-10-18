@@ -391,6 +391,8 @@ export interface ReadyMessage {
 }
 export interface CaptureMessage {
   command: "capture";
+  /** The panel's own frame-count field — the capture uses what's on screen where it was clicked. */
+  numFrames?: number;
 }
 // Ctrl/Cmd+click on a box: jump to its source. `line` here is 1-based, same as the model's
 // CallFrame.lineNumber/IDisassembledInstruction.line/etc. — passed straight through, no +1.

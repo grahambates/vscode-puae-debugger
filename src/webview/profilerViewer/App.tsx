@@ -412,7 +412,7 @@ export function App() {
 
   const capture = () => {
     setBusy(true);
-    bridge.postMessage({ command: "capture" });
+    bridge.postMessage({ command: "capture", numFrames });
   };
 
   const save = () => bridge.postMessage({ command: "saveProfile" });
