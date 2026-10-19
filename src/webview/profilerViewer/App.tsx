@@ -549,6 +549,7 @@ export function App() {
           timing={timing}
           onOpenSource={openSource}
           hideTotalTime={treeMode === "bottom"}
+          treeMode={treeMode}
           selectedSlot={selectedSlot}
           onSelectSlot={selectSlot}
           onOpenCpuTab={() => setTab("disasm")}

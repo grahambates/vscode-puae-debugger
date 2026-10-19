@@ -1711,6 +1711,15 @@ body {
   position: relative; /* above the impact bar */
 }
 
+/* Times the row's call path was entered (countCallsByPath). */
+.tv-calls {
+  text-align: right;
+  width: 56px;
+  flex-shrink: 0;
+  margin: 0 4px;
+  color: var(--vscode-descriptionForeground);
+}
+
 .tv-heading {
   color: var(--vscode-foreground);
   user-select: none;
@@ -1745,6 +1754,13 @@ body {
 .tv-location.tv-heading {
   padding-left: 10px;
   color: var(--vscode-foreground);
+}
+
+/* Over the rows' file references: right-aligned in the same space .tv-file takes. */
+.tv-file-heading {
+  flex: 1;
+  margin-left: 2em;
+  text-align: right;
 }
 
 .tv-expander {

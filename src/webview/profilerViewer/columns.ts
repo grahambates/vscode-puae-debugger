@@ -487,3 +487,35 @@ export function countCalls(columns: IColumn[]): Map<string, { name: string; file
   }
   return calls;
 }
+
+/**
+ * countCalls per call path, for the Time view's rows, keyed by location ids joined with ",":
+ * - `topDown`: outermost first, as a top-down row's path from the top level down to it — one call
+ *   per box starting at that depth;
+ * - `bottomUp`: the called location first, then its callers outward, as a bottom-up row's path —
+ *   one call of the location per box, counted against each chain of callers it was reached
+ *   through. The single-location key follows countCalls' rule that a box inside another of the
+ *   same location isn't a separate call.
+ * Column 0's boxes were already running when the span began and aren't counted.
+ */
+export function countCallsByPath(columns: IColumn[]): { topDown: Map<string, number>; bottomUp: Map<string, number> } {
+  const topDown = new Map<string, number>();
+  const bottomUp = new Map<string, number>();
+  const add = (map: Map<string, number>, key: string) => map.set(key, (map.get(key) ?? 0) + 1);
+  for (let k = 1; k < columns.length; k++) {
+    const ids: number[] = [];
+    const above = new Set<number>();
+    columns[k].rows.forEach((cell, depth) => {
+      const loc = typeof cell === "number" ? columns[cell]?.rows[depth] : cell;
+      if (!loc || typeof loc === "number") return;
+      ids.push(loc.id);
+      if (typeof cell !== "number") {
+        add(topDown, ids.join(","));
+        if (!above.has(loc.id)) add(bottomUp, String(loc.id));
+        for (let j = depth - 1; j >= 0; j--) add(bottomUp, ids.slice(j, depth + 1).reverse().join(","));
+      }
+      above.add(loc.id);
+    });
+  }
+  return { topDown, bottomUp };
+}

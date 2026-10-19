@@ -9,9 +9,12 @@ import { IGraphNode } from "./topDownGraph";
 import { compileFilter, IRichFilter } from "./filter";
 import { dataName, DisplayUnit, formatValue, Timing } from "./display";
 import { getProfileModel } from "./modelStore";
-import { buildColumns, columnIndexAtX, columnIndexToSlot, findNextSample } from "./columns";
+import { buildColumns, columnIndexAtX, columnIndexToSlot, countCallsByPath, findNextSample } from "./columns";
 
-enum SortFn { Self, Agg }
+enum SortFn { Self, Agg, Calls }
+
+/** A row's call count (see countCallsByPath), or undefined where there is none (synthetic rows). */
+type CallsOf = (node: IGraphNode) => number | undefined;
 
 interface NodeAtDepth { node: IGraphNode; depth: number; position: number }
 
@@ -31,6 +34,7 @@ type RowListProps = {
   // and switch to the CPU tab. undefined if the trace data needed to do this isn't available
   // (mirrors DisassemblyView's onJumpToExecution).
   onJumpToExecution: ((locationId: number, prev: boolean) => void) | undefined;
+  callsOf: CallsOf;
 };
 
 const getGlobalUniqueId = (node: IGraphNode): string => {
@@ -39,16 +43,18 @@ const getGlobalUniqueId = (node: IGraphNode): string => {
   return parts.join("-");
 };
 
-const getSortedChildren = (node: IGraphNode, sortFn: SortFn): IGraphNode[] => {
-  const children = Object.values(node.children) as IGraphNode[];
-  if (sortFn === SortFn.Agg) children.sort((a, b) => b.aggregateTime - a.aggregateTime);
-  else children.sort((a, b) => b.selfTime - a.selfTime);
-  return children;
+const compareBy = (sortFn: SortFn, callsOf: CallsOf) => (a: IGraphNode, b: IGraphNode): number => {
+  if (sortFn === SortFn.Calls) return (callsOf(b) ?? 0) - (callsOf(a) ?? 0) || b.aggregateTime - a.aggregateTime;
+  if (sortFn === SortFn.Agg) return b.aggregateTime - a.aggregateTime;
+  return b.selfTime - a.selfTime;
 };
+
+const getSortedChildren = (node: IGraphNode, sortFn: SortFn, callsOf: CallsOf): IGraphNode[] =>
+  (Object.values(node.children) as IGraphNode[]).sort(compareBy(sortFn, callsOf));
 
 // Defined outside TimeView so the reference is stable across renders (v2 memoises by rowComponent identity).
 // v2 injects ariaAttributes (listitem role) but our rows use treeitem — we don't spread it.
-function RowRenderer({ index, style, rows, expanded, onExpandChange, onKeyDown, onFocus, displayUnit, timing, onOpenSource, hideTotalTime, onJumpToExecution }: RowComponentProps<RowListProps>) {
+function RowRenderer({ index, style, rows, expanded, onExpandChange, onKeyDown, onFocus, displayUnit, timing, onOpenSource, hideTotalTime, onJumpToExecution, callsOf }: RowComponentProps<RowListProps>) {
   const row = rows[index];
   if (!row) return null;
   const { node, depth, position } = row;
@@ -67,6 +73,7 @@ function RowRenderer({ index, style, rows, expanded, onExpandChange, onKeyDown, 
       onOpenSource={onOpenSource}
       hideTotalTime={hideTotalTime}
       onJumpToExecution={onJumpToExecution}
+      calls={callsOf(node)}
       style={style}
     />
   );
@@ -79,6 +86,7 @@ export function TimeView({
   timing,
   onOpenSource,
   hideTotalTime = false,
+  treeMode,
   selectedSlot,
   onSelectSlot,
   onOpenCpuTab,
@@ -89,6 +97,8 @@ export function TimeView({
   timing: Timing;
   onOpenSource: (file: string, line: number, toSide: boolean) => void;
   hideTotalTime?: boolean;
+  /** Which tree `data` is — rows are call paths read in opposite directions. */
+  treeMode: "top" | "bottom";
   selectedSlot: number | undefined;
   onSelectSlot: (slot: number, sampleIdx?: number) => void;
   onOpenCpuTab: () => void;
@@ -98,6 +108,18 @@ export function TimeView({
   const [sortFn, setSortFn] = useState<SortFn>(SortFn.Agg);
   const [focused, setFocused] = useState<IGraphNode | undefined>(undefined);
   const [expanded, setExpanded] = useState<ReadonlySet<IGraphNode>>(new Set());
+
+  // The model's column layout — the flame graph's — for the calls each row's path made, and for
+  // jump-to-execution below.
+  const model = getProfileModel();
+  const columns = useMemo(() => (model ? buildColumns(model) : []), [model]);
+  const callCounts = useMemo(() => countCallsByPath(columns), [columns]);
+  const callsOf = useCallback<CallsOf>((node) => {
+    const ids: number[] = [];
+    for (let n: IGraphNode | undefined = node; n && n.id !== -1; n = n.parent) ids.unshift(n.id);
+    if (ids.some((id) => id < 0)) return undefined; // a synthetic DMA row, not a call path
+    return (treeMode === "top" ? callCounts.topDown : callCounts.bottomUp).get(ids.join(",")) ?? 0;
+  }, [callCounts, treeMode]);
   // Filter: mutate node.filtered and derive filterExpanded in one pass so rendered/visibleRows
   // recompute in the same render (no setState lag).
   const filterExpanded = useMemo(() => {
@@ -129,11 +151,8 @@ export function TimeView({
 
   // Sorted top-level list.
   const sorted = useMemo(() => {
-    const s = data.slice();
-    if (sortFn === SortFn.Agg) s.sort((a, b) => b.aggregateTime - a.aggregateTime);
-    else s.sort((a, b) => b.selfTime - a.selfTime);
-    return s;
-  }, [data, sortFn]);
+    return data.slice().sort(compareBy(sortFn, callsOf));
+  }, [data, sortFn, callsOf]);
 
   // Flat visible list: expand nodes that are in expanded ∪ filterExpanded.
   const rendered = useMemo(() => {
@@ -141,14 +160,14 @@ export function TimeView({
     for (let i = 0; i < output.length; i++) {
       const { node, depth } = output[i];
       if (expanded.has(node) || filterExpanded.has(node)) {
-        const toAdd = getSortedChildren(node, sortFn).map((child, idx) => ({
+        const toAdd = getSortedChildren(node, sortFn, callsOf).map((child, idx) => ({
           node: child, position: idx + 1, depth: depth + 1,
         }));
         output.splice(i + 1, 0, ...toAdd);
       }
     }
     return output;
-  }, [sorted, expanded, filterExpanded, sortFn]);
+  }, [sorted, expanded, filterExpanded, sortFn, callsOf]);
 
   // Visible rows only (filter-hidden nodes are excluded from the virtual list).
   const visibleRows = useMemo(
@@ -218,8 +237,6 @@ export function TimeView({
   // See findNextSample's comment for why the two share the scan; the model/columns/currentIdx
   // setup here directly mirrors DisassemblyView's own (kept local rather than lifted into
   // App.tsx — the extra buildColumns() call is cheap and memoised per model change).
-  const model = getProfileModel();
-  const columns = useMemo(() => (model ? buildColumns(model) : []), [model]);
   const dmaSlots = model?.dma?.owner.length;
   const currentIdx = useMemo(() => {
     if (selectedSlot === undefined || !dmaSlots || !model?.pcs.length) return undefined;
@@ -252,11 +269,12 @@ export function TimeView({
     onOpenSource,
     hideTotalTime,
     onJumpToExecution: jumpToExecution,
-  }), [visibleRows, expanded, onKeyDown, displayUnit, timing, onOpenSource, hideTotalTime, jumpToExecution]);
+    callsOf,
+  }), [visibleRows, expanded, onKeyDown, displayUnit, timing, onOpenSource, hideTotalTime, jumpToExecution, callsOf]);
 
   return (
     <div className="time-view">
-      <TimeViewHeader sortFn={sortFn} onChangeSort={setSortFn} displayUnit={displayUnit} hideTotalTime={hideTotalTime} />
+      <TimeViewHeader sortFn={sortFn} onChangeSort={setSortFn} displayUnit={displayUnit} hideTotalTime={hideTotalTime} treeMode={treeMode} />
       <div className="tv-rows">
         <List
           listRef={listRef}
@@ -272,35 +290,52 @@ export function TimeView({
 }
 
 function TimeViewHeader({
-  sortFn, onChangeSort, displayUnit, hideTotalTime,
-}: { sortFn: SortFn; onChangeSort: (fn: SortFn) => void; displayUnit: DisplayUnit; hideTotalTime: boolean }) {
+  sortFn, onChangeSort, displayUnit, hideTotalTime, treeMode,
+}: { sortFn: SortFn; onChangeSort: (fn: SortFn) => void; displayUnit: DisplayUnit; hideTotalTime: boolean; treeMode: "top" | "bottom" }) {
+  // Without a Total column (bottom-up), the Self column orders by the function's total — its
+  // rows' aggregate is the time spent in it via that path — as it always has.
+  const selfSort = hideTotalTime ? SortFn.Agg : SortFn.Self;
+  const selfSorted = hideTotalTime ? sortFn !== SortFn.Calls : sortFn === SortFn.Self;
+  const chevron = <span className="codicon codicon-chevron-down" />;
   return (
     <div className="tv-row tv-header">
       <div
         id="tv-self-header"
-        className={"tv-duration tv-heading" + (sortFn === SortFn.Self || hideTotalTime ? " tv-sorted" : "")}
-        onClick={() => !hideTotalTime && onChangeSort(sortFn === SortFn.Self ? SortFn.Agg : SortFn.Self)}
-        style={hideTotalTime ? { cursor: "default" } : undefined}
+        className={"tv-duration tv-heading" + (selfSorted ? " tv-sorted" : "")}
+        onClick={() => onChangeSort(selfSort)}
       >
-        {(sortFn === SortFn.Self || hideTotalTime) && <span className="codicon codicon-chevron-down" />}Self {dataName(displayUnit)}
+        {selfSorted && chevron}Self {dataName(displayUnit)}
       </div>
       {!hideTotalTime && (
         <div
           id="tv-total-header"
           className={"tv-duration tv-heading" + (sortFn === SortFn.Agg ? " tv-sorted" : "")}
-          onClick={() => onChangeSort(sortFn === SortFn.Agg ? SortFn.Self : SortFn.Agg)}
+          onClick={() => onChangeSort(SortFn.Agg)}
         >
-          {sortFn === SortFn.Agg && <span className="codicon codicon-chevron-down" />}Total {dataName(displayUnit)}
+          {sortFn === SortFn.Agg && chevron}Total {dataName(displayUnit)}
         </div>
       )}
-      <div className="tv-location tv-heading">File</div>
+      <div
+        id="tv-calls-header"
+        className={"tv-calls tv-heading" + (sortFn === SortFn.Calls ? " tv-sorted" : "")}
+        onClick={() => onChangeSort(SortFn.Calls)}
+        title={treeMode === "top"
+          ? "Times this call path was entered — not counting a call already running when the frame began"
+          : "Times this function was entered through this chain of callers — not counting a call already running when the frame began"}
+      >
+        {sortFn === SortFn.Calls && chevron}Calls
+      </div>
+      <div className="tv-location tv-heading">
+        <span>Function</span>
+        <span className="tv-file-heading">File</span>
+      </div>
     </div>
   );
 }
 
 function TimeViewRow({
   node, depth, position, expanded, onExpandChange, onKeyDown: onKeyDownRaw,
-  onFocus: onFocusRaw, displayUnit, timing, onOpenSource, hideTotalTime, onJumpToExecution, style,
+  onFocus: onFocusRaw, displayUnit, timing, onOpenSource, hideTotalTime, onJumpToExecution, calls, style,
 }: {
   node: IGraphNode; depth: number; position: number;
   expanded: ReadonlySet<IGraphNode>; onExpandChange: React.Dispatch<React.SetStateAction<ReadonlySet<IGraphNode>>>;
@@ -310,6 +345,7 @@ function TimeViewRow({
   onOpenSource: (file: string, line: number, toSide: boolean) => void;
   hideTotalTime: boolean;
   onJumpToExecution: ((locationId: number, prev: boolean) => void) | undefined;
+  calls: number | undefined;
   style: React.CSSProperties;
 }) {
   // Basename only, not the full absolute path — matches DisassemblyView/CopperView's convention.
@@ -380,6 +416,7 @@ function TimeViewRow({
           <span>{formatValue(node.aggregateTime, displayUnit, timing)}</span>
         </div>
       )}
+      <div className="tv-calls" aria-labelledby="tv-calls-header">{calls ?? ""}</div>
       <div className="tv-location" style={{ paddingLeft: depth * 15 + 10 }}>
         <span className="tv-expander" onClick={onToggleExpand} onMouseDown={(e) => { if (e.shiftKey) e.preventDefault(); }}>
           {node.childrenSize > 0

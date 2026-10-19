@@ -1,4 +1,4 @@
-import { buildColumns, columnIndexAtX, columnIndexToSlot, countCalls, findLineExecutionSlot, findNextSample, functionCallKey, IColumn, IColumnLocation } from "../webview/profilerViewer/columns";
+import { buildColumns, columnIndexAtX, columnIndexToSlot, countCalls, countCallsByPath, findLineExecutionSlot, findNextSample, functionCallKey, IColumn, IColumnLocation } from "../webview/profilerViewer/columns";
 import { BusOwner, DMA_CODE, IDisassembledFunction, IDisassembledInstruction, IProfileModel } from "../shared/profilerTypes";
 
 const columns: IColumn[] = [
@@ -497,5 +497,31 @@ describe("countCalls", () => {
     const draw = at("Draw"), local = at("Draw");
     const calls = countCalls([col([at("main")]), col([0, draw]), col([0, 1, local])]);
     expect(calls.get(functionCallKey(draw))?.calls).toBe(1);
+  });
+});
+
+describe("countCallsByPath", () => {
+  const at = (id: number, name: string) => ({ id, callFrame: { functionName: name, url: "" }, graphId: 0, filtered: true }) as unknown as IColumnLocation;
+  const col = (rows: (IColumnLocation | number)[]): IColumn => ({ x1: 0, x2: 0, rows });
+
+  it("counts each call path top-down, and each callee by its chain of callers bottom-up", () => {
+    // main(1) calls Plot(3) twice and Draw(2) once; Draw also calls Plot.
+    const main = at(1, "main");
+    const columns = [
+      col([main]),
+      col([0, at(3, "Plot")]),
+      col([0, at(3, "Plot")]),
+      col([0, at(2, "Draw")]),
+      col([0, 3, at(3, "Plot")]),
+    ];
+    const { topDown, bottomUp } = countCallsByPath(columns);
+    expect(topDown.get("1,3")).toBe(2); // main > Plot
+    expect(topDown.get("1,2")).toBe(1); // main > Draw
+    expect(topDown.get("1,2,3")).toBe(1); // main > Draw > Plot
+    expect(topDown.get("1")).toBeUndefined(); // main was already running
+    expect(bottomUp.get("3")).toBe(3); // Plot, however it was reached
+    expect(bottomUp.get("3,1")).toBe(2); // Plot called from main
+    expect(bottomUp.get("3,2")).toBe(1); // Plot called from Draw
+    expect(bottomUp.get("3,2,1")).toBe(1); // ... from Draw, from main
   });
 });
