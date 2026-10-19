@@ -611,6 +611,7 @@
   "scripts": {
     "vscode:prepublish": "npm run package",
     "prepublishOnly": "npm run package",
+    "version": "node scripts/update-changelog.js && git add CHANGELOG.md",
     "compile": "npm run check-types && node esbuild.js",
     "watch": "npm run check-types && node esbuild.js --watch",
     "package": "npm run check-types && node esbuild.js --production",
