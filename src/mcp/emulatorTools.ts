@@ -19,7 +19,8 @@
 // Sessions cost a wasm instance each and are capped and idle-evicted (see sessionRegistry.ts);
 // `emulator_close` frees one immediately.
 
-import { mkdtempSync, writeFileSync } from "fs";
+import { createHash } from "crypto";
+import { mkdirSync, mkdtempSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { basename, join } from "path";
 import { analyseProfile } from "../profileAnalysis";
@@ -60,6 +61,8 @@ const MAX_STEP_INSTRUCTIONS = 1000;
 // Enough for a structure, a copper list or a sprite; past that a hex dump stops being readable
 // and the answer belongs in a capture instead.
 const MAX_MEMORY_BYTES = 4096;
+/** Memory read as a hash or to a file: as much RAM as an Amiga is likely to have. */
+const MAX_MEMORY_FILE_BYTES = 16 * 1024 * 1024;
 // A full-screen gradient or per-line palette list runs to a few hundred instructions; the default
 // covers that, and the cap keeps a list with no end marker from flooding the reply.
 const DEFAULT_COPPER_INSTRUCTIONS = 512;
@@ -122,15 +125,28 @@ function stringArray(args: Record<string, unknown>, key: string): string[] {
   return v as string[];
 }
 
-function memoryReads(args: Record<string, unknown>): { address: string; bytes: number }[] {
+type MemoryReadForm = "hex" | "sha256" | "file";
+interface MemoryRead {
+  address: string;
+  bytes: number;
+  as: MemoryReadForm;
+  out?: string;
+}
+
+function memoryReads(args: Record<string, unknown>): MemoryRead[] {
   const v = args.memory;
   if (v === undefined || v === null) return [];
   if (!Array.isArray(v)) throw new Error(`"memory" must be an array`);
   return v.map((entry) => {
     if (typeof entry !== "object" || entry === null) throw new Error(`each "memory" entry must be an object`);
     const read = entry as Record<string, unknown>;
-    const bytes = boundedNumber(read, "bytes", 64, MAX_MEMORY_BYTES);
-    return { address: requireString(read, "address"), bytes };
+    const as = read.as === undefined ? "hex" : read.as;
+    if (as !== "hex" && as !== "sha256" && as !== "file") throw new Error(`memory "as" must be "hex", "sha256" or "file"`);
+    // Hex goes into the reply, so it's kept to what a model can usefully read; a hash or a file
+    // doesn't, so it can cover a whole buffer — chip RAM entire, if need be.
+    const bytes = boundedNumber(read, "bytes", 64, as === "hex" ? MAX_MEMORY_BYTES : MAX_MEMORY_FILE_BYTES);
+    if (read.out !== undefined && as !== "file") throw new Error(`memory "out" only applies with "as": "file"`);
+    return { address: requireString(read, "address"), bytes, as, out: optionalPath(read, "out") };
   });
 }
 
@@ -421,7 +437,7 @@ function hexDump(address: number, data: Buffer): string {
   return lines.join("\n");
 }
 
-function formatInspect(result: InspectResult): string {
+function formatInspect(result: InspectResult, reads: MemoryRead[], program: string): string {
   const cpu = result.cpu as unknown as Record<string, string>;
   const registerLine = (names: string[]) => names.map((n) => `${n}=${cpu[n]}`).join(" ");
   const sections = [
@@ -435,10 +451,21 @@ function formatInspect(result: InspectResult): string {
       ? "Call stack (innermost first):\n" + result.callstack.map((f, i) => `  #${i} ${f}`).join("\n")
       : "Call stack: empty (nothing has been called from the entry point yet)",
   ];
-  for (const read of result.memory) {
-    sections.push("", `Memory at ${read.requested} (${formatAddress(read.address)}), ${read.data.length} bytes:`,
-      hexDump(read.address, read.data));
-  }
+  result.memory.forEach((read, i) => {
+    const { as, out } = reads[i];
+    const at = `${read.requested} (${formatAddress(read.address)}), ${read.data.length} bytes`;
+    // The hash covers exactly the bytes read, so two calls agree only if those bytes do.
+    const hash = () => createHash("sha256").update(read.data).digest("hex");
+    if (as === "sha256") {
+      sections.push("", `Memory at ${at}: sha256 ${hash()}`);
+    } else if (as === "file") {
+      const name = `${program}-${formatAddress(read.address)}`;
+      const path = writeOutput(out, name, ".bin", Buffer.from(read.data));
+      sections.push("", `Memory at ${at} written to ${path} (sha256 ${hash()})`);
+    } else {
+      sections.push("", `Memory at ${at}:`, hexDump(read.address, read.data));
+    }
+  });
   return sections.join("\n");
 }
 
@@ -692,7 +719,19 @@ export function emulatorTools(ctx: EmulatorToolContext): ToolDefinition[] {
               type: "object",
               properties: {
                 address: { type: "string", description: "Address (0x2140) or symbol name." },
-                bytes: { type: "number", description: `How many bytes to read (default 64, max ${MAX_MEMORY_BYTES}).` },
+                bytes: {
+                  type: "number",
+                  description: `How many bytes to read (default 64; max ${MAX_MEMORY_BYTES} as hex, ${MAX_MEMORY_FILE_BYTES} as a hash or file).`,
+                },
+                as: {
+                  type: "string",
+                  enum: ["hex", "sha256", "file"],
+                  description:
+                    '"hex" (default): a hex dump in the reply. "sha256": just a hash of the bytes — to check two ' +
+                    'builds or two runs left a buffer identical, in one call each. "file": the raw bytes written ' +
+                    "to a file (with their hash), to compare or examine outside the reply.",
+                },
+                out: { type: "string", description: 'Where to write the bytes, with "as": "file". Defaults to a temp file.' },
               },
               required: ["address"],
               additionalProperties: false,
@@ -727,7 +766,7 @@ export function emulatorTools(ctx: EmulatorToolContext): ToolDefinition[] {
         const copperAt = optionalString(args, "copperAt");
         const wantCopper = args.copper === true || copperAt !== undefined;
         const copperMax = boundedNumber(args, "copperMax", DEFAULT_COPPER_INSTRUCTIONS, MAX_COPPER_INSTRUCTIONS);
-        const sections = [formatInspect(await session.inspect(reads))];
+        const sections = [formatInspect(await session.inspect(reads), reads, `session-${requireString(args, "session")}`)];
         if (args.chipset === true) {
           sections.push("Custom chips:\n" + (await session.chipset()));
         }
@@ -1063,8 +1102,11 @@ export function emulatorTools(ctx: EmulatorToolContext): ToolDefinition[] {
         "is injected into RAM and run for `frames` frames (raise that if the effect needs time to " +
         "appear); the PNG is written to disk and its path returned, so it can then be read as an " +
         "image. Set `count` for several frames on one contact sheet — every `every` frames from " +
-        "there, each labelled with its frame number and marked = when identical to the frame before " +
-        "it — to see an animation, or a glitch that lasts one frame. Needs a Kickstart ROM.",
+        "there, each labelled with its frame number and marked = when identical to the emulated " +
+        "frame just before it (frame N-1, even when `every` spaces the tiles out — not the previous " +
+        "tile) — to see an animation, or a glitch that lasts one frame. A repeat means the picture " +
+        "didn't change, which is how a dropped frame usually shows; but one whose picture changes " +
+        "anyway (a buffer cleared while on screen) isn't marked. Needs a Kickstart ROM.",
       inputSchema: {
         type: "object",
         properties: {
@@ -1081,6 +1123,12 @@ export function emulatorTools(ctx: EmulatorToolContext): ToolDefinition[] {
           every: {
             type: "number",
             description: "Frames between the ones on the sheet (default 1: consecutive frames, to catch a one-frame glitch; e.g. 10 to watch a slower animation).",
+          },
+          framesDir: {
+            type: "string",
+            description:
+              "With `count`, also write each frame as its own full-size PNG into this directory (frame-<n>.png), " +
+              "to compare frames one by one rather than by cutting up the sheet.",
           },
           size: {
             type: "string",
@@ -1112,13 +1160,23 @@ export function emulatorTools(ctx: EmulatorToolContext): ToolDefinition[] {
             const name = optionalString(args, "program") ?? `session-${optionalString(args, "session")}`;
             const path = writeOutput(optionalPath(args, "out"), name, ".png", encodePng(sheet.rgba, sheet.width, sheet.height));
             const repeats = tiles.filter((t) => t.repeated).map((t) => t.frame);
+            const framesDir = optionalPath(args, "framesDir");
+            if (framesDir) {
+              mkdirSync(framesDir, { recursive: true });
+              for (const t of tiles) writeFileSync(join(framesDir, `frame-${t.frame}.png`), encodePng(t.rgba, t.width, t.height));
+            }
+            // A hash per frame: the same picture gives the same hash, run to run and build to build,
+            // so two runs compare frame by frame without reading a single image.
+            const hashes = tiles.map((t) => `  frame ${t.frame}: ${createHash("sha256").update(t.rgba).digest("hex").slice(0, 16)}`);
             return (
               `Wrote a ${sheet.width}x${sheet.height} contact sheet of ${tiles.length} frame(s) to ${path}\n` +
               `Frames ${tiles.map((t) => t.frame).join(", ")} (frame numbers count from the launch; ${every === 1 ? "consecutive" : `every ${every}`}).\n` +
               (repeats.length
-                ? `Identical to the frame before (marked =): ${repeats.join(", ")}.\n`
-                : "No frame on the sheet is identical to the frame before it.\n") +
+                ? `Identical to the emulated frame just before it, frame N-1 (marked =): ${repeats.join(", ")}.\n`
+                : "No frame on the sheet is identical to the emulated frame just before it (frame N-1).\n") +
               (stoppedEarly ? `Stopped after ${tiles.length} of ${count}: the program hit a breakpoint, a watch or an exception.\n` : "") +
+              (framesDir ? `Each frame also written to ${framesDir} as frame-<n>.png.\n` : "") +
+              `Picture hashes (sha256 of the pixels, first 16 hex digits):\n${hashes.join("\n")}\n` +
               "Read that file to see the frames." + serialNote(session)
             );
           });
@@ -1130,7 +1188,7 @@ export function emulatorTools(ctx: EmulatorToolContext): ToolDefinition[] {
           const path = writeOutput(optionalPath(args, "out"), name, ".png", shot.png);
           const stoppedEarly = ran < frames ? ` (stopped after ${ran} — the program hit a breakpoint or halted)` : "";
           return (
-            `Wrote ${shot.width}x${shot.height} PNG to ${path}\n` +
+            `Wrote ${shot.width}x${shot.height} PNG to ${path} (picture hash ${createHash("sha256").update(shot.rgba).digest("hex").slice(0, 16)})\n` +
             (frames > 0 ? `Ran ${frames} frame(s)${stoppedEarly}.\n` : "Captured the session's current frame, without running it on.\n") +
             "Read that file to see the frame." + serialNote(session)
           );

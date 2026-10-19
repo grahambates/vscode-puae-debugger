@@ -18,6 +18,7 @@
 //   - registers-truncated    → the register cap that used to stop profile recording outright
 //   - frame-short            → the profile buffer running out mid-capture
 
+import { analyseIterations, IterationAnalysis } from "./profileIterations";
 import { buildColumns, buildSampleSlots, columnIndexAtX } from "./webview/profilerViewer/columns";
 import { blitLabel, blitTooltip, getBlits } from "./webview/profilerViewer/blits";
 import { createSymbolizer } from "./webview/profilerViewer/symbols";
@@ -88,6 +89,12 @@ export interface FunctionCost {
   totalCycles: number;
   totalPct: number;
   widthPct: number; // share of the flame graph's width (should track selfPct)
+  /**
+   * Times it was entered during the frame: each new box the flame graph draws for it. One already
+   * running when the frame began isn't counted — it was entered in an earlier frame. A labelled
+   * part of a routine reached by a branch counts as an entry too, as it gets a box of its own.
+   */
+  calls: number;
 }
 
 /** One node of the top-down call tree: a function as reached by one particular call path. */
@@ -281,6 +288,8 @@ export interface ProfileAnalysis {
   instructionQuery?: string;
   /** The function `callers` resolved to, as the capture spells it. */
   callersOf?: string;
+  /** Present only when iterations were requested. */
+  iterations?: IterationAnalysis;
 }
 
 // Measured cost against datasheet cost, per function — the difference between "this routine is
@@ -712,7 +721,7 @@ export function analyseFrame(model: IProfileModel, index: number): FrameAnalysis
     const { name, file } = leafOf(model, k);
     const key = `${name} ${file ?? ""}`;
     let e = byFn.get(key);
-    if (!e) { e = { name, file, samples: 0, selfCycles: 0, selfPct: 0, totalCycles: 0, totalPct: 0, widthPct: 0 }; byFn.set(key, e); }
+    if (!e) { e = { name, file, samples: 0, selfCycles: 0, selfPct: 0, totalCycles: 0, totalPct: 0, widthPct: 0, calls: 0 }; byFn.set(key, e); }
     e.samples++;
     e.selfCycles += cost;
     const col = columns[k];
@@ -723,8 +732,29 @@ export function analyseFrame(model: IProfileModel, index: number): FrameAnalysis
   // missing from the table entirely.
   for (const [key, inc] of inclusiveCycles(model)) {
     let e = byFn.get(key);
-    if (!e) { e = { name: inc.name, file: inc.file, samples: 0, selfCycles: 0, selfPct: 0, totalCycles: 0, totalPct: 0, widthPct: 0 }; byFn.set(key, e); }
+    if (!e) { e = { name: inc.name, file: inc.file, samples: 0, selfCycles: 0, selfPct: 0, totalCycles: 0, totalPct: 0, widthPct: 0, calls: 0 }; byFn.set(key, e); }
     e.totalCycles = inc.cycles;
+  }
+  // Calls: a box starts in the layout where a column's cell is a location; the box's later columns
+  // point back at that one by index. Column 0's boxes were already running when the frame began.
+  // A box inside another of the same function (recursion, or a bsr to a local label within it,
+  // which is attributed to the routine) isn't a separate call of it — as total time counts once.
+  for (let k = 1; k < columns.length; k++) {
+    const above = new Set<string>();
+    columns[k].rows.forEach((cell, depth) => {
+      const loc = typeof cell === "number" ? columns[cell]?.rows[depth] : cell;
+      if (!loc || typeof loc === "number") return;
+      const fn = functionKey(loc);
+      if (typeof cell !== "number" && !above.has(fn.key)) {
+        let e = byFn.get(fn.key);
+        if (!e) {
+          e = { name: fn.name, file: fn.file, samples: 0, selfCycles: 0, selfPct: 0, totalCycles: 0, totalPct: 0, widthPct: 0, calls: 0 };
+          byFn.set(fn.key, e);
+        }
+        e.calls++;
+      }
+      above.add(fn.key);
+    });
   }
   for (const e of byFn.values()) {
     e.selfPct = cycles > 0 ? (e.selfCycles / cycles) * 100 : 0;
@@ -1062,9 +1092,11 @@ export function analyseProfile(
     blits?: boolean;
     /** The copper trace, for the whole frame or the `flame` window's lines when one is given. */
     copper?: boolean;
+    /** Split the capture into iterations at each execution of this address, symbol or source line. */
+    iterations?: string;
   } = {},
 ): ProfileAnalysis {
-  const { frames, manifest } = loadProfile(file);
+  const { frames, manifest, sourceMap } = loadProfile(file);
   const analysed = frames.map((f, i) => {
     const a = analyseFrame(f.model, i);
     a.duplicateOfPrevious = f.raw.duplicateOfPrevious === true;
@@ -1119,5 +1151,14 @@ export function analyseProfile(
     analysed.map((f) => f.duplicateOfPrevious),
     manifest.meta.isPAL ? 50 : 60,
   );
-  return { manifest, frames: analysed, findings, screenUpdates, instructionQuery: opts.instructions, callersOf: callersName };
+  let iterations: IterationAnalysis | undefined;
+  if (opts.iterations) {
+    try {
+      iterations = analyseIterations(frames.map((f) => f.model), sourceMap, opts.iterations);
+    } catch (err) {
+      // An address the capture can't resolve is the caller's argument, not a damaged file.
+      throw new ProfileRequestError(`--iterations ${opts.iterations}: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+  return { manifest, frames: analysed, findings, screenUpdates, instructionQuery: opts.instructions, callersOf: callersName, iterations };
 }

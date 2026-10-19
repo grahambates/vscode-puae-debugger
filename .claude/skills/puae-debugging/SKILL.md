@@ -71,8 +71,10 @@ Kickstart itself — `AllocMem` clearing memory it hands out is a write too.
 
 **The screen is wrong.** `emulator_screenshot` on the session to see it. For something that
 moves, or a glitch that lasts one frame, `{ "count": 8 }` puts consecutive frames on one contact
-sheet, each labelled with its frame number and marked `=` when identical to the frame before;
-`every` spaces them out for a slower animation. Then
+sheet, each labelled with its frame number and marked `=` when identical to the emulated frame
+just before it — frame N-1, even when `every` spaces them out for a slower animation. A dropped
+frame usually shows as `=`, but not always: if something changes the picture anyway (a buffer
+cleared while on screen), the frame isn't marked, so "no `=`" doesn't prove nothing was dropped. Then
 `emulator_inspect { "chipset": true, "copper": true }`:
 - `chipset` decodes DMACON, INTENA/INTREQ, BPLCONx, display window, bitplane/sprite/blitter
   pointers and the colours. It warns when DMAEN is off — a channel bit set under a cleared master
@@ -124,6 +126,10 @@ emulator_snapshot { "restore": "before" }   ← and try the next idea from the s
   `$0100` *disables* bitplane DMA and `$8100` enables it. The reply says which it did.
 - A memory `value` needs a `size` (`b`/`w`/`l`) — it won't guess a width and clobber the
   neighbouring variable. Patching code is `bytes` (hex).
+- **Comparing two builds or two runs:** don't read buffers or pictures side by side. A memory
+  entry with `"as": "sha256"` hashes a whole buffer (up to 16 MB) in one call, and `"as": "file"`
+  writes it out; screenshots report a picture hash, per frame on a contact sheet, and
+  `framesDir` writes each sheet frame as its own PNG. Same hash, same bytes.
 - Restoring keeps breakpoints, watches and exception stops: they're debugger settings, not
   machine state. `{ "restore": "start" }` reruns the program from its entry point.
 

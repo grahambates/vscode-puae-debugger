@@ -14,6 +14,7 @@
 //     profile_check applies, not merely produced without throwing.
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -244,6 +245,19 @@ check("an out-of-range frame count is refused before booting", overCap.isError =
   check("emulator_inspect dumps requested memory", /Memory at moveloop \(0x[0-9a-f]{8}\), 32 bytes:/.test(inspectText),
     inspectText);
 
+  // The same 32 bytes as a hash, and as a file: all three forms must agree.
+  const memFile = path.join(outDir, "moveloop.bin");
+  const forms = (await callTool("emulator_inspect", {
+    session: sessionId,
+    memory: [{ address: "moveloop", bytes: 32, as: "sha256" }, { address: "moveloop", bytes: 32, as: "file", out: memFile }],
+  })).content?.[0]?.text ?? "";
+  const hexBytes = Buffer.from(
+    [...inspectText.matchAll(/^0x[0-9a-f]{8} {2}((?:[0-9a-f]{2} )*[0-9a-f]{2})/gm)].map((m) => m[1].replace(/ /g, "")).join(""), "hex");
+  const expected = crypto.createHash("sha256").update(hexBytes).digest("hex");
+  check("memory as sha256 hashes the bytes the hex dump shows", hexBytes.length === 32 && forms.includes(`sha256 ${expected}`),
+    `${hexBytes.length} hex bytes, expected ${expected}\n${forms}`);
+  check("memory as a file writes those bytes", fs.existsSync(memFile) && fs.readFileSync(memFile).equals(hexBytes), forms);
+
   const stepped = await callTool("emulator_step", { session: sessionId, count: 3 });
   check("emulator_step moves the PC", /Stepped 3 instruction\(s\)\. Now at 0x[0-9a-f]{8}/.test(stepped.content[0].text),
     stepped.content?.[0]?.text);
@@ -262,6 +276,19 @@ check("an out-of-range frame count is refused before booting", overCap.isError =
     shotResult.isError !== true && fs.existsSync(sessionShot), shotResult.content?.[0]?.text);
   check("a session screenshot doesn't advance the machine",
     /without running it on/.test(shotResult.content?.[0]?.text ?? ""), shotResult.content?.[0]?.text);
+
+  // A contact sheet hashes each frame and can write each one out; its last frame is what's on
+  // screen afterwards, so a screenshot taken then must hash the same.
+  const framesDir = path.join(outDir, "frames");
+  const sheet = (await callTool("emulator_screenshot", { session: sessionId, frames: 1, count: 2, framesDir, out: path.join(outDir, "sheet.png") }))
+    .content?.[0]?.text ?? "";
+  const tileHashes = [...sheet.matchAll(/^ {2}frame (\d+): ([0-9a-f]{16})$/gm)];
+  const after = (await callTool("emulator_screenshot", { session: sessionId, out: path.join(outDir, "after.png") })).content?.[0]?.text ?? "";
+  check("a contact sheet lists a picture hash per frame", tileHashes.length === 2, sheet);
+  check("each sheet frame is written as its own PNG",
+    tileHashes.length === 2 && tileHashes.every((m) => fs.existsSync(path.join(framesDir, `frame-${m[1]}.png`))), sheet);
+  check("a screenshot's hash matches the same frame's on a sheet",
+    tileHashes.length === 2 && after.includes(`picture hash ${tileHashes[1][2]}`), `${sheet}\n${after}`);
 
   const closed = await callTool("emulator_close", { session: sessionId });
   check("emulator_close frees the session", /Closed session/.test(closed.content[0].text), closed.content?.[0]?.text);

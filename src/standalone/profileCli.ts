@@ -10,19 +10,26 @@
 
 import { readFileSync } from "fs";
 import { analyseProfile, parseLineRange, ProfileAnalysis, ProfileRequestError } from "../profileAnalysis";
-import { renderCheck, renderDump } from "../profileReport";
+import { diffProfiles, summarizeFunctions } from "../profileCompare";
+import { analysisJson, renderCheck, renderDiff, renderDump, renderHeader, renderIterations, renderSummary } from "../profileReport";
 
 const USAGE = `Usage:
   puae-debugger profile dump  <file.puaeprofile> [--frame N] [--functions N] [--sort self|total]
                                                   [--tree] [--callers NAME] [--flame]
                                                   [--lines FROM-TO] [--blits] [--copper]
                                                   [--stalls]
-                                                  [--instructions NAME] [--json]
+                                                  [--instructions NAME] [--summary]
+                                                  [--iterations ADDRESS] [--json]
   puae-debugger profile check <file.puaeprofile> [--json]
+  puae-debugger profile diff  <before.puaeprofile> <after.puaeprofile> [--functions N] [--json]
 
   dump   Per-frame cost tables: cycles, top functions by self and total time, DMA bus census.
   check  Verify the capture against physical invariants (frame length, flame-graph
          layout, buffer truncation). Exits 1 if any error-level finding is reported.
+  diff   Compare two captures: each function's average cost per frame before and after,
+         ordered by how much it changed.
+
+  Times are colour clocks (1 cc = 2 68000 CPU cycles; a PAL frame is 71051 cc).
 
 Options:
   --frame N            Restrict dump to one frame (default: all).
@@ -41,6 +48,11 @@ Options:
                        to separate slow instructions from bus-blocked ones. 68000 only.
   --instructions NAME  Per-instruction costs within one function: cycles, hits, cycles
                        per hit, and (68000) datasheet cost and stall per execution.
+  --summary            Each function's min/avg/max cost per frame across the capture,
+                       instead of a table per frame.
+  --iterations ADDRESS Split the capture at each execution of ADDRESS (an address, symbol
+                       or file:line, e.g. the top of the main loop): each iteration's length,
+                       which ones took longer than a frame, and per-function cost per iteration.
   --json               Emit the full analysis as JSON instead of text.`;
 
 // Returns the process exit code. `check` fails the run on any error-level finding so it can be
@@ -51,6 +63,7 @@ export function runProfileCli(argv: string[]): number {
     console.log(USAGE);
     return sub ? 0 : 1;
   }
+  if (sub === "diff") return runDiff(argv.slice(1));
   if (sub !== "dump" && sub !== "check") {
     console.error(`Unknown profile subcommand: ${sub}\n\n${USAGE}`);
     return 1;
@@ -69,6 +82,8 @@ export function runProfileCli(argv: string[]): number {
   let blits = false;
   let copper = false;
   let lines: string | undefined;
+  let summary = false;
+  let iterations: string | undefined;
   for (let i = 1; i < argv.length; i++) {
     const arg = argv[i];
     if (arg === "--json") json = true;
@@ -83,6 +98,11 @@ export function runProfileCli(argv: string[]): number {
       sort = v;
     }
     else if (arg === "--tree") callTree = true;
+    else if (arg === "--summary") summary = true;
+    else if (arg === "--iterations") {
+      iterations = argv[++i];
+      if (!iterations) { console.error(`--iterations needs an address, symbol or file:line.\n\n${USAGE}`); return 1; }
+    }
     else if (arg === "--flame") flame = true;
     else if (arg === "--blits") blits = true;
     else if (arg === "--copper") copper = true;
@@ -119,7 +139,7 @@ export function runProfileCli(argv: string[]): number {
   let analysis: ProfileAnalysis;
   try {
     const flameOpt = lines !== undefined ? parseLineRange(lines) : flame;
-    analysis = analyseProfile(bytes, { stalls, instructions, callTree, callers, flame: flameOpt, blits, copper });
+    analysis = analyseProfile(bytes, { stalls, instructions, callTree, callers, flame: flameOpt, blits, copper, iterations });
   } catch (err) {
     // A request the capture can't satisfy (an unknown --instructions name) is reported on its own
     // terms: its message already names what the capture does contain, and a "could not read"
@@ -133,28 +153,49 @@ export function runProfileCli(argv: string[]): number {
     return 1;
   }
 
+  const across = summary ? summarizeFunctions(analysis.frames) : undefined;
   if (json) {
-    // The manifest carries the whole disassembly (large, and already available via dump), so it's
-    // trimmed out of the JSON — consumers want the analysis, not a re-encoding of the document.
-    const { disassembly: _disassembly, ...manifest } = analysis.manifest;
-    let { frames, findings } = analysis;
     // Only `dump` takes --frame/--functions (`check` has no such option — see USAGE — and always
     // reports every finding, since a finding already carries its own `frame` field). Applying
     // them here too, not just in renderDump's text path, matters for the JSON output specifically:
     // it's the form an automated caller is most likely to request scoped, e.g. "just frame 3's
     // costs" without pulling the whole capture over.
-    if (sub === "dump") {
-      if (frame !== undefined) {
-        frames = frames.filter((f) => f.index === frame);
-        findings = findings.filter((f) => f.frame === undefined || f.frame === frame);
-      }
-      if (sort === "total") frames = frames.map((f) => ({ ...f, functions: [...f.functions].sort((a, b) => b.totalCycles - a.totalCycles) }));
-      if (limit > 0) frames = frames.map((f) => ({ ...f, functions: f.functions.slice(0, limit) }));
-    }
-    console.log(JSON.stringify({ ...analysis, manifest, frames, findings }, null, 2));
+    const scope = sub === "dump" ? { frame, limit, sort, summary: across } : {};
+    console.log(JSON.stringify(analysisJson(analysis, scope), null, 2));
+  } else if (sub === "dump" && (across || analysis.iterations)) {
+    const parts = [...renderHeader(analysis)];
+    if (across) parts.push(renderSummary(across, limit));
+    if (analysis.iterations) parts.push(renderIterations(analysis.iterations, limit));
+    console.log(parts.join("\n"));
   } else {
     console.log(sub === "dump" ? renderDump(analysis, frame, limit, sort) : renderCheck(analysis));
   }
 
   return sub === "check" && analysis.findings.some((f) => f.severity === "error") ? 1 : 0;
+}
+
+function runDiff(argv: string[]): number {
+  const files: string[] = [];
+  let json = false;
+  let limit = 20;
+  for (let i = 0; i < argv.length; i++) {
+    const arg = argv[i];
+    if (arg === "--json") json = true;
+    else if (arg === "--functions") limit = Number(argv[++i]);
+    else if (arg.startsWith("-")) { console.error(`Unknown option: ${arg}\n\n${USAGE}`); return 1; }
+    else files.push(arg);
+  }
+  if (files.length !== 2) { console.error(`diff takes two captures, before and after.\n\n${USAGE}`); return 1; }
+  const analyses: ProfileAnalysis[] = [];
+  for (const file of files) {
+    try {
+      analyses.push(analyseProfile(new Uint8Array(readFileSync(file))));
+    } catch (err) {
+      console.error(`Could not read ${file}: ${err instanceof Error ? err.message : String(err)}`);
+      return 1;
+    }
+  }
+  const diff = diffProfiles(analyses[0].frames, analyses[1].frames);
+  console.log(json ? JSON.stringify(diff, null, 2) : renderDiff(diff, limit, [files[0], files[1]]));
+  return 0;
 }

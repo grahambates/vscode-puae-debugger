@@ -1,3 +1,5 @@
+import * as fs from "fs";
+import * as os from "os";
 import * as path from "path";
 import { handleRequest, JSON_RPC_METHOD_NOT_FOUND, ServerInfo, ToolDefinition } from "../mcp/jsonRpc";
 import { TOOLS } from "../mcp/tools";
@@ -113,7 +115,7 @@ describe("MCP tools", () => {
   it("exposes the analysis tools", async () => {
     const r = await handleRequest({ jsonrpc: "2.0", id: 1, method: "tools/list" }, INFO, TOOLS);
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    expect((r as any).result.tools.map((t: { name: string }) => t.name)).toEqual(["profile_check", "profile_dump"]);
+    expect((r as any).result.tools.map((t: { name: string }) => t.name)).toEqual(["profile_check", "profile_dump", "profile_diff"]);
   });
 
   it("steers the caller to run check before trusting dump", async () => {
@@ -141,6 +143,31 @@ describe("MCP tools", () => {
     expect(text).toMatch(/Frame 0:/);
     expect(text).toMatch(/self%\s+total\s+total%\s+width%/);
     expect(text).toMatch(/more \(use --functions 0\)/); // the cap was applied
+  });
+
+  it("profile_dump summarises across frames and writes JSON to a file", async () => {
+    const out = path.join(os.tmpdir(), `mcp-dump-${process.pid}.json`);
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const summary = await realCall("profile_dump", { file: FIXTURE, summary: true }) as any;
+      expect(summary.result.content[0].text).toMatch(/Per function across all \d+ frame\(s\)/);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const r = await realCall("profile_dump", { file: FIXTURE, out }) as any;
+      expect(r.result.content[0].text).toMatch(/Wrote the analysis as JSON to/);
+      const json = JSON.parse(fs.readFileSync(out, "utf8"));
+      expect(json.frames.length).toBeGreaterThan(0);
+      expect(json.manifest.disassembly).toBeUndefined();
+    } finally {
+      fs.rmSync(out, { force: true });
+    }
+  });
+
+  it("profile_diff of a capture against itself changes nothing", async () => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const r = await realCall("profile_diff", { before: FIXTURE, after: FIXTURE }) as any;
+    const rows = (r.result.content[0].text as string).split("\n").filter((l) => /^ {2}\S.*\d+→\d+$/.test(l));
+    expect(rows.length).toBeGreaterThan(0);
+    for (const row of rows) expect(row).not.toMatch(/[+-]\d/);
   });
 
   it("reports a missing file as isError rather than throwing", async () => {

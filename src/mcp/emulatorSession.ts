@@ -1039,9 +1039,9 @@ export class HeadlessSession {
   }
 
   /** The current frame as a PNG. */
-  public screenshot(): { png: Buffer; width: number; height: number } {
+  public screenshot(): { png: Buffer; rgba: Uint8Array; width: number; height: number } {
     const { rgba, width, height } = this.emulator.readFramebuffer();
-    return { png: encodePng(rgba, width, height), width, height };
+    return { png: encodePng(rgba, width, height), rgba, width, height };
   }
 
   /**

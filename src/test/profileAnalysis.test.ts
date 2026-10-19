@@ -211,8 +211,8 @@ describe("checkFrame", () => {
     const findings: ProfileFinding[] = [];
     checkFrame(baseFrame({
       functions: [
-        { name: "WaitRaster", samples: 500, selfCycles: 10000, selfPct: 14.5, totalCycles: 10000, totalPct: 14.5, widthPct: 91.5 },
-        { name: "FillMask", samples: 200, selfCycles: 15000, selfPct: 21.0, totalCycles: 15000, totalPct: 21.0, widthPct: 0.5 },
+        { name: "WaitRaster", samples: 500, selfCycles: 10000, selfPct: 14.5, totalCycles: 10000, totalPct: 14.5, widthPct: 91.5, calls: 1 },
+        { name: "FillMask", samples: 200, selfCycles: 15000, selfPct: 21.0, totalCycles: 15000, totalPct: 21.0, widthPct: 0.5, calls: 1 },
       ],
     }), false, findings);
     const codes = codesOf(findings).filter((c) => c === "width-vs-cycles");
@@ -223,7 +223,7 @@ describe("checkFrame", () => {
   it("does not flag width-vs-cycles within the divergence tolerance", () => {
     const findings: ProfileFinding[] = [];
     checkFrame(baseFrame({
-      functions: [{ name: "main", samples: 500, selfCycles: 10000, selfPct: 40, totalCycles: 10000, totalPct: 40, widthPct: 41.5 }],
+      functions: [{ name: "main", samples: 500, selfCycles: 10000, selfPct: 40, totalCycles: 10000, totalPct: 40, widthPct: 41.5, calls: 1 }],
     }), false, findings);
     expect(codesOf(findings)).not.toContain("width-vs-cycles");
   });

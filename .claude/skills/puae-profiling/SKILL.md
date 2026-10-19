@@ -35,9 +35,21 @@ the question is what the program draws rather than what it costs). Both need a K
   `emulator_snapshot { "save": "before" }`, capture, then `{ "restore": "before" }`,
   `emulator_write` the patch (a constant, a table, a few bytes of code) and capture again. Or
   rebuild and capture the new binary with the same arguments. The emulator is deterministic, so
-  the two captures differ only by the change, and their `profile_dump` numbers compare directly.
+  the two captures differ only by the change: `profile_diff` (CLI `profile diff <before> <after>`)
+  lines them up function by function — average cost per frame before and after, and the change.
 - Several frames at once (`frames`, up to 100) is how to see a cadence: routines that run every
   other frame, and repeated frames where the picture didn't change (see `check`/`dump` below).
+  `profile_dump { "summary": true }` reads one quickly: each function's min/avg/max per frame, how
+  many frames it ran in, and its calls per frame. `out` writes the whole analysis as JSON, for
+  anything longer.
+- **Overruns: count iterations, not repeated frames.** A frame always adds up to 71051 colour
+  clocks, so when the main loop takes longer than a frame its work just spreads over two, and
+  per-frame costs stop being per-pass costs. `profile_dump { "iterations": "main.s:204" }` (the
+  first instruction of the main loop — a local label like `.mainLoop` isn't a symbol, so give its
+  line) splits the capture at each pass instead: each pass's length, which ones took longer than a
+  frame, and per-function cost per pass. A repeated picture is only a hint — a dropped frame whose
+  picture changes anyway (a buffer cleared while on screen) doesn't repeat. The function table's
+  `calls` column (RotateBuffers ×0 in a frame) is the other quick signal.
 
 A capture made this way is the same format as a saved one, with one exception: it carries no
 filmstrip thumbnails, which nothing in the analysis uses.
@@ -48,7 +60,9 @@ filmstrip thumbnails, which nothing in the analysis uses.
 npx puae-debugger profile check <file.puaeprofile> [--json]
 npx puae-debugger profile dump  <file.puaeprofile> [--frame N] [--functions N] [--sort self|total]
                                 [--tree] [--callers NAME] [--flame] [--lines FROM-TO] [--blits]
-                                [--copper] [--instructions NAME] [--stalls] [--json]
+                                [--copper] [--instructions NAME] [--stalls] [--summary]
+                                [--iterations ADDRESS] [--json]
+npx puae-debugger profile diff  <before.puaeprofile> <after.puaeprofile> [--functions N] [--json]
 ```
 
 (Working inside a checkout of the debugger itself? `node out/standalone.js profile ...` is the
@@ -133,6 +147,10 @@ denominator that's already wrong.
 
 ## Physical facts worth knowing (not obvious from one file)
 
+- **Every "cycles" figure is colour clocks, not CPU cycles** — `selfCycles`, `totalCycles`, the
+  `cc` and `cc/hit` columns, and the datasheet column of `--instructions`/`--stalls` alike. One
+  colour clock is two 68000 cycles, so a `move.b` reading 6 took 12 CPU cycles. Halve a timing
+  table's figure before comparing, never double the profile's.
 - **A PAL frame is exactly 71051 color clocks** (`227 × 313`, the DMA grid's fixed geometry —
   `DMA_HPOS × DMA_VPOS`). This is the ground truth every cycle figure is measured against, not
   a display convention. A frame's sampled cycles should sum to ~71051, ± the last frame's known
@@ -210,6 +228,11 @@ Contention can only ever add cycles, so the excess is time the CPU spent waiting
 working — a high `stall%` means "blocked, look at the bus", a low one means "genuinely this
 expensive, look at the algorithm". `bus` shows the read/write accesses those executions demand,
 i.e. what the contention is competing for.
+
+Stall is charged to whichever instruction was running when the bus made it wait — including for
+its own instruction fetch. So in code running from chip or slow RAM, register-only instructions
+(`subq`, `add.w d0,d1`) show stalls too: that's the prefetch queueing behind bitplane or blitter
+DMA, not the instruction's operands. Read a block's total stall; don't pin it on one line of it.
 
 Two guards make this refuse rather than mislead, and it will tell you which one fired:
 68kcounter models the **68000 only**, so a capture containing sub-color-clock samples (the 020+

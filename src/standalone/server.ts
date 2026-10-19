@@ -28,12 +28,22 @@ if (VERSION_FLAGS.includes(process.argv[2])) {
   process.exit(0);
 }
 
+// The subcommands below print their output and process.exit straight after, which must not lose
+// any of it. Written to a pipe (`profile dump --json | jq`), stdout is asynchronous, and exiting
+// discards whatever hasn't been written yet — the JSON came out cut off at 64KB. Blocking writes
+// make each console.log complete before it returns. (Exiting later instead isn't an option: these
+// must stop here, not fall through to the server startup below.)
+function blockingStdout(): void {
+  (process.stdout as unknown as { _handle?: { setBlocking?: (b: boolean) => void } })._handle?.setBlocking?.(true);
+}
+
 // `puae-debugger profile <dump|check> ...` is a plain offline CLI (no DAP/HTTP server, no
 // emulator) — dispatched before parseArgs/main below (which are for the DAP server) even run,
 // so it exits fast without booting any of that. See profileCli.ts's own header for why this is
 // a subcommand of the existing binary rather than a separate one: it shares the bin entry, the
 // bundle, and package installation, and "puae-debugger profile" reads naturally either way.
 if (process.argv[2] === "profile") {
+  blockingStdout();
   process.exit(runProfileCli(process.argv.slice(3)));
 }
 
@@ -41,6 +51,7 @@ if (process.argv[2] === "profile") {
 // .claude/skills (see skillCli.ts). Same reasoning as `profile` above: no DAP/HTTP server, no
 // emulator, so it's dispatched before any of that starts.
 if (process.argv[2] === "skill") {
+  blockingStdout();
   process.exit(runSkillCli(process.argv.slice(3)));
 }
 

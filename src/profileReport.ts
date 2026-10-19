@@ -4,6 +4,8 @@
 // conversation about one won't transfer to the other.
 
 import { BlitAnalysis, CopperTrace, CallerPath, CallTreeNode, FlameBox, FlameView, FrameAnalysis, InstructionAnalysis, ProfileAnalysis, ScreenUpdates, StallAnalysis } from "./profileAnalysis";
+import { CaptureSummary, ProfileDiff, Stat } from "./profileCompare";
+import { IterationAnalysis, OVERRUN_TOLERANCE } from "./profileIterations";
 
 export function pct(v: number): string {
   return `${v.toFixed(1)}%`;
@@ -236,7 +238,7 @@ function renderCopper(c: CopperTrace, frameIndex: number, windowed: boolean): st
 }
 
 function renderCallers(paths: CallerPath[], query: string, frameIndex: number): string[] {
-  const out = ["", `  Calls into ${query}, frame ${frameIndex} (cycles including what it calls, by call path)`];
+  const out = ["", `  Calls into ${query}, frame ${frameIndex} (colour clocks including what it calls, by call path)`];
   if (paths.length === 0) {
     out.push(`  not executed in frame ${frameIndex}.`);
     return out;
@@ -254,7 +256,7 @@ function dumpFrame(
   callersQuery?: string,
 ): void {
   out.push("");
-  out.push(`Frame ${f.index}: ${f.samples} samples, ${f.cycles} cycles = ${pct(f.cyclePct)} of ${f.frameCycles} color clocks` +
+  out.push(`Frame ${f.index}: ${f.samples} samples, ${f.cycles} cc = ${pct(f.cyclePct)} of the frame's ${f.frameCycles}` +
     (f.duplicateOfPrevious ? ` — same picture as frame ${f.index - 1}` : ""));
   const detail = [`zero-cost samples: ${f.zeroCostSamples}`];
   if (f.registerSamples) detail.push(`register trace: ${f.registerSamples}`);
@@ -274,14 +276,14 @@ function dumpFrame(
   out.push("");
   out.push(
     `  ${"function".padEnd(36)}${"self".padStart(9)}${"self%".padStart(8)}${"total".padStart(9)}${"total%".padStart(8)}` +
-    `${"width%".padStart(8)}${"samples".padStart(9)}`,
+    `${"width%".padStart(8)}${"samples".padStart(9)}${"calls".padStart(7)}`,
   );
   for (const fn of fns) {
     // width% is only meaningful against a DMA grid; without one it degenerates to self%.
     out.push(
       `  ${label(fn).slice(0, 35).padEnd(36)}${String(fn.selfCycles).padStart(9)}${pct(fn.selfPct).padStart(8)}` +
       `${String(fn.totalCycles).padStart(9)}${pct(fn.totalPct).padStart(8)}` +
-      `${pct(fn.widthPct).padStart(8)}${String(fn.samples).padStart(9)}`,
+      `${pct(fn.widthPct).padStart(8)}${String(fn.samples).padStart(9)}${String(fn.calls ?? "").padStart(7)}`,
     );
   }
   if (limit > 0 && f.functions.length > limit) {
@@ -309,16 +311,20 @@ function dumpFrame(
 function renderInstructions(d: InstructionAnalysis, frameIndex: number): string[] {
   const out: string[] = [
     "",
-    `  ${d.name} (0x${d.address.toString(16)}) — per instruction, frame ${frameIndex}, ${d.totalCycles} cycles total`,
+    `  ${d.name} (0x${d.address.toString(16)}) — per instruction, frame ${frameIndex}, ${d.totalCycles} cc total`,
   ];
   if (d.datasheetApplicable) {
-    out.push(`  cyc/hit vs datasheet cost; a large "stall" is time blocked on the bus, not work.`);
+    out.push(`  cc/hit vs datasheet cost; a large "stall" is time blocked on the bus, not work. Stalls are charged to the
+` +
+      `  instruction running when the bus was busy: on code in chip or slow RAM, a register-only instruction can
+` +
+      `  show one for its own prefetch, so read a block's total stall rather than pinning it on one instruction.`);
   } else if (d.datasheetCaveat) {
     out.push(`  (no datasheet comparison: ${d.datasheetCaveat})`);
   }
   out.push("");
   const head =
-    `  ${"address".padEnd(10)}${"cycles".padStart(9)}${"%fn".padStart(7)}${"hits".padStart(8)}${"cyc/hit".padStart(9)}` +
+    `  ${"address".padEnd(10)}${"cc".padStart(9)}${"%fn".padStart(7)}${"hits".padStart(8)}${"cc/hit".padStart(9)}` +
     (d.datasheetApplicable ? `${"sheet".padStart(7)}${"stall".padStart(7)}` : "") +
     "  instruction";
   out.push(head);
@@ -341,7 +347,7 @@ function renderInstructions(d: InstructionAnalysis, frameIndex: number): string[
 }
 
 function renderStalls(st: StallAnalysis, limit: number, frameIndex: number): string[] {
-  const out: string[] = ["", `  Measured vs 68000 datasheet cost (frame ${frameIndex})`];
+  const out: string[] = ["", `  Measured vs 68000 datasheet cost (frame ${frameIndex}), in colour clocks`];
   if (!st.applicable) {
     out.push(`  NOT APPLICABLE: ${st.caveat}`);
     return out;
@@ -349,6 +355,8 @@ function renderStalls(st: StallAnalysis, limit: number, frameIndex: number): str
   const overall = st.totalMeasured - st.totalTheoretical;
   out.push(`  total measured ${st.totalMeasured}, datasheet ${st.totalTheoretical}, ` +
     `stall ${overall} (${st.totalMeasured > 0 ? ((overall / st.totalMeasured) * 100).toFixed(1) : "0.0"}% waiting)`);
+  out.push("  A function's stall includes its own instruction fetches waiting for the bus, so code in chip or slow RAM");
+  out.push("  stalls even where it never touches memory; --instructions shows where within it.");
   out.push("");
   out.push(`  ${"function".padEnd(36)}${"measured".padStart(10)}${"datasheet".padStart(11)}${"stall".padStart(9)}${"stall%".padStart(8)}${"bus".padStart(8)}`);
   const rows = limit > 0 ? st.functions.slice(0, limit) : st.functions;
@@ -362,15 +370,25 @@ function renderStalls(st: StallAnalysis, limit: number, frameIndex: number): str
   return out;
 }
 
-export function renderDump(a: ProfileAnalysis, frame: number | undefined, limit: number, sort: "self" | "total" = "self"): string {
+// Every time in these reports is in colour clocks, the unit the DMA grid and the beam count in —
+// not CPU cycles, which a reader checking against a 68000 timing table would otherwise assume.
+const UNITS = "times are in colour clocks (cc): 1 cc = 2 68000 CPU cycles; a PAL frame is 71051 cc (313 lines of 227)";
+
+/** The capture's description, above any per-frame or summary table. */
+export function renderHeader(a: ProfileAnalysis): string[] {
   const out: string[] = [];
   const m = a.manifest;
   out.push(`${m.program.name ?? "(unnamed program)"} — ${m.frameCount} frame(s), ${m.meta.isPAL ? "PAL" : "NTSC"}`);
   if (m.meta.capturedAt) out.push(`captured ${new Date(m.meta.capturedAt).toISOString()}`);
   out.push(`address range 0x${m.meta.start.toString(16)}-0x${m.meta.end.toString(16)}, ${m.meta.total} instructions executed (${m.meta.inRange} in range)`);
   if (m.kickstart.name) out.push(`kickstart ${m.kickstart.name}`);
+  out.push(UNITS);
   if (a.screenUpdates) out.push(...renderScreenUpdates(a.screenUpdates));
+  return out;
+}
 
+export function renderDump(a: ProfileAnalysis, frame: number | undefined, limit: number, sort: "self" | "total" = "self"): string {
+  const out = renderHeader(a);
   const frames = frame === undefined ? a.frames : a.frames.filter((f) => f.index === frame);
   if (frames.length === 0) {
     out.push("");
@@ -384,7 +402,7 @@ export function renderDump(a: ProfileAnalysis, frame: number | undefined, limit:
 export function renderCheck(a: ProfileAnalysis): string {
   const out: string[] = [];
   for (const f of a.frames) {
-    out.push(`frame ${f.index}: ${String(f.samples).padStart(7)} samples  ${String(f.cycles).padStart(7)} cycles  ${pct(f.cyclePct).padStart(7)} of frame` +
+    out.push(`frame ${f.index}: ${String(f.samples).padStart(7)} samples  ${String(f.cycles).padStart(7)} cc  ${pct(f.cyclePct).padStart(7)} of frame` +
       (f.duplicateOfPrevious ? "  = previous picture" : ""));
   }
   if (a.screenUpdates) out.push(...renderScreenUpdates(a.screenUpdates));
@@ -404,3 +422,106 @@ export function renderCheck(a: ProfileAnalysis): string {
   return out.join("\n");
 }
 
+
+// ── Across frames, and between captures (profileCompare.ts) ───────────────────────────────
+
+const cc = (v: number) => String(Math.round(v));
+const statCells = (s: Stat) => `${cc(s.min).padStart(8)}${cc(s.avg).padStart(8)}${cc(s.max).padStart(8)}`;
+
+export function renderSummary(s: CaptureSummary, limit: number, unit = "frame"): string {
+  const out = [
+    "",
+    `  Per function across all ${s.frames} ${unit}(s), in colour clocks per ${unit} — min, avg, max, counting 0 for`,
+    `  ${/^[aeiou]/.test(unit) ? "an" : "a"} ${unit} it didn't run in. "ran" is the ${unit}s it ran in; "calls" the range of calls per ${unit}.`,
+    "",
+    `  ${"function".padEnd(36)}${"ran".padStart(7)}  ${"self min".padStart(8)}${"avg".padStart(8)}${"max".padStart(8)}  ${"total min".padStart(9)}${"avg".padStart(8)}${"max".padStart(8)}${"calls".padStart(9)}`,
+  ];
+  const label = labeller(s.functions);
+  const rows = limit > 0 ? s.functions.slice(0, limit) : s.functions;
+  for (const f of rows) {
+    const calls = f.calls.min === f.calls.max ? cc(f.calls.min) : `${cc(f.calls.min)}-${cc(f.calls.max)}`;
+    out.push(`  ${label(f).slice(0, 35).padEnd(36)}${`${f.frames}/${s.frames}`.padStart(7)}  ${statCells(f.self)}  ${" "}${statCells(f.total)}${calls.padStart(9)}`);
+  }
+  if (limit > 0 && s.functions.length > limit) out.push(`  … ${s.functions.length - limit} more (functions: 0 for all)`);
+  return out.join("\n");
+}
+
+export function renderDiff(d: ProfileDiff, limit: number, names: [string, string]): string {
+  const signed = (v: number) => (Math.round(v) > 0 ? "+" : "") + cc(v);
+  const change = (was: number, now: number) => {
+    if (Math.round(now) === Math.round(was)) return "";
+    if (was <= 0) return "new";
+    const p = ((now - was) / was) * 100;
+    return `${p > 0 ? "+" : ""}${p.toFixed(0)}%`;
+  };
+  const out = [
+    `before: ${names[0]} (${d.before.frames} frame(s))`,
+    `after:  ${names[1]} (${d.after.frames} frame(s))`,
+    "",
+    "  Average colour clocks per frame, per function, ordered by the size of the change in self time. A",
+    "  function that didn't run in a frame counts 0 there; \"ran\" is the frames it ran in, before → after.",
+    "",
+    `  ${"function".padEnd(36)}${"self before".padStart(12)}${"after".padStart(9)}${"change".padStart(9)}${"".padStart(7)}` +
+      `${"total before".padStart(13)}${"after".padStart(9)}${"change".padStart(9)}${"ran".padStart(11)}`,
+  ];
+  const label = labeller(d.functions);
+  const rows = (limit > 0 ? d.functions.slice(0, limit) : d.functions);
+  for (const f of rows) {
+    const sb = f.before?.self.avg ?? 0, sa = f.after?.self.avg ?? 0;
+    const tb = f.before?.total.avg ?? 0, ta = f.after?.total.avg ?? 0;
+    const ran = `${f.before?.frames ?? 0}→${f.after?.frames ?? 0}`;
+    out.push(
+      `  ${label(f).slice(0, 35).padEnd(36)}${cc(sb).padStart(12)}${cc(sa).padStart(9)}${signed(f.selfDelta).padStart(9)}${change(sb, sa).padStart(7)}` +
+      `${cc(tb).padStart(13)}${cc(ta).padStart(9)}${signed(f.totalDelta).padStart(9)}${ran.padStart(11)}`,
+    );
+  }
+  if (limit > 0 && d.functions.length > limit) out.push(`  … ${d.functions.length - limit} more (functions: 0 for all)`);
+  return out.join("\n");
+}
+
+/**
+ * The analysis as JSON for a caller to process — `profile dump --json`, and profile_dump's `out`.
+ * The manifest's disassembly is left out (large, and available through `instructions`); `frame`,
+ * `limit` and `sort` scope it the way they scope the text.
+ */
+export function analysisJson(a: ProfileAnalysis, opts: { frame?: number; limit?: number; sort?: "self" | "total"; summary?: CaptureSummary } = {}): unknown {
+  const { disassembly: _disassembly, ...manifest } = a.manifest;
+  let { frames, findings } = a;
+  if (opts.frame !== undefined) {
+    frames = frames.filter((f) => f.index === opts.frame);
+    findings = findings.filter((f) => f.frame === undefined || f.frame === opts.frame);
+  }
+  if (opts.sort === "total") frames = frames.map((f) => ({ ...f, functions: [...f.functions].sort((x, y) => y.totalCycles - x.totalCycles) }));
+  if (opts.limit && opts.limit > 0) frames = frames.map((f) => ({ ...f, functions: f.functions.slice(0, opts.limit) }));
+  return { ...a, manifest, frames, findings, ...(opts.summary ? { summary: opts.summary } : {}) };
+}
+
+export function renderIterations(it: IterationAnalysis, limit: number): string {
+  const out = [
+    "",
+    `  Iterations of ${it.query} (0x${it.address.toString(16)}): from one execution of it to the next.`,
+  ];
+  if (it.iterations.length === 0) {
+    out.push("  It ran fewer than twice in the capture, so no complete iteration — capture more frames, or check the address.");
+    return out.join("\n");
+  }
+  const frames = (v: number, frameCc: number) => (v / frameCc).toFixed(2);
+  const frameCc = it.frameCycles;
+  out.push(
+    `  ${it.iterations.length} complete; length min ${cc(it.length.min)}, avg ${cc(it.length.avg)}, max ${cc(it.length.max)} colour clocks ` +
+      `(${frames(it.length.min, frameCc)}-${frames(it.length.max, frameCc)} frames).`,
+    it.overran
+      ? `  ${it.overran} took longer than a frame: each of those is a missed frame, whether or not the picture repeated.`
+      : `  None took longer than a frame (allowing ${OVERRUN_TOLERANCE * 100}% for where the beam wait happens to end).`,
+    "",
+    `  ${"#".padStart(4)}  ${"starts".padStart(13)}  ${"length".padStart(8)}  frames`,
+  );
+  const rows = it.iterations.length > 60 ? [...it.iterations.slice(0, 30), undefined, ...it.iterations.slice(-30)] : it.iterations;
+  for (const r of rows) {
+    if (!r) { out.push(`  … ${it.iterations.length - 60} more`); continue; }
+    const at = `f${r.frame} ${r.line}:${String(r.hpos).padStart(3, "0")}`;
+    out.push(`  ${String(r.index).padStart(4)}  ${at.padStart(13)}  ${cc(r.length).padStart(8)}  ${frames(r.length, frameCc).padStart(6)}${r.frames > 1 + OVERRUN_TOLERANCE ? "  overran" : ""}`);
+  }
+  out.push(renderSummary(it.summary, limit, "iteration"));
+  return out.join("\n");
+}

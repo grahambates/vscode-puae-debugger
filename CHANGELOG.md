@@ -5,10 +5,23 @@
 ### Added
 
 - Codex support for skills installer
+- Profile summaries and comparisons: `profile_dump`'s `summary` (CLI `dump --summary`) gives each function's min/avg/max cost per frame across a capture, and `profile_diff` (CLI `profile diff <before> <after>`) compares two captures function by function. `profile_dump`'s `out` writes the analysis as JSON to a file.
+- Per-pass costs and overruns: `profile_dump`'s `iterations` (CLI `--iterations`) splits a capture at each execution of an address, symbol or `file:line` — the top of the main loop — reporting each pass's length, which ones took longer than a frame, and per-function cost per pass.
+- The function table has a `calls` column: how many times each function was entered in the frame.
+- `emulator_inspect` memory reads can return a SHA-256 of the range (`"as": "sha256"`, up to 16 MB) or write it to a file (`"as": "file"`), to compare buffers between builds without dumping them.
+- Screenshots report a picture hash, per frame on a contact sheet, and `framesDir` writes each sheet frame as its own PNG.
+
+### Changed
+
+- Profile reports label their units: times are colour clocks (two 68000 CPU cycles each), now said so in the report header and the `cc` columns, where they were called "cycles".
+- The contact sheet's `=` is described as "identical to the emulated frame just before it", including when `every` spaces the tiles out.
+- `--stalls` and `--instructions` explain that stall includes a function's own instruction fetches waiting for the bus, so register-only instructions in chip or slow RAM show it too.
+- A source line can be given by file name alone (`main.s:42`) in breakpoints, watches and `iterations`, rather than the full path the program records.
 
 ### Fixes
 
 - Kickstart symbols no longer overwrite program symbols in naming clash in profiler
+- `profile dump --json` (and other CLI output) was cut off at 64 KB when piped to another program.
 
 ## 1.1.0
 

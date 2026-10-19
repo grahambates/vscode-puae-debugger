@@ -42,7 +42,15 @@ export function resolveBreakpointSpec(spec: string, sourceMap: SourceMap): Resol
   // "path:line" — split on the LAST colon so a Windows drive letter (C:\src\main.s:42) survives.
   const colon = trimmed.lastIndexOf(":");
   if (colon > 0 && DECIMAL.test(trimmed.slice(colon + 1))) {
-    const path = trimmed.slice(0, colon);
+    // A file name alone, or a trailing part of the path (main.s, src/main.s), names the one
+    // source file it ends — the program records full paths, which a caller rarely spells out.
+    const given = trimmed.slice(0, colon);
+    const tail = given.replace(/\\/g, "/");
+    const matches = sourceMap.getSourceFiles().filter((f) => {
+      const file = f.replace(/\\/g, "/");
+      return file === tail || file.endsWith(`/${tail}`);
+    });
+    const path = matches.length === 1 ? matches[0] : given;
     const line = parseInt(trimmed.slice(colon + 1), 10);
     let location;
     try {

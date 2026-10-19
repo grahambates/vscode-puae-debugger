@@ -57,6 +57,7 @@ describe("emulator MCP tools", () => {
       "emulator_capture_profile",
       "profile_check",
       "profile_dump",
+      "profile_diff",
     ]);
   });
 
@@ -180,6 +181,15 @@ describe("breakpoint specs", () => {
     expect(sourceFile).toMatch(/^[a-z]:\\/i);
     const resolved = resolveBreakpointSpec(`${sourceFile}:155`, sourceMap);
     expect(resolved.address).toBe(sourceMap.lookupSourceLine(sourceFile, 155).address);
+  });
+
+  it("resolves a source line by file name alone, or a trailing part of its path", () => {
+    // Programs record full paths; "gencop.s:155" is how a caller actually writes it.
+    const expected = sourceMap.lookupSourceLine(sourceFile, 155).address;
+    const name = sourceFile.split(/[\\/]/).pop()!;
+    expect(resolveBreakpointSpec(`${name}:155`, sourceMap).address).toBe(expected);
+    const parent = sourceFile.split(/[\\/]/).slice(-2).join("/");
+    expect(resolveBreakpointSpec(`${parent}:155`, sourceMap).address).toBe(expected);
   });
 
   it("reports the nearest line with code when the requested one has none", () => {

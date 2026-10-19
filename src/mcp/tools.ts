@@ -12,9 +12,10 @@
 // profileReport.ts, so a number discussed in a terminal and a number discussed over MCP are
 // formatted identically.
 
-import { readFileSync, statSync } from "fs";
+import { readFileSync, statSync, writeFileSync } from "fs";
 import { analyseProfile, parseLineRange } from "../profileAnalysis";
-import { renderCheck, renderDump } from "../profileReport";
+import { diffProfiles, summarizeFunctions } from "../profileCompare";
+import { analysisJson, renderCheck, renderDiff, renderDump, renderHeader, renderIterations, renderSummary } from "../profileReport";
 import { emulatorTools, EmulatorToolContext } from "./emulatorTools";
 import { ToolDefinition } from "./jsonRpc";
 import { expandHome } from "./paths";
@@ -79,7 +80,8 @@ export const TOOLS: ToolDefinition[] = [
   {
     name: "profile_dump",
     description:
-      "Per-frame cost tables for a .puaeprofile capture: self and total (including callees) cycles " +
+      "Per-frame cost tables for a .puaeprofile capture: self and total (including callees) time " +
+      "(every time here is in colour clocks: 1 cc = 2 68000 CPU cycles, a PAL frame is 71051 cc) " +
       "and flame-graph width per function, plus a DMA bus census showing what the chipset was doing. " +
       "Set `callTree` for the top-down call tree (the profiler's Time view), or `callers` to a " +
       "function name to see every call path into it and what each costs — e.g. which caller makes " +
@@ -143,6 +145,29 @@ export const TOOLS: ToolDefinition[] = [
           type: "string",
           description: 'Zoom to raster lines "FROM-TO" (e.g. "40-80"): the flame graph with finer folding and the DMA bus use in that window, and the copper trace if requested. Implies flame.',
         },
+        summary: {
+          type: "boolean",
+          description:
+            "Instead of a table per frame, one row per function across the whole capture: min/avg/max self and " +
+            "total time per frame, and how many frames it ran in (a frame it skipped counts 0). The quick read " +
+            "of a multi-frame capture: which routines vary, which skip frames.",
+        },
+        iterations: {
+          type: "string",
+          description:
+            "Split the capture at each execution of this address, symbol or file:line — the top of the main loop, " +
+            "say (a local label like .mainLoop isn't a symbol; give its line, e.g. \"main.s:204\"). Reports each " +
+            "iteration's length and which took longer than a frame — a missed frame, directly, even when the " +
+            "picture didn't repeat — and each function's cost per iteration rather than per video frame, which " +
+            "is what a routine costs per pass when passes straddle frames.",
+        },
+        out: {
+          type: "string",
+          description:
+            "Write the whole analysis (everything requested, scoped by frame/functions/sort, plus the summary if " +
+            "asked for) as JSON to this file, and reply with just its path and a summary — for processing " +
+            "outside the reply.",
+        },
         instructions: {
           type: "string",
           description:
@@ -169,7 +194,52 @@ export const TOOLS: ToolDefinition[] = [
       const flame = lines ?? args.flame === true;
       const blits = args.blits === true;
       const copper = args.copper === true;
-      return renderDump(load(file, { stalls, instructions, callTree, callers, flame, blits, copper }), frame, functions ?? 12, sort);
+      const iterations = args.iterations === undefined ? undefined : requireString(args, "iterations");
+      const analysis = load(file, { stalls, instructions, callTree, callers, flame, blits, copper, iterations });
+      const limit = functions ?? 12;
+      const summary = args.summary === true ? summarizeFunctions(analysis.frames) : undefined;
+      let text: string;
+      if (summary || analysis.iterations) {
+        const parts = renderHeader(analysis);
+        if (summary) parts.push(renderSummary(summary, limit));
+        if (analysis.iterations) parts.push(renderIterations(analysis.iterations, limit));
+        text = parts.join("\n");
+      } else {
+        text = renderDump(analysis, frame, limit, sort);
+      }
+      if (args.out !== undefined) {
+        const out = expandHome(requireString(args, "out"));
+        writeFileSync(out, JSON.stringify(analysisJson(analysis, { frame, limit: functions ?? 0, sort, summary }), null, 2));
+        const brief = analysis.iterations ? text : [...renderHeader(analysis), renderSummary(summary ?? summarizeFunctions(analysis.frames), 12)].join("\n");
+        return `Wrote the analysis as JSON to ${out}${functions === undefined ? " (every function)" : ""}.\n\n${brief}`;
+      }
+      return text;
+    },
+  },
+  {
+    name: "profile_diff",
+    description:
+      "Compare two .puaeprofile captures — before and after a change, two builds, 68000 against 68020: each " +
+      "function's average self and total time per frame in both, the change, and the frames it ran in, " +
+      "ordered by how much it changed. Times are colour clocks. Averages per frame rather than frame by frame, " +
+      "so captures of different lengths or frames out of step still compare. Run profile_check on both first.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        before: { type: "string", description: "Path to the first .puaeprofile (the baseline)." },
+        after: { type: "string", description: "Path to the second .puaeprofile." },
+        functions: { type: "number", description: "How many functions to list (default 20; 0 for all)." },
+      },
+      required: ["before", "after"],
+      additionalProperties: false,
+    },
+    run: (args) => {
+      const before = requireString(args, "before");
+      const after = requireString(args, "after");
+      // Load both before diffing: load() caches only the latest file, so read each one's frames out first.
+      const a = load(before).frames;
+      const b = load(after).frames;
+      return renderDiff(diffProfiles(a, b), optionalNumber(args, "functions") ?? 20, [before, after]);
     },
   },
 ];
