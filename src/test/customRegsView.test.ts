@@ -1,5 +1,5 @@
 import { reconstructCustomRegs } from "../webview/profilerViewer/reconstruct";
-import { WRITEABLE_REG_OFFSETS, PTR_HIGH_OFFSETS, isColorReg, formatRegValue } from "../webview/profilerViewer/customRegsTable";
+import { WRITEABLE_REG_OFFSETS, PTR_HIGH_OFFSETS, isColorReg, formatRegValue, registerMatches } from "../webview/profilerViewer/customRegsTable";
 import { customRegisterName } from "../webview/shared/customRegisters";
 import { IDmaModel, BusOwner, DMA_WRITE } from "../shared/profilerTypes";
 
@@ -75,5 +75,23 @@ describe("reconstructCustomRegs", () => {
     expect(afterSet[0x096 >> 1]).toBe(0x0200);
     const afterClear = reconstructCustomRegs(dma, base, 7 + 1);
     expect(afterClear[0x096 >> 1]).toBe(0x0000);
+  });
+});
+
+describe("registerMatches", () => {
+  it("matches a name anywhere in it, any case", () => {
+    expect(registerMatches("COLOR00", 0x180, "col")).toBe(true);
+    expect(registerMatches("BPL1PT", 0x0e0, "1pt")).toBe(true);
+    expect(registerMatches("DMACON", 0x096, "color")).toBe(false);
+  });
+
+  it("matches an address as 180, $180 or dff180", () => {
+    for (const f of ["180", "$180", "dff180", "0x180", "dff1"]) expect(registerMatches("COLOR00", 0x180, f)).toBe(true);
+    expect(registerMatches("COLOR00", 0x180, "dff2")).toBe(false);
+    expect(registerMatches("DMACON", 0x096, "96")).toBe(true);
+  });
+
+  it("matches everything when empty", () => {
+    expect(registerMatches("BLTSIZE", 0x058, "  ")).toBe(true);
   });
 });

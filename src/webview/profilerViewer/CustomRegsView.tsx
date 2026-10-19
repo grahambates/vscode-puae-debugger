@@ -1,9 +1,9 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { AccessList, useAccessContext, useMemoryAccesses } from "./AccessList";
 import { Tooltip } from "./Tooltip";
 import { getProfileModel } from "./modelStore";
 import { reconstructCustomRegs } from "./reconstruct";
-import { WRITEABLE_REG_OFFSETS, PTR_HIGH_OFFSETS, isColorReg, formatRegValue } from "./customRegsTable";
+import { WRITEABLE_REG_OFFSETS, PTR_HIGH_OFFSETS, isColorReg, formatRegValue, registerMatches } from "./customRegsTable";
 import { customRegisterName } from "../shared/customRegisters";
 import { createSymbolizer } from "./symbols";
 import { DMA_HPOS } from "../../shared/profilerTypes";
@@ -12,6 +12,10 @@ import { DMA_HPOS } from "../../shared/profilerTypes";
 // debugger/customregs.tsx, ported). The cycle comes from `selectedSlot` — set by clicking the DMA
 // band in the flame graph (see FlameGraph's selectedSlot/onSelectSlot). High-pointer-half registers
 // (BPLxPTH, COPxLCH, …) are shown combined with their low half as one symbolized 32-bit address.
+// Sort order and filter, kept across remounts (switching tabs and back).
+let savedSort: "address" | "name" = "address";
+let savedFilter = "";
+
 export function CustomRegsView({
   selectedSlot,
   onSelectSlot,
@@ -41,6 +45,18 @@ export function CustomRegsView({
   // The register whose accesses are listed below — picked by clicking its row.
   const [selected, setSelected] = useState<number | undefined>(undefined);
   const [hover, setHover] = useState<{ offset: number; x: number; y: number } | undefined>(undefined);
+  const [sort, setSort] = useState(savedSort);
+  const [filter, setFilter] = useState(savedFilter);
+  useEffect(() => { savedSort = sort; savedFilter = filter; }, [sort, filter]);
+  // The rows, by the name each is shown with (a pointer pair as one, BPL1PT), sorted and filtered.
+  const shown = useMemo(() => {
+    const regs = WRITEABLE_REG_OFFSETS.map((offset) => {
+      const full = customRegisterName(offset) ?? `$${offset.toString(16)}`;
+      return { offset, name: full, label: PTR_HIGH_OFFSETS.has(offset) ? full.replace(/H$/, "") : full };
+    }).filter((r) => registerMatches(r.label, r.offset, filter) || registerMatches(r.name, r.offset, filter));
+    if (sort === "name") regs.sort((a, b) => a.label.localeCompare(b.label, undefined, { numeric: true }));
+    return regs;
+  }, [sort, filter]);
   const ctx = useAccessContext(model);
   const target = useMemo(
     () => (selected === undefined ? undefined : { start: 0xdff000 + selected, end: 0xdff000 + selected + (PTR_HIGH_OFFSETS.has(selected) ? 4 : 2) }),
@@ -61,14 +77,37 @@ export function CustomRegsView({
 
   return (
     <div className="customregs">
-      <div className="cr-time">
-        Cycle {slot} (line {Math.floor(slot / DMA_HPOS)}, color clock {slot % DMA_HPOS})
+      <div className="cr-toolbar">
+        <input
+          className="cr-filter"
+          type="search"
+          placeholder="Filter by name or address"
+          value={filter}
+          onChange={(e) => setFilter(e.target.value)}
+        />
+        <span className="cr-time">
+          Cycle {slot} (line {Math.floor(slot / DMA_HPOS)}, color clock {slot % DMA_HPOS})
+        </span>
+      </div>
+      <div className="cr-row cr-header">
+        <span
+          className={"cr-name cr-heading" + (sort === "name" ? " cr-sorted" : "")}
+          onClick={() => setSort("name")}
+          title="Sort by name"
+        >{sort === "name" && <span className="codicon codicon-chevron-down" />}Name</span>
+        <span
+          className={"cr-addr cr-heading" + (sort === "address" ? " cr-sorted" : "")}
+          onClick={() => setSort("address")}
+          title="Sort by address"
+        >{sort === "address" && <span className="codicon codicon-chevron-down" />}Address</span>
+        <span className="cr-value">Value</span>
       </div>
       <div className="cr-rows">
-        {WRITEABLE_REG_OFFSETS.map((offset) => {
+        {shown.length === 0 && <div className="hint">{`No register matches "${filter}".`}</div>}
+        {shown.map(({ offset, label }) => {
           const index = offset >> 1;
           const isPth = PTR_HIGH_OFFSETS.has(offset);
-          const name = customRegisterName(offset) ?? `$${offset.toString(16)}`;
+          const name = label;
           const changed = isPth
             ? customRegs[index] !== prevRegs[index] || customRegs[index + 1] !== prevRegs[index + 1]
             : customRegs[index] !== prevRegs[index];

@@ -17,6 +17,7 @@
 
 ### Changed
 
+- The profiler's Custom Registers view can be sorted by name or address (click the column heading) and filtered by name or address (`col`, `bpl1pt`, `$180`).
 - Profile reports label their units: times are colour clocks (two 68000 CPU cycles each), now said so in the report header and the `cc` columns, where they were called "cycles". The profiler view says so too: the "Cycles" unit is now "Colour clocks" (`cc`), as are the disassembly view's time column and the editor's per-line annotations.
 - The contact sheet's `=` is described as "identical to the emulated frame just before it", including when `every` spaces the tiles out.
 - `--stalls` and `--instructions` explain that stall includes a function's own instruction fetches waiting for the bus, so register-only instructions in chip or slow RAM show it too.

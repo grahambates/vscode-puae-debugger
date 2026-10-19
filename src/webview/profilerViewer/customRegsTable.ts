@@ -51,3 +51,17 @@ export function formatRegValue(name: string, value: number): string {
   }
   return `$${(value & 0xffff).toString(16).padStart(4, "0")}`;
 }
+
+/**
+ * Does a register match the filter: its name contains it (any case), or its address does — as
+ * "180", "$180" or "dff180". A pointer pair matches by its combined name (BPL1PT) as well.
+ */
+export function registerMatches(name: string, offset: number, filter: string): boolean {
+  const f = filter.trim().toLowerCase();
+  if (!f) return true;
+  if (name.toLowerCase().includes(f)) return true;
+  const hex = f.replace(/^\$/, "").replace(/^0x/, "");
+  if (!/^[0-9a-f]+$/.test(hex)) return false;
+  const short = offset.toString(16).padStart(3, "0");
+  return short.includes(hex.replace(/^dff/, "")) && (!hex.startsWith("dff") || `dff${short}`.startsWith(hex));
+}

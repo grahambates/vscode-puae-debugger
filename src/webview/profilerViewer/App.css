@@ -807,13 +807,42 @@ body {
   overflow: hidden;
 }
 
-.cr-time {
+.cr-toolbar {
   flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
   padding: 4px 10px;
-  color: var(--vscode-descriptionForeground);
-  font-size: 11px;
   border-bottom: 1px solid var(--vscode-panel-border);
 }
+
+.cr-filter {
+  width: 16em;
+  min-width: 0;
+  background: var(--vscode-input-background);
+  color: var(--vscode-input-foreground);
+  border: 1px solid var(--vscode-input-border, transparent);
+  padding: 2px 6px;
+  border-radius: 2px;
+  outline: none;
+}
+.cr-filter:focus { border-color: var(--vscode-focusBorder); }
+
+.cr-time {
+  color: var(--vscode-descriptionForeground);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+/* Column headings, outside the scrolling rows; Name and Address sort the list. */
+.cr-header {
+  flex-shrink: 0;
+  font-weight: 600;
+  border-bottom: 1px solid var(--vscode-panel-border);
+}
+.cr-header:hover { background: none; }
+.cr-heading { cursor: pointer; display: inline-flex; align-items: center; }
+.cr-heading:hover { color: var(--vscode-textLink-foreground); }
 
 .cr-rows {
   flex: 1;
@@ -844,7 +873,7 @@ body {
 }
 
 .cr-addr {
-  width: 4em;
+  width: 6em;
   flex-shrink: 0;
   color: var(--vscode-descriptionForeground);
 }
