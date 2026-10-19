@@ -1,5 +1,4 @@
 import { readFileSync } from "fs";
-import { basename } from "path";
 import { DebugProtocol } from "@vscode/debugprotocol";
 import { logger } from "@vscode/debugadapter";
 import { StopMessage } from "./emulatorProtocol";
@@ -14,6 +13,7 @@ import {
   MEMORY_PROTECTION_VECTOR,
 } from "./hardware";
 import { symbolDeclaredSize } from "./sourceParsing";
+import { alignedBlocks, describeHit } from "./mcp/watchpoints";
 
 /**
  * Internal reference to a breakpoint set in the emulator.
@@ -660,14 +660,10 @@ export class BreakpointManager {
           const accessType = bp.accessType || "readWrite";
           const ignores = this.parseHitCondition(bp.hitCondition);
 
-          await this.emulator.setWatchpoint(address, this.armHitCount(id, ignores), {
-            read: accessType !== "write",
-            write: accessType !== "read",
-            length,
-          });
+          const addresses = await this.armRange(address, length ?? 1, this.armHitCount(id, ignores), accessType);
           this.dataBreakpoints.push({
             id,
-            addresses: [address],
+            addresses,
             dataId: bp.dataId,
             accessType,
             ignores,
@@ -699,6 +695,34 @@ export class BreakpointManager {
     }
 
     return resultBreakpoints;
+  }
+
+  /**
+   * Watches exactly [address, address + length): the emulator's watchpoints match an aligned
+   * power-of-two block each, so a range is armed as the fewest such blocks that cover it exactly
+   * (alignedBlocks). One watchpoint rounded up to a single covering block would also watch the
+   * bytes either side — and stop on writes to a neighbouring variable, which looks just like the
+   * bug being hunted. If arming one block fails, those already armed are removed again, as for a
+   * custom register's pair. Returns the blocks' addresses, which hits report as their `pc`.
+   */
+  private async armRange(address: number, length: number, nativeIgnores: number, accessType: string): Promise<number[]> {
+    const armed: number[] = [];
+    try {
+      for (const block of alignedBlocks(address, Math.max(1, length))) {
+        await this.emulator.setWatchpoint(block.address, nativeIgnores, {
+          read: accessType !== "write",
+          write: accessType !== "read",
+          length: block.size,
+        });
+        armed.push(block.address);
+      }
+    } catch (err) {
+      for (const a of armed) {
+        await this.emulator.removeWatchpoint(a).catch(() => { /* best-effort rollback */ });
+      }
+      throw err;
+    }
+    return armed;
   }
 
   /**
@@ -741,19 +765,17 @@ export class BreakpointManager {
     const ref = this.dataBreakpoints.find((bp) => bp.dataId === dataId);
     if (!ref) return;
 
-    // Only reachable for symbols today (the "Set Watchpoint Length..."
-    // command is restricted to the Symbols scope — custom registers have
-    // a fixed, known length and registers-as-pointer have no length
-    // concept at all), so this is always a single address in practice,
-    // but loop generically rather than assuming.
-    for (const address of ref.addresses) {
-      await this.emulator.removeWatchpoint(address);
-      await this.emulator.setWatchpoint(address, this.armHitCount(ref.id, ref.ignores), {
-        read: ref.accessType !== "write",
-        write: ref.accessType !== "read",
-        length,
-      });
+    // Only reachable for symbols (the "Set Watchpoint Length..." command is restricted to the
+    // Symbols scope — custom registers have a fixed, known length and registers-as-pointer have no
+    // length concept at all): one range from the first address, re-split for the new length.
+    const start = ref.addresses[0];
+    for (const address of ref.addresses) await this.emulator.removeWatchpoint(address);
+    let autoLength: number | undefined;
+    if (length === undefined) {
+      const name = dataId.split(":")[1];
+      autoLength = name ? await this.resolveSymbolLength(name, start) : undefined;
     }
+    ref.addresses = await this.armRange(start, length ?? autoLength ?? 1, this.armHitCount(ref.id, ref.ignores), ref.accessType);
     logger.log(
       `Data breakpoint #${ref.id} at ${ref.addresses.map(formatHex).join(", ")} length override: ${length ?? "auto"}`,
     );
@@ -832,51 +854,35 @@ export class BreakpointManager {
     let bpMatch: { id: number } | undefined;
 
     if (message.name === "WATCHPOINT_REACHED") {
-      // source is PUAE-only (emulator doesn't track it for watchpoints) — when
-      // absent, omit the qualifier rather than print a misleading
-      // "(source=CPU)" for a backend that can't tell the difference.
-      // Custom chipset registers and chip RAM each have a distinct, fixed
-      // set of possible non-CPU writers — registers can only ever be
-      // written by the Copper (Blitter/disk DMA target chip RAM, not
-      // registers), so a DMA-sourced hit there is unambiguous. For either,
-      // the CPU is just whatever it happens to be running concurrently
-      // when a non-CPU source hits, not the thing that configured the
-      // access (which ran earlier, asynchronously) — labelled
-      // "concurrent pc" so the call stack/disassembly the user lands on
-      // isn't mistaken for the actual cause.
-      const isDma = message.payload.source === 1;
-      const isCopper = isDma && isCustomRegisterAddress(message.payload.pc);
-      const dmaSource = isCopper ? "the Copper" : "the Blitter/disk DMA";
-      const source = isDma
-        ? ` from ${dmaSource}`
-        : message.payload.source === 0
-          ? " from the CPU"
-          : "";
-      // copperPc, when present, is the Copper's list pointer at the moment of the write — unlike
-      // cpuPc/"concurrent pc" (whatever the CPU happens to be running at the same time), it
-      // leads to the real cause. But the pointer has already moved past the MOVE that wrote the
-      // register, so the instruction itself is one back: copperMoveBefore confirms that, and only
-      // then is it labelled as the copper's location, with its source line. Unconfirmed, the raw
-      // pointer is still shown, as what it is.
-      const copperPc = isCopper ? message.payload.copperPc : undefined;
-      const writtenAddress = message.payload.addr ?? message.payload.pc;
-      const copperMove = await copperMoveBefore(copperPc, writtenAddress, (a, n) => this.emulator.readMemory(a, n));
-      const copperLoc =
-        copperMove !== undefined ? this.sourceMap.lookupAddress(copperMove) : undefined;
-      const copperLabel =
-        copperMove !== undefined
-          ? ` (copperLoc=${formatHex(copperMove)}${
-              copperLoc ? ` ${basename(copperLoc.path)}:${copperLoc.line}` : ""
-            })`
-          : copperPc !== undefined
-            ? ` (copper list pointer=${formatHex(copperPc)})`
-            : "";
-      const pcLabel = isDma ? "concurrent pc" : "pc";
+      // What was accessed, how, the value (and for a write the old one), and who did it — the CPU
+      // and its PC, the copper MOVE, or blitter/disk DMA (describeHit, shared with the MCP tools).
+      // For a DMA hit the CPU is just whatever it happened to be running at the same time, not
+      // what set the access up, and is labelled as such, so the call stack and disassembly the user
+      // lands on aren't mistaken for the cause.
+      //
+      // copperPc, when present, is the Copper's list pointer at the moment of the write. It has
+      // already moved past the MOVE that wrote the register, so the instruction itself is one
+      // back: copperMoveBefore confirms that before it's named as the copper's location.
+      const p = message.payload;
+      const isCopper = p.source === 1 && isCustomRegisterAddress(p.pc);
+      const writtenAddress = p.addr ?? p.pc;
+      const copperMove = isCopper
+        ? await copperMoveBefore(p.copperPc, writtenAddress, (a, n) => this.emulator.readMemory(a, n))
+        : undefined;
       const result: BreakpointStopResult = {
         reason: "data breakpoint",
-        text: source
-          ? `Data breakpoint hit${source} (${pcLabel}=${formatHex(message.payload.cpuPc ?? 0)})${copperLabel}`
-          : undefined,
+        text: `Data breakpoint: ${describeHit({
+          watchAddress: p.pc,
+          addr: p.addr,
+          accessKind: p.accessKind,
+          sizeBits: p.sizeBits,
+          value: p.value,
+          oldValue: p.oldValue,
+          source: p.source,
+          cpuPc: p.cpuPc,
+          copperPc: isCopper ? p.copperPc : undefined,
+          copperInstruction: copperMove,
+        }, this.sourceMap)}`,
       };
       bpMatch = this.dataBreakpoints.find((bp) =>
         bp.addresses.includes(message.payload.pc),

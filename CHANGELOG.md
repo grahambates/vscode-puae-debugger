@@ -23,6 +23,8 @@
 
 - Kickstart symbols no longer overwrite program symbols in naming clash in profiler
 - `profile dump --json` (and other CLI output) was cut off at 64 KB when piped to another program.
+- A data breakpoint on a variable watched more than the variable: its range was rounded up to one power-of-two block, so writes to a neighbouring variable stopped it too. It now watches exactly the variable's bytes. Clearing a "Set Watchpoint Length" override also went back to watching a single byte instead of the variable's own size.
+- A data breakpoint stop now says what happened — the access and its size, the value written and the value it replaced, the exact address, and who did it (the CPU and its PC, the copper MOVE, or blitter/disk DMA) — where it only named the source before.
 
 ## 1.1.0
 

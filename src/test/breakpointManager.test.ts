@@ -34,6 +34,7 @@ function createFakeSourceMap(address = 0x1000) {
     getSymbols: sinon.stub().returns({}),
     getGlobalVariables: sinon.stub().returns([]),
     lookupAddress: sinon.stub().returns(null),
+    findSymbolOffset: sinon.stub().returns(undefined),
     getSymbolLengths: sinon.stub().returns({}),
   } as any;
 }
@@ -143,12 +144,15 @@ describe("BreakpointManager - copper-sourced watchpoint attribution", () => {
     const result = await bpManager.handleBreakpointStop({
       hasMessage: true,
       name: "WATCHPOINT_REACHED",
-      payload: { pc: 0xdff180, vector: 0, source: 1, cpuPc: 0x1234, copperPc: 0x4000 },
+      payload: { pc: 0xdff180, addr: 0xdff180, accessKind: 2, sizeBits: 16, value: 0x0f00, oldValue: 0x0349, vector: 0, source: 1, cpuPc: 0x1234, copperPc: 0x4000 },
     });
 
-    assert.ok(result.text?.includes("from the Copper"));
-    assert.ok(result.text?.includes("copperLoc=0x00003ffc"));
-    assert.ok(result.text?.includes("copperlist.s:41"));
+    // What was written, where, what it was before, and the MOVE that did it, with its source line.
+    assert.ok(result.text?.includes("write.w $0f00 to 0x00dff180 (COLOR00), was $0349"), result.text);
+    assert.ok(result.text?.includes("by the copper MOVE at 0x00003ffc"), result.text);
+    assert.ok(result.text?.includes("copperlist.s:41"), result.text);
+    // The CPU's PC is incidental to a copper write, and labelled so.
+    assert.ok(result.text?.includes("which is not the cause"), result.text);
   });
 
   it("shows the raw list pointer, as such, when the MOVE can't be confirmed", async () => {
@@ -163,8 +167,8 @@ describe("BreakpointManager - copper-sourced watchpoint attribution", () => {
       payload: { pc: 0xdff180, vector: 0, source: 1, cpuPc: 0x1234, copperPc: 0x4000 },
     });
 
-    assert.ok(result.text?.includes("copper list pointer=0x00004000"));
-    assert.ok(!result.text?.includes("copperLoc="));
+    assert.ok(result.text?.includes("by the copper (list pointer at 0x00004000"), result.text);
+    assert.ok(!result.text?.includes("copper MOVE"), result.text);
   });
 
   it("omits the copper pc/source-line for a Blitter/disk-sourced chip RAM write", async () => {
@@ -178,8 +182,47 @@ describe("BreakpointManager - copper-sourced watchpoint attribution", () => {
       payload: { pc: 0x2000, vector: 0, source: 1, cpuPc: 0x1234 },
     });
 
-    assert.ok(result.text?.includes("from the Blitter/disk DMA"));
-    assert.ok(!result.text?.includes("copperlist.s"));
+    assert.ok(result.text?.includes("by DMA (blitter or disk), not the CPU"), result.text);
+    assert.ok(!result.text?.includes("copper"), result.text);
+  });
+});
+
+describe("BreakpointManager - data breakpoint ranges", () => {
+  it("watches exactly the variable's bytes, as aligned blocks, and matches a hit on any of them", async () => {
+    const { fake, emulator } = createFakeEmulator(false);
+    const sourceMap = createFakeSourceMap();
+    sourceMap.getSymbols = sinon.stub().returns({ table: 0x1006 });
+    const bpManager = new BreakpointManager(emulator, sourceMap);
+    // A 12-byte variable at $1006: one watchpoint would have to cover $1000-$100f or more,
+    // taking in its neighbours. Three blocks cover it exactly.
+    await bpManager.setWatchpointLengthOverride("symbols:table", 12);
+    const [bp] = await bpManager.setDataBreakpoints([{ dataId: "symbols:table", accessType: "write" }]);
+
+    const armed = fake.setWatchpoint.getCalls().map((c) => [c.args[0], c.args[2].length]);
+    assert.deepStrictEqual(armed, [[0x1006, 2], [0x1008, 8], [0x1010, 2]]);
+    assert.ok(fake.setWatchpoint.getCalls().every((c) => c.args[2].write && !c.args[2].read));
+
+    const hit = await bpManager.handleBreakpointStop({
+      hasMessage: true,
+      name: "WATCHPOINT_REACHED",
+      payload: { pc: 0x1008, addr: 0x100a, accessKind: 2, sizeBits: 16, value: 7, oldValue: 3, vector: 0, source: 0, cpuPc: 0x2000 },
+    });
+    assert.deepStrictEqual(hit.hitBreakpointIds, [bp.id]);
+    assert.ok(hit.text?.includes("write.w $0007 to"), hit.text);
+    assert.ok(hit.text?.includes("was $0003 — by the CPU at 0x00002000"), hit.text);
+  });
+
+  it("re-splits the range when its length is changed", async () => {
+    const { fake, emulator } = createFakeEmulator(false);
+    const sourceMap = createFakeSourceMap();
+    sourceMap.getSymbols = sinon.stub().returns({ table: 0x1006 });
+    const bpManager = new BreakpointManager(emulator, sourceMap);
+    await bpManager.setWatchpointLengthOverride("symbols:table", 2);
+    await bpManager.setDataBreakpoints([{ dataId: "symbols:table" }]);
+    fake.setWatchpoint.resetHistory();
+    await bpManager.setWatchpointLengthOverride("symbols:table", 4);
+    assert.deepStrictEqual(fake.removeWatchpoint.getCalls().map((c) => c.args[0]), [0x1006]);
+    assert.deepStrictEqual(fake.setWatchpoint.getCalls().map((c) => [c.args[0], c.args[2].length]), [[0x1006, 2], [0x1008, 2]]);
   });
 });
 
