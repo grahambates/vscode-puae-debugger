@@ -1,4 +1,5 @@
 import { decodeInstruction as m68kDecode, instructionToString } from "m68kdecode";
+import { callTarget, CodeReader, diskSourceLines, localRoutineName, SourceLines, snapshotReader } from "./localRoutines";
 import { libraryCallComments } from "./libraryCalls";
 import { SourceMap } from "./sourceMap";
 import type { PuaeRpcClient } from "./shared/puaeRpcProtocol";
@@ -109,18 +110,22 @@ export function decodeProfileStream(words: Uint32Array): InstructionSample[] {
 // frame is shown at the *call site* of the next-inner frame (the line where the inline
 // call appears in the caller), and only the innermost frame gets the instruction's own
 // source line. `getInlineFramesForPc` returns frames innermost-first.
-function expandPc(pc: number, sourceMap: SourceMap): ProfileFrame[] {
+//
+// `local`, when given, is a subroutine at a local label that this PC's frame was called into (see
+// localRoutines.ts): the physical frame takes its name and its entry's source location instead of
+// the enclosing global label's.
+function expandPc(pc: number, sourceMap: SourceMap, local?: { name: string; entry: number }): ProfileFrame[] {
   const synthetic = syntheticLabel(pc, sourceMap);
   if (synthetic) return [{ func: synthetic, file: undefined, line: undefined, address: pc }];
   const sym = sourceMap.findSymbolOffset(pc, true);
   const loc = sourceMap.lookupAddress(pc);
-  const funcName = sym ? sym.symbol : `0x${pc.toString(16)}`;
+  const funcName = local?.name ?? (sym ? sym.symbol : `0x${pc.toString(16)}`);
   const inlines = sourceMap.getInlineFramesForPc?.(pc) ?? []; // innermost-first
   if (inlines.length === 0) {
     // No inlining (typical for assembly): resolve file/line at the symbol's own address,
     // not pc, so a function invoked via a macro carrying its own line-table entry (e.g. an
     // include) still resolves to one consistent location instead of splitting per call site.
-    const declLoc = sym ? sourceMap.lookupAddress(pc - sym.offset) : loc;
+    const declLoc = local ? sourceMap.lookupAddress(local.entry) : sym ? sourceMap.lookupAddress(pc - sym.offset) : loc;
     return [{ func: funcName, file: declLoc?.path, line: declLoc?.line, address: pc }];
   }
   const n = inlines.length;
@@ -247,7 +252,14 @@ export function trimToProgramRoot(samples: InstructionSample[], sourceMap: Sourc
 //   - samples[] the leaf node id per instruction in execution order (samples[0] is
 //     a dummy paired with timeDeltas — matches the offset buildColumns expects),
 //   - timeDeltas[] the per-instruction cycle cost; duration = total cycles.
-export function buildProfileModel(samples: InstructionSample[], sourceMap: SourceMap, cyclesPerMicroSecond = PAL_COLOR_CLOCKS_PER_US): IProfileModel {
+export function buildProfileModel(
+  samples: InstructionSample[],
+  sourceMap: SourceMap,
+  cyclesPerMicroSecond = PAL_COLOR_CLOCKS_PER_US,
+  // The capture's code, and its source, for naming subroutines at local labels (localRoutines.ts).
+  // Without the code they're attributed to the routine they're in, as before.
+  code: { read?: CodeReader; sourceLines?: SourceLines } = {},
+): IProfileModel {
   const locations: ILocation[] = [];
   // Key: "functionName:url" — all instructions within the same function share one location.
   // This matches the V8/CDP convention where callFrame.lineNumber = function declaration line,
@@ -291,14 +303,44 @@ export function buildProfileModel(samples: InstructionSample[], sourceMap: Sourc
 
   // Expand each PC into its logical frames (physical + inlines) once, caching the
   // resulting location-id chain (outermost→innermost) so hot PCs aren't re-symbolicated.
-  const locIdsByPc = new Map<number, number[]>();
-  const locIdsFor = (pc: number): number[] => {
-    let ids = locIdsByPc.get(pc);
+  const locIdsByPc = new Map<string, number[]>();
+  const locIdsFor = (pc: number, local?: { name: string; entry: number }): number[] => {
+    const key = local ? `${pc}@${local.name}` : String(pc);
+    let ids = locIdsByPc.get(key);
     if (!ids) {
-      ids = expandPc(pc, sourceMap).map(internLocation);
-      locIdsByPc.set(pc, ids);
+      ids = expandPc(pc, sourceMap, local).map(internLocation);
+      locIdsByPc.set(key, ids);
     }
     return ids;
+  };
+
+  // A frame called into a local label (localRoutines.ts). Its entry: the target of the call at its
+  // call site (the frame above, in a branch-stack capture), when the instruction says; otherwise
+  // the first instruction it ran, if it started during the capture (`entries` below). Only for
+  // branch-stack captures — a DWARF unwind records return addresses, not call sites — and only
+  // while the frame is in the routine its entry is in, which rules out an exception frame whose
+  // interrupted instruction happens to be a call.
+  const branchStack = sourceMap.getUnwindRows().length === 0;
+  const targetByCallSite = new Map<number, number | undefined>();
+  const nameByEntry = new Map<number, { name: string; entry: number; symbol: string } | null>();
+  const localFor = (pc: number, callSite: number, observedEntry: number | undefined): { name: string; entry: number } | undefined => {
+    if (!branchStack || syntheticLabel(pc, sourceMap)) return undefined;
+    let target = targetByCallSite.get(callSite);
+    if (!targetByCallSite.has(callSite)) {
+      target = code.read ? callTarget(callSite, code.read) : undefined;
+      targetByCallSite.set(callSite, target);
+    }
+    const entry = target ?? observedEntry;
+    if (entry === undefined) return undefined;
+    let local = nameByEntry.get(entry);
+    if (local === undefined) {
+      const name = localRoutineName(entry, sourceMap, code.sourceLines);
+      const symbol = sourceMap.findSymbolOffset(entry, true)?.symbol;
+      local = name && symbol ? { name, entry, symbol } : null;
+      nameByEntry.set(entry, local);
+    }
+    if (!local) return undefined;
+    return sourceMap.findSymbolOffset(pc, true)?.symbol === local.symbol ? local : undefined;
   };
 
   // Call tree: synthetic root node 0, then a child per distinct (parent, location).
@@ -329,13 +371,34 @@ export function buildProfileModel(samples: InstructionSample[], sourceMap: Sourc
   // the actual current instruction (not just the current function) as the time cursor moves.
   const pcs: number[] = [];
   let duration = 0;
+  // Each frame's entry — its first PC since it started — by depth from the root, for a call whose
+  // target isn't in the instruction. A frame continues from the previous sample while every frame
+  // outside it is unchanged (the same call sites), and carries its entry with it; a new frame's
+  // entry is where it is now. A frame already running at the first sample has no known entry.
+  let prevRoot: number[] = [];
+  let entries: (number | undefined)[] = [];
+  let first = true;
   for (const s of applyContextReuse(trimToProgramRoot(samples, sourceMap), sourceMap)) {
+    const root = [...s.stack].reverse();
+    let same = 0;
+    while (same < root.length && same < prevRoot.length && root[same] === prevRoot[same]) same++;
+    const nextEntries: (number | undefined)[] = [];
+    for (let r = 0; r < root.length; r++) {
+      const continues = r < prevRoot.length && r <= same;
+      nextEntries[r] = continues ? entries[r] : first ? undefined : root[r];
+    }
+    entries = nextEntries;
+    prevRoot = root;
+    first = false;
+
     // Stacks are leaf-first; descend outermost→leaf so the path hangs off the root.
     // Each physical PC expands to physical + inlined frames (outermost→innermost), so
     // inlined callees appear as their own boxes stacked above the caller.
     let nodeId = 0;
     for (let i = s.stack.length - 1; i >= 0; i--) {
-      for (const locId of locIdsFor(s.stack[i])) {
+      const r = s.stack.length - 1 - i;
+      const local = r > 0 ? localFor(s.stack[i], s.stack[i + 1], entries[r]) : undefined;
+      for (const locId of locIdsFor(s.stack[i], local)) {
         nodeId = childNode(nodeId, locId);
       }
     }
@@ -475,7 +538,11 @@ export function buildModelFromCapture(
   const nominal = pb.isPAL ? PAL_COLOR_CLOCKS_PER_US : NTSC_COLOR_CLOCKS_PER_US;
   const cyclesPerMicroSecond = pb.frameCycles > 0 ? pb.frameCycles / frameUs : nominal;
 
-  const model = buildProfileModel(samples, sourceMap, cyclesPerMicroSecond);
+  const snap = raw.snapshot;
+  const model = buildProfileModel(samples, sourceMap, cyclesPerMicroSecond, {
+    read: snap ? snapshotReader(snap.chip, snap.slow, snap.fast, snap.fastAddr) : undefined,
+    sourceLines: diskSourceLines(),
+  });
   model.symbols = buildSymbolList(sourceMap);
   model.lineTable = sourceMap.getLineTable().map((e): ILineTableEntry => ({ address: e.address, file: e.path, line: e.line }));
   model.segments = sourceMap.getSegmentsInfo().map((s): ISegmentRange => ({ address: s.address, size: s.size }));
