@@ -10,6 +10,7 @@ import { customRegisterName } from "../shared/customRegisters";
 import { DMA_HPOS, IProfileModel } from "../../shared/profilerTypes";
 import { Blit, getBlits } from "./blits";
 import { createSourceLookup } from "./sourceLookup";
+import { AsmOperands, AsmText } from "./AsmText";
 
 // The panel's height, shared by the views that show one and kept across remounts — resized by
 // dragging its top edge.
@@ -32,12 +33,12 @@ function Row({ index, style, rows, current, onSelect, onOpenSource }: RowCompone
     <div className={"al-row" + (index === current ? " al-current" : "")} style={style} onClick={() => onSelect(r)}>
       <span className="al-pos">{pos(r.slot)}</span>
       {r.kind && <span className={"al-kind" + (r.kind.startsWith("W") ? " al-write" : "")}>{r.kind}</span>}
-      <span className="al-value">{r.value}</span>
+      <span className="al-value"><AsmOperands text={r.value} /></span>
       {r.offset && <span className="al-offset">{r.offset}</span>}
       <span className="al-who" title={r.unverified ? "Placed by timing only — not checked against the instruction's operand (this frame has no register trace)" : undefined}>
         {r.who}{r.unverified ? " ~" : ""}
       </span>
-      {r.detail && <span className="al-detail">{r.detail}</span>}
+      {r.detail && <span className="al-detail"><AsmText text={r.detail} /></span>}
       {r.source && (
         <a
           href="#"

@@ -113,11 +113,13 @@ export function CustomRegsView({
             const addr = ((customRegs[index] << 16) | customRegs[index + 1]) >>> 0;
             const sym = symbolize(addr);
             const hex = `$${addr.toString(16).padStart(6, "0")}`;
-            valueNode = <span>{sym ? `${sym} (${hex})` : hex}</span>;
+            valueNode = sym
+              ? <span><span className="asm-symbol">{sym}</span> (<span className="asm-number">{hex}</span>)</span>
+              : <span className="asm-number">{hex}</span>;
           } else {
             valueNode = (
               <span>
-                {formatRegValue(name, customRegs[index])}
+                <span className="asm-number">{formatRegValue(name, customRegs[index])}</span>
                 {isColorReg(offset) && (
                   <span
                     className="dma-dot"

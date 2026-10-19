@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Syntax highlighting in the profiler's CPU, Copper and Custom Registers tabs and their change-history lists: mnemonics, registers and numbers are coloured as in the memory viewer's disassembly, symbols stand out from the hex address beside them, and source links are link-coloured.
+
 ## [1.2.0] - 2026-10-19
 
 ### Added

@@ -5,6 +5,7 @@ import { disassembleCopperInstruction, CopperInstruction } from "../../shared/co
 import { DMA_HPOS } from "../../shared/profilerTypes";
 import { CUSTOM_REGISTER_OFFSETS as R } from "../shared/customRegisters";
 import { createSourceLookup, SourceLocation } from "./sourceLookup";
+import { AsmOperands } from "./AsmText";
 
 interface CopperRow {
   slot: number; // DMA-grid cycle of this instruction's second-word fetch — the jump/highlight key
@@ -37,7 +38,7 @@ function RowRenderer({ index, style, rows, currentIndex, onJump, onOpenSource }:
       </span>
       <span className="cop-insn">
         {insn.color && <span className="dma-dot" style={{ background: `rgb(${insn.color.join(",")})` }} />}
-        <span className="cop-mnemonic">{insn.mnemonic}</span> {insn.operands}
+        <span className="cop-mnemonic asm-mnemonic">{insn.mnemonic}</span> <AsmOperands text={insn.operands} />
       </span>
       {insn.comment && <span className="cop-comment">{insn.comment}</span>}
       {loc && (

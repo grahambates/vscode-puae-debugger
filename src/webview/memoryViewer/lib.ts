@@ -1,5 +1,8 @@
 /// <reference lib="dom" />
 
+// The operand tokenizer lives in webview/shared/asmSyntax.ts (shared with the profiler's views).
+import { tokenizeOperands } from "../shared/asmSyntax";
+
 // Re-exported so existing call sites in this module are unaffected — the implementation now
 // lives in webview/shared/memoryFormat.ts (shared with the profiler's MemoryView).
 export { convertToSigned } from "../shared/memoryFormat";
@@ -40,52 +43,10 @@ export function formatAddress(
   return addressStr;
 }
 
-/**
- * Lightweight syntax highlighting for M68k/Copper operand strings.
- *
- * The disassemblers return operands as plain strings (e.g. "123(a0,d0),d3" or
- * "#$1234,d7"), so highlighting is done by tokenizing with a regex rather than
- * from structured data.
- */
-export type OperandTokenType = "register" | "number" | "text";
-
-export interface OperandToken {
-  text: string;
-  type: OperandTokenType;
-}
-
 export interface OperandColors {
   register: string;
   number: string;
   text: string;
-}
-
-const OPERAND_TOKEN_RE = /\b(?:[da][0-7]|sp|pc|sr|ccr|usp)\b|#?-?(?:\$[0-9a-f]+|\d+)\b/gi;
-const REGISTER_RE = /^(?:[da][0-7]|sp|pc|sr|ccr|usp)$/i;
-
-/**
- * Splits an operand string into registers, numbers/immediates, and the
- * surrounding punctuation/separators (parentheses, commas, +, -, *, size suffixes).
- */
-export function tokenizeOperands(operands: string): OperandToken[] {
-  const tokens: OperandToken[] = [];
-  let lastIndex = 0;
-  for (const match of operands.matchAll(OPERAND_TOKEN_RE)) {
-    const index = match.index ?? 0;
-    if (index > lastIndex) {
-      tokens.push({ text: operands.slice(lastIndex, index), type: "text" });
-    }
-    const value = match[0];
-    tokens.push({
-      text: value,
-      type: REGISTER_RE.test(value) ? "register" : "number",
-    });
-    lastIndex = index + value.length;
-  }
-  if (lastIndex < operands.length) {
-    tokens.push({ text: operands.slice(lastIndex), type: "text" });
-  }
-  return tokens;
 }
 
 export interface MnemonicColors {

@@ -9,6 +9,7 @@ import { createSymbolizer, Symbolizer } from "./symbols";
 import { interpretDataReg, interpretAddressReg } from "./registerInterpret";
 import { AccessList, useAccessContext, useRegisterChanges } from "./AccessList";
 import { Tooltip } from "./Tooltip";
+import { AsmText } from "./AsmText";
 
 const ROW_H = 18; // instruction row height (px)
 const SRC_H = 15; // source-line header row height (px)
@@ -163,7 +164,7 @@ function RowRenderer({ index, style, rows, maxCycles, currentAddress, onOpenSour
         );
       })()}
       <span className="disasm-addr">${ins.address.toString(16).padStart(6, "0")}</span>
-      <span className="disasm-text">{ins.text}{ins.comment && <span className="disasm-comment">  ; {ins.comment}</span>}</span>
+      <span className="disasm-text"><AsmText text={ins.text} />{ins.comment && <span className="disasm-comment">  ; {ins.comment}</span>}</span>
       {!showSource && ins.file && (
         <a
           href="#"
@@ -220,7 +221,7 @@ function SortedRowRenderer({ index, style, rows, totalCycles, currentAddress, ma
       <span className="disasm-pct" title="Share of all executed instructions' total time this frame">{pct.toFixed(1)}%</span>
       <span className="disasm-addr">${ins.address.toString(16).padStart(6, "0")}</span>
       <span className="disasm-fn" title={fn.name}>{fn.name}</span>
-      <span className="disasm-text">{ins.text}{ins.comment && <span className="disasm-comment">  ; {ins.comment}</span>}</span>
+      <span className="disasm-text"><AsmText text={ins.text} />{ins.comment && <span className="disasm-comment">  ; {ins.comment}</span>}</span>
       {ins.file && (
         <a
           href="#"
@@ -316,7 +317,7 @@ function RegistersPanel({
       onClick={onCellClick(i)}
     >
       <span className="reg-label">{label}</span>
-      <span className="reg-val">{hex(regs[i], digits)}</span>
+      <span className="reg-val asm-number">{hex(regs[i], digits)}</span>
     </div>
   );
 
@@ -337,7 +338,7 @@ function RegistersPanel({
         onClick={onCellClick(REG_PC)}
       >
         <span className="reg-label">PC</span>
-        <span className="reg-val">{hex(regs[REG_PC], 6)}</span>
+        <span className="reg-val asm-number">{hex(regs[REG_PC], 6)}</span>
       </div>
       <div
         className="reg-flags reg-hoverable"
@@ -347,7 +348,7 @@ function RegistersPanel({
         onClick={onCellClick(REG_USP)}
       >
         <span className="reg-label">USP</span>
-        <span className="reg-val">{hex(regs[REG_USP], 6)}</span>
+        <span className="reg-val asm-number">{hex(regs[REG_USP], 6)}</span>
       </div>
       <div
         className={"reg-flags reg-hoverable" + (changed(REG_SR) ? " reg-changed" : "") + (selectedReg === REG_SR ? " reg-selected" : "")}

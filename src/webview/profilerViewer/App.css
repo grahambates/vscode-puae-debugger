@@ -797,6 +797,19 @@ body {
   opacity: 1;
 }
 
+/* ── Instruction syntax highlighting (AsmText.tsx) ───────────────────────────
+   The same theme colours the memory viewer's disassembly uses: VS Code's debug-view token
+   colours, tuned by theme authors to read against the editor text. */
+
+.asm-mnemonic { color: var(--vscode-debugTokenExpression-type, #4ec9b0); }
+.asm-register { color: var(--vscode-debugTokenExpression-name, #c586c0); }
+.asm-number { color: var(--vscode-debugTokenExpression-number, #b5cea8); }
+.asm-symbol { color: var(--vscode-symbolIcon-classForeground, #ee9d28); }
+.asm-comment { white-space: pre; color: var(--vscode-descriptionForeground); }
+
+/* On a selected row the selection's own foreground wins — token colours aren't designed for it. */
+.cop-current :is(.asm-mnemonic, .asm-register, .asm-number, .asm-symbol, .asm-comment, .disasm-src) { color: inherit; }
+
 /* ── Custom registers view ───────────────────────────────────────────────── */
 
 .customregs {
@@ -1577,7 +1590,7 @@ body {
   max-width: 16em;
   overflow: hidden;
   text-overflow: ellipsis;
-  color: var(--vscode-terminal-foreground);
+  color: var(--vscode-textLink-foreground);
   text-decoration: none;
   font-size: 0.85em;
 }
