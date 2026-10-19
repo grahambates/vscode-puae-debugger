@@ -39,7 +39,8 @@ const integerFormat = new Intl.NumberFormat(undefined, { maximumFractionDigits: 
 // for the future DMA/memory views and are intentionally not offered here.
 export const unitOptions: { unit: DisplayUnit; label: string }[] = [
   { unit: DisplayUnit.Microseconds, label: "Microseconds" },
-  { unit: DisplayUnit.Cycles, label: "Cycles" },
+  // Colour clocks, which the profile measures in: a 68000 CPU cycle is half of one.
+  { unit: DisplayUnit.Cycles, label: "Colour clocks" },
   { unit: DisplayUnit.Lines, label: "Rasterlines" },
   { unit: DisplayUnit.PercentFrame, label: "% of Frame" },
 ];
@@ -91,7 +92,7 @@ export const formatValue = (value: number, unit: DisplayUnit, t: Timing): string
     case DisplayUnit.Microseconds:
       return integerFormat.format(v) + "µs";
     case DisplayUnit.Cycles:
-      return integerFormat.format(v) + "cy";
+      return integerFormat.format(v) + "cc";
     case DisplayUnit.Lines:
       return decimalFormat.format(v) + "li";
     case DisplayUnit.PercentFrame:

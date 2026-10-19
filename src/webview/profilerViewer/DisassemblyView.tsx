@@ -146,7 +146,7 @@ function RowRenderer({ index, style, rows, maxCycles, currentAddress, onOpenSour
       title={onJumpToExecution ? "Click: next execution · Shift+Click: previous execution" : undefined}
     >
       <span className="disasm-hits" title="Executions this frame">{ins.hits > 0 ? `${ins.hits}×` : ""}</span>
-      <span className="disasm-cycles" title="Total cycles this frame">{ins.cycles > 0 ? `${ins.cycles}cy` : ""}</span>
+      <span className="disasm-cycles" title="Total time this frame, in colour clocks (1 cc = 2 68000 CPU cycles)">{ins.cycles > 0 ? `${ins.cycles}cc` : ""}</span>
       {datasheetApplicable && (() => {
         const stall = stallOf(ins, true);
         if (stall === undefined) return <span className="disasm-stall" />;
@@ -154,7 +154,7 @@ function RowRenderer({ index, style, rows, maxCycles, currentAddress, onOpenSour
         return (
           <span
             className={"disasm-stall" + (stall > 0 ? " disasm-stalled" : "")}
-            title={`Measured ${ins.cycles}cy vs 68000 datasheet ${theoretical}cy for ${ins.hits} execution(s)`
+            title={`Measured ${ins.cycles}cc vs 68000 datasheet ${theoretical}cc for ${ins.hits} execution(s), in colour clocks (1 cc = 2 CPU cycles)`
               + ` — ${stall > 0 ? `${stall}cy waiting for the bus` : "no contention"}`
               + (ins.busAccesses ? `, ${ins.busAccesses * ins.hits} bus accesses` : "")}
           >
@@ -216,8 +216,8 @@ function SortedRowRenderer({ index, style, rows, totalCycles, currentAddress, ma
       title="Click: view in context"
     >
       <span className="disasm-hits" title="Executions this frame">{ins.hits}×</span>
-      <span className="disasm-cycles" title="Total cycles this frame">{ins.cycles}cy</span>
-      <span className="disasm-pct" title="Share of all executed instructions' total cycles this frame">{pct.toFixed(1)}%</span>
+      <span className="disasm-cycles" title="Total time this frame, in colour clocks (1 cc = 2 68000 CPU cycles)">{ins.cycles}cc</span>
+      <span className="disasm-pct" title="Share of all executed instructions' total time this frame">{pct.toFixed(1)}%</span>
       <span className="disasm-addr">${ins.address.toString(16).padStart(6, "0")}</span>
       <span className="disasm-fn" title={fn.name}>{fn.name}</span>
       <span className="disasm-text">{ins.text}</span>
@@ -251,7 +251,7 @@ function SortedHeader({ sortKey, onChangeSort }: { sortKey: SortKey; onChangeSor
   return (
     <div className="disasm-row disasm-sorted-header">
       {heading("hits", "disasm-hits", "Hits")}
-      {heading("cycles", "disasm-cycles", "Cycles")}
+      {heading("cycles", "disasm-cycles", "Time (cc)")}
       <div className="disasm-pct tv-heading">%</div>
       <div className="disasm-addr tv-heading">Address</div>
       <div className="disasm-fn tv-heading">Function</div>
@@ -690,7 +690,7 @@ export function DisassemblyView({
           <button
             className={"time-mode-btn" + (viewMode === "sorted" ? " active" : "")}
             onClick={() => setViewMode("sorted")}
-            title="Every executed instruction this frame, whole-program, ranked by cycle cost or execution count"
+            title="Every executed instruction this frame, whole-program, ranked by time or execution count"
           >Sorted</button>
         </span>
         {viewMode === "linear" ? (

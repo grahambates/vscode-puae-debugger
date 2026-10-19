@@ -309,7 +309,7 @@ describe("ProfilerLineDecorationProvider", () => {
       ) as vscode.Hover | undefined;
       if (!hover) return undefined;
       const text = (hover.contents as unknown as { value: string }).value;
-      const cycles = Number(text.match(/([\d,]+) cycles/)?.[1].replace(/,/g, ""));
+      const cycles = Number(text.match(/([\d,]+) colour clocks/)?.[1].replace(/,/g, ""));
       const hits = Number(text.match(/([\d,]+) execution/)?.[1].replace(/,/g, ""));
       return { cycles, hits };
     }

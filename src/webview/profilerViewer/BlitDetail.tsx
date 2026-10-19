@@ -123,7 +123,7 @@ export function BlitDetailGrid({
             <span className="tip-label">End</span>
             <span className="tip-val">Line {info.end.line}, Color Clock {info.end.colorClock}, DMA Cycle {info.end.slot}</span>
             <span className="tip-label">{info.startedBefore ? "In this frame" : "Duration"}</span>
-            <span className="tip-val">{info.end.durationSlots} DMA Cycles ({formatValue(info.end.durationSlots * 2, displayUnit, timing)})</span>
+            <span className="tip-val">{info.end.durationSlots} colour clocks ({formatValue(info.end.durationSlots, displayUnit, timing)})</span>
           </>
         )}
       </div>

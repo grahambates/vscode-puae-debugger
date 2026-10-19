@@ -252,7 +252,7 @@ export class ProfilerLineDecorationProvider implements vscode.HoverProvider, vsc
       buckets[bucketIdx].push({
         range: new vscode.Range(zeroBased, 0, zeroBased, 0),
         renderOptions: {
-          after: { contentText: ` ${formatCount(stats.cycles)} cy · ${formatCount(stats.hits)}×` },
+          after: { contentText: ` ${formatCount(stats.cycles)} cc · ${formatCount(stats.hits)}×` },
         },
       });
     }
@@ -275,7 +275,7 @@ export class ProfilerLineDecorationProvider implements vscode.HoverProvider, vsc
     const pct = total > 0 ? (stats.cycles / total) * 100 : 0;
     const md = new vscode.MarkdownString();
     md.appendMarkdown(
-      `**Profiler:** ${stats.cycles.toLocaleString()} cycles (${pct.toFixed(1)}% of file), ` +
+      `**Profiler:** ${stats.cycles.toLocaleString()} colour clocks (${pct.toFixed(1)}% of file; 1 cc = 2 68000 CPU cycles), ` +
         `${stats.hits.toLocaleString()} execution${stats.hits === 1 ? "" : "s"}`,
     );
     return new vscode.Hover(md);

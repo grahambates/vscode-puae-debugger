@@ -14,7 +14,7 @@
 
 ### Changed
 
-- Profile reports label their units: times are colour clocks (two 68000 CPU cycles each), now said so in the report header and the `cc` columns, where they were called "cycles".
+- Profile reports label their units: times are colour clocks (two 68000 CPU cycles each), now said so in the report header and the `cc` columns, where they were called "cycles". The profiler view says so too: the "Cycles" unit is now "Colour clocks" (`cc`), as are the disassembly view's time column and the editor's per-line annotations.
 - The contact sheet's `=` is described as "identical to the emulated frame just before it", including when `every` spaces the tiles out.
 - `--stalls` and `--instructions` explain that stall includes a function's own instruction fetches waiting for the bus, so register-only instructions in chip or slow RAM show it too.
 - A source line can be given by file name alone (`main.s:42`) in breakpoints, watches and `iterations`, rather than the full path the program records.
@@ -23,6 +23,7 @@
 
 - Kickstart symbols no longer overwrite program symbols in naming clash in profiler
 - `profile dump --json` (and other CLI output) was cut off at 64 KB when piped to another program.
+- The Blitter view showed every blit's duration at twice its length in µs, lines and % of frame.
 - A data breakpoint on a variable watched more than the variable: its range was rounded up to one power-of-two block, so writes to a neighbouring variable stopped it too. It now watches exactly the variable's bytes. Clearing a "Set Watchpoint Length" override also went back to watching a single byte instead of the variable's own size.
 - A data breakpoint stop now says what happened — the access and its size, the value written and the value it replaced, the exact address, and who did it (the CPU and its PC, the copper MOVE, or blitter/disk DMA) — where it only named the source before.
 
