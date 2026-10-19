@@ -230,6 +230,7 @@ export interface IDisassembledInstruction {
   file?: string;
   line?: number; // 1-based, straight from SourceMap.lookupAddress().line — see ProfileFrame.line
   jumpTarget?: number; // resolved branch/jump target address, for arrow-gutter visualization
+  comment?: string; // what a library call calls, e.g. "exec.library AllocMem" (resolved at capture time)
   // Datasheet cost of ONE execution with no bus contention, in color clocks, and the bus accesses
   // it makes (68kcounter — see theoreticalTimings.ts). Derived from `text`, so it is recomputed by
   // attachDisassembly on every load rather than stored in the .puaeprofile: the document holds the

@@ -1,4 +1,5 @@
 import { decodeInstruction as m68kDecode, instructionToString } from "m68kdecode";
+import { libraryCallComments } from "./libraryCalls";
 import { SourceMap } from "./sourceMap";
 import type { PuaeRpcClient } from "./shared/puaeRpcProtocol";
 import { buildUnwindTable } from "./unwindTable";
@@ -385,6 +386,12 @@ export interface RawDisassembledInstruction {
   hits: number;
   cycles: number;
   jumpTarget?: number;
+  /**
+   * What a library call calls (`exec.library AllocMem`) — see annotateLibraryCalls. Stored, not
+   * worked out on load like the timings: it's a reading of the machine at capture time, of memory
+   * the document doesn't hold (library names are in ROM).
+   */
+  comment?: string;
 }
 export interface RawDisassembledFunction {
   address: number;
@@ -575,6 +582,48 @@ export const MAX_DISASSEMBLE_INSTRUCTIONS = 16_384;
 // disassembly template (instruction text + addresses unchanged from the template). Used
 // to give frames 1..N-1 correct per-frame counts without re-running the expensive
 // disassemble RPC, and to produce the combined-all-frames disassembly.
+/**
+ * Names the library calls in a capture's listing (libraryCalls.ts), against the live machine. a6
+ * at each call is known exactly from the register trace — every value it held across the
+ * capture's executions of that call — so nothing is guessed for a call that ran; one that didn't
+ * falls back to the a6 load before it in the code. Every frame's copy of the listing gets the same
+ * comments. Best-effort: a failure leaves calls unnamed, never the capture broken.
+ */
+async function annotateLibraryCalls(frames: FrameCapture[], sourceMap: SourceMap, read: (address: number, count: number) => Promise<Uint8Array>): Promise<void> {
+  const listing = frames[0]?.raw.disassembly;
+  if (!listing?.length) return;
+  const a6At = new Map<number, Set<number>>();
+  for (const { model } of frames) {
+    if (!model.registers) continue;
+    for (let k = 0; k < model.pcs.length; k++) {
+      const a6 = model.registers[k * REG_COUNT + 14]; // D0-D7, A0-A7, …: A6 is 14
+      if (a6 === undefined) break;
+      let set = a6At.get(model.pcs[k]);
+      if (!set) a6At.set(model.pcs[k], (set = new Set()));
+      set.add(a6);
+    }
+  }
+  const symbolAt = (address: number) => {
+    const sym = sourceMap.findSymbolOffset(address);
+    return sym && sym.offset === 0 ? sym.symbol : undefined;
+  };
+  const comments = new Map<number, string>();
+  try {
+    for (const fn of listing) {
+      const found = await libraryCallComments(fn.instructions, read, symbolAt, { a6At: (address) => [...(a6At.get(address) ?? [])] });
+      for (const [address, comment] of found) comments.set(address, comment);
+    }
+  } catch (e) {
+    console.warn("[profiler] library call names failed:", e);
+  }
+  if (comments.size === 0) return;
+  for (const { model, raw } of frames) {
+    if (!raw.disassembly) continue;
+    for (const fn of raw.disassembly) for (const ins of fn.instructions) ins.comment = comments.get(ins.address) ?? ins.comment;
+    model.disassembly = attachDisassembly(raw.disassembly, sourceMap);
+  }
+}
+
 export function reweightDisassembly(
   template: RawDisassembledFunction[],
   samples: InstructionSample[],
@@ -1346,6 +1395,9 @@ export class ProfilerManager {
           frames.push({ model, raw });
         }
       }
+      // Still paused, so the machine can be asked what each library call calls.
+      await annotateLibraryCalls(frames, sourceMap, (address, count) =>
+        rpc.sendRpcCommand("readMemory", { address, count }).then((r) => u8(r.data)));
     } finally {
       try {
         await rpc.sendRpcCommand("copperTrackingEnable", { enabled: false });

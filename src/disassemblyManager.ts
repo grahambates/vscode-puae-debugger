@@ -5,6 +5,7 @@ import { Emulator } from "./emulator";
 import { Source } from "@vscode/debugadapter";
 import { disassembleCopperInstruction } from "./shared/copperDisassembler";
 import { decodeInstruction, instructionToString } from "m68kdecode";
+import { libraryCallComments } from "./libraryCalls";
 
 /**
  * Manages instruction disassembly for the debug adapter.
@@ -83,6 +84,15 @@ export class DisassemblyManager {
       byteOffset += bytesUsed;
     }
 
+    // Library calls named in a comment — `jsr -198(a6)  ; exec.library AllocMem` (libraryCalls.ts).
+    // Worked out over everything decoded, not just the rows returned, so a call near the top can
+    // still see the a6 load above it.
+    const libraryCalls = await this.libraryCallComments(decoded);
+    for (const instr of decoded) {
+      const comment = libraryCalls.get(instr.addr);
+      if (comment) instr.instruction += `  ; ${comment}`;
+    }
+
     const startIndex = decoded.findIndex(i => i.addr === baseAddress);
     if (startIndex === -1) {
       throw new Error("Disassembly failed: Start instruction not found");
@@ -127,6 +137,24 @@ export class DisassemblyManager {
       }
       return disasm;
     });
+  }
+
+  /** Never fails the disassembly: without a readable a6 or memory, calls just go unnamed. */
+  private async libraryCallComments(decoded: { addr: number; hex: string }[]): Promise<Map<number, string>> {
+    try {
+      const cpu = await this.emulator.getCpuInfo();
+      return await libraryCallComments(
+        decoded.map((d) => ({ address: d.addr, hex: d.hex })),
+        (address, length) => this.emulator.readMemory(address, length),
+        (address) => {
+          const sym = this.sourceMap?.findSymbolOffset(address);
+          return sym && sym.offset === 0 ? sym.symbol : undefined;
+        },
+        { live: { pc: parseInt(cpu.pc, 16), a6: parseInt(cpu.a6, 16) } },
+      );
+    } catch {
+      return new Map();
+    }
   }
 
   /**

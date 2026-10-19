@@ -163,7 +163,7 @@ function RowRenderer({ index, style, rows, maxCycles, currentAddress, onOpenSour
         );
       })()}
       <span className="disasm-addr">${ins.address.toString(16).padStart(6, "0")}</span>
-      <span className="disasm-text">{ins.text}</span>
+      <span className="disasm-text">{ins.text}{ins.comment && <span className="disasm-comment">  ; {ins.comment}</span>}</span>
       {!showSource && ins.file && (
         <a
           href="#"
@@ -220,7 +220,7 @@ function SortedRowRenderer({ index, style, rows, totalCycles, currentAddress, ma
       <span className="disasm-pct" title="Share of all executed instructions' total time this frame">{pct.toFixed(1)}%</span>
       <span className="disasm-addr">${ins.address.toString(16).padStart(6, "0")}</span>
       <span className="disasm-fn" title={fn.name}>{fn.name}</span>
-      <span className="disasm-text">{ins.text}</span>
+      <span className="disasm-text">{ins.text}{ins.comment && <span className="disasm-comment">  ; {ins.comment}</span>}</span>
       {ins.file && (
         <a
           href="#"

@@ -8,6 +8,7 @@
 // `ProfilerManager`. It deliberately reuses those same modules rather than reimplementing any of
 // it, so a capture taken here symbolicates identically to one taken from the debugger.
 
+import { libraryCallComments } from "../libraryCalls";
 import { readFile } from "fs/promises";
 import { parseHunks } from "../amigaHunkParser";
 import { loadAmigaProgram } from "../amigaHunkLoader";
@@ -770,6 +771,24 @@ export class HeadlessSession {
     };
   }
 
+  /** Names library calls — `jsr -198(a6)` as `exec.library AllocMem` — see libraryCalls.ts. */
+  private async annotateLibraryCalls(lines: DecodedLine[], pc: number): Promise<void> {
+    const a6 = parseInt((await this.emulator.getCpuInfo()).a6, 16);
+    const comments = await libraryCallComments(
+      lines,
+      (address, length) => this.emulator.readMemory(address, length),
+      (address) => {
+        const sym = this.sourceMap.findSymbolOffset(address);
+        return sym && sym.offset === 0 ? sym.symbol : undefined;
+      },
+      { live: { pc, a6 } },
+    );
+    for (const line of lines) {
+      const comment = comments.get(line.address);
+      if (comment) line.comments.push(comment);
+    }
+  }
+
   /**
    * A disassembly listing around `at` (an address, symbol or file:line; default the PC), or of
    * the whole routine enclosing it.
@@ -779,61 +798,6 @@ export class HeadlessSession {
    * the listing decodes forward from that symbol, which is aligned by construction; only without
    * one does it fall back to guessing a start and checking the decode lands on the address.
    */
-  /**
-   * Names library calls — `jsr -198(a6)` as `exec.library AllocMem` — by asking the machine rather
-   * than a table: which library base `a6` holds, that library's own name, and where its jump table
-   * entry at that offset points. The target is named only on an exact ROM symbol (the Kickstart
-   * symbol tables), since the nearest symbol would confidently name the wrong function; otherwise
-   * the address is shown, including when SetFunction has patched the entry into RAM.
-   *
-   * `a6` comes from the listing itself — the nearest earlier `movea.l $4.w,a6` / `movea.l Base,a6`,
-   * whose source is read from memory now — or, with no such write between the PC and the call,
-   * the live register. Either way the base must check out as a library node (ln_Type) before
-   * anything is said about it, so a wrong guess about `a6` yields no annotation, not a wrong one.
-   */
-  private async annotateLibraryCalls(lines: DecodedLine[], pc: number): Promise<void> {
-    const long = async (address: number) => (await this.emulator.readMemory(address, 4)).readUInt32BE(0);
-    const liveA6 = parseInt((await this.emulator.getCpuInfo()).a6, 16);
-    const pcIndex = lines.findIndex((l) => l.address === pc);
-    for (let i = 0; i < lines.length; i++) {
-      const call = /^(jsr|jmp) (-?\d+)\(a6\)$/.exec(lines[i].text);
-      if (!call) continue;
-      let base: number | undefined;
-      for (let j = i - 1; j >= 0 && base === undefined; j--) {
-        const write = /^movea?\.l (\S+),a6$/.exec(lines[j].text);
-        if (write) {
-          const abs = /^\$([0-9a-f]+)(?:\.w)?$/.exec(write[1]);
-          const imm = /^#\$([0-9a-f]+)$/.exec(write[1]);
-          base = abs ? await long(parseInt(abs[1], 16)) : imm ? parseInt(imm[1], 16) : -1;
-          break;
-        }
-        if (/,a6$/.test(lines[j].text)) { base = -1; break; } // a6 changed some other way
-        if (j === pcIndex) { base = liveA6; break; }
-      }
-      if (base === undefined && pcIndex >= 0 && pcIndex <= i) base = liveA6;
-      if (base === undefined || base < 0) continue;
-      const comment = await this.describeLibraryCall(base >>> 0, parseInt(call[2], 10));
-      if (comment) lines[i].comments.push(comment);
-    }
-  }
-
-  private async describeLibraryCall(base: number, offset: number): Promise<string | undefined> {
-    // ln_Type: NT_DEVICE 3, NT_RESOURCE 8, NT_LIBRARY 9 — anything else isn't a jump-table owner.
-    const header = await this.emulator.readMemory(base + 8, 6);
-    if (![3, 8, 9].includes(header[0])) return undefined;
-    const nameBytes = await this.emulator.readMemory(header.readUInt32BE(2), 40);
-    const end = nameBytes.indexOf(0);
-    const name = nameBytes.subarray(0, end < 0 ? 40 : end).toString("latin1");
-    if (!/^[\x20-\x7e]+$/.test(name)) return undefined;
-    const entry = await this.emulator.readMemory((base + offset) >>> 0, 6);
-    if (entry.readUInt16BE(0) !== 0x4ef9) return `${name} ${offset}`; // not a JMP abs.l: just the library and offset
-    const target = entry.readUInt32BE(2) & 0xffffff;
-    const sym = this.sourceMap.findSymbolOffset(target);
-    if (sym && sym.offset === 0) return `${name} ${sym.symbol}`;
-    const where = target >= 0xf80000 ? "ROM" : "RAM, patched";
-    return `${name} ${offset} -> ${formatAddr(target)} (${where})`;
-  }
-
   public async disassemble(
     at: string | undefined,
     options: { before: number; count: number; wholeFunction: boolean; maxInstructions: number },

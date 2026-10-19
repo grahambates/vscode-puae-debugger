@@ -1537,6 +1537,12 @@ body {
   text-overflow: ellipsis;
 }
 
+/* A library call's name ("exec.library AllocMem"), after the instruction it annotates. */
+.disasm-comment {
+  white-space: pre;
+  color: var(--vscode-descriptionForeground);
+}
+
 .disasm-src {
   flex-shrink: 0;
   max-width: 16em;

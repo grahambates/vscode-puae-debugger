@@ -6,6 +6,7 @@
 
 - Codex support for skills installer
 - The program's serial output — `kprintf`/`KPrintF`, `RawPutChar`, or any write to SERDAT — appears in the Debug Console as it runs, in VS Code and the standalone debugger.
+- Library calls are named in disassembly — `jsr -198(a6)  ; exec.library AllocMem` — in VS Code's disassembly view, the Debug Console's `disassemble()` and the profiler's disassembly, from the library base in `a6` and its jump table (an entry patched with SetFunction shows its RAM target). The profiler uses `a6` as recorded at each call; the debugger follows the code back to where `a6` was loaded, including `movea.l Base(pc),a6`.
 - Profile summaries and comparisons: `profile_dump`'s `summary` (CLI `dump --summary`) gives each function's min/avg/max cost per frame across a capture, and `profile_diff` (CLI `profile diff <before> <after>`) compares two captures function by function. `profile_dump`'s `out` writes the analysis as JSON to a file.
 - Per-pass costs and overruns: `profile_dump`'s `iterations` (CLI `--iterations`) splits a capture at each execution of an address, symbol or `file:line` — the top of the main loop — reporting each pass's length, which ones took longer than a frame, and per-function cost per pass.
 - Call counts: how many times each function was entered in the frame — in the profiler's flame-graph tooltip, and as a `calls` column in `profile_dump`'s function table.

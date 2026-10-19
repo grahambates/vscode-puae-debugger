@@ -554,11 +554,14 @@ export function buildFlame(model: IProfileModel, lines?: { from: number; to: num
 function formatInstructionText(detail: InstructionAnalysis, model: IProfileModel): void {
   const fn = model.disassembly?.find((f) => f.address === detail.address);
   if (!fn) return;
-  const bytes = new Map(fn.instructions.map((ins) => [ins.address, ins.hex]));
+  const byAddress = new Map(fn.instructions.map((ins) => [ins.address, ins]));
   const symbolize = createSymbolizer(model.symbols);
   for (const ins of detail.instructions) {
-    const hex = bytes.get(ins.address);
-    if (hex) ins.text = formatInstruction(hex, ins.address, symbolize);
+    const stored = byAddress.get(ins.address);
+    if (!stored?.hex) continue;
+    ins.text = formatInstruction(stored.hex, ins.address, symbolize);
+    // A library call's name, resolved when the capture was made (see annotateLibraryCalls).
+    if (stored.comment) ins.text += ins.text.includes("  ; ") ? `, ${stored.comment}` : `  ; ${stored.comment}`;
   }
 }
 
