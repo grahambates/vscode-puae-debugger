@@ -19,7 +19,7 @@
 //   - frame-short            → the profile buffer running out mid-capture
 
 import { analyseIterations, IterationAnalysis } from "./profileIterations";
-import { buildColumns, buildSampleSlots, columnIndexAtX } from "./webview/profilerViewer/columns";
+import { buildColumns, buildSampleSlots, columnIndexAtX, countCalls } from "./webview/profilerViewer/columns";
 import { blitLabel, blitTooltip, getBlits } from "./webview/profilerViewer/blits";
 import { createSymbolizer } from "./webview/profilerViewer/symbols";
 import { disassembleCopperInstruction } from "./shared/copperDisassembler";
@@ -735,26 +735,14 @@ export function analyseFrame(model: IProfileModel, index: number): FrameAnalysis
     if (!e) { e = { name: inc.name, file: inc.file, samples: 0, selfCycles: 0, selfPct: 0, totalCycles: 0, totalPct: 0, widthPct: 0, calls: 0 }; byFn.set(key, e); }
     e.totalCycles = inc.cycles;
   }
-  // Calls: a box starts in the layout where a column's cell is a location; the box's later columns
-  // point back at that one by index. Column 0's boxes were already running when the frame began.
-  // A box inside another of the same function (recursion, or a bsr to a local label within it,
-  // which is attributed to the routine) isn't a separate call of it — as total time counts once.
-  for (let k = 1; k < columns.length; k++) {
-    const above = new Set<string>();
-    columns[k].rows.forEach((cell, depth) => {
-      const loc = typeof cell === "number" ? columns[cell]?.rows[depth] : cell;
-      if (!loc || typeof loc === "number") return;
-      const fn = functionKey(loc);
-      if (typeof cell !== "number" && !above.has(fn.key)) {
-        let e = byFn.get(fn.key);
-        if (!e) {
-          e = { name: fn.name, file: fn.file, samples: 0, selfCycles: 0, selfPct: 0, totalCycles: 0, totalPct: 0, widthPct: 0, calls: 0 };
-          byFn.set(fn.key, e);
-        }
-        e.calls++;
-      }
-      above.add(fn.key);
-    });
+  // Calls: see countCalls — the same count the flame graph's tooltip shows.
+  for (const [key, { name, file, calls }] of countCalls(columns)) {
+    let e = byFn.get(key);
+    if (!e) {
+      e = { name, file, samples: 0, selfCycles: 0, selfPct: 0, totalCycles: 0, totalPct: 0, widthPct: 0, calls: 0 };
+      byFn.set(key, e);
+    }
+    e.calls = calls;
   }
   for (const e of byFn.values()) {
     e.selfPct = cycles > 0 ? (e.selfCycles / cycles) * 100 : 0;

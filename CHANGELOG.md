@@ -8,7 +8,7 @@
 - The program's serial output — `kprintf`/`KPrintF`, `RawPutChar`, or any write to SERDAT — appears in the Debug Console as it runs, in VS Code and the standalone debugger.
 - Profile summaries and comparisons: `profile_dump`'s `summary` (CLI `dump --summary`) gives each function's min/avg/max cost per frame across a capture, and `profile_diff` (CLI `profile diff <before> <after>`) compares two captures function by function. `profile_dump`'s `out` writes the analysis as JSON to a file.
 - Per-pass costs and overruns: `profile_dump`'s `iterations` (CLI `--iterations`) splits a capture at each execution of an address, symbol or `file:line` — the top of the main loop — reporting each pass's length, which ones took longer than a frame, and per-function cost per pass.
-- The function table has a `calls` column: how many times each function was entered in the frame.
+- Call counts: how many times each function was entered in the frame — in the profiler's flame-graph tooltip, and as a `calls` column in `profile_dump`'s function table.
 - `emulator_inspect` memory reads can return a SHA-256 of the range (`"as": "sha256"`, up to 16 MB) or write it to a file (`"as": "file"`), to compare buffers between builds without dumping them.
 - Screenshots report a picture hash, per frame on a contact sheet, and `framesDir` writes each sheet frame as its own PNG.
 

@@ -457,3 +457,33 @@ export function resolveStackAtX(columns: IColumn[], x: number): IColumnLocation[
   }
   return stack;
 }
+
+/** A function's identity across a capture: name and source file, as the analysis keys it. */
+export const functionCallKey = (loc: ILocation): string => `${loc.callFrame.functionName} ${loc.callFrame.url || ""}`;
+
+/**
+ * Times each function was entered in the span these columns cover: each new box the flame graph
+ * draws for it. A box starts where a column's cell is a location — the box's later columns point
+ * back at that one by index. Column 0's boxes were already running when the span began, so they
+ * aren't counted. A box inside another of the same function (recursion, or a bsr to a local label
+ * within it, which is attributed to the routine) isn't a separate call either, just as total time
+ * counts it once. Keyed by functionCallKey.
+ */
+export function countCalls(columns: IColumn[]): Map<string, { name: string; file?: string; calls: number }> {
+  const calls = new Map<string, { name: string; file?: string; calls: number }>();
+  for (let k = 1; k < columns.length; k++) {
+    const above = new Set<string>();
+    columns[k].rows.forEach((cell, depth) => {
+      const loc = typeof cell === "number" ? columns[cell]?.rows[depth] : cell;
+      if (!loc || typeof loc === "number") return;
+      const key = functionCallKey(loc);
+      if (typeof cell !== "number" && !above.has(key)) {
+        const entry = calls.get(key) ?? { name: loc.callFrame.functionName, file: loc.callFrame.url || undefined, calls: 0 };
+        entry.calls++;
+        calls.set(key, entry);
+      }
+      above.add(key);
+    });
+  }
+  return calls;
+}

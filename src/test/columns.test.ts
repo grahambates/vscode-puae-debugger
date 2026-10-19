@@ -1,4 +1,4 @@
-import { buildColumns, columnIndexAtX, columnIndexToSlot, findLineExecutionSlot, findNextSample, IColumn } from "../webview/profilerViewer/columns";
+import { buildColumns, columnIndexAtX, columnIndexToSlot, countCalls, findLineExecutionSlot, findNextSample, functionCallKey, IColumn, IColumnLocation } from "../webview/profilerViewer/columns";
 import { BusOwner, DMA_CODE, IDisassembledFunction, IDisassembledInstruction, IProfileModel } from "../shared/profilerTypes";
 
 const columns: IColumn[] = [
@@ -470,5 +470,32 @@ describe("findLineExecutionSlot", () => {
   it("returns undefined when the model has no DMA trace", () => {
     const noDma: IProfileModel = { ...model, dma: undefined };
     expect(findLineExecutionSlot(noDma, "a.c", 10, undefined, sameFile)).toBeUndefined();
+  });
+});
+
+describe("countCalls", () => {
+  const at = (name: string) => ({ callFrame: { functionName: name, url: "" }, graphId: 0, filtered: true }) as unknown as IColumnLocation;
+  const col = (rows: (IColumnLocation | number)[]): IColumn => ({ x1: 0, x2: 0, rows });
+
+  it("counts each new box after the first column, once per outermost run", () => {
+    const main = at("main"), draw = at("Draw"), inner = at("Draw"), plot = at("Plot"), plot2 = at("Plot");
+    const columns = [
+      col([main, draw]), // Draw already running: not a call
+      col([0, 0]),
+      col([0, plot]), // main calls Plot
+      col([0, 2, inner]), // Plot bsr's into Draw's code: inside no other Draw, so it counts
+      col([0, plot2]), // a second Plot box
+      col([0, 4, 3]), // a continuation, nothing new
+    ];
+    const calls = countCalls(columns);
+    expect(calls.get(functionCallKey(plot))?.calls).toBe(2);
+    expect(calls.get(functionCallKey(draw))?.calls).toBe(1);
+    expect(calls.get(functionCallKey(main))).toBeUndefined();
+  });
+
+  it("doesn't count a box inside another of the same function", () => {
+    const draw = at("Draw"), local = at("Draw");
+    const calls = countCalls([col([at("main")]), col([0, draw]), col([0, 1, local])]);
+    expect(calls.get(functionCallKey(draw))?.calls).toBe(1);
   });
 });

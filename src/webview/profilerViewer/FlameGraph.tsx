@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { PointerEvent as ReactPointerEvent } from "react";
 import { BusOwner, Category, ILocation, DMA_WRITE, DMA_BYTE, DMA_HPOS, dmaIsCustomReg } from "../../shared/profilerTypes";
 import { getProfileModel } from "./modelStore";
-import { buildColumns, IColumn, IColumnLocation, resolveStackAtX } from "./columns";
+import { buildColumns, countCalls, functionCallKey, IColumn, IColumnLocation, resolveStackAtX } from "./columns";
 import { binarySearch } from "./array";
 import { dataName, DisplayUnit, formatValue, scaleValue, Timing } from "./display";
 import { compileFilter, IRichFilter } from "./filter";
@@ -300,6 +300,8 @@ export function FlameGraph({
   const yOffset = TIMELINE_H + bandH + blitH;
 
   const columns = useMemo(() => buildColumns(model), [model]);
+  // How many times each function was entered in what's shown — the frame, or the selected frames.
+  const callCounts = useMemo(() => countCalls(columns), [columns]);
   const { boxById, boxes, maxY } = useMemo(() => buildBoxes(columns, yOffset), [columns, yOffset]);
   const height = Math.max(maxY, yOffset) + Y_BUFFER;
   const duration = model.duration || 1;
@@ -1005,6 +1007,9 @@ export function FlameGraph({
                 <span className="tip-val">{formatValue(hoverLoc.aggregateTime, displayUnit, timing)}</span>
               </>
             )}
+
+            <span className="tip-label" title="Times it was entered here, not counting a call already running when this began">Calls</span>
+            <span className="tip-val">{callCounts.get(functionCallKey(hoverLoc))?.calls ?? 0}</span>
           </div>
           {hoverLoc.callFrame.url && (
             <div className="tt-hint">{isMac ? "Cmd" : "Ctrl"}+Click to open source</div>
