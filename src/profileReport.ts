@@ -3,7 +3,7 @@
 // terminal and a number a model reads over MCP should never be formatted differently, or a
 // conversation about one won't transfer to the other.
 
-import { BlitAnalysis, CopperTrace, CallerPath, CallTreeNode, FlameBox, FlameView, FrameAnalysis, InstructionAnalysis, ProfileAnalysis, ScreenUpdates, StallAnalysis } from "./profileAnalysis";
+import { AccessAnalysis, BlitAnalysis, CopperTrace, CallerPath, CallTreeNode, FlameBox, FlameView, FrameAnalysis, InstructionAnalysis, ProfileAnalysis, ScreenUpdates, StallAnalysis } from "./profileAnalysis";
 import { CaptureSummary, ProfileDiff, Stat } from "./profileCompare";
 import { IterationAnalysis, OVERRUN_TOLERANCE } from "./profileIterations";
 
@@ -294,6 +294,7 @@ function dumpFrame(
   if (f.flame) out.push(...renderFlame(f.flame, f.index, label));
   if (f.blits) out.push(...renderBlits(f.blits, f.cycles, f.index));
   if (f.copper) out.push(...renderCopper(f.copper, f.index, f.flame !== undefined && f.flame.end - f.flame.start < f.cycles));
+  if (f.accesses) out.push(...renderAccesses(f.accesses, f.index));
   if (f.stalls) out.push(...renderStalls(f.stalls, limit, f.index));
   if (f.instructionDetail) {
     out.push(...renderInstructions(f.instructionDetail, f.index));
@@ -524,4 +525,58 @@ export function renderIterations(it: IterationAnalysis, limit: number): string {
   }
   out.push(renderSummary(it.summary, limit, "iteration"));
   return out.join("\n");
+}
+
+// Rows past this go to --json / `out`: a buffer cleared by the CPU is thousands of accesses, and the
+// summary above them says who and when already.
+const ACCESS_TEXT_ROWS = 100;
+
+function renderAccesses(a: AccessAnalysis, frameIndex: number): string[] {
+  const hex = (v: number, w = 6) => `$${(v >>> 0).toString(16).padStart(w, "0")}`;
+  const t = a.target;
+  if (a.registerChanges) {
+    const out = ["", `  Changes to ${t.query}, frame ${frameIndex}: ${a.total}`];
+    if (a.noTrace) {
+      out[1] += " — this frame has no register trace (a capture records one for its first frame only)";
+      return out;
+    }
+    if (a.total === 0) return out;
+    out.push("", `  ${"who".padEnd(40)}${"count".padStart(7)}  lines`);
+    for (const g of a.groups) {
+      const p = (slot: number) => `${Math.floor(slot / LINE_SLOTS)}:${String(slot % LINE_SLOTS).padStart(3, "0")}`;
+      out.push(`  ${g.who.slice(0, 39).padEnd(40)}${String(g.count).padStart(7)}  ${p(g.firstSlot)}-${p(g.lastSlot)}`);
+    }
+    out.push("", `  ${"line:hpos".padEnd(10)}${"from".padEnd(11)}${"to".padEnd(11)}who`);
+    for (const r of a.registerChanges.slice(0, ACCESS_TEXT_ROWS)) {
+      const via = r.via === "exception" ? "  (taking an exception)" : r.via === "outside" ? "  (in the unprofiled code it called)" : "";
+      out.push(`  ${`${r.line}:${String(r.hpos).padStart(3, "0")}`.padEnd(10)}${hex(r.from, 8).padEnd(11)}${hex(r.to, 8).padEnd(11)}${r.who}${r.at ? `  ${r.at}` : ""}${via}`);
+    }
+    if (a.total > ACCESS_TEXT_ROWS) out.push(`  … ${a.total - ACCESS_TEXT_ROWS} more (--json, or profile_dump's out)`);
+    return out;
+  }
+  const out = [
+    "",
+    `  Accesses to ${t.query} (${hex(t.start)}-${hex(t.end - 1)}), frame ${frameIndex}: ${a.total}` +
+      (a.total ? "" : " — nothing touched it on the chip bus this frame (fast RAM isn't on it)"),
+  ];
+  if (a.total === 0) return out;
+  const pos = (slot: number) => `${Math.floor(slot / LINE_SLOTS)}:${String(slot % LINE_SLOTS).padStart(3, "0")}`;
+  out.push("", `  ${"who".padEnd(40)}${"".padEnd(6)}${"count".padStart(7)}  ${"lines".padEnd(17)}offsets`);
+  for (const g of a.groups) {
+    const offsets = g.low === g.high ? `+$${(g.low - t.start).toString(16)}` : `+$${(g.low - t.start).toString(16)}-$${(g.high - t.start).toString(16)}`;
+    out.push(`  ${(g.who + (g.unverified ? " ~" : "")).slice(0, 39).padEnd(40)}${(g.write ? "write" : "read").padEnd(6)}${String(g.count).padStart(7)}  ${`${pos(g.firstSlot)}-${pos(g.lastSlot)}`.padEnd(17)}${offsets}`);
+  }
+  if (a.groups.some((g) => g.unverified)) {
+    out.push("  ~ some CPU accesses here are placed by timing only, not checked against the instruction's operand (no register trace for this frame)");
+  }
+  out.push("", `  ${"line:hpos".padEnd(10)}${"".padEnd(4)}${"value".padEnd(8)}${"offset".padEnd(9)}who`);
+  for (const r of a.rows.slice(0, ACCESS_TEXT_ROWS)) {
+    const value = r.size === 1 ? hex(r.value & 0xff, 2) : hex(r.value, 4);
+    out.push(
+      `  ${`${r.line}:${String(r.hpos).padStart(3, "0")}`.padEnd(10)}${(r.write ? "W" : "R") + (r.size === 1 ? ".b" : ".w")} ${value.padEnd(8)}${`+$${r.offset.toString(16)}`.padEnd(9)}` +
+        `${r.who}${r.unverified ? " ~" : ""}${r.at ? `  ${r.at}` : ""}`,
+    );
+  }
+  if (a.total > ACCESS_TEXT_ROWS) out.push(`  … ${a.total - ACCESS_TEXT_ROWS} more (--json, or profile_dump's out, has ${Math.min(a.total, a.rows.length)})`);
+  return out;
 }

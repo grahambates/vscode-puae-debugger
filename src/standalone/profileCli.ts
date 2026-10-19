@@ -19,7 +19,7 @@ const USAGE = `Usage:
                                                   [--lines FROM-TO] [--blits] [--copper]
                                                   [--stalls]
                                                   [--instructions NAME] [--summary]
-                                                  [--iterations ADDRESS] [--json]
+                                                  [--iterations ADDRESS] [--accesses TARGET] [--json]
   puae-debugger profile check <file.puaeprofile> [--json]
   puae-debugger profile diff  <before.puaeprofile> <after.puaeprofile> [--functions N] [--json]
 
@@ -50,6 +50,12 @@ Options:
                        per hit, and (68000) datasheet cost and stall per execution.
   --summary            Each function's min/avg/max cost per frame across the capture,
                        instead of a table per frame.
+  --accesses TARGET    Every access to TARGET this frame and who made it — the CPU (instruction and
+                       source line), a copper MOVE, the blitter, bitplane or sprite DMA. TARGET is a
+                       custom register (COLOR00, BPL1PT), an address or symbol (with :LENGTH, or a
+                       symbol's own size) or a range FROM-TO. Chip and slow RAM only. A CPU
+                       register (d7, a5, sp) lists its changes instead: old and new value and the
+                       instruction that made each (a capture's first frame).
   --iterations ADDRESS Split the capture at each execution of ADDRESS (an address, symbol
                        or file:line, e.g. the top of the main loop): each iteration's length,
                        which ones took longer than a frame, and per-function cost per iteration.
@@ -84,6 +90,7 @@ export function runProfileCli(argv: string[]): number {
   let lines: string | undefined;
   let summary = false;
   let iterations: string | undefined;
+  let accesses: string | undefined;
   for (let i = 1; i < argv.length; i++) {
     const arg = argv[i];
     if (arg === "--json") json = true;
@@ -99,6 +106,10 @@ export function runProfileCli(argv: string[]): number {
     }
     else if (arg === "--tree") callTree = true;
     else if (arg === "--summary") summary = true;
+    else if (arg === "--accesses") {
+      accesses = argv[++i];
+      if (!accesses) { console.error(`--accesses needs a register, address, symbol or range.\n\n${USAGE}`); return 1; }
+    }
     else if (arg === "--iterations") {
       iterations = argv[++i];
       if (!iterations) { console.error(`--iterations needs an address, symbol or file:line.\n\n${USAGE}`); return 1; }
@@ -139,7 +150,7 @@ export function runProfileCli(argv: string[]): number {
   let analysis: ProfileAnalysis;
   try {
     const flameOpt = lines !== undefined ? parseLineRange(lines) : flame;
-    analysis = analyseProfile(bytes, { stalls, instructions, callTree, callers, flame: flameOpt, blits, copper, iterations });
+    analysis = analyseProfile(bytes, { stalls, instructions, callTree, callers, flame: flameOpt, blits, copper, iterations, accesses });
   } catch (err) {
     // A request the capture can't satisfy (an unknown --instructions name) is reported on its own
     // terms: its message already names what the capture does contain, and a "could not read"

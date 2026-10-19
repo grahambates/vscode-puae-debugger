@@ -523,9 +523,12 @@ export interface FrameCapture {
 // live captures and loaded .puaeprofile files, and the unit-test entry point. An empty
 // capture yields an empty model here; the live "nothing captured" diagnostic lives in
 // ProfilerManager.capture() where the emulator-state hint makes sense.
+// `codeSnapshot` is memory to read the program's code from when `raw` carries no snapshot of its
+// own: a multi-frame capture stores one, on its last frame, and the code is the same in every frame.
 export function buildModelFromCapture(
   raw: RawCapture,
   sourceMap: SourceMap,
+  codeSnapshot?: RawCapture["snapshot"],
 ): { model: IProfileModel; samples: InstructionSample[] } {
   const pb = raw.profile;
   const words = new Uint32Array(pb.data.buffer, pb.data.byteOffset, pb.data.byteLength >>> 2);
@@ -538,7 +541,7 @@ export function buildModelFromCapture(
   const nominal = pb.isPAL ? PAL_COLOR_CLOCKS_PER_US : NTSC_COLOR_CLOCKS_PER_US;
   const cyclesPerMicroSecond = pb.frameCycles > 0 ? pb.frameCycles / frameUs : nominal;
 
-  const snap = raw.snapshot;
+  const snap = raw.snapshot ?? codeSnapshot;
   const model = buildProfileModel(samples, sourceMap, cyclesPerMicroSecond, {
     read: snap ? snapshotReader(snap.chip, snap.slow, snap.fast, snap.fastAddr) : undefined,
     sourceLines: diskSourceLines(),
@@ -792,9 +795,10 @@ export function buildFramesFromCaptures(raws: RawCapture[], sourceMap: SourceMap
   const frames: FrameCapture[] = [];
   const frameSamples: InstructionSample[][] = [];
   const allSamples: InstructionSample[] = [];
+  const codeSnapshot = raws.find((r) => r.snapshot)?.snapshot;
   for (let i = 0; i < raws.length; i++) {
     const raw = raws[i];
-    const { model, samples } = buildModelFromCapture(raw, sourceMap);
+    const { model, samples } = buildModelFromCapture(raw, sourceMap, codeSnapshot);
     frameSamples.push(samples);
     allSamples.push(...samples);
     if (i > 0 && frames[0].raw.disassembly?.length) {
@@ -1325,6 +1329,7 @@ export class ProfilerManager {
         // wasm_profile_capture_baseline), which memory reconstruction replays that frame's writes
         // over; only attached to the last frame to avoid duplicating 2.5MB per frame.
         let snapshotRaw: { chip: Uint8Array; slow: Uint8Array; fast?: Uint8Array; fastAddr?: number; custom: Uint8Array; agaColors?: Uint8Array; atFrameStart?: boolean } | undefined;
+        const sourceLines = diskSourceLines(); // read once each for every frame's local routine names
         try {
           if (perFrameDmaBytes[numFrames - 1]) {
             const snap = await rpc.sendRpcCommand("getDmaSnapshot", undefined, 30000);
@@ -1415,7 +1420,10 @@ export class ProfilerManager {
             duplicateOfPrevious: dupBytes[fi] === 1,
           };
 
-          const model = buildProfileModel(samples, sourceMap, cyclesPerMicroSecond);
+          const model = buildProfileModel(samples, sourceMap, cyclesPerMicroSecond, {
+            read: snapshotRaw ? snapshotReader(snapshotRaw.chip, snapshotRaw.slow, snapshotRaw.fast, snapshotRaw.fastAddr) : undefined,
+            sourceLines,
+          });
           model.symbols = buildSymbolList(sourceMap);
           model.lineTable = sourceMap.getLineTable().map((e): ILineTableEntry => ({ address: e.address, file: e.path, line: e.line }));
           model.segments = sourceMap.getSegmentsInfo().map((s): ISegmentRange => ({ address: s.address, size: s.size }));

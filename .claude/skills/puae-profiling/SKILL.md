@@ -42,6 +42,16 @@ the question is what the program draws rather than what it costs). Both need a K
   `profile_dump { "summary": true }` reads one quickly: each function's min/avg/max per frame, how
   many frames it ran in, and its calls per frame. `out` writes the whole analysis as JSON, for
   anything longer.
+- **Who touched it.** `profile_dump { "accesses": "Screen1" }` (or a register like `"COLOR00"`, an
+  address with `:LENGTH`, or a range `"0x1000-0x1fff"`) lists every chip-bus access to it in the
+  frame, grouped by who made it — the CPU (routine, instruction and source line), a copper MOVE,
+  the blitter (which blit), bitplane or sprite DMA — then access by access with line:hpos. CPU
+  accesses are checked against the instruction's registers on a capture's first frame; elsewhere
+  they're placed by timing and marked `~` (right ~99% of the time, but a guess). Fast RAM isn't on
+  the chip bus, so the CPU's accesses to it never appear. A CPU register (`"a5"`, `"sp"`) lists
+  its changes instead — old and new value and the instruction behind each, with an interrupt's
+  entry and a ROM call's result labelled as such — from the register trace, which only a
+  capture's first frame has.
 - **Overruns: count iterations, not repeated frames.** A frame always adds up to 71051 colour
   clocks, so when the main loop takes longer than a frame its work just spreads over two, and
   per-frame costs stop being per-pass costs. `profile_dump { "iterations": "main.s:204" }` (the
@@ -61,7 +71,7 @@ npx puae-debugger profile check <file.puaeprofile> [--json]
 npx puae-debugger profile dump  <file.puaeprofile> [--frame N] [--functions N] [--sort self|total]
                                 [--tree] [--callers NAME] [--flame] [--lines FROM-TO] [--blits]
                                 [--copper] [--instructions NAME] [--stalls] [--summary]
-                                [--iterations ADDRESS] [--json]
+                                [--iterations ADDRESS] [--accesses TARGET] [--json]
 npx puae-debugger profile diff  <before.puaeprofile> <after.puaeprofile> [--functions N] [--json]
 ```
 

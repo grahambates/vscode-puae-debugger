@@ -23,7 +23,12 @@ import { buildColumns, buildSampleSlots, columnIndexAtX, countCalls } from "./we
 import { blitLabel, blitTooltip, getBlits } from "./webview/profilerViewer/blits";
 import { createSymbolizer } from "./webview/profilerViewer/symbols";
 import { disassembleCopperInstruction } from "./shared/copperDisassembler";
-import { formatInstruction } from "./m68kDisassembly";
+import { decodeLine, formatInstruction } from "./m68kDisassembly";
+import { AccessGroup, CPU_REGISTER_NAMES, findAccesses, findRegisterChanges, groupAccesses, ReadCode, sourceName } from "./webview/profilerViewer/accesses";
+import { customRegisterRange } from "./mcp/watchpoints";
+import { customRegisterName } from "./webview/shared/customRegisters";
+import { snapshotReader } from "./localRoutines";
+import { SourceMap } from "./sourceMap";
 import { BusOwner, DMA_HPOS, IComputedNode, IDisassembledFunction, ILocation, IProfileModel, REG_COUNT } from "./shared/profilerTypes";
 import { loadProfile } from "./profileLoader";
 import { ProfileManifest } from "./profileFormat";
@@ -233,6 +238,8 @@ export interface FrameAnalysis {
   blits?: BlitAnalysis;
   /** Present only when the copper trace was requested and the capture recorded one. */
   copper?: CopperTrace;
+  /** Present only when accesses were requested: everything that touched the range this frame. */
+  accesses?: AccessAnalysis;
   /**
    * The screen output is byte-identical to the previous frame's — the profiler filmstrip's "="
    * badge. Never true for frame 0 (nothing earlier in the capture to compare against).
@@ -1085,9 +1092,22 @@ export function analyseProfile(
     copper?: boolean;
     /** Split the capture into iterations at each execution of this address, symbol or source line. */
     iterations?: string;
+    /** List every access to this address, range, symbol or custom register (see resolveAccessTarget). */
+    accesses?: string;
   } = {},
 ): ProfileAnalysis {
   const { frames, manifest, sourceMap } = loadProfile(file);
+  // A multi-frame capture's memory snapshot is on its last frame; the code is the same in each.
+  const snap = frames.find((f) => f.raw.snapshot)?.raw.snapshot;
+  const readCode = snap ? snapshotReader(snap.chip, snap.slow, snap.fast, snap.fastAddr) : undefined;
+  let accessTarget: AccessTarget | undefined;
+  if (opts.accesses) {
+    try {
+      accessTarget = resolveAccessTarget(opts.accesses, sourceMap);
+    } catch (err) {
+      throw new ProfileRequestError(`accesses ${opts.accesses}: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
   const analysed = frames.map((f, i) => {
     const a = analyseFrame(f.model, i);
     a.duplicateOfPrevious = f.raw.duplicateOfPrevious === true;
@@ -1096,6 +1116,7 @@ export function analyseProfile(
     if (opts.flame) a.flame = buildFlame(f.model, opts.flame === true ? undefined : opts.flame);
     if (opts.blits) a.blits = analyseBlits(f.model);
     if (opts.copper) a.copper = analyseCopper(f.model, typeof opts.flame === "object" ? opts.flame : undefined);
+    if (accessTarget) a.accesses = analyseAccesses(f.model, accessTarget, readCode, sourceMap);
     return a;
   });
   let callersName: string | undefined;
@@ -1152,4 +1173,149 @@ export function analyseProfile(
     }
   }
   return { manifest, frames: analysed, findings, screenUpdates, instructionQuery: opts.instructions, callersOf: callersName, iterations };
+}
+
+// ── Accesses: who touched an address range (accesses.ts) ──────────────────────────────────
+
+export interface AccessTarget {
+  query: string;
+  /** [start, end) bus addresses, custom registers as $dffxxx. */
+  start: number;
+  end: number;
+  /** A CPU register instead (REG_COUNT index): its changes, from the register trace. */
+  cpuRegister?: number;
+}
+
+/** One change to a CPU register: the instruction that made it, and the values either side. */
+export interface RegisterChangeRow {
+  line: number;
+  hpos: number;
+  from: number;
+  to: number;
+  who: string;
+  at?: string;
+  /** Taken during an exception's entry, or by an unprofiled subroutine (a ROM call) — see RegisterChange. */
+  via?: "exception" | "outside";
+}
+
+export interface AccessRow {
+  line: number;
+  hpos: number;
+  write: boolean;
+  size: 1 | 2;
+  address: number;
+  /** Offset into the range. */
+  offset: number;
+  value: number;
+  /** "CPU ClearScreen+$1a", "Copper MOVE", "Blitter D (blit #3)", "Bitplane 1". */
+  who: string;
+  /** The instruction or copper MOVE that made it, and its source line, where known. */
+  at?: string;
+  /** A CPU access attributed by position only, not checked against the instruction's operand. */
+  unverified?: boolean;
+}
+
+export interface AccessAnalysis {
+  target: AccessTarget;
+  groups: AccessGroup[];
+  rows: AccessRow[];
+  /** Total, though `rows` may be cut short (MAX_ACCESS_ROWS). */
+  total: number;
+  /** For a CPU register: its changes this frame; empty, with `noTrace`, when the frame has no register trace. */
+  registerChanges?: RegisterChangeRow[];
+  noTrace?: boolean;
+}
+
+const MAX_ACCESS_ROWS = 2000;
+
+/**
+ * What `accesses` asks about: a custom register by name (COLOR00, or a pointer pair like BPL1PT),
+ * an address or symbol (the symbol's whole size), either with an explicit `:LENGTH`, or an
+ * inclusive range `FROM-TO`.
+ */
+export function resolveAccessTarget(query: string, sourceMap: SourceMap): AccessTarget {
+  const q = query.trim();
+  const cpu = CPU_REGISTER_NAMES.indexOf(q.toLowerCase() === "sp" ? "a7" : q.toLowerCase());
+  if (cpu >= 0 && q.toLowerCase() !== "pc") return { query: q, start: 0, end: 0, cpuRegister: cpu };
+  const num = (t: string) => (/^(0x|\$)/i.test(t) ? parseInt(t.replace(/^(0x|\$)/i, ""), 16) : /^\d+$/.test(t) ? parseInt(t, 10) : undefined);
+  const range = /^(\S+?)-(\S+)$/.exec(q);
+  if (range && num(range[1]) !== undefined && num(range[2]) !== undefined) {
+    return { query: q, start: num(range[1])!, end: num(range[2])! + 1 };
+  }
+  const [what, lengthText] = q.split(":");
+  const explicit = lengthText !== undefined ? num(lengthText) : undefined;
+  if (lengthText !== undefined && explicit === undefined) throw new Error(`"${lengthText}" isn't a length`);
+  const custom = customRegisterRange(what);
+  if (custom) return { query: q, start: custom.address, end: custom.address + (explicit ?? custom.size) };
+  const address = num(what);
+  if (address !== undefined) return { query: q, start: address, end: address + (explicit ?? 2) };
+  const symbols = sourceMap.getSymbols();
+  const at = symbols[what];
+  if (at === undefined) {
+    const q = what.toLowerCase();
+    const near = Object.keys(symbols).filter((n) => n.toLowerCase().includes(q) || q.includes(n.toLowerCase())).slice(0, 8);
+    throw new Error(`not a custom register, an address or a symbol in this program${near.length ? ` (did you mean ${near.join(", ")}?)` : ""}`);
+  }
+  const size = explicit ?? sourceMap.getSymbolLengths()?.[what] ?? 4;
+  return { query: q, start: at, end: at + Math.max(1, size) };
+}
+
+export function analyseAccesses(model: IProfileModel, target: AccessTarget, readCode: ReadCode | undefined, sourceMap: SourceMap): AccessAnalysis {
+  if (target.cpuRegister !== undefined) return analyseRegisterChanges(model, target, readCode, sourceMap);
+  const baseline = model.dmaSnapshot?.atFrameStart ? model.dmaSnapshot.custom : undefined;
+  const blits = model.dma ? getBlits(model.dma, baseline).blits : undefined;
+  const accesses = findAccesses(model, target.start, target.end, readCode, blits);
+  const symbolize = createSymbolizer(model.symbols);
+  const where = (address: number) => {
+    const loc = sourceMap.lookupAddress(address);
+    return loc ? `${loc.path.split(/[\\/]/).pop()}:${loc.line}` : undefined;
+  };
+  const rows = accesses.slice(0, MAX_ACCESS_ROWS).map((a): AccessRow => {
+    const row: AccessRow = {
+      line: Math.floor(a.slot / DMA_HPOS), hpos: a.slot % DMA_HPOS, write: a.write, size: a.size,
+      address: a.address, offset: a.address - target.start, value: a.value, who: sourceName(a.source, a.write),
+    };
+    if (a.source.kind === "cpu") {
+      const sym = symbolize(a.source.pc);
+      if (sym) row.who = `CPU ${sym}`;
+      const bytes = readCode?.(a.source.pc);
+      const text = bytes ? decodeLine(bytes, a.source.pc, symbolize).text : undefined;
+      row.at = [text, where(a.source.pc)].filter(Boolean).join("  ") || undefined;
+      if (!a.source.verified) row.unverified = true;
+    } else if (a.source.kind === "copper" && a.source.instruction !== undefined) {
+      const reg = customRegisterName(a.address & 0x1fe) ?? `$${(a.address & 0x1fe).toString(16)}`;
+      row.at = [`MOVE to ${reg} at $${a.source.instruction.toString(16).padStart(6, "0")}`, where(a.source.instruction)].filter(Boolean).join("  ");
+    }
+    return row;
+  });
+  return { target, groups: groupAccesses(accesses), rows, total: accesses.length };
+}
+
+function analyseRegisterChanges(model: IProfileModel, target: AccessTarget, readCode: ReadCode | undefined, sourceMap: SourceMap): AccessAnalysis {
+  const empty = { target, groups: [], rows: [], total: 0 };
+  if (!model.registers?.length) return { ...empty, registerChanges: [], noTrace: true };
+  const symbolize = createSymbolizer(model.symbols);
+  const changes = findRegisterChanges(model, target.cpuRegister!, readCode);
+  const registerChanges = changes.slice(0, MAX_ACCESS_ROWS).map((c): RegisterChangeRow => {
+    const bytes = readCode?.(c.pc);
+    const text = bytes ? decodeLine(bytes, c.pc, symbolize).text : undefined;
+    const loc = sourceMap.lookupAddress(c.pc);
+    const row: RegisterChangeRow = {
+      line: Math.floor(c.slot / DMA_HPOS), hpos: c.slot % DMA_HPOS, from: c.from, to: c.to,
+      who: `CPU ${symbolize(c.pc) ?? c.function}`,
+      at: [text, loc ? `${loc.path.split(/[\\/]/).pop()}:${loc.line}` : undefined].filter(Boolean).join("  ") || undefined,
+    };
+    if (c.via) row.via = c.via;
+    return row;
+  });
+  // Grouped by routine, as memory accesses are by who made them.
+  const groups = new Map<string, AccessGroup>();
+  for (const c of changes) {
+    const who = `CPU ${c.function}`;
+    const g = groups.get(who) ?? { who, write: true, count: 0, firstSlot: c.slot, lastSlot: c.slot, low: 0, high: 0, unverified: false };
+    g.count++;
+    g.lastSlot = c.slot;
+    groups.set(who, g);
+  }
+  return { ...empty, groups: [...groups.values()].sort((a, b) => a.firstSlot - b.firstSlot), total: changes.length, registerChanges };
 }

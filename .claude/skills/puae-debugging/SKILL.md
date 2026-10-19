@@ -69,6 +69,11 @@ the whole value after the write, so a byte written into a word counts. Ranges ar
 all), and a custom register can be named directly (`COP1LC`, `DMACON`). Expect early hits from
 Kickstart itself — `AllocMem` clearing memory it hands out is a write too.
 
+To see *everything* that touches a buffer or register over a whole frame at once — every writer and
+reader, not just the next hit — capture a profile and use `profile_dump { "accesses": "Buffer" }`
+(see puae-profiling): the CPU with instruction and source line, copper MOVEs, blits, bitplane DMA.
+Chip and slow RAM only.
+
 **The screen is wrong.** `emulator_screenshot` on the session to see it. For something that
 moves, or a glitch that lasts one frame, `{ "count": 8 }` puts consecutive frames on one contact
 sheet, each labelled with its frame number and marked `=` when identical to the emulated frame

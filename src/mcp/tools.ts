@@ -152,6 +152,17 @@ export const TOOLS: ToolDefinition[] = [
             "total time per frame, and how many frames it ran in (a frame it skipped counts 0). The quick read " +
             "of a multi-frame capture: which routines vary, which skip frames.",
         },
+        accesses: {
+          type: "string",
+          description:
+            "Every change this frame to a CPU register (\"d7\", \"a5\", \"sp\" — the instruction that made each, old and new " +
+            "value; a capture's first frame only, which is the one with a register trace), or every access to a custom " +
+            "register (\"COLOR00\", \"BPL1PT\"), an address or symbol (its own size, or " +
+            "\"name:LENGTH\") or a range (\"0x1000-0x1fff\"), and who made it: the CPU (instruction and source line), a " +
+            "copper MOVE, the blitter (which blit), or bitplane/sprite/disk DMA — grouped first, then access by access. " +
+            "For \"what overwrites this buffer\" or \"who set this register\" across a frame at once (emulator_watch " +
+            "stops at each hit instead). Chip and slow RAM only: fast RAM isn't on the chip bus.",
+        },
         iterations: {
           type: "string",
           description:
@@ -195,7 +206,8 @@ export const TOOLS: ToolDefinition[] = [
       const blits = args.blits === true;
       const copper = args.copper === true;
       const iterations = args.iterations === undefined ? undefined : requireString(args, "iterations");
-      const analysis = load(file, { stalls, instructions, callTree, callers, flame, blits, copper, iterations });
+      const accesses = args.accesses === undefined ? undefined : requireString(args, "accesses");
+      const analysis = load(file, { stalls, instructions, callTree, callers, flame, blits, copper, iterations, accesses });
       const limit = functions ?? 12;
       const summary = args.summary === true ? summarizeFunctions(analysis.frames) : undefined;
       let text: string;
