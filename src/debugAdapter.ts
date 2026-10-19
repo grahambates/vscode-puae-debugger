@@ -1425,7 +1425,8 @@ export class DebugAdapter extends LoggingDebugSession {
     } else if (isEmulatorStateMessage(message)) {
       return this.updateState(message);
     } else if (isEmulatorOutputMessage(message)) {
-      this.sendEvent(new OutputEvent(message.data + "\n"));
+      // The program's serial output, as it arrives: partial lines and all, so no newline added.
+      this.sendEvent(new OutputEvent(message.data, "stdout"));
     } else if (isExecReadyMessage(message)) {
       if (this.fastLoad) {
         await this.injectProgram();

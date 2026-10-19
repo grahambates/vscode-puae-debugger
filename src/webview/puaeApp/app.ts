@@ -483,10 +483,31 @@ export async function main(config: MainConfig = {}): Promise<void> {
   // src/standalone/server.ts and StandalonePuaeEmulator). undefined for
   // neither (e.g. puae/debug.html opened directly off disk, file://, with no
   // server behind it to connect to).
+  // Serial output — kprintf/RawPutChar, or any write to SERDAT — for the Debug Console. The core
+  // collects it (puae_debug.c, not during a rewind's replay, so nothing prints twice); this drains
+  // it once per batch of frames and before any message to the host, as text: Latin-1, line endings
+  // normalised. Here rather than in the shared dispatcher, because the MCP server reads the same
+  // buffer itself and would find it empty.
+  const serialDecoder = new TextDecoder("latin1");
+  const flushSerial = (): void => {
+    if (!vscode || typeof M._wasm_serial_get_len !== "function") return;
+    const len = M._wasm_serial_get_len();
+    const dropped = M._wasm_serial_get_dropped();
+    if (len === 0 && dropped === 0) return;
+    const text = serialDecoder.decode(new Uint8Array(M.HEAPU8.buffer, M._wasm_serial_get_ptr(), len)).replace(/\r\n?/g, "\n");
+    M._wasm_serial_clear();
+    vscode.postMessage({ type: "emulator-output", data: (dropped ? `[${dropped} bytes of serial output lost]\n` : "") + text });
+  };
+
   const bridge = createHostBridge("/rpc");
   if (bridge) {
     vscode = bridge;
-    rpc = setupRpcDispatcher(M, (msg) => bridge.postMessage(msg), { usesDh0 });
+    // Drained before every message to the host, so text the program printed just before a
+    // breakpoint arrives ahead of the stop rather than after it — see flushSerial.
+    rpc = setupRpcDispatcher(M, (msg) => {
+      flushSerial();
+      bridge.postMessage(msg);
+    }, { usesDh0 });
     bridge.onMessage((message) => {
       // Matches the old raw JSON.parse's implicit `any` return.
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -1737,6 +1758,7 @@ export async function main(config: MainConfig = {}): Promise<void> {
       jitterMultiTickMaxRan = Math.max(jitterMultiTickMaxRan, ranCount);
     }
     emuFrames += ranCount;
+    if (ranCount > 0) flushSerial();
     // Warp mode can run emuFrames ahead of the wall-clock schedule — pull
     // emuClockMs forward to match so playback doesn't "freeze" waiting for
     // real time to catch up once warp mode is turned off. Never moves
