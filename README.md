@@ -187,6 +187,19 @@ The same binary has a few modes that need neither the emulator nor a browser:
 
   (`${VAR}` expansion in `.mcp.json` is a Claude Code feature; other clients may need the path written in.)
 
+  For Codex:
+
+  ```sh
+  codex mcp add puae --env PUAE_KICKSTART_ROM=/path/to/kick31.rom -- npx -y puae-debugger mcp
+  ```
+
+  Codex stops a tool call after 60 seconds by default, which a long `emulator_continue` or a many-frame capture can exceed. Raise it in `~/.codex/config.toml`:
+
+  ```toml
+  [mcp_servers.puae]
+  tool_timeout_sec = 300
+  ```
+
   `profile_check` and `profile_dump` read a saved `.puaeprofile`, as above. The rest *run* the program, on a machine booted headlessly — no browser, no VS Code — with the program injected the way `fastLoad` does. The ROM comes from `PUAE_KICKSTART_ROM` (as above) or a per-call `kickstartRom` argument.
 
   | Tool | |
@@ -200,9 +213,9 @@ The same binary has a few modes that need neither the emulator nor a browser:
   | `emulator_close` | End a session |
 
   The first two work standalone — pass a `program` and they boot a throwaway machine, so the same arguments always give the same answer. They also take a `session` instead, which is what makes the interesting sequence possible: run to a breakpoint, inspect registers and memory there, then profile or screenshot *from that exact state*. Together this closes the loop — "why is this routine slow", "did that change help", "what's in this buffer by the time we reach here" — without a person driving the debugger and relaying the results.
-- `puae-debugger skill install` — installs two skills into your project's `.claude/skills/` (`--global` for `~/.claude/skills/` instead). They're the judgement that goes with the tools: `puae-profiling` for making and reading captures (verify a capture before reading it, don't mistake flame-graph width for time spent, check the DMA bus census before optimizing CPU code that was really waiting on the blitter), and `puae-debugging` for the MCP emulator tools (which tool answers which symptom — a crash, a corrupted variable, a wrong screen — and what not to misread, like the PC of an address error or the CPU's PC on a DMA write). Worth installing in the Amiga project you're working on, not just here.
+- `puae-debugger skill install` — installs two skills into your project's `.claude/skills/` (`--global` for `~/.claude/skills/` instead). They're the judgement that goes with the tools: `puae-profiling` for making and reading captures (verify a capture before reading it, don't mistake flame-graph width for time spent, check the DMA bus census before optimizing CPU code that was really waiting on the blitter), and `puae-debugging` for the MCP emulator tools (which tool answers which symptom — a crash, a corrupted variable, a wrong screen — and what not to misread, like the PC of an address error or the CPU's PC on a DMA write). Worth installing in the Amiga project you're working on, not just here. For Codex (or another agent that follows the Agent Skills convention), add `--agents` to install into `.agents/skills/` instead.
 
-  The installed skills are copies, so they don't change when the package does. After upgrading, run `npx puae-debugger@latest skill install` again (with `--global` if that's where you installed them): copies an older version installed are updated, and copies you've edited are left alone unless you pass `--force`, which keeps your version as `SKILL.md.bak`. The MCP server checks too: if the project's or your global skills are older than the server, it tells the agent, which passes the update command on to you.
+  The installed skills are copies, so they don't change when the package does. After upgrading, run `npx puae-debugger@latest skill install` again (with `--global` and `--agents` as you installed them): copies an older version installed are updated, and copies you've edited are left alone unless you pass `--force`, which keeps your version as `SKILL.md.bak`. The MCP server checks too: if the project's or your global skills are older than the server, it tells the agent, which passes the update command on to you.
 
 ## Configuration reference
 

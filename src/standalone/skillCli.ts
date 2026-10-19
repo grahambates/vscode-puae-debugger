@@ -1,5 +1,5 @@
 // `puae-debugger skill install` — copies the packaged skills into a project's (or the user's)
-// `.claude/skills/`, so an agent working in an Amiga project gets the playbooks without that
+// `.claude/skills/` (or `.agents/skills/`, for Codex and other Agent Skills hosts), so an agent working in an Amiga project gets the playbooks without that
 // project having to vendor a copy of this repo.
 //
 // The skills are the judgement half of the `profile` subcommands and the `mcp` server: which tool
@@ -32,7 +32,7 @@ const LEGACY: Record<string, string> = {
 };
 
 const USAGE = `Usage:
-  puae-debugger skill install [--global] [--force]
+  puae-debugger skill install [--global] [--agents] [--force]
 
   Installs, or updates, the agent skills that go with these tools:
     puae-profiling  profiling a program: making captures with the MCP tools,
@@ -45,12 +45,25 @@ const USAGE = `Usage:
   left as is unless --force is given.
 
 Options:
-  --global  Install into ~/.claude/skills (all projects) instead of
-            ./.claude/skills (this project only).
+  --global  Install into your home directory (all projects) instead of this
+            project.
+  --agents  Install into .agents/skills, where Codex and other agents that
+            follow the Agent Skills convention look, instead of Claude Code's
+            .claude/skills.
   --force   Also replace copies that have been edited (the old copy is kept
-            alongside, as SKILL.md.bak).`;
+            alongside, as SKILL.md.bak).
 
-const skillPath = (name: string) => join(".claude", "skills", name, "SKILL.md");
+  Run through npm exec, put -- before these options (npm exec puae-debugger --
+  skill install --force), or npm keeps them for itself.`;
+
+/**
+ * Where agents look for skills, under a project or the home directory: Claude Code's own, and the
+ * Agent Skills convention's, which Codex uses. The packaged copies live in the first.
+ */
+export const SKILL_DIRS = { claude: ".claude", agents: ".agents" } as const;
+type SkillDir = keyof typeof SKILL_DIRS;
+
+const skillPath = (name: string, dir: SkillDir = "claude") => join(SKILL_DIRS[dir], "skills", name, "SKILL.md");
 
 const normalize = (text: string) => text.replace(/\r\n/g, "\n");
 const sha256 = (text: string) => createHash("sha256").update(text).digest("hex");
@@ -111,11 +124,13 @@ export function runSkillCli(
   }
 
   let global = false;
+  let dir: SkillDir = "claude";
   // `npm exec puae-debugger skill install --force` never passes --force on: npm takes it as its
   // own option. It does say so in the environment, though, so honour that as the same thing.
   let force = env.npm_config_force === "true";
   for (const arg of argv.slice(1)) {
     if (arg === "--global") global = true;
+    else if (arg === "--agents") dir = "agents";
     else if (arg === "--force") force = true;
     else {
       console.error(`Unknown option: ${arg}\n\n${USAGE}`);
@@ -133,7 +148,7 @@ export function runSkillCli(
       return 1;
     }
     const source = readFileSync(sourcePath, "utf8");
-    const target = join(root, skillPath(skill.name));
+    const target = join(root, skillPath(skill.name, dir));
     const state = existsSync(target) ? installedState(source, readFileSync(target, "utf8")) : undefined;
     if (state?.kind === "current") {
       console.log(`Up to date: ${target}`);
@@ -171,17 +186,21 @@ export function runSkillCli(
 
 /**
  * Installed skills that are older than this package's, for the MCP server to mention — found in
- * the project (`cwd`) and the user's own skills. A copy changed since it was installed counts
- * only when it was installed by another version: an edit to a current copy is the user's choice.
- * One line per copy, each saying what to run; empty when there's nothing to say.
+ * the project (`cwd`) and the user's own skills, in both SKILL_DIRS: the server can't tell which
+ * agent started it. A copy changed since it was installed counts only when it was installed by
+ * another version: an edit to a current copy is the user's choice. One line per copy, each saying
+ * what to run; empty when there's nothing to say.
  */
 export function outdatedSkills(packageRoot: string, version: string, cwd = process.cwd(), home = homedir()): string[] {
   const notes: string[] = [];
-  const roots = [{ dir: cwd, flag: "" }];
-  if (resolve(home) !== resolve(cwd)) roots.push({ dir: home, flag: " --global" });
-  for (const { dir, flag } of roots) {
+  const roots = [{ root: cwd, flag: "" }];
+  if (resolve(home) !== resolve(cwd)) roots.push({ root: home, flag: " --global" });
+  const places = roots.flatMap(({ root, flag }) =>
+    (Object.keys(SKILL_DIRS) as SkillDir[]).map((dir) => ({ root, dir, flag: flag + (dir === "agents" ? " --agents" : "") })),
+  );
+  for (const { root, dir, flag } of places) {
     for (const { name } of SKILLS) {
-      const target = join(dir, skillPath(name));
+      const target = join(root, skillPath(name, dir));
       const sourcePath = join(packageRoot, skillPath(name));
       if (!existsSync(target) || !existsSync(sourcePath)) continue;
       let state: InstalledState;

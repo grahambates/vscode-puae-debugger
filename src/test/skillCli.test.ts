@@ -38,6 +38,15 @@ describe("skill install", () => {
     }
   });
 
+  it("installs into .agents/skills with --agents, for Codex", () => {
+    expect(install("--agents")).toBe(0);
+    for (const { name } of SKILLS) {
+      const text = readFileSync(path.join(root, ".agents", "skills", name, "SKILL.md"), "utf8");
+      expect(installedState(packaged(name), text)).toEqual({ kind: "current" });
+    }
+    expect(existsSync(path.join(root, ".claude"))).toBe(false);
+  });
+
   it("reports an up-to-date install as such, and succeeds", () => {
     install();
     const before = readFileSync(installed(root, "puae-profiling"), "utf8");
@@ -122,6 +131,15 @@ describe("outdatedSkills", () => {
     expect(notes).toHaveLength(2);
     expect(notes[0]).toMatch(/puae-profiling.*from puae-debugger 1\.5\.0; .*`npx puae-debugger@2\.0\.0 skill install`/);
     expect(notes[1]).toMatch(/puae-debugging.*from puae-debugger 1\.6\.0; .*skill install --global`/);
+  });
+
+  it("checks .agents/skills too, and says to pass --agents", () => {
+    const at = path.join(home, ".agents", "skills", "puae-profiling", "SKILL.md");
+    mkdirSync(path.dirname(at), { recursive: true });
+    writeFileSync(at, stampSkill(OLD_SKILL, "1.5.0"));
+    const notes = outdatedSkills(PACKAGE_ROOT, "2.0.0", cwd, home);
+    expect(notes).toHaveLength(1);
+    expect(notes[0]).toMatch(/\.agents.*skill install --global --agents`/);
   });
 
   it("ignores edits to a current copy, but not an edited old one", () => {

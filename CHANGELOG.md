@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Added
+
+- Codex support for skills installer
+
 ### Fixes
 
 - Kickstart symbols no longer overwrite program symbols in naming clash in profiler
@@ -25,6 +29,7 @@
 - `profile_dump`'s per-instruction listing (`instructions`) prints the same readable disassembly as `emulator_disassemble` — hex addresses and immediates, branch targets, and symbols, custom registers and CIAs named — including for captures saved earlier.
 - `puae-debugging` skill for the emulator tools, and `puae-profiling` now covers making captures with them — including from a debugging session, and before/after a change — not just reading saved ones; `skill install` now installs it alongside `puae-profiling`.
 - Keeping skills up to date: `skill install` stamps each installed skill with the package version, so running it again after an upgrade updates copies an older version installed (including 1.0.0's) and leaves edited ones alone unless `--force` is given (which keeps a `SKILL.md.bak`). The MCP server notices installed skills older than itself and tells the agent, with the command to update them.
+- Codex: `skill install --agents` installs the skills into `.agents/skills/`, where Codex (and other agents following the Agent Skills convention) looks for them; the MCP server's outdated-skill check covers those too. The README shows how to register the MCP server with Codex.
 
 ### Fixes
 
