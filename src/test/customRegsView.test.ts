@@ -1,4 +1,4 @@
-import { findPrevRegWrite, findNextRegWrite, reconstructCustomRegs } from "../webview/profilerViewer/reconstruct";
+import { reconstructCustomRegs } from "../webview/profilerViewer/reconstruct";
 import { WRITEABLE_REG_OFFSETS, PTR_HIGH_OFFSETS, isColorReg, formatRegValue } from "../webview/profilerViewer/customRegsTable";
 import { customRegisterName } from "../webview/shared/customRegisters";
 import { IDmaModel, BusOwner, DMA_WRITE } from "../shared/profilerTypes";
@@ -55,7 +55,7 @@ describe("customRegsTable", () => {
   });
 });
 
-describe("findPrevRegWrite / findNextRegWrite", () => {
+describe("reconstructCustomRegs", () => {
   // DMACON written at slot 2 and slot 7 (by the CPU); BPLCON0 written at slot 4.
   const dma = makeModel([
     { owner: BusOwner.CPU, flags: 0, data: 0, addr: 0xdff000 },
@@ -68,20 +68,7 @@ describe("findPrevRegWrite / findNextRegWrite", () => {
     { owner: BusOwner.CPU, flags: DMA_WRITE, data: 0x0200, addr: 0xdff096 }, // DMACON
   ]);
 
-  it("finds the nearest DMACON write strictly before/after a slot", () => {
-    expect(findPrevRegWrite(dma, 0x096, 5)).toBe(2);
-    expect(findNextRegWrite(dma, 0x096, 5)).toBe(7);
-    expect(findPrevRegWrite(dma, 0x096, 2)).toBeUndefined(); // strictly before slot 2: none
-    expect(findNextRegWrite(dma, 0x096, 7)).toBeUndefined(); // strictly after slot 7: none
-  });
-
-  it("doesn't confuse different registers", () => {
-    expect(findPrevRegWrite(dma, 0x100, 5)).toBe(4);
-    expect(findNextRegWrite(dma, 0x100, 0)).toBe(4);
-    expect(findPrevRegWrite(dma, 0x100, 4)).toBeUndefined();
-  });
-
-  it("reconstructCustomRegs at the found write slot includes that write (sliceEnd = slot+1)", () => {
+  it("includes the write at the slot it is reconstructed to (sliceEnd = slot+1)", () => {
     const base = new Uint16Array(256);
     // slot 2 sets bit 0x0200 (SETCLR=1), slot 7 clears it (SETCLR=0) — DMACON ends at 0.
     const afterSet = reconstructCustomRegs(dma, base, 2 + 1);

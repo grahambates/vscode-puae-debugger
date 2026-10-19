@@ -50,6 +50,13 @@ describe("findAccesses", () => {
     expect(move).toMatchObject({ address: 0xdff180, write: true, value: 0x0f00, source: { kind: "copper", instruction: 0x3000 } });
   });
 
+  it("finds a word access when asked about its odd byte", () => {
+    // The move's store is a word at $2000: asking about $2001 alone must still find it.
+    const [store] = findAccesses(frame(true), 0x2001, 0x2002, readCode);
+    expect(store).toMatchObject({ address: 0x2000, size: 2, write: true, value: 0x1234 });
+    expect(findAccesses(frame(true), 0x2004, 0x2006, readCode)).toEqual([]);
+  });
+
   it("lists every kind of access to a range, and groups them", () => {
     const all = findAccesses(frame(true), 0x2000, 0x2004, readCode, [{ startSlot: 11, endSlot: 13 } as never]);
     expect(all.map((a) => a.source.kind)).toEqual(["cpu", "blitter", "dma"]);
@@ -122,5 +129,56 @@ describe("findRegisterChanges", () => {
 
   it("finds nothing without a register trace", () => {
     expect(findRegisterChanges({ ...model, registers: undefined }, D0, readCode)).toEqual([]);
+  });
+});
+
+describe("findAccesses with long accesses", () => {
+  // One instruction at $1000, then a nop at its successor; the CPU's data cells after the nop's
+  // fetch, as the 68000's prefetch puts them. `regs` sets a0 and a7 for the instruction.
+  function longFrame(opcode: number[], cells: [number, number, number][], regs: { a0?: number; a7?: number } = {}): { model: IProfileModel; read: (a: number) => Uint8Array } {
+    const n = 20;
+    const owner = new Uint8Array(n), flags = new Uint8Array(n), addr = new Uint32Array(n), value = new Uint16Array(n);
+    const set = (s: number, f: number, a: number, v: number) => { owner[s] = BusOwner.CPU; flags[s] = f; addr[s] = a; value[s] = v; };
+    set(2, 4, 0x1000, (opcode[0] << 8) | opcode[1]);
+    set(4, 4, 0x1000 + opcode.length, 0x4e71);
+    cells.forEach(([s, a, v]) => set(s, DMA_WRITE, a, v));
+    const registers = new Uint32Array(2 * REG_COUNT);
+    for (const k of [0, 1]) { registers[k * REG_COUNT + 8] = regs.a0 ?? 0; registers[k * REG_COUNT + 15] = regs.a7 ?? 0; }
+    const mem = new Uint8Array(0x4000);
+    mem.set([...opcode, 0x4e, 0x71], 0x1000);
+    return {
+      model: {
+        pcs: [0x1000, 0x1000 + opcode.length], timeDeltas: [2, 2], samples: [0, 1, 1],
+        nodes: [{ id: 0, locationId: 0, children: [1] }, { id: 1, locationId: 1, parent: 0, children: [] }],
+        locations: [{ callFrame: { functionName: "(all)" } }, { callFrame: { functionName: "Save" } }],
+        dma: { owner, flags, addr, value }, registers,
+      } as unknown as IProfileModel,
+      read: (a) => mem.subarray(a),
+    };
+  }
+
+  it("joins a long's two word writes, high word first", () => {
+    const { model, read } = longFrame([0x20, 0x80], [[6, 0x2000, 0x1234], [8, 0x2002, 0x5678]], { a0: 0x2000 }); // move.l d0,(a0)
+    const all = findAccesses(model, 0x2000, 0x2004, read);
+    expect(all).toHaveLength(1);
+    expect(all[0]).toMatchObject({ address: 0x2000, size: 4, value: 0x12345678, write: true, source: { pc: 0x1000, verified: true } });
+    // Either half's bytes find the whole long.
+    expect(findAccesses(model, 0x2003, 0x2004, read)[0]).toMatchObject({ address: 0x2000, size: 4 });
+  });
+
+  it("joins them the other way round for -(An), low word first", () => {
+    const { model, read } = longFrame([0x21, 0x00], [[6, 0x1ffe, 0x5678], [8, 0x1ffc, 0x1234]], { a0: 0x2000 }); // move.l d0,-(a0)
+    expect(findAccesses(model, 0x1ffc, 0x2000, read)).toEqual([
+      expect.objectContaining({ address: 0x1ffc, size: 4, value: 0x12345678, source: expect.objectContaining({ verified: true }) }),
+    ]);
+  });
+
+  it("checks a stack instruction's access against A7", () => {
+    // rts pops the long at A7 — reads, so flag 0, not DMA_WRITE.
+    const { model, read } = longFrame([0x4e, 0x75], [], { a7: 0x3000 });
+    model.dma!.flags[6] = 0; model.dma!.owner[6] = BusOwner.CPU; model.dma!.addr[6] = 0x3000; model.dma!.value[6] = 0x00c0;
+    model.dma!.flags[8] = 0; model.dma!.owner[8] = BusOwner.CPU; model.dma!.addr[8] = 0x3002; model.dma!.value[8] = 0x2140;
+    const [pop] = findAccesses(model, 0x3000, 0x3004, read);
+    expect(pop).toMatchObject({ write: false, size: 4, value: 0x00c02140, source: { pc: 0x1000, verified: true } });
   });
 });

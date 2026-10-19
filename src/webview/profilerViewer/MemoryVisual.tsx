@@ -31,7 +31,7 @@ interface Props {
   fadeTick: number;   // bumped on each animation frame while fades are active
   baseAddr: number;
   highlightOffset: number | undefined; // offset of the current-write highlight
-  onByteClick: (addr: number, jumpToSource: boolean, toSide: boolean, forward: boolean) => void;
+  onByteClick: (addr: number, jumpToSource: boolean, toSide: boolean) => void;
   onByteHover: (addr: number, x: number, y: number) => void;
   onByteLeave: () => void;
   // Initial row width (1..512), e.g. from a blit jump request that arrived before this component
@@ -222,7 +222,7 @@ export const MemoryVisual = forwardRef<MemoryVisualAPI, Props>(function MemoryVi
 
   const handleClick = (e: React.MouseEvent<HTMLCanvasElement>) => {
     const off = canvasOffset(e);
-    if (off !== undefined) onByteClick(baseAddr + off, e.ctrlKey || e.metaKey, e.altKey, e.shiftKey);
+    if (off !== undefined) onByteClick(baseAddr + off, e.ctrlKey || e.metaKey, e.altKey);
   };
 
   const handleMouseMove = (e: React.MouseEvent<HTMLCanvasElement>) => {
@@ -287,7 +287,7 @@ export const MemoryVisual = forwardRef<MemoryVisualAPI, Props>(function MemoryVi
         >
           {[1, 2, 3, 4, 5].map((s) => <option key={s} value={s}>{s}×</option>)}
         </select>
-        <span className="memvisual-hint">{isMac ? "Cmd" : "Ctrl"}+Click to open source · Shift+Click: next write</span>
+        <span className="memvisual-hint">Click: access history · {isMac ? "Cmd" : "Ctrl"}+Click to open source</span>
       </div>
       <div
         ref={containerRef}

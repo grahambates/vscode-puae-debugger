@@ -1,13 +1,13 @@
 import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { List, ListImperativeAPI, RowComponentProps } from "react-window";
 import { getProfileModel } from "./modelStore";
-import { buildColumns, columnIndexAtX, columnIndexToSlot, findNextSample, IColumn } from "./columns";
+import { buildColumns, columnIndexAtX, columnIndexToSlot, findNextSample } from "./columns";
 import { IDisassembledFunction, IDisassembledInstruction, REG_COUNT, REG_D0, REG_A0, REG_SR, REG_PC, REG_USP } from "../../shared/profilerTypes";
 import { heatColor } from "../../shared/profilerColor";
 import { srFlags } from "../shared/cpuFlags";
 import { createSymbolizer, Symbolizer } from "./symbols";
 import { interpretDataReg, interpretAddressReg } from "./registerInterpret";
-import { findPrevRegChangeSample, findRegNextChangeSample } from "./registerHistory";
+import { AccessList, useAccessContext, useRegisterChanges } from "./AccessList";
 import { Tooltip } from "./Tooltip";
 
 const ROW_H = 18; // instruction row height (px)
@@ -262,6 +262,9 @@ function SortedHeader({ sortKey, onChangeSort }: { sortKey: SortKey; onChangeSor
 
 const hex = (v: number, digits = 8) => `$${(v >>> 0).toString(16).padStart(digits, "0")}`;
 
+// Names by register-trace index (REG_COUNT layout).
+const REG_LABELS = ["D0", "D1", "D2", "D3", "D4", "D5", "D6", "D7", "A0", "A1", "A2", "A3", "A4", "A5", "A6", "A7", "SR", "PC", "USP"];
+
 type RegKind = "data" | "address";
 type RegHover = { kind: RegKind; value: number; x: number; y: number };
 
@@ -276,23 +279,18 @@ type RegHover = { kind: RegKind; value: number; x: number; y: number };
 // symbol+offset line instead, when the value resolves to one. The register name itself isn't
 // repeated in the tooltip (already shown on the cell being hovered).
 //
-// Click jumps the playhead to where this register's CURRENT value was set (walking the per-sample
-// trace backward to the start of the run — see registerHistory.ts); Shift+click jumps forward to
-// where it next changes — mirroring Memory View's click-for-previous-write (and, per its own
-// request, the asymmetry it pointed out: Custom Registers' ◀▶ already go both ways, this and
-// Memory View didn't). `registers`/`currentIdx`/`columns`/`dmaSlots` are the whole-trace context
-// needed to do that lookup and convert the resulting sample index back into a DMA slot.
+// Click selects a register: its change history is listed under the disassembly (AccessList), the
+// counterpart of Memory's and Custom Registers' "click: access history" (a register's trace
+// records its value, so it's the changes to it that can be listed, not every read).
 function RegistersPanel({
-  regs, prev, symbolize, registers, currentIdx, columns, dmaSlots, onSelectSlot,
+  regs, prev, symbolize, selectedReg, onSelectReg,
 }: {
   regs: Uint32Array;
   prev: Uint32Array | undefined;
   symbolize: Symbolizer;
-  registers: Uint32Array | undefined;
-  currentIdx: number | undefined;
-  columns: IColumn[];
-  dmaSlots: number | undefined;
-  onSelectSlot: (slot: number, sampleIdx?: number) => void;
+  /** The register whose changes are listed under the disassembly — the last one clicked. */
+  selectedReg: number | undefined;
+  onSelectReg: (reg: number) => void;
 }) {
   const [hover, setHover] = useState<RegHover | undefined>(undefined);
   const changed = (i: number) => prev !== undefined && regs[i] !== prev[i];
@@ -300,26 +298,18 @@ function RegistersPanel({
     setHover({ kind, value: regs[i], x: e.clientX, y: e.clientY });
   const onLeave = () => setHover(undefined);
 
-  const canNavigate = registers !== undefined && currentIdx !== undefined && !!dmaSlots;
-  const sampleCount = registers ? registers.length / REG_COUNT : 0;
   // Prevent the browser from setting a text-selection anchor on mousedown — without this,
   // clicking cell A then Shift+clicking cell B extends a selection across the panel.
   // preventDefault on click alone is too late; the selection starts on mousedown.
   const preventSelect = (e: { preventDefault(): void }) => e.preventDefault();
 
-  const onCellClick = (i: number) => (e: { shiftKey: boolean; preventDefault(): void }) => {
-    if (!canNavigate) return;
-    const target = e.shiftKey
-      ? findRegNextChangeSample(registers, REG_COUNT, sampleCount, i, currentIdx)
-      : findPrevRegChangeSample(registers, REG_COUNT, sampleCount, i, currentIdx);
-    if (target === undefined) return;
-    onSelectSlot(columnIndexToSlot(columns, target, dmaSlots), target);
-  };
+  // Click: the register's change history, listed under the disassembly.
+  const onCellClick = (i: number) => () => onSelectReg(i);
 
   const cell = (label: string, i: number, kind: RegKind, digits = 8) => (
     <div
       key={label}
-      className={"reg-cell" + (changed(i) ? " reg-changed" : "") + " reg-hoverable"}
+      className={"reg-cell" + (changed(i) ? " reg-changed" : "") + (i === selectedReg ? " reg-selected" : "") + " reg-hoverable"}
       onMouseEnter={onEnter(kind, i)}
       onMouseLeave={onLeave}
       onMouseDown={preventSelect}
@@ -359,7 +349,12 @@ function RegistersPanel({
         <span className="reg-label">USP</span>
         <span className="reg-val">{hex(regs[REG_USP], 6)}</span>
       </div>
-      <div className={"reg-flags" + (changed(REG_SR) ? " reg-changed" : "")}>
+      <div
+        className={"reg-flags reg-hoverable" + (changed(REG_SR) ? " reg-changed" : "") + (selectedReg === REG_SR ? " reg-selected" : "")}
+        onMouseDown={preventSelect}
+        onClick={onCellClick(REG_SR)}
+        title="Click: change history"
+      >
         <span className="reg-label">SR</span>
         <span className="reg-val reg-sr">{srFlags(regs[REG_SR])}</span>
       </div>
@@ -374,12 +369,7 @@ function RegistersPanel({
               </Fragment>
             ))}
           </div>
-          {canNavigate && (
-            <>
-              <div className="tt-hint">Click: jump where set</div>
-              <div className="tt-hint">Shift+Click: next change</div>
-            </>
-          )}
+          <div className="tt-hint">Click: change history</div>
         </Tooltip>
       )}
     </div>
@@ -423,6 +413,10 @@ export function DisassemblyView({
   onSetGlobalHeat?: (enabled: boolean) => void;
 }) {
   const model = getProfileModel();
+  // The CPU register whose changes are listed under the disassembly (picked in the Registers panel).
+  const [selectedReg, setSelectedReg] = useState<number | undefined>(undefined);
+  const accessContext = useAccessContext(model);
+  const registerChanges = useRegisterChanges(model, accessContext, selectedReg);
   const disassembly = model?.disassembly;
   const [selectedFn, setSelectedFn] = useState<number | undefined>(undefined); // index into `functions`
   const [follow, setFollow] = useState(savedOptions?.follow ?? true);
@@ -701,7 +695,7 @@ export function DisassemblyView({
             >
               {functions.map((fn, i) => (
                 <option key={fn.address} value={i}>
-                  {fn.name} ({fn.totalCycles} cy)
+                  {fn.name} ({fn.totalCycles} cc)
                 </option>
               ))}
             </select>
@@ -750,6 +744,7 @@ export function DisassemblyView({
         )}
       </div>
       {viewMode === "linear" ? (
+        <>
         <div className="disasm-body">
           <div className="disasm-rows">
             <ArrowGutter arrows={arrows} instructionRowY={instructionRowY} scrollTop={scrollTop} />
@@ -768,14 +763,24 @@ export function DisassemblyView({
               regs={currentRegs}
               prev={prevRegs}
               symbolize={symbolize}
-              registers={model.registers}
-              currentIdx={currentIdx}
-              columns={columns}
-              dmaSlots={dmaSlots}
-              onSelectSlot={onSelectSlot}
+              selectedReg={selectedReg}
+              onSelectReg={setSelectedReg}
             />
           )}
         </div>
+        {showRegs && selectedReg !== undefined && (
+          <AccessList
+            title={`Changes to ${REG_LABELS[selectedReg]}`}
+            note={model.registers?.length ? undefined : "this frame has no register trace (a capture records one for its first frame)"}
+            rows={registerChanges}
+            selectedSlot={selectedSlot}
+            onSelect={(row) => onSelectSlot(row.slot, row.sample)}
+            onOpenSource={onOpenSource}
+            onClose={() => setSelectedReg(undefined)}
+            empty={model.registers?.length ? "It didn't change this frame." : "No register trace for this frame."}
+          />
+        )}
+        </>
       ) : (
         <div className="disasm-sorted-rows">
           <SortedHeader sortKey={sortKey} onChangeSort={setSortKey} />

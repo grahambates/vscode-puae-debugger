@@ -47,7 +47,7 @@ the question is what the program draws rather than what it costs). Both need a K
   frame, grouped by who made it — the CPU (routine, instruction and source line), a copper MOVE,
   the blitter (which blit), bitplane or sprite DMA — then access by access with line:hpos. CPU
   accesses are checked against the instruction's registers on a capture's first frame; elsewhere
-  they're placed by timing and marked `~` (right ~99% of the time, but a guess). Fast RAM isn't on
+  they're placed by timing and marked `~` (right ~98% of the time, but a guess). A long access is shown as one `.l`, though the bus made it as two words. Fast RAM isn't on
   the chip bus, so the CPU's accesses to it never appear. A CPU register (`"a5"`, `"sp"`) lists
   its changes instead — old and new value and the instruction behind each, with an interrupt's
   entry and a ROM call's result labelled as such — from the register trace, which only a

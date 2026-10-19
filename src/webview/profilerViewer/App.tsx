@@ -556,7 +556,7 @@ export function App() {
         />
       </div>
     );
-    if (tab === "customregs") return <CustomRegsView selectedSlot={selectedSlot} onSelectSlot={selectSlot} />;
+    if (tab === "customregs") return <CustomRegsView selectedSlot={selectedSlot} onSelectSlot={selectSlot} onOpenSource={openSource} />;
     if (tab === "copper") {
       // In combined multi-frame mode, selectedSlot spans N × frameSlots. The copper
       // trace is from one frame, but the copper list restarts at vpos 0 each frame —

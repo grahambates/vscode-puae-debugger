@@ -4,8 +4,6 @@ import {
   reconstructMemoryAt,
   reconstructCustomRegs,
   resolveMemoryRegion,
-  findPrevMemWrite,
-  findNextMemWrite,
   SLOW_BASE,
 } from "../webview/profilerViewer/reconstruct";
 import { createTopDownGraph } from "../webview/profilerViewer/topDownGraph";
@@ -364,27 +362,6 @@ describe("resolveMemoryRegion", () => {
   it("returns undefined for an address outside both buffers (e.g. an empty slow RAM)", () => {
     const noSlow = { chip: new Uint8Array(0x1000), slow: new Uint8Array(0) };
     expect(resolveMemoryRegion(SLOW_BASE + 0x20, noSlow)).toBeUndefined();
-  });
-});
-
-describe("findPrevMemWrite / findNextMemWrite", () => {
-  const dma = makeModel([
-    { owner: BusOwner.CPU, flags: 0, data: 0, addr: 0 },
-    { owner: BusOwner.CPU, flags: DMA_WRITE, data: 0x1234, addr: 0x100 }, // slot 1
-    { owner: BusOwner.CPU, flags: 0, data: 0, addr: 0 },
-    { owner: BusOwner.COPPER, flags: DMA_WRITE, data: 0x0f00, addr: 0x180 }, // register write, not RAM
-    { owner: BusOwner.CPU, flags: DMA_WRITE, data: 0x5678, addr: 0x100 }, // slot 4
-  ]);
-
-  it("finds the nearest write to the exact address, ignoring register writes", () => {
-    expect(findPrevMemWrite(dma, 0x100, 3)).toBe(1);
-    expect(findNextMemWrite(dma, 0x100, 1)).toBe(4);
-    expect(findPrevMemWrite(dma, 0x100, 1)).toBeUndefined(); // strictly before slot 1: none
-    expect(findNextMemWrite(dma, 0x100, 4)).toBeUndefined(); // strictly after slot 4: none
-  });
-
-  it("doesn't match an unrelated address", () => {
-    expect(findPrevMemWrite(dma, 0x200, 5)).toBeUndefined();
   });
 });
 

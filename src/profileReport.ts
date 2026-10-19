@@ -5,6 +5,7 @@
 
 import { AccessAnalysis, BlitAnalysis, CopperTrace, CallerPath, CallTreeNode, FlameBox, FlameView, FrameAnalysis, InstructionAnalysis, ProfileAnalysis, ScreenUpdates, StallAnalysis } from "./profileAnalysis";
 import { CaptureSummary, ProfileDiff, Stat } from "./profileCompare";
+import { formatOffset } from "./webview/profilerViewer/accesses";
 import { IterationAnalysis, OVERRUN_TOLERANCE } from "./profileIterations";
 
 export function pct(v: number): string {
@@ -563,17 +564,17 @@ function renderAccesses(a: AccessAnalysis, frameIndex: number): string[] {
   const pos = (slot: number) => `${Math.floor(slot / LINE_SLOTS)}:${String(slot % LINE_SLOTS).padStart(3, "0")}`;
   out.push("", `  ${"who".padEnd(40)}${"".padEnd(6)}${"count".padStart(7)}  ${"lines".padEnd(17)}offsets`);
   for (const g of a.groups) {
-    const offsets = g.low === g.high ? `+$${(g.low - t.start).toString(16)}` : `+$${(g.low - t.start).toString(16)}-$${(g.high - t.start).toString(16)}`;
+    const offsets = g.low === g.high ? formatOffset(g.low - t.start) : `${formatOffset(g.low - t.start)} to ${formatOffset(g.high - t.start)}`;
     out.push(`  ${(g.who + (g.unverified ? " ~" : "")).slice(0, 39).padEnd(40)}${(g.write ? "write" : "read").padEnd(6)}${String(g.count).padStart(7)}  ${`${pos(g.firstSlot)}-${pos(g.lastSlot)}`.padEnd(17)}${offsets}`);
   }
   if (a.groups.some((g) => g.unverified)) {
     out.push("  ~ some CPU accesses here are placed by timing only, not checked against the instruction's operand (no register trace for this frame)");
   }
-  out.push("", `  ${"line:hpos".padEnd(10)}${"".padEnd(4)}${"value".padEnd(8)}${"offset".padEnd(9)}who`);
+  out.push("", `  ${"line:hpos".padEnd(10)}${"".padEnd(4)}${"value".padEnd(10)}${"offset".padEnd(9)}who`);
   for (const r of a.rows.slice(0, ACCESS_TEXT_ROWS)) {
-    const value = r.size === 1 ? hex(r.value & 0xff, 2) : hex(r.value, 4);
+    const value = r.size === 1 ? hex(r.value & 0xff, 2) : hex(r.value, r.size * 2);
     out.push(
-      `  ${`${r.line}:${String(r.hpos).padStart(3, "0")}`.padEnd(10)}${(r.write ? "W" : "R") + (r.size === 1 ? ".b" : ".w")} ${value.padEnd(8)}${`+$${r.offset.toString(16)}`.padEnd(9)}` +
+      `  ${`${r.line}:${String(r.hpos).padStart(3, "0")}`.padEnd(10)}${(r.write ? "W" : "R") + (r.size === 1 ? ".b" : r.size === 4 ? ".l" : ".w")} ${value.padEnd(10)}${formatOffset(r.offset).padEnd(9)}` +
         `${r.who}${r.unverified ? " ~" : ""}${r.at ? `  ${r.at}` : ""}`,
     );
   }

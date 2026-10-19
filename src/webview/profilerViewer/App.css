@@ -1845,3 +1845,99 @@ body {
 .vscode-high-contrast .tv-impact-bar {
   background: #fff;
 }
+
+/* ── Access lists (AccessList.tsx): who touched a range, a custom register or a CPU register ── */
+.access-list {
+  flex: 0 0 auto;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  border-top: 1px solid var(--vscode-panel-border);
+  font-family: var(--vscode-editor-font-family);
+  font-size: var(--vscode-editor-font-size);
+  overflow: hidden;
+}
+.al-title {
+  display: flex;
+  align-items: center;
+  padding: 3px 6px;
+  font-family: var(--vscode-font-family);
+  font-weight: 600;
+  flex-shrink: 0;
+}
+.al-title-text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.al-close {
+  flex-shrink: 0;
+  background: none;
+  border: none;
+  color: var(--vscode-foreground);
+  cursor: pointer;
+  padding: 2px;
+  opacity: 0.7;
+}
+.al-close:hover { opacity: 1; background: var(--vscode-toolbar-hoverBackground); }
+/* The top edge: drag to resize. Over the border, a few pixels tall so it's easy to grab. */
+.al-resize {
+  position: absolute;
+  top: -3px;
+  left: 0;
+  right: 0;
+  height: 6px;
+  cursor: row-resize;
+  z-index: 1;
+}
+.al-resize:hover { background: var(--vscode-sash-hoverBorder); }
+.al-note {
+  font-weight: normal;
+  color: var(--vscode-descriptionForeground);
+}
+.al-row {
+  display: flex;
+  gap: 10px;
+  white-space: nowrap;
+  align-items: center;
+}
+.al-rows {
+  flex: 1;
+  min-height: 0;
+}
+.al-row {
+  padding: 0 6px;
+  cursor: pointer;
+  box-sizing: border-box;
+  overflow: hidden;
+}
+.al-row:hover {
+  background: var(--vscode-list-hoverBackground);
+}
+.al-current {
+  background: var(--vscode-list-inactiveSelectionBackground);
+}
+.al-pos { width: 6.5em; flex-shrink: 0; color: var(--vscode-descriptionForeground); }
+.al-kind { width: 2.5em; flex-shrink: 0; }
+.al-write { color: var(--vscode-terminal-ansiYellow); }
+.al-value { flex-shrink: 0; }
+.al-offset { width: 5.5em; flex-shrink: 0; color: var(--vscode-descriptionForeground); }
+.al-who { flex-shrink: 0; }
+/* The one part of a row that gives way when it's narrow — truncated, so the source link after it
+   stays in view (a flex item doesn't shrink below its text without min-width: 0). */
+.al-detail { color: var(--vscode-descriptionForeground); overflow: hidden; text-overflow: ellipsis; flex: 0 1 auto; min-width: 0; }
+
+.cr-clickable { cursor: pointer; }
+.cr-clickable:hover { background: var(--vscode-list-hoverBackground); }
+.cr-selected { background: var(--vscode-list-inactiveSelectionBackground); }
+.reg-selected { outline: 1px solid var(--vscode-focusBorder); }
+.al-source {
+  flex-shrink: 0;
+  margin-left: auto;
+  padding-left: 1em;
+  color: var(--vscode-textLink-foreground);
+  text-decoration: none;
+}
+.al-source:hover { text-decoration: underline; }

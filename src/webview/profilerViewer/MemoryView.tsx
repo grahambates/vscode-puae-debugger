@@ -2,7 +2,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { List, ListImperativeAPI, RowComponentProps } from "react-window";
 import { useCombobox } from "downshift";
 import { getProfileModel } from "./modelStore";
-import { reconstructMemoryAt, resolveMemoryRegion, findPrevMemWrite, findNextMemWrite, SLOW_BASE } from "./reconstruct";
+import { AccessList, useAccessContext, useMemoryAccesses } from "./AccessList";
+import { reconstructMemoryAt, resolveMemoryRegion, SLOW_BASE } from "./reconstruct";
 import { createSymbolizer } from "./symbols";
 import { createSourceLookup } from "./sourceLookup";
 import { buildAddressSuggestions, parseAddressInput, AddressSuggestion, Region } from "./addressSuggestions";
@@ -42,7 +43,7 @@ type RowListProps = {
   // undefined = no symbol targeted (e.g. jumped to a raw address or a whole region instead), or
   // navigated away from it — nothing gets highlighted, ordinary browsing looks unaffected.
   targetRange: { start: number; end: number } | undefined;
-  onByteClick: (addr: number, jumpToSource: boolean, toSide: boolean, forward: boolean) => void;
+  onByteClick: (addr: number, jumpToSource: boolean, toSide: boolean) => void;
   onByteHover: (addr: number, x: number, y: number) => void;
   onByteLeave: () => void;
 };
@@ -110,7 +111,7 @@ function RowRenderer({
               c.present ? nibbleClass(c.value, colorCode) : undefined,
             ].filter(Boolean).join(" ")}
             style={c.fade > 0 ? { background: `rgba(255,200,0,${c.fade.toFixed(3)})` } : undefined}
-            onClick={c.present ? (e) => onByteClick(baseAddr + c.off, e.ctrlKey || e.metaKey, e.altKey, e.shiftKey) : undefined}
+            onClick={c.present ? (e) => onByteClick(baseAddr + c.off, e.ctrlKey || e.metaKey, e.altKey) : undefined}
             onMouseEnter={c.present ? (e) => onByteHover(baseAddr + c.off, e.clientX, e.clientY) : undefined}
             onMouseLeave={onByteLeave}
           >
@@ -173,6 +174,12 @@ export function MemoryView({
   // "last navigation" to highlight anyway.
   const [targetRange, setTargetRange] = useState<{ start: number; end: number } | undefined>(undefined);
   const [viewMode, setViewMode] = useState<"hex" | "visual">(initialJumpRef.current ? "visual" : "hex");
+  // "Who touched it", listed in a panel that a byte click opens: that byte — or, for a byte inside
+  // the symbol picked in the address box, the whole symbol. Picking a symbol makes it the candidate
+  // without opening the panel (it's also just navigation); `pickedSymbol` remembers it.
+  const [showAccesses, setShowAccesses] = useState(false);
+  const [pickedSymbol, setPickedSymbol] = useState<{ start: number; end: number; label: string } | undefined>(undefined);
+  const [accessTarget, setAccessTarget] = useState<{ start: number; end: number; label: string } | undefined>(undefined);
   const visualRef = useRef<MemoryVisualAPI>(null);
   // Keep a ref so scrollToByteOffset stays stable (no viewMode dep → no callback cascade).
   const viewModeRef = useRef(viewMode);
@@ -390,27 +397,24 @@ export function MemoryView({
   );
 
   const sourceLookup = useMemo(() => createSourceLookup(model?.lineTable, model?.segments), [model]);
+  const accessContext = useAccessContext(model);
+  const accesses = useMemoryAccesses(model, accessContext, showAccesses ? accessTarget : undefined);
 
   const onByteClick = useCallback(
-    (addr: number, jumpToSource: boolean, toSide: boolean, forward: boolean) => {
+    (addr: number, jumpToSource: boolean, toSide: boolean) => {
       if (jumpToSource) {
         const loc = sourceLookup(addr);
         if (loc) onOpenSource(loc.file, loc.line, toSide); // loc.line is already 1-based
         return;
       }
-      if (!dma) return;
-      // Shift+click jumps forward to the NEXT write, plain click backward to the previous one.
-      // Both use strict "before/after current slot" semantics (matching findPrevRegWrite's ◀ in
-      // CustomRegsView) — using slot+1 as the backward ceiling would find the current slot itself
-      // and re-select it on every click, causing the navigation to stick. When the first search
-      // reaches the beginning/end without a match, wrap around to the other end of the frame
-      // (same wrapping behaviour as CPU register and instruction navigation).
-      const found = forward
-        ? (findNextMemWrite(dma, addr, slot) ?? findNextMemWrite(dma, addr, -1))
-        : (findPrevMemWrite(dma, addr, slot) ?? findPrevMemWrite(dma, addr, dma.owner.length));
-      if (found !== undefined) onSelectSlot(found);
+      // The byte's access history — or, inside the symbol picked in the address box, the whole
+      // symbol's, so clicking around a buffer keeps the buffer's list.
+      setAccessTarget(pickedSymbol && addr >= pickedSymbol.start && addr < pickedSymbol.end
+        ? pickedSymbol
+        : { start: addr, end: addr + 1, label: `$${addr.toString(16).padStart(6, "0")}` });
+      setShowAccesses(true);
     },
-    [dma, slot, onSelectSlot, sourceLookup, onOpenSource],
+    [sourceLookup, onOpenSource, pickedSymbol],
   );
 
   const onByteHover = useCallback((addr: number, x: number, y: number) => setHover({ addr, x, y }), []);
@@ -515,6 +519,10 @@ export function MemoryView({
         jumpToAddress(item.address);
         // Highlight the symbol's own byte range (.mem-in-target) — only when it has a known size.
         setTargetRange(item.size > 0 ? { start: item.address, end: item.address + item.size } : undefined);
+        const symbol = { start: item.address, end: item.address + Math.max(1, item.size), label: item.label };
+        setPickedSymbol(symbol);
+        // Already open: switch the list to it, since that's clearly what's being looked at now.
+        setAccessTarget((t) => (t ? symbol : t));
       }
     },
     [jumpToRegion, jumpToAddress],
@@ -556,6 +564,7 @@ export function MemoryView({
     if (addr !== undefined) {
       jumpToAddress(addr);
       setTargetRange(undefined); // a raw address has no symbol length to dim around
+      setPickedSymbol(undefined);
     }
   }, [comboSuggestions, comboQuery, selectSuggestion, jumpToAddress]);
 
@@ -660,6 +669,18 @@ export function MemoryView({
           initialBytesPerRow={initialJumpRef.current?.bytesPerRow}
         />
       )}
+      {showAccesses && accessTarget && (
+        <AccessList
+          title={`Accesses to ${accessTarget.label}`}
+          note="chip and slow RAM only"
+          rows={accesses}
+          selectedSlot={selectedSlot}
+          onSelect={(row) => onSelectSlot(row.slot)}
+          onOpenSource={onOpenSource}
+          onClose={() => setShowAccesses(false)}
+          empty="Nothing read or wrote it on the chip bus this frame."
+        />
+      )}
       {hover && hoverInfo && (
         <Tooltip x={hover.x} y={hover.y} width={220}>
           <div className="tt-func">
@@ -684,8 +705,7 @@ export function MemoryView({
               );
             })}
           </div>
-          <div className="tt-hint">Click: jump to previous write</div>
-          <div className="tt-hint">Shift+Click: jump to next write</div>
+          <div className="tt-hint">Click: access history</div>
           {hoverSourceLoc && (
             <div className="tt-hint">{isMac ? "Cmd" : "Ctrl"}+Click to open source</div>
           )}

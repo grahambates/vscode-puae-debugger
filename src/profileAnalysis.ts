@@ -1202,7 +1202,7 @@ export interface AccessRow {
   line: number;
   hpos: number;
   write: boolean;
-  size: 1 | 2;
+  size: 1 | 2 | 4;
   address: number;
   /** Offset into the range. */
   offset: number;
