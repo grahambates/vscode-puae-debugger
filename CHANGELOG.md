@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Fixes
+
+- Kickstart symbols no longer overwrite program symbols in naming clash in profiler
+
 ## 1.1.0
 
 ### MCP server
@@ -28,6 +32,7 @@
 - A capture of a program with no debug information can be opened in the profiler.
 - A data breakpoint hit by a copper write now names the copper MOVE that made it; it pointed at the instruction after it.
 - A Kickstart ROM dumped "doubled" to 512KB (the usual form of 1.3 dumps) wasn't recognised, so ROM code had no symbol names in the debugger, profiler or MCP tools.
+- A program routine with the same name as a Kickstart one (`Draw`, `Wait`, …) lost its symbol to the ROM's: in the profiler its time went to the label before it, and a breakpoint on it was set in the ROM. The program's symbol now wins, and the ROM's is named `Draw (ROM)`. Saved captures pick this up when reopened.
 - Continuing after a reverse step (or reverse continue / step back a frame) ran one frame too many before the next frame ended.
 - Stepping back — most reliably a frame forward and then a frame back — could leave the wrong picture on screen (a later frame, or a blank one) instead of the one shown at that point.
 - Call stacks in assembly programs (the profiler's flame graph and call tree, and the debugger's stack) lost their callers when code used `rts` for something other than a return — return-threaded code that points A7 at a table of routines, or a `pea label / rts` jump — or moved A7 to a stack of its own. An `rts` now only pops the frame it actually returns from.

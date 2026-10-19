@@ -187,6 +187,25 @@ describe("Kickstart symbols", () => {
         offset: 4,
       });
     });
+
+    it("keeps the program's symbol when a ROM symbol has the same name", () => {
+      // graphics.library has a Draw; so does many a demo.
+      const sourceMap = new SourceMap(
+        [{ name: "CODE", address: 0x1000, size: 0x1000, memType: MemoryType.CHIP }],
+        new Set(),
+        { Draw: 0x1100, main: 0x1000 },
+        [],
+      );
+      sourceMap.addSymbolModule(
+        { name: "kickstart", address: 0xfc0000, size: 256 * 1024, memType: MemoryType.ANY },
+        { Draw: 0xfc5634, OpenLibrary: 0xfc1474 },
+      );
+      assert.strictEqual(sourceMap.getSymbols()["Draw"], 0x1100);
+      assert.strictEqual(sourceMap.getSymbols()["Draw (ROM)"], 0xfc5634);
+      assert.deepStrictEqual(sourceMap.findSymbolOffset(0x1104), { symbol: "Draw", offset: 4 });
+      assert.deepStrictEqual(sourceMap.findSymbolOffset(0xfc5634), { symbol: "Draw (ROM)", offset: 0 });
+      assert.strictEqual(sourceMap.getSymbols()["OpenLibrary"], 0xfc1474);
+    });
   });
 
   describe("buildSourceMapFromBundle re-merges Kickstart symbols (saved profile)", () => {

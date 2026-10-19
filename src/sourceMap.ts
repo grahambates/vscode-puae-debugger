@@ -136,10 +136,19 @@ export class SourceMap {
    * and merges the symbols into the symbol table. No source-line (locationsByAddress) entries are
    * added: these symbols have names but no source. getSymbolLengths() derives sizes from address
    * ordering, so no sizes are needed here.
+   *
+   * The program's own symbols win a name clash. ROM routines have ordinary names (graphics.library
+   * has a `Draw`, exec a `Wait`), and taking the ROM's address for one would leave the program's
+   * routine without a symbol — its code then attributed to whatever label precedes it, and a
+   * breakpoint on it set in the ROM. The ROM symbol is kept as "Name (ROM)", so the ROM address is
+   * still named.
    */
   public addSymbolModule(segment: Segment, symbols: Record<string, number>): void {
     this.segments.push(segment);
-    Object.assign(this.symbols, symbols);
+    for (const [name, address] of Object.entries(symbols)) {
+      const clash = name in this.symbols && this.symbols[name] !== address;
+      this.symbols[clash ? `${name} (ROM)` : name] = address;
+    }
   }
 
   public getSourceFiles(): string[] {
