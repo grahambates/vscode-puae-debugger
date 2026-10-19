@@ -280,8 +280,8 @@ type RegHover = { kind: RegKind; value: number; x: number; y: number };
 // repeated in the tooltip (already shown on the cell being hovered).
 //
 // Click selects a register: its change history is listed under the disassembly (AccessList), the
-// counterpart of Memory's and Custom Registers' "click: access history" (a register's trace
-// records its value, so it's the changes to it that can be listed, not every read).
+// same "click: change history" as Custom Registers (the Memory view's is an access history,
+// reads included).
 function RegistersPanel({
   regs, prev, symbolize, selectedReg, onSelectReg,
 }: {

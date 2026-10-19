@@ -496,3 +496,51 @@ export function registerChangeRows(
     source: sourceAt(c.pc),
   }));
 }
+
+// ── Custom registers, as change history ───────────────────────────────────────────────────
+
+// Registers whose writes set or clear bits (bit 15 chooses) rather than replace the value.
+const SET_CLR_OFFSETS = new Set([0x096, 0x09a, 0x09c, 0x09e]); // DMACON, INTENA, INTREQ, ADKCON
+
+/**
+ * A custom register's writes this frame as old → new, like a CPU register's changes: the CPU's
+ * and the copper's, at its write address (a pointer pair's two halves combined into one address).
+ * Its read-only partner (DMACONR for DMACON) is a different address and isn't included. `base` is
+ * the register file at the frame's start, for the value before the first write; without it that
+ * shows as "?". A SET/CLR register's new value has the write's set or clear applied.
+ */
+export function customRegisterChangeRows(
+  model: IProfileModel,
+  offset: number,
+  pair: boolean,
+  base: Uint16Array | undefined,
+  readCode: ReadCode,
+  blits: Blit[] | undefined,
+  instructionText: (pc: number) => string | undefined,
+  sourceAt: SourceAt,
+  registerName: (offset: number) => string | undefined,
+): AccessListRow[] {
+  const start = 0xdff000 + offset;
+  const writes = findAccesses(model, start, start + (pair ? 4 : 2), readCode, blits).filter((a) => a.write);
+  const halves = [base?.[offset >> 1], pair ? base?.[(offset >> 1) + 1] : undefined];
+  const known = () => halves[0] !== undefined && (!pair || halves[1] !== undefined);
+  const show = () => {
+    if (!known()) return "?";
+    return pair ? hexOf(((halves[0]! << 16) | halves[1]!) >>> 0, 6) : hexOf(halves[0]!, 4);
+  };
+  const rows = accessListRows(model, writes, start, instructionText, sourceAt, registerName);
+  return writes.map((w, i) => {
+    const half = pair && w.address === start + 2 ? 1 : 0;
+    const before = show();
+    const old = halves[half];
+    const v = w.value & 0xffff;
+    halves[half] = SET_CLR_OFFSETS.has(offset) && !pair
+      ? (old === undefined ? undefined : v & 0x8000 ? (old | (v & 0x7fff)) & 0x7fff : old & ~v & 0x7fff)
+      : v;
+    const row = rows[i];
+    if (w.source.kind === "copper" && w.source.instruction !== undefined) {
+      row.detail = `MOVE #${hexOf(v, 4)} to ${registerName((w.address & 0x1fe)) ?? hexOf(w.address & 0x1fe, 3)} at ${hexOf(w.source.instruction, 6)}`;
+    }
+    return { ...row, kind: "", offset: undefined, value: `${before} → ${show()}` };
+  });
+}

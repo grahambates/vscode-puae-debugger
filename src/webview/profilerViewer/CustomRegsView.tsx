@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { AccessList, useAccessContext, useMemoryAccesses } from "./AccessList";
+import { AccessList, useAccessContext, useCustomRegisterChanges } from "./AccessList";
 import { Tooltip } from "./Tooltip";
 import { getProfileModel } from "./modelStore";
 import { reconstructCustomRegs } from "./reconstruct";
@@ -42,7 +42,7 @@ export function CustomRegsView({
     [dma, base, slot],
   );
 
-  // The register whose accesses are listed below — picked by clicking its row.
+  // The register whose change history is listed below — picked by clicking its row.
   const [selected, setSelected] = useState<number | undefined>(undefined);
   const [hover, setHover] = useState<{ offset: number; x: number; y: number } | undefined>(undefined);
   const [sort, setSort] = useState(savedSort);
@@ -58,11 +58,7 @@ export function CustomRegsView({
     return regs;
   }, [sort, filter]);
   const ctx = useAccessContext(model);
-  const target = useMemo(
-    () => (selected === undefined ? undefined : { start: 0xdff000 + selected, end: 0xdff000 + selected + (PTR_HIGH_OFFSETS.has(selected) ? 4 : 2) }),
-    [selected],
-  );
-  const rows = useMemoryAccesses(model, ctx, target);
+  const rows = useCustomRegisterChanges(model, ctx, selected, selected !== undefined && PTR_HIGH_OFFSETS.has(selected));
   // A pointer pair is listed as one: BPL1PTH and BPL1PTL as BPL1PT.
   const selectedName = selected === undefined
     ? undefined
@@ -154,13 +150,13 @@ export function CustomRegsView({
       )}
       {selectedName !== undefined && (
         <AccessList
-          title={`Accesses to ${selectedName}`}
+          title={`Changes to ${selectedName}`}
           rows={rows}
           selectedSlot={selectedSlot}
           onSelect={(row) => onSelectSlot(row.slot)}
           onOpenSource={onOpenSource}
           onClose={() => setSelected(undefined)}
-          empty="Nothing wrote or read it this frame."
+          empty="Nothing wrote it this frame."
         />
       )}
     </div>
@@ -207,7 +203,7 @@ function CustomRegTip({ offset, regs, changed, symbolize }: {
         ))}
       </div>
       {changed && <div className="tt-hint">Written at this cycle</div>}
-      <div className="tt-hint">Click: access history</div>
+      <div className="tt-hint">Click: change history</div>
     </>
   );
 }

@@ -5,7 +5,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { List, ListImperativeAPI, RowComponentProps } from "react-window";
-import { accessListRows, AccessListRow, findAccesses, findRegisterChanges, readCodeFromListing, ReadCode, registerChangeRows, SourceAt } from "./accesses";
+import { accessListRows, AccessListRow, customRegisterChangeRows, findAccesses, findRegisterChanges, readCodeFromListing, ReadCode, registerChangeRows, SourceAt } from "./accesses";
 import { customRegisterName } from "../shared/customRegisters";
 import { DMA_HPOS, IProfileModel } from "../../shared/profilerTypes";
 import { Blit, getBlits } from "./blits";
@@ -170,4 +170,13 @@ export function useRegisterChanges(model: IProfileModel | null | undefined, ctx:
     if (!model || reg === undefined) return [];
     return registerChangeRows(findRegisterChanges(model, reg, ctx.readCode), ctx.instructionText, ctx.sourceAt);
   }, [model, ctx, reg]);
+}
+
+/** A custom register's writes this frame, as old → new rows (customRegisterChangeRows). */
+export function useCustomRegisterChanges(model: IProfileModel | null | undefined, ctx: AccessContext, offset: number | undefined, pair: boolean): AccessListRow[] {
+  return useMemo(() => {
+    if (!model || offset === undefined) return [];
+    const base = model.dmaSnapshot?.atFrameStart ? model.dmaSnapshot.custom : undefined;
+    return customRegisterChangeRows(model, offset, pair, base, ctx.readCode, ctx.blits, ctx.instructionText, ctx.sourceAt, customRegisterName);
+  }, [model, ctx, offset, pair]);
 }

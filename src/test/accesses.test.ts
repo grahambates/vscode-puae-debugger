@@ -1,4 +1,4 @@
-import { findAccesses, findRegisterChanges, groupAccesses } from "../webview/profilerViewer/accesses";
+import { customRegisterChangeRows, findAccesses, findRegisterChanges, groupAccesses } from "../webview/profilerViewer/accesses";
 import { BusOwner, DMA_HPOS, DMA_WRITE, IProfileModel, REG_COUNT } from "../shared/profilerTypes";
 import { resolveAccessTarget } from "../profileAnalysis";
 import { SourceMap } from "../sourceMap";
@@ -180,5 +180,32 @@ describe("findAccesses with long accesses", () => {
     model.dma!.flags[8] = 0; model.dma!.owner[8] = BusOwner.CPU; model.dma!.addr[8] = 0x3002; model.dma!.value[8] = 0x2140;
     const [pop] = findAccesses(model, 0x3000, 0x3004, read);
     expect(pop).toMatchObject({ write: false, size: 4, value: 0x00c02140, source: { pc: 0x1000, verified: true } });
+  });
+});
+
+describe("customRegisterChangeRows", () => {
+  // Copper MOVEs: DMACON set $8200 then clear $0200; COLOR00 $0f00 then $0f00 again; BPL1PTH/L.
+  function frameWith(cells: [number, number, number][]): IProfileModel {
+    const n = 40;
+    const owner = new Uint8Array(n), flags = new Uint8Array(n), addr = new Uint32Array(n), value = new Uint16Array(n);
+    for (const [s, a, v] of cells) { owner[s] = BusOwner.COPPER; flags[s] = DMA_WRITE; addr[s] = a; value[s] = v; }
+    return { pcs: [], timeDeltas: [], samples: [0], nodes: [], locations: [], dma: { owner, flags, addr, value } } as unknown as IProfileModel;
+  }
+  const rows = (model: IProfileModel, offset: number, pair: boolean, base?: Uint16Array) =>
+    customRegisterChangeRows(model, offset, pair, base, () => undefined, undefined, () => undefined, () => undefined, () => undefined).map((r) => r.value);
+
+  it("applies a SET/CLR register's writes to its value", () => {
+    const base = new Uint16Array(256);
+    base[0x096 >> 1] = 0x0100;
+    expect(rows(frameWith([[2, 0x096, 0x8200], [4, 0x096, 0x0100]]), 0x096, false, base)).toEqual(["$0100 → $0300", "$0300 → $0200"]);
+  });
+
+  it("lists a write of the same value, and shows ? without a frame-start value", () => {
+    expect(rows(frameWith([[2, 0x180, 0x0f00], [4, 0x180, 0x0f00]]), 0x180, false)).toEqual(["? → $0f00", "$0f00 → $0f00"]);
+  });
+
+  it("combines a pointer pair's halves into one address", () => {
+    const base = new Uint16Array(256);
+    expect(rows(frameWith([[2, 0x0e0, 0x0001], [4, 0x0e2, 0x2340]]), 0x0e0, true, base)).toEqual(["$000000 → $010000", "$010000 → $012340"]);
   });
 });
