@@ -10,6 +10,17 @@ function fixture() {
       cpu: { pc: "1234" },
       memory: [{ data: Buffer.from([1, 2]) }],
     }),
+    clock: jest
+      .fn()
+      .mockResolvedValue({
+        colourClocks: 100,
+        instructions: 10,
+        sinceLaunchColourClocks: 0,
+        pc: 0x1234,
+        location: "main",
+        frame: 0,
+        timeline: 0,
+      }),
     readBytes: jest.fn().mockResolvedValue(Buffer.from([1, 2])),
     takeSerial: jest.fn().mockReturnValue({ text: "", dropped: 0 }),
     resolveAddress: jest.fn().mockReturnValue(0x2000),
@@ -204,5 +215,85 @@ describe("JavaScript automation API", () => {
     await emulator.releaseAll();
     expect(session.releaseAll).toHaveBeenCalled();
     expect(session.continueUntilStop).not.toHaveBeenCalled();
+  });
+  it("reads paused counters and rejects marks from another machine or an abandoned timeline", async () => {
+    const { session, emulator } = fixture();
+    const mark = await emulator.timing.mark();
+    expect(Object.isFrozen(mark)).toBe(true);
+    expect(await emulator.timing.elapsed(mark)).toMatchObject({
+      colourClocks: 0,
+      instructions: 0,
+    });
+    session.clock.mockResolvedValue({
+      ...mark,
+      colourClocks: 140,
+      instructions: 14,
+    });
+    expect(await emulator.timing.elapsed(mark)).toMatchObject({
+      colourClocks: 40,
+      instructions: 4,
+    });
+    const other = fixture();
+    await expect(other.emulator.timing.elapsed(mark)).rejects.toThrow(
+      "different emulator sessions",
+    );
+    session.clock.mockResolvedValue({ ...mark, timeline: 1 });
+    await expect(emulator.timing.elapsed(mark)).rejects.toThrow(
+      "rewound or restored",
+    );
+    session.clock.mockResolvedValue({ ...mark, colourClocks: 90 });
+    await expect(emulator.timing.elapsed(mark)).rejects.toThrow("out of order");
+    expect(session.continueUntilStop).not.toHaveBeenCalled();
+  });
+  it("measures to the next visit even when already at the target", async () => {
+    const { session, emulator } = fixture();
+    session.resolveAddress.mockReturnValue(0x1234);
+    session.continueUntilStop.mockResolvedValue({
+      stopped: true,
+      framesRun: 1,
+      pc: 0x1234,
+      reason: "BREAKPOINT_REACHED",
+    });
+    const before = await session.clock();
+    session.clock
+      .mockResolvedValueOnce(before)
+      .mockResolvedValueOnce({
+        ...before,
+        colourClocks: 126,
+        instructions: 20,
+      });
+    expect(
+      await emulator.timing.measure({ from: 0x1234, to: 0x1234 }),
+    ).toMatchObject({ colourClocks: 26, instructions: 10 });
+    expect(session.continueUntilStop).toHaveBeenCalledTimes(1);
+    expect(session.removeBreakpoints).toHaveBeenCalledWith(["0x1234"]);
+  });
+  it("benchmarks exclude warmup samples and report jitter", async () => {
+    const { session, emulator } = fixture();
+    session.continueUntilStop.mockResolvedValue({
+      stopped: true,
+      framesRun: 1,
+      pc: 0x2000,
+      reason: "BREAKPOINT_REACHED",
+    });
+    const base = await session.clock();
+    for (const colourClocks of [0, 99, 99, 109, 109, 129])
+      session.clock.mockResolvedValueOnce({ ...base, colourClocks });
+    const result = await emulator.timing.benchmark({
+      to: "loop",
+      samples: 2,
+      warmup: 1,
+    });
+    expect(result.samples.map((s) => s.colourClocks)).toEqual([10, 20]);
+    expect(result.colourClocks).toEqual({
+      min: 10,
+      mean: 15,
+      max: 20,
+      total: 30,
+    });
+    expect(session.continueUntilStop).toHaveBeenCalledTimes(3);
+    await expect(
+      emulator.timing.benchmark({ to: "loop", samples: 0 }),
+    ).rejects.toThrow("samples");
   });
 });

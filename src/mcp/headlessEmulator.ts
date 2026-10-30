@@ -48,6 +48,9 @@ interface PuaeWasmModule {
   _wasm_serial_get_len(): number;
   _wasm_serial_get_dropped(): number;
   _wasm_serial_clear(): void;
+  _wasm_read_instr_count(): void;
+  _wasm_get_instr_count_hi(): number;
+  _wasm_get_instr_count_lo(): number;
   _wasm_read_cycle_count(): void;
   _wasm_get_cycle_count_hi(): number;
   _wasm_get_cycle_count_lo(): number;
@@ -261,6 +264,16 @@ export class HeadlessEmulator extends WebviewEmulator {
     const hi = this.module._wasm_get_cycle_count_hi() >>> 0;
     const lo = this.module._wasm_get_cycle_count_lo() >>> 0;
     return hi * 2 ** 32 + lo;
+  }
+
+  /** Retired instructions, restored with the machine's rewind/snapshot state. */
+  public instructions(): number {
+    this.module._wasm_read_instr_count();
+    const hi = this.module._wasm_get_instr_count_hi() >>> 0;
+    const lo = this.module._wasm_get_instr_count_lo() >>> 0;
+    const count = hi * 2 ** 32 + lo;
+    if (!Number.isSafeInteger(count)) throw new RangeError("Instruction counter exceeds JavaScript integer precision");
+    return count;
   }
 
   /** Steps back `count` instructions in one restore + replay. False when history doesn't reach that far. */

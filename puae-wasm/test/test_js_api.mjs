@@ -50,10 +50,43 @@ try {
   assert.deepEqual((await emulator.input([])).held, []);
   const sequence = await emulator.frameSequence({ frames: 2 });
   assert.equal(sequence.tiles.length, 2);
+  const beforeCapture = await emulator.timing.mark();
   const capture = await emulator.captureProfile({ frames: 1 });
+  const captureTiming = await emulator.timing.elapsed(beforeCapture);
+  assert.ok(captureTiming.colourClocks > 0 && captureTiming.instructions > 0);
   const analysis = await puae.profiles.analyse(capture.bytes, { callTree: true, copper: true });
   assert.equal(analysis.frames.length, 1);
   assert.equal(analysis.findings.filter(f => f.severity === "error").length, 0);
+  // A known five-instruction loop lets us check exact instruction deltas across both
+  // single stepping and breakpoint stops, independently of a demo's symbols or workload.
+  await emulator.snapshots.restore('start');
+  await emulator.memory.write(emulator.entryPoint, new Uint8Array([
+    0x4e, 0x71, 0x4e, 0x71, 0x4e, 0x71, 0x4e, 0x71, 0x60, 0xf6,
+  ]));
+  await emulator.custom.write('DMACON', 0x7fff);
+  await emulator.registers.write('sr', 0x2700);
+  await emulator.registers.write('pc', emulator.entryPoint);
+  const mark = await emulator.timing.mark();
+  assert.equal((await emulator.timing.elapsed(mark)).colourClocks, 0);
+  await emulator.step({ count: 2 });
+  const elapsed = await emulator.timing.elapsed(mark);
+  assert.equal(elapsed.instructions, 2);
+  assert.ok(elapsed.colourClocks >= 4);
+  const measured = await emulator.timing.measure({ from: emulator.entryPoint, to: emulator.entryPoint + 4, frames: 10 });
+  assert.equal(measured.instructions, 2);
+  assert.ok(measured.colourClocks >= 4);
+  const benchmark = await emulator.timing.benchmark({ from: emulator.entryPoint, to: emulator.entryPoint, samples: 4, warmup: 2, frames: 10 });
+  assert.equal(benchmark.samples.length, 4);
+  assert.ok(benchmark.samples.every(sample => sample.instructions === 5 && sample.colourClocks >= 13));
+  assert.equal(benchmark.instructions.mean, 5);
+  assert.equal(benchmark.colourClocks.total, benchmark.samples.reduce((sum, sample) => sum + sample.colourClocks, 0));
+  await emulator.snapshots.restore('start');
+  await assert.rejects(emulator.timing.elapsed(mark), /rewound or restored/);
+  const beforeReverse = await emulator.timing.mark();
+  await emulator.step({ count: 2 });
+  await emulator.reverse();
+  await assert.rejects(emulator.timing.elapsed(beforeReverse), /rewound or restored/);
+  console.log('OK JavaScript API: colour-clock and instruction checkpoints, exact code intervals, repeated benchmarks and rewind invalidation');
   console.log("OK JavaScript API: ESM/CJS, launch, memory, step, restore, run, screenshots and profile analysis");
 } finally {
   await emulator.close();

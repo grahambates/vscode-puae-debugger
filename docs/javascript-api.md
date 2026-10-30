@@ -153,3 +153,67 @@ await withEmulator({ program, kickstartRom }, async amiga => {
 ```
 
 `withEmulator(options, callback, { directory })` launches and closes a machine around an async callback. On callback failure it saves `failure.txt`, `screen.png`, `state.json` and unread `serial.txt` in a unique directory before teardown. Unavailable artifacts are recorded as error files (for example, after worker termination); artifact failures do not replace the original test error. The optional logger receives the artifact directory path. The callback's return value is preserved on success. Await emulator operations inside the callback. The helper works with Node's test runner or another test framework and does not add dependencies.
+
+## Colour-clock timing and repeated benchmarks
+
+Use timing checkpoints to measure any sequence of emulator operations:
+
+```js
+const start = await amiga.timing.mark();
+await amiga.step({ count: 10 });
+const elapsed = await amiga.timing.elapsed(start);
+console.log(elapsed.colourClocks, elapsed.instructions);
+```
+
+`timing.read()` and `timing.mark()` both return an immutable checkpoint with absolute `colourClocks`, retired `instructions`, `sinceLaunchColourClocks`, `pc`, `location` and `frame`. They do not advance the CPU. `elapsed(start)` returns counter differences plus `start` and `end` checkpoints. Host execution, logging, filesystem work and time paused between calls add no colour clocks.
+
+For a code interval, use symbols, source lines or numeric addresses:
+
+```js
+const cost = await amiga.timing.measure({
+  from: 'draw_frame',
+  to: 'draw_frame_done',
+  frames: 100,
+});
+console.log(`${cost.colourClocks} cc, ${cost.instructions} instructions`);
+```
+
+The measurement starts immediately before the `from` instruction and ends immediately before `to`. If `from` is omitted, measurement starts at the current CPU position. Travel to `from` is excluded. If already at `to`, execution resumes to its **next** visit, so measuring from a loop label back to itself times one complete pass. The result contains `colourClocks`, `instructions`, the two checkpoints and the final debugger `stop`.
+
+These are actual emulated elapsed colour clocks, including chip-bus waits, DMA contention, interrupts, operating-system calls and code waiting for the beam. They measure latency between the chosen points, rather than only a function's own CPU work. On a 68000 one colour clock corresponds to two CPU cycles; no PAL/NTSC clock frequency is assumed or used to convert into seconds. Results depend on machine configuration and the raster phase at which a routine runs.
+
+For repeated measurements and performance regression assertions:
+
+```js
+const result = await amiga.timing.benchmark({
+  from: 'main_loop',
+  to: 'main_loop',
+  warmup: 2,
+  samples: 20,
+  frames: 100,
+});
+console.log(result.colourClocks); // { min, mean, max, total }
+console.log(result.instructions);
+assert.ok(result.colourClocks.max < 10000); // Choose a budget for your program.
+```
+
+Warmup passes execute but are excluded from the results. Each sample includes the same fields as `measure()`, and the aggregate statistics report min/mean/max/total for both clocks and instructions. Samples continue on the running machine; they do not restore a snapshot or reset input/state. For separate entry/exit labels, the return trip to the entry label is excluded on each sample. Without `from`, the first sample starts at the current position and later samples measure successive visits to `to`. Samples default to 10 (1–1000), and warmup defaults to 0 (0–1000).
+
+Timing operations preserve existing breakpoints and use temporary breakpoints for their endpoints. Any unrelated breakpoint, watchpoint, exception or exhausted frame budget rejects with `WaitError`, rather than returning an incomplete measurement. The frame budget defaults to 500 (1–5000) for each navigation phase. `measure()` and `benchmark()` also accept `timeoutMs` and `signal`; their wall-clock deadline covers the entire operation, including warmup and all samples.
+
+Checkpoints belong to one session and execution timeline. A snapshot restore or reverse-execution call invalidates earlier checkpoints, even if execution later returns to the same location; take a new mark after restoring. Cross-session marks and negative elapsed values are rejected. Checkpoints are ordinary serializable data; `sessionId` and `timeline` identify the compatible machine history. Counter reads fail rather than silently round values beyond JavaScript's safe integer range.
+
+For attribution rather than elapsed latency, use the existing profile analysis options: `instructions` gives per-instruction costs, `stalls` separates measured time from 68000 theoretical timings, and `iterations` reports per-pass costs and overruns at a chosen loop label:
+
+```js
+const capture = await amiga.captureProfile({ frames: 5 });
+const analysis = await puae.profiles.analyse(capture.bytes, {
+  iterations: 'main_loop',
+  instructions: 'draw_frame',
+  stalls: true,
+});
+assert.equal(analysis.findings.filter(f => f.severity === 'error').length, 0);
+console.log(analysis.iterations);
+```
+
+A profile is still captured on frame boundaries; `timing.measure()` provides instruction-boundary intervals without needing a full profile capture.

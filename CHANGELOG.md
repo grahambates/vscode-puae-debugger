@@ -4,6 +4,8 @@
 
 ### Added
 
+- JavaScript API colour-clock and retired-instruction timing: checkpoints, measurements between code locations and repeated benchmarks with warmup and min/mean/max costs. Checkpoints detect restores, rewinds and cross-session use.
+
 - Automation helpers for the JavaScript API: condition-based waits, scalar/string reads, structured instructions and custom registers, input cleanup, quiet configurable logging, cancellable worker sessions with deadlines, screenshot comparisons and test fixtures with failure artifacts.
 
 - Node.js automation API at `puae-debugger/api`: typed sessions for execution, debugging, input, snapshots, screenshots and profile capture/analysis, sharing the MCP backend. Supports ESM and CommonJS.

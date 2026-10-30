@@ -184,6 +184,7 @@ export class HeadlessSession {
   private readonly heldKeyCodes = new Set<number>();
   private readonly snapshots = new Map<string, SnapshotInfo & { state: { data: Uint8Array; instrCount: string } }>();
   private framesRun = 0;
+  private timingTimeline = 0;
 
   private constructor(
     private readonly emulator: HeadlessEmulator,
@@ -477,6 +478,7 @@ export class HeadlessSession {
    * the oldest checkpoint, or past a snapshot restore, which starts a new history.
    */
   public async reverse(mode: "step" | "continue" | "frame", count: number): Promise<{ done: number; reachedStart: boolean; state: StopState }> {
+    this.timingTimeline++;
     let done = 0;
     let reachedStart = false;
     if (mode === "step") {
@@ -637,6 +639,7 @@ export class HeadlessSession {
     if (!snapshot) {
       throw new Error(`No snapshot "${name}". Saved: ${[...this.snapshots.keys()].join(", ") || "none"}`);
     }
+    this.timingTimeline++;
     await this.emulator.loadState(snapshot.state);
     // A stop pending from before the restore belongs to the abandoned timeline.
     this.emulator.consumeStopMessage();
@@ -757,12 +760,25 @@ export class HeadlessSession {
     return this.describeStop(0, "STEP");
   }
 
-  /** Registers, call stack and current location — everything "where am I" needs. */
-  /** Resolve a code/data specification without reading or advancing the machine. */
+  /** Exact emulated counters at the paused CPU boundary; excludes all host-side work. */
+  public async clock() {
+    const cpu = await this.emulator.getCpuInfo();
+    const colourClocks = this.emulator.cycles();
+    if (!Number.isSafeInteger(colourClocks)) throw new RangeError("Colour-clock counter exceeds JavaScript integer precision");
+    const pc = parseInt(cpu.pc, 16);
+    return {
+      colourClocks, instructions: this.emulator.instructions(),
+      sinceLaunchColourClocks: colourClocks - this.launchCycles,
+      pc, location: describeAddress(pc, this.sourceMap), frame: this.framesRun,
+      timeline: this.timingTimeline,
+    };
+  }
+
   public hasBreakpoint(address: number): boolean {
     return this.breakpoints.has(address);
   }
 
+  /** Resolve a code/data specification without reading or advancing the machine. */
   public resolveAddress(spec: string): number {
     return resolveBreakpointSpec(spec, this.sourceMap).address;
   }
@@ -781,6 +797,7 @@ export class HeadlessSession {
     this.held.clear();
   }
 
+  /** Registers, call stack and current location — everything "where am I" needs. */
   public async inspect(reads: { address: string; bytes: number }[]): Promise<InspectResult> {
     const cpu = await this.emulator.getCpuInfo();
     const pc = parseInt(cpu.pc, 16);

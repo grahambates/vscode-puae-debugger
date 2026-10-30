@@ -1,4 +1,6 @@
 /** Node.js automation API. Each launch owns an independent, explicitly driven machine. */
+import { randomUUID } from "crypto";
+import { elapsedTiming, timingStats, TimingPoint } from "./timing";
 import { readFile, writeFile } from "fs/promises";
 import { resolve } from "path";
 import {
@@ -115,7 +117,20 @@ export class WaitError extends Error {
   }
 }
 
+export interface MeasureOptions extends WaitOptions {
+  /** Optional starting code location. Travel to it is excluded from the measurement. */
+  from?: Address;
+  /** Ends before this instruction executes. If already here, measure to the next visit. */
+  to: Address;
+}
+export interface BenchmarkOptions extends MeasureOptions {
+  samples?: number;
+  warmup?: number;
+}
+export type { TimingPoint, ElapsedTiming, TimingStats } from "./timing";
+
 export class Emulator {
+  private readonly sessionId = randomUUID();
   private closed = false;
   private busy = false;
   /** @internal Use launch(). */
@@ -200,35 +215,87 @@ export class Emulator {
   }
   /** Run to an address, symbol or source line, preserving existing breakpoints. */
   runUntil(at: Address, options: WaitOptions = {}) {
-    return this.use(async (s) => {
-      const budget = integer(options.frames ?? 500, "frames", 5000);
-      const target = await s.resolveAddress(address(at));
-      const initial = await s.inspect([]);
-      if (parseInt(initial.cpu.pc, 16) === target) {
-        return {
-          stopped: true,
-          reason: "TARGET_REACHED",
-          pc: target,
-          location: initial.location,
-          framesRun: 0,
-        };
-      }
-      const exists = await s.hasBreakpoint(target);
-      if (!exists) await s.setBreakpoints([address(target)]);
-      try {
-        const stop = await s.continueUntilStop(budget);
-        if (stop.pc === target && stop.reason === "BREAKPOINT_REACHED")
-          return stop;
-        throw new WaitError(
-          `runUntil(${at}) ${stop.stopped ? "interrupted by " + stop.reason : "timed out"} after ${stop.framesRun} frames at ${stop.location}`,
-          stop,
-        );
-      } finally {
-        if (!exists && !this.closed)
-          await s.removeBreakpoints([address(target)]);
-      }
-    }, options);
+    return this.use(
+      (s) => this.runTo(s, at, integer(options.frames ?? 500, "frames", 5000)),
+      options,
+    );
   }
+
+  private async runTo(
+    s: AutomationSession,
+    at: Address,
+    budget: number,
+    next = false,
+  ): Promise<StopState> {
+    const target = await s.resolveAddress(address(at));
+    const initial = await s.inspect([]);
+    if (!next && parseInt(initial.cpu.pc, 16) === target) {
+      return {
+        stopped: true,
+        reason: "TARGET_REACHED",
+        pc: target,
+        location: initial.location,
+        framesRun: 0,
+      };
+    }
+    const exists = await s.hasBreakpoint(target);
+    if (!exists) await s.setBreakpoints([address(target)]);
+    try {
+      const stop = await s.continueUntilStop(budget);
+      if (stop.pc === target && stop.reason === "BREAKPOINT_REACHED")
+        return stop;
+      throw new WaitError(
+        `runUntil(${at}) ${stop.stopped ? "interrupted by " + stop.reason : "timed out"} after ${stop.framesRun} frames at ${stop.location}`,
+        stop,
+      );
+    } finally {
+      if (!exists && !this.closed) await s.removeBreakpoints([address(target)]);
+    }
+  }
+
+  private async timingPoint(s: AutomationSession): Promise<TimingPoint> {
+    return Object.freeze({ ...(await s.clock()), sessionId: this.sessionId });
+  }
+  private async measureTo(s: AutomationSession, options: MeasureOptions) {
+    const budget = integer(options.frames ?? 500, "frames", 5000);
+    // Resolve both endpoints before moving the machine, so a typo cannot run half a measurement.
+    const target = await s.resolveAddress(address(options.to));
+    const origin =
+      options.from === undefined
+        ? undefined
+        : await s.resolveAddress(address(options.from));
+    if (origin !== undefined) await this.runTo(s, origin, budget);
+    const start = await this.timingPoint(s);
+    const stop = await this.runTo(s, target, budget, true);
+    const end = await this.timingPoint(s);
+    return { ...elapsedTiming(start, end), stop };
+  }
+  readonly timing = {
+    /** Read counters without advancing; also serves as a checkpoint for elapsed(). */
+    read: () => this.use((s) => this.timingPoint(s)),
+    mark: () => this.use((s) => this.timingPoint(s)),
+    elapsed: (start: TimingPoint) =>
+      this.use(async (s) => elapsedTiming(start, await this.timingPoint(s))),
+    /** Measure actual emulated time between instruction boundaries, including DMA stalls and interrupts. */
+    measure: (options: MeasureOptions) =>
+      this.use((s) => this.measureTo(s, options), options),
+    /** Repeat a code interval on the running machine, exposing jitter and min/mean/max costs. */
+    benchmark: (options: BenchmarkOptions) =>
+      this.use(async (s) => {
+        const count = integer(options.samples ?? 10, "samples", 1000);
+        const warmup = integer(options.warmup ?? 0, "warmup", 1000, 0);
+        integer(options.frames ?? 500, "frames", 5000);
+        for (let i = 0; i < warmup; i++) await this.measureTo(s, options);
+        const samples: Awaited<ReturnType<Emulator["measureTo"]>>[] = [];
+        for (let i = 0; i < count; i++)
+          samples.push(await this.measureTo(s, options));
+        return {
+          samples,
+          colourClocks: timingStats(samples.map((s) => s.colourClocks)),
+          instructions: timingStats(samples.map((s) => s.instructions)),
+        };
+      }, options),
+  };
 
   /** Poll a big-endian byte, word or long at frame boundaries; check before advancing. */
   waitForMemory(
