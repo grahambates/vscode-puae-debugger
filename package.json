@@ -51,7 +51,8 @@
     "CHANGELOG.md",
     "out/api.js",
     "out/api-types/",
-    "docs/javascript-api.md"
+    "docs/javascript-api.md",
+    "out/apiWorker.js"
   ],
   "contributes": {
     "customEditors": [

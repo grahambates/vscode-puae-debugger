@@ -34,3 +34,4 @@
 !out/api-types/**
 !out/puaeRpc.mjs
 !docs/javascript-api.md
+!out/apiWorker.js

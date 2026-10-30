@@ -74,8 +74,8 @@ async function main() {
   }
 
   const apiCtx = await esbuild.context({
-    entryPoints: ['src/api/index.ts'], bundle: true, format: 'cjs', platform: 'node',
-    outfile: 'out/api.js', minify: production, sourcemap: !production,
+    entryPoints: { api: 'src/api/index.ts', apiWorker: 'src/api/worker.ts' }, bundle: true, format: 'cjs', platform: 'node',
+    outdir: 'out', minify: production, sourcemap: !production,
     logLevel: 'silent', plugins: [esbuildProblemMatcherPlugin, {
       name: 'api-declarations',
       setup(build) {

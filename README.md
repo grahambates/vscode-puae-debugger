@@ -245,4 +245,4 @@ Emulation is powered by [PUAE](https://github.com/libretro/libretro-uae) (libret
 
 ## JavaScript automation API
 
-Drive the headless emulator from Node.js with `import { puae } from "puae-debugger/api"`. Launch a program, run to breakpoints, inspect and write memory, send input, rewind, take screenshots and analyse profiles using the same backend as the MCP server. Supports ESM, CommonJS and TypeScript. See the [API guide and examples](docs/javascript-api.md).
+Drive the headless emulator from Node.js with `import { puae } from "puae-debugger/api"`. Launch a program, run to breakpoints, inspect and write memory, send input, rewind, take screenshots and analyse profiles using the same backend as the MCP server. Includes condition-based waits, scalar memory reads, cancellable worker isolation, image comparisons and automatic failure artifacts. Supports ESM, CommonJS and TypeScript. See the [API guide and examples](docs/javascript-api.md).

@@ -22,13 +22,9 @@ import { outdatedSkills } from "../standalone/skillCli";
  * emulator-backed tools need to find the wasm module and the RPC dispatcher at runtime.
  */
 export function runMcpServer(rootDir: string): void {
-  // stdout is the protocol stream, so nothing but sendMessage may write to it. That is easy to
-  // honour in this code and impossible to honour in code this server calls: booting the emulator
-  // pulls in the Emscripten module, whose frontend_shim.c logs its boot progress with EM_ASM
-  // console.log — which landed mid-frame in a JSON-RPC message and broke the client's parser
-  // outright the first time an emulator tool ran. Redirecting console.log for the process closes
-  // that off for anything else that logs too. (Emscripten's own printf path is redirected
-  // separately, where the module is created — see headlessEmulator.ts.)
+  // stdout is exclusively JSON-RPC. Core output is routed separately by headlessEmulator,
+  // but shared helpers can still emit console diagnostics. This redirect is confined to the
+  // MCP CLI process; the JavaScript API uses worker-local logging instead.
   console.log = (...args: unknown[]) => log(args.map(String).join(" "));
   console.info = console.log;
   console.debug = console.log;

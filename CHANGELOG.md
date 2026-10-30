@@ -4,6 +4,8 @@
 
 ### Added
 
+- Automation helpers for the JavaScript API: condition-based waits, scalar/string reads, structured instructions and custom registers, input cleanup, quiet configurable logging, cancellable worker sessions with deadlines, screenshot comparisons and test fixtures with failure artifacts.
+
 - Node.js automation API at `puae-debugger/api`: typed sessions for execution, debugging, input, snapshots, screenshots and profile capture/analysis, sharing the MCP backend. Supports ESM and CommonJS.
 
 - Debug Console `writeFile("dump.bin", readBytes(address, count))` saves memory as raw binary on the debugger host. Also supports `readWords`/`readLongs` in big-endian order. Relative paths use the program directory; existing files are overwritten.

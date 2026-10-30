@@ -8,6 +8,7 @@
 // `ProfilerManager`. It deliberately reuses those same modules rather than reimplementing any of
 // it, so a capture taken here symbolicates identically to one taken from the debugger.
 
+import { CODE_TO_RETROK } from "../shared/retroKeys";
 import { libraryCallComments } from "../libraryCalls";
 import { readFile } from "fs/promises";
 import { parseHunks } from "../amigaHunkParser";
@@ -43,6 +44,7 @@ export interface LaunchOptions {
   kickstartRom: string;
   /** Extra `.uae` config lines (cpu_model, chipset, chipmem_size, ...). */
   extraConfig?: string;
+  log?: (line: string) => void;
 }
 
 /**
@@ -179,6 +181,7 @@ export class HeadlessSession {
   /** Mouse buttons, keys and joystick directions currently held down by emulator_input. */
   private readonly held = new Set<string>();
   private joystickBits = 0;
+  private readonly heldKeyCodes = new Set<number>();
   private readonly snapshots = new Map<string, SnapshotInfo & { state: { data: Uint8Array; instrCount: string } }>();
   private framesRun = 0;
 
@@ -218,6 +221,7 @@ export class HeadlessSession {
       rootDir: options.rootDir,
       kickstartRomPath: options.kickstartRom,
       extraConfig: options.extraConfig,
+      log: options.log,
     });
 
     let loaded;
@@ -591,6 +595,7 @@ export class HeadlessSession {
       if (down) this.held.add(name); else this.held.delete(name);
     } else if (action.kind === "key" || action.kind === "keyDown" || action.kind === "keyUp") {
       this.emulator.key(action.code, down);
+      if (down) this.heldKeyCodes.add(action.code); else this.heldKeyCodes.delete(action.code);
       if (down) this.held.add(action.name); else this.held.delete(action.name);
     } else if (action.kind === "joyTap" || action.kind === "joyPress" || action.kind === "joyRelease") {
       this.joystickBits = down ? this.joystickBits | (1 << action.bit) : this.joystickBits & ~(1 << action.bit);
@@ -753,6 +758,29 @@ export class HeadlessSession {
   }
 
   /** Registers, call stack and current location — everything "where am I" needs. */
+  /** Resolve a code/data specification without reading or advancing the machine. */
+  public hasBreakpoint(address: number): boolean {
+    return this.breakpoints.has(address);
+  }
+
+  public resolveAddress(spec: string): number {
+    return resolveBreakpointSpec(spec, this.sourceMap).address;
+  }
+
+  public async readBytes(spec: string, bytes: number): Promise<Buffer> {
+    return this.emulator.readMemory(this.resolveAddress(spec), bytes);
+  }
+
+  /** Releases all input at once without advancing the CPU, including while stopped. */
+  public releaseAll(): void {
+    for (const code of new Set([...Object.values(CODE_TO_RETROK), ...this.heldKeyCodes])) this.emulator.key(code, false);
+    for (let button = 0; button < 3; button++) this.emulator.mouseButton(button, false);
+    this.emulator.joystick(0);
+    this.joystickBits = 0;
+    this.heldKeyCodes.clear();
+    this.held.clear();
+  }
+
   public async inspect(reads: { address: string; bytes: number }[]): Promise<InspectResult> {
     const cpu = await this.emulator.getCpuInfo();
     const pc = parseInt(cpu.pc, 16);
@@ -801,7 +829,7 @@ export class HeadlessSession {
   public async disassemble(
     at: string | undefined,
     options: { before: number; count: number; wholeFunction: boolean; maxInstructions: number },
-  ): Promise<{ listing: string; notes: string[] }> {
+  ): Promise<{ listing: string; notes: string[]; instructions: DecodedLine[] }> {
     const pc = parseInt((await this.emulator.getCpuInfo()).pc, 16);
     const address = at !== undefined ? resolveBreakpointSpec(at, this.sourceMap).address : pc;
     if (address & 1) throw new Error(`${formatAddr(address)} is odd — 68000 instructions are word-aligned`);
@@ -824,7 +852,7 @@ export class HeadlessSession {
         notes.push(`(${routine.symbol} continues past ${options.maxInstructions} instructions; listing cut short)`);
       }
       await this.annotateLibraryCalls(lines, pc);
-      return { listing: formatListing(lines, pc, this.sourceMap), notes };
+      return { listing: formatListing(lines, pc, this.sourceMap), notes, instructions: lines };
     }
 
     // Decode forward from the routine start when it's near enough to be worth it; else from a
@@ -858,7 +886,7 @@ export class HeadlessSession {
     const after = decodeRange(mem, lo, address, options.count, Infinity, sourceMapSymbolizer(this.sourceMap));
     const all = [...before, ...after];
     await this.annotateLibraryCalls(all, pc);
-    return { listing: formatListing(all, pc, this.sourceMap), notes };
+    return { listing: formatListing(all, pc, this.sourceMap), notes, instructions: all };
   }
 
   /**
@@ -945,6 +973,10 @@ export class HeadlessSession {
   }
 
   /** Custom-chip registers, grouped and decoded, with chip pointers symbolicated. */
+  public async customRegisters() {
+    return this.emulator.getAllCustomRegisters();
+  }
+
   public async chipset(): Promise<string> {
     const regs = await this.emulator.getAllCustomRegisters();
     return formatChipset(regs, (address) => describeAddress(address, this.sourceMap));

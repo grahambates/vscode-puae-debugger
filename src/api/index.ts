@@ -2,9 +2,7 @@
 import { readFile, writeFile } from "fs/promises";
 import { resolve } from "path";
 import {
-  HeadlessSession,
   LaunchOptions as SessionLaunchOptions,
-  DEFAULT_EXCEPTION_STOPS,
   InputAction,
   WriteRequest,
 } from "../mcp/emulatorSession";
@@ -14,6 +12,9 @@ import { composeSheet } from "../mcp/contactSheet";
 import { encodePng } from "../mcp/png";
 import { analyseProfile } from "../profileAnalysis";
 import { diffProfiles, summarizeFunctions } from "../profileCompare";
+import { createSession, AutomationSession } from "./session";
+import { createWorkerSession } from "./workerSession";
+import type { StopState } from "../mcp/emulatorSession";
 import { MAX_CAPTURE_FRAMES } from "../shared/profilerTypes";
 
 export type {
@@ -37,6 +38,11 @@ export interface LaunchOptions
   breakpoints?: string[];
   /** Exception vectors to stop on; defaults to bus/address errors, illegal instruction and divide by zero. */
   exceptions?: number[];
+  /** Run in a worker (default true), allowing hard cancellation and isolated diagnostics. */
+  isolate?: boolean;
+  /** Wall-clock deadline for boot and each worker request. Default 30000 ms. */
+  timeoutMs?: number;
+  signal?: AbortSignal;
 }
 export type Address = string | number;
 export type MouseButton = "left" | "middle" | "right";
@@ -74,21 +80,38 @@ export async function launch(options: LaunchOptions): Promise<Emulator> {
   const kickstartRom = options.kickstartRom ?? process.env.PUAE_KICKSTART_ROM;
   if (!kickstartRom)
     throw new Error("Provide kickstartRom or set PUAE_KICKSTART_ROM");
-  const session = await HeadlessSession.launch({
-    ...options,
+  const { isolate = true, timeoutMs, signal, ...config } = options;
+  if (!isolate && (signal || timeoutMs !== undefined))
+    throw new Error(
+      "Launch deadlines and AbortSignal require worker isolation",
+    );
+  const sessionOptions = {
+    ...config,
     kickstartRom,
     rootDir: options.rootDir ?? resolve(__dirname, ".."),
-  });
-  try {
-    await session.setExceptionStops(
-      options.exceptions ?? DEFAULT_EXCEPTION_STOPS,
-    );
-    await session.setBreakpoints(options.breakpoints ?? []);
-    await session.saveSnapshot("start");
-    return new Emulator(session);
-  } catch (error) {
-    session.dispose();
-    throw error;
+    log: options.log ?? (() => {}),
+  };
+  const session = isolate
+    ? await createWorkerSession(sessionOptions, { timeoutMs, signal })
+    : await createSession(sessionOptions);
+  return new Emulator(session, timeoutMs);
+}
+
+export interface OperationOptions {
+  signal?: AbortSignal;
+  timeoutMs?: number;
+}
+export interface WaitOptions extends OperationOptions {
+  frames?: number;
+}
+export class WaitError extends Error {
+  constructor(
+    message: string,
+    public readonly lastStop?: StopState,
+    public readonly actual?: number | string,
+  ) {
+    super(message);
+    this.name = "WaitError";
   }
 }
 
@@ -96,20 +119,60 @@ export class Emulator {
   private closed = false;
   private busy = false;
   /** @internal Use launch(). */
-  constructor(private readonly session: HeadlessSession) {}
+  constructor(
+    private readonly session: AutomationSession,
+    private readonly timeoutMs = 30000,
+  ) {}
 
   private async use<T>(
-    fn: (session: HeadlessSession) => T | Promise<T>,
+    fn: (session: AutomationSession) => T | Promise<T>,
+    options: OperationOptions = {},
   ): Promise<T> {
     if (this.closed) throw new Error("Emulator is closed");
     if (this.busy)
       throw new Error(
         "An emulator operation is already running; await it before starting another",
       );
+    options.signal?.throwIfAborted();
+    if (
+      (options.signal || options.timeoutMs !== undefined) &&
+      !this.session.terminate
+    )
+      throw new Error(
+        "AbortSignal and wall-clock deadlines require worker isolation",
+      );
+    const deadline = integer(
+      options.timeoutMs ?? this.timeoutMs,
+      "timeoutMs",
+      2147483647,
+    );
+    let interruption: Error | undefined;
+    const cancel = (message: string) => {
+      interruption = new Error(message);
+      this.closed = true;
+      void this.session.terminate?.(message);
+    };
+    const abort = () => cancel("Emulator operation aborted; machine closed");
+    const timer = this.session.terminate
+      ? setTimeout(
+          () =>
+            cancel(
+              `Emulator operation timed out after ${deadline} ms; machine closed`,
+            ),
+          deadline,
+        )
+      : undefined;
+    options.signal?.addEventListener("abort", abort, { once: true });
     this.busy = true;
     try {
-      return await fn(this.session);
+      const value = await fn(this.session);
+      if (interruption) throw interruption;
+      return value;
+    } catch (error) {
+      throw interruption ?? error;
     } finally {
+      clearTimeout(timer);
+      options.signal?.removeEventListener("abort", abort);
       this.busy = false;
     }
   }
@@ -128,23 +191,131 @@ export class Emulator {
   }
 
   /** Runs at most this many emulated frames and returns the stop reason and location. Always pauses afterwards. */
-  run(options: { frames?: number } = {}) {
-    return this.use((s) =>
-      s.continueUntilStop(integer(options.frames ?? 500, "frames", 5000)),
+  run(options: WaitOptions = {}) {
+    return this.use(
+      (s) =>
+        s.continueUntilStop(integer(options.frames ?? 500, "frames", 5000)),
+      options,
     );
   }
-  step(options: { count?: number } = {}) {
-    return this.use((s) => s.step(integer(options.count ?? 1, "count", 1000)));
+  /** Run to an address, symbol or source line, preserving existing breakpoints. */
+  runUntil(at: Address, options: WaitOptions = {}) {
+    return this.use(async (s) => {
+      const budget = integer(options.frames ?? 500, "frames", 5000);
+      const target = await s.resolveAddress(address(at));
+      const initial = await s.inspect([]);
+      if (parseInt(initial.cpu.pc, 16) === target) {
+        return {
+          stopped: true,
+          reason: "TARGET_REACHED",
+          pc: target,
+          location: initial.location,
+          framesRun: 0,
+        };
+      }
+      const exists = await s.hasBreakpoint(target);
+      if (!exists) await s.setBreakpoints([address(target)]);
+      try {
+        const stop = await s.continueUntilStop(budget);
+        if (stop.pc === target && stop.reason === "BREAKPOINT_REACHED")
+          return stop;
+        throw new WaitError(
+          `runUntil(${at}) ${stop.stopped ? "interrupted by " + stop.reason : "timed out"} after ${stop.framesRun} frames at ${stop.location}`,
+          stop,
+        );
+      } finally {
+        if (!exists && !this.closed)
+          await s.removeBreakpoints([address(target)]);
+      }
+    }, options);
+  }
+
+  /** Poll a big-endian byte, word or long at frame boundaries; check before advancing. */
+  waitForMemory(
+    at: Address,
+    options: WaitOptions & { equals: number; size?: 1 | 2 | 4 },
+  ) {
+    return this.use(async (s) => {
+      const budget = integer(options.frames ?? 500, "frames", 5000);
+      const size = options.size ?? 2;
+      if (![1, 2, 4].includes(size))
+        throw new RangeError("size must be 1, 2 or 4");
+      integer(options.equals, "equals", 2 ** (size * 8) - 1, 0);
+      let stop: StopState | undefined;
+      for (let ran = 0; ; ran++) {
+        const value = (await s.readBytes(address(at), size)).readUIntBE(
+          0,
+          size,
+        );
+        if (value === options.equals) return { value, framesRun: ran, stop };
+        if (stop?.stopped || ran === budget)
+          throw new WaitError(
+            `waitForMemory(${at}) ${stop?.stopped ? "interrupted by " + stop.reason : "timed out"} after ${ran} frames; expected ${options.equals}, last value ${value}`,
+            stop,
+            value,
+          );
+        stop = await s.continueUntilStop(1);
+        // Yield to Node so timers and AbortSignals can be delivered between polls.
+        await new Promise<void>((resolve) => setImmediate(resolve));
+      }
+    }, options);
+  }
+
+  /** Consume serial output until a substring or regular expression matches. */
+  waitForSerial(pattern: string | RegExp, options: WaitOptions = {}) {
+    return this.use(async (s) => {
+      const budget = integer(options.frames ?? 500, "frames", 5000);
+      const expression =
+        pattern instanceof RegExp
+          ? new RegExp(pattern.source, pattern.flags.replace(/[gy]/g, ""))
+          : undefined;
+      let text = "";
+      let stop: StopState | undefined;
+      for (let ran = 0; ; ran++) {
+        const output = await s.takeSerial();
+        text += output.text;
+        if (output.dropped || text.length > 1024 * 1024)
+          throw new WaitError(
+            "Serial output overflowed while waiting",
+            stop,
+            text,
+          );
+        if (
+          expression ? expression.test(text) : text.includes(pattern as string)
+        )
+          return { text, framesRun: ran, stop };
+        if (stop?.stopped || ran === budget)
+          throw new WaitError(
+            `waitForSerial(${pattern}) ${stop?.stopped ? "interrupted by " + stop.reason : "timed out"} after ${ran} frames`,
+            stop,
+            text,
+          );
+        stop = await s.continueUntilStop(1);
+        await new Promise<void>((resolve) => setImmediate(resolve));
+      }
+    }, options);
+  }
+
+  step(options: OperationOptions & { count?: number } = {}) {
+    return this.use(
+      (s) => s.step(integer(options.count ?? 1, "count", 1000)),
+      options,
+    );
   }
   reverse(
-    options: { mode?: "step" | "continue" | "frame"; count?: number } = {},
+    options: OperationOptions & {
+      mode?: "step" | "continue" | "frame";
+      count?: number;
+    } = {},
   ) {
     const mode = options.mode ?? "step";
-    return this.use((s) =>
-      s.reverse(
-        mode,
-        integer(options.count ?? 1, "count", mode === "step" ? 100000 : 50),
-      ),
+    return this.use(
+      (s) =>
+        s.reverse(
+          mode,
+          integer(options.count ?? 1, "count", mode === "step" ? 100000 : 50),
+        ),
+      options,
     );
   }
   inspect() {
@@ -180,17 +351,28 @@ export class Emulator {
   };
   readonly memory = {
     read: (at: Address, bytes: number) =>
-      this.use(
-        async (s) =>
-          (
-            await s.inspect([
-              {
-                address: address(at),
-                bytes: integer(bytes, "bytes", 16 * 1024 * 1024),
-              },
-            ])
-          ).memory[0].data,
+      this.use((s) =>
+        s.readBytes(address(at), integer(bytes, "bytes", 16 * 1024 * 1024)),
       ),
+    readByte: (at: Address) => this.readScalar(at, 1),
+    readWord: (at: Address) => this.readScalar(at, 2),
+    readLong: (at: Address) => this.readScalar(at, 4),
+    readString: (
+      at: Address,
+      options: { maxBytes?: number; encoding?: BufferEncoding } = {},
+    ) =>
+      this.use(async (s) => {
+        const bytes = await s.readBytes(
+          address(at),
+          integer(options.maxBytes ?? 256, "maxBytes", 16 * 1024 * 1024),
+        );
+        const end = bytes.indexOf(0);
+        if (end < 0)
+          throw new Error(
+            `Unterminated string at ${at} within ${bytes.length} bytes`,
+          );
+        return bytes.subarray(0, end).toString(options.encoding ?? "latin1");
+      }),
     write: (at: Address, bytes: Uint8Array) =>
       this.write({
         memory: [{ address: address(at), bytes: Buffer.from(bytes) }],
@@ -198,6 +380,11 @@ export class Emulator {
     writeValue: (at: Address, value: number, size: 1 | 2 | 4 = 2) =>
       this.write({ memory: [{ address: address(at), value, size }] }),
   };
+  private readScalar(at: Address, size: 1 | 2 | 4) {
+    return this.use(async (s) =>
+      (await s.readBytes(address(at), size)).readUIntBE(0, size),
+    );
+  }
   readonly registers = {
     read: () => this.use(async (s) => (await s.inspect([])).cpu),
     write: (name: string, value: string | number) =>
@@ -233,6 +420,15 @@ export class Emulator {
   }
   readonly custom = {
     read: () => this.use((s) => s.chipset()),
+    registers: () =>
+      this.use(async (s) =>
+        Object.fromEntries(
+          Object.entries(await s.customRegisters()).map(([name, register]) => [
+            name,
+            Number(register.value),
+          ]),
+        ),
+      ),
     write: (name: string, value: string | number) =>
       this.write({ custom: [{ name, value }] }),
     copperList: (options: { address?: Address; count?: number } = {}) =>
@@ -262,6 +458,11 @@ export class Emulator {
       return s.input(actions);
     });
   }
+  /** Release all held input without running a frame, even at a breakpoint. */
+  releaseAll() {
+    return this.use((s) => s.releaseAll());
+  }
+
   readonly keyboard = {
     press: (code: string) => this.key(code, "key"),
     down: (code: string) => this.key(code, "keyDown"),
@@ -313,7 +514,7 @@ export class Emulator {
   /** Returns PNG and RGBA data; optionally writes the PNG to disk. */
   screenshot(options: { path?: string } = {}) {
     return this.use(async (s) => {
-      const image = s.screenshot();
+      const image = await s.screenshot();
       if (options.path) await writeFile(options.path, image.png);
       return image;
     });
@@ -347,22 +548,33 @@ export class Emulator {
       return { ...result, ...sheet, png };
     });
   }
-  captureProfile(options: { frames?: number; path?: string } = {}) {
+  captureProfile(options: WaitOptions & { path?: string } = {}) {
     return this.use(async (s) => {
       const result = await s.captureProfile(
         integer(options.frames ?? 1, "frames", MAX_CAPTURE_FRAMES),
       );
       if (options.path) await writeFile(options.path, result.bytes);
       return result;
-    });
+    }, options);
   }
   /** Idempotent; wait for any active operation before closing. */
   async close(): Promise<void> {
-    if (this.closed) return;
+    if (this.closed) {
+      await this.session.terminate?.();
+      return;
+    }
     if (this.busy)
       throw new Error("Await the active emulator operation before closing");
     this.closed = true;
-    this.session.dispose();
+    await this.session.dispose();
+  }
+
+  /** Hard cancellation. Permanently closes an isolated machine, including active work. */
+  async terminate(): Promise<void> {
+    if (!this.session.terminate)
+      throw new Error("Hard cancellation requires worker isolation");
+    this.closed = true;
+    await this.session.terminate();
   }
 }
 
@@ -382,3 +594,7 @@ export const profiles = {
 };
 export { analyseProfile, diffProfiles, summarizeFunctions };
 export const puae = { launch, profiles };
+
+export { images, compareImages } from "./images";
+export type { Image, CompareOptions, Rectangle } from "./images";
+export { withEmulator } from "./fixture";

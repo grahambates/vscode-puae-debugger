@@ -347,7 +347,7 @@ static void shim_log(enum retro_log_level level, const char *fmt, ...) {
     char buf[512];
     vsnprintf(buf, sizeof(buf), fmt, ap);
     va_end(ap);
-    EM_ASM_({ console.log('[puae]', UTF8ToString($0)); }, buf);
+    EM_ASM_({ (Module['print'] || console.log)('[puae]', UTF8ToString($0)); }, buf);
 }
 
 static bool shim_environment(unsigned cmd, void *data) {
@@ -359,7 +359,7 @@ static bool shim_environment(unsigned cmd, void *data) {
         }
         case RETRO_ENVIRONMENT_SET_PIXEL_FORMAT: {
             g_pixel_format = *(const enum retro_pixel_format *)data;
-            EM_ASM_({ console.log('[shim] core requested pixel format', $0); }, (int)g_pixel_format);
+            EM_ASM_({ (Module['print'] || console.log)('[shim] core requested pixel format', $0); }, (int)g_pixel_format);
             return true;
         }
         case RETRO_ENVIRONMENT_GET_LOG_INTERFACE: {
@@ -378,7 +378,7 @@ static bool shim_environment(unsigned cmd, void *data) {
             const struct retro_game_geometry *geo = (const struct retro_game_geometry *)data;
             g_geom_base_width  = geo->base_width;
             g_geom_base_height = geo->base_height;
-            EM_ASM_({ console.log('[shim] SET_GEOMETRY base=' + $0 + 'x' + $1); },
+            EM_ASM_({ (Module['print'] || console.log)('[shim] SET_GEOMETRY base=' + $0 + 'x' + $1); },
                     geo->base_width, geo->base_height);
             return true;
         }
@@ -431,7 +431,7 @@ static bool shim_environment(unsigned cmd, void *data) {
 // e.g. "/uae_system/game.adf", or NULL/empty string for no disk.
 EMSCRIPTEN_KEEPALIVE
 int wasm_boot(const char *adf_path) {
-    EM_ASM({ console.log('[shim] registering libretro callbacks'); });
+    EM_ASM({ (Module['print'] || console.log)('[shim] registering libretro callbacks'); });
 
     retro_set_environment(shim_environment);
     retro_set_video_refresh(shim_video_refresh);
@@ -440,14 +440,14 @@ int wasm_boot(const char *adf_path) {
     retro_set_input_poll(shim_input_poll);
     retro_set_input_state(shim_input_state);
 
-    EM_ASM({ console.log('[shim] calling retro_init()'); });
+    EM_ASM({ (Module['print'] || console.log)('[shim] calling retro_init()'); });
     retro_init();
 
     struct retro_system_info sysinfo;
     memset(&sysinfo, 0, sizeof(sysinfo));
     retro_get_system_info(&sysinfo);
     EM_ASM_({
-        console.log('[shim] retro_get_system_info: library_name=' + UTF8ToString($0) +
+        (Module['print'] || console.log)('[shim] retro_get_system_info: library_name=' + UTF8ToString($0) +
                     ' library_version=' + UTF8ToString($1) +
                     ' valid_extensions=' + (($2) ? UTF8ToString($2) : '(null)'));
     }, sysinfo.library_name, sysinfo.library_version, sysinfo.valid_extensions);
@@ -456,7 +456,7 @@ int wasm_boot(const char *adf_path) {
     memset(&avinfo, 0, sizeof(avinfo));
     retro_get_system_av_info(&avinfo);
     EM_ASM_({
-        console.log('[shim] av_info geometry=' + $0 + 'x' + $1 +
+        (Module['print'] || console.log)('[shim] av_info geometry=' + $0 + 'x' + $1 +
                     ' max=' + $2 + 'x' + $3 +
                     ' aspect=' + $4 + ' fps=' + $5 + ' sample_rate=' + $6);
     }, avinfo.geometry.base_width, avinfo.geometry.base_height,
@@ -465,16 +465,16 @@ int wasm_boot(const char *adf_path) {
 
     int load_ok;
     if (adf_path && adf_path[0]) {
-        EM_ASM_({ console.log('[shim] calling retro_load_game with path', UTF8ToString($0)); }, adf_path);
+        EM_ASM_({ (Module['print'] || console.log)('[shim] calling retro_load_game with path', UTF8ToString($0)); }, adf_path);
         struct retro_game_info game;
         memset(&game, 0, sizeof(game));
         game.path = adf_path;
         load_ok = retro_load_game(&game);
     } else {
-        EM_ASM({ console.log('[shim] calling retro_load_game(NULL) — no disk'); });
+        EM_ASM({ (Module['print'] || console.log)('[shim] calling retro_load_game(NULL) — no disk'); });
         load_ok = retro_load_game(NULL);
     }
-    EM_ASM_({ console.log('[shim] retro_load_game returned', $0); }, load_ok);
+    EM_ASM_({ (Module['print'] || console.log)('[shim] retro_load_game returned', $0); }, load_ok);
     // A joypad on the Amiga's joystick port, so wasm_set_joypad's state is read at all (the
     // mapper skips ports with no device). With nothing pressed it changes nothing.
     if (load_ok) retro_set_controller_port_device(0, RETRO_DEVICE_JOYPAD);
@@ -1329,6 +1329,6 @@ int wasm_unserialize(const void *buf, size_t size) {
 }
 
 int main(void) {
-    EM_ASM({ console.log('[shim] module loaded, call _wasm_boot() to start'); });
+    EM_ASM({ (Module['print'] || console.log)('[shim] module loaded, call _wasm_boot() to start'); });
     return 0;
 }

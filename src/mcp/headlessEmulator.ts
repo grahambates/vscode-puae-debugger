@@ -129,6 +129,8 @@ export interface HeadlessEmulatorOptions {
   kickstartRomPath: string;
   /** Extra `.uae` config lines, appended after the cycle-exact defaults below. */
   extraConfig?: string;
+  /** Core output; defaults to stderr for MCP callers. */
+  log?: (line: string) => void;
 }
 
 // Matches PuaeEmulator.buildExtraConfig's own prepended defaults, so a headless capture measures
@@ -169,6 +171,7 @@ export class HeadlessEmulator extends WebviewEmulator {
    */
   public static async boot(options: HeadlessEmulatorOptions): Promise<HeadlessEmulator> {
     const { rootDir, kickstartRomPath, extraConfig } = options;
+    const log = options.log ?? ((line: string) => { process.stderr.write(line + "\n"); });
 
     // Both loaded by path at runtime, not bundled — see this file's header.
     // eslint-disable-next-line @typescript-eslint/no-require-imports
@@ -178,13 +181,11 @@ export class HeadlessEmulator extends WebviewEmulator {
 
     const rom = await readFile(kickstartRomPath);
 
-    // Emscripten writes the core's own logging (`[puae] ...`, PUAE's write_log output) through
-    // these; the default sends it to stdout, which in `puae-debugger mcp` is the JSON-RPC
-    // protocol stream. frontend_shim.c's EM_ASM console.log calls bypass these entirely — see
-    // the console.log redirect in mcp/server.ts, which catches those.
+    // Both Emscripten printf and frontend_shim.c diagnostics use these callbacks.
+    // MCP defaults to stderr because stdout carries JSON-RPC; API callers supply their logger.
     const module = await createPuaeModule({
-      print: (text: string) => process.stderr.write(text + "\n"),
-      printErr: (text: string) => process.stderr.write(text + "\n"),
+      print: (...args: unknown[]) => log(args.join(" ")),
+      printErr: (...args: unknown[]) => log(args.join(" ")),
     });
     module.FS.mkdir("/uae_system");
     // The filename is fixed: frontend_shim.c looks for exactly this path, and falls back to
