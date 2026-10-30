@@ -1181,6 +1181,7 @@ export class DebugAdapter extends LoggingDebugSession {
         args,
         pc,
         regs,
+        this.programPath ? path.dirname(this.programPath) : process.cwd(),
       );
       this.sendResponse(response);
     } catch (err) {

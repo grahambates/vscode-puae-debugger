@@ -305,6 +305,10 @@ export const parserBuiltInFunctions: UsageDocs = {
 };
 
 export const consoleCommands: UsageDocs = {
+  writeFile: [
+    `${ansi.func("writeFile")}("path", ${ansi.variable("data")})`,
+    "Save readBytes/readWords/readLongs as raw binary (big-endian). Paths are JSON strings, relative to the program directory. Overwrites existing files; parent directory must exist. Console only.",
+  ],
   help: [
     `${ansi.func("help")} [syntax|functions]`,
     "Show REPL usage guide, or further documentation for category",
@@ -333,6 +337,9 @@ ${funcDocs(typeFunctions)}
     Most math related functions are available with standard names e.g.  ${ansi.func("round")}, ${ansi.func("floor")}, ${ansi.func("min")}, ${ansi.func("max")}
     Type '${ansi.func("help functions")}' for full list.
 
+${ansi.section("Console Commands:")}
+${funcDocs(consoleCommands)}
+
 ${ansi.section("Available Variables:")}
   ${ansi.subsection("CPU Registers:")} ${ansi.variable("d0-d7")}, ${ansi.variable("a0-a7")}, ${ansi.variable("pc")}, ${ansi.variable("sr")} etc.
   ${ansi.subsection("Custom Chip Registers:")} ${ansi.variable("DMACON")}, ${ansi.variable("INTENA")}, ${ansi.variable("INTREQ")}, ${ansi.variable("ADKCON")}, etc.
@@ -345,6 +352,7 @@ ${ansi.section("Examples:")}
   ${ansi.func("readBytes")}(${ansi.number("0x1000")}, ${ansi.number("16")}, ${ansi.number("8")}) - Read 16 bytes, 8 per line hex dump
   ${ansi.func("disassemble")}(${ansi.variable("pc")})     - Disassemble 1 instruction from current PC
   ${ansi.func("disassemble")}(${ansi.number("0x1000")}, ${ansi.number("5")}) - Disassemble 5 instructions from address
+  ${ansi.func("writeFile")}("dump.bin", ${ansi.func("readBytes")}(${ansi.number("0x1000")}, ${ansi.number("256")})) - Save 256 bytes to disk
   ${ansi.func("trace")}(${ansi.number("8")})              - Show the last 8 executed instructions
   ${ansi.variable("main")} + ${ansi.number("0x10")}        - Symbol address + offset
 `;

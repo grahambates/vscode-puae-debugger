@@ -1,5 +1,8 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import * as assert from "assert";
+import { mkdtemp, readFile, rm } from "fs/promises";
+import { tmpdir } from "os";
+import { join } from "path";
 import * as sinon from "sinon";
 import { EvaluateManager, EvaluateResultType } from "../evaluateManager";
 import { CpuInfo } from "../emulatorProtocol";
@@ -42,6 +45,66 @@ describe("EvaluateManager - Comprehensive Tests", () => {
 
   afterEach(() => {
     sinon.restore();
+  });
+
+  describe("Console file export", () => {
+    let directory: string;
+
+    beforeEach(async () => {
+      directory = await mkdtemp(join(tmpdir(), "puae-export-"));
+    });
+
+    afterEach(async () => {
+      await rm(directory, { recursive: true, force: true });
+    });
+
+    it("writes exact binary bytes and overwrites an existing file", async () => {
+      const filename = 'Dump, readBytes ($abc).bin';
+      const expression = `writeFile(${JSON.stringify(filename)}, readBytes(0x1000, 4, 2))`;
+      mockEmulator.readMemory.resolves(Buffer.from([0, 127, 128, 255]));
+      const result = await evaluateManager.evaluateFormatted(
+        { expression, context: "repl" }, null, null, directory,
+      );
+      assert.deepStrictEqual(await readFile(join(directory, filename)), Buffer.from([0, 127, 128, 255]));
+      assert.strictEqual(result.result, `Wrote 4 bytes to ${join(directory, filename)}`);
+      mockEmulator.readMemory.resolves(Buffer.from([42]));
+      await evaluateManager.evaluateFormatted(
+        { expression: `writeFile(${JSON.stringify(filename)}, readBytes(0x1000, 1))`, context: "repl" },
+        null, null, directory,
+      );
+      assert.deepStrictEqual(await readFile(join(directory, filename)), Buffer.from([42]));
+    });
+
+    for (const [reader, bytes] of [["readWords", 4], ["readLongs", 8]] as const) {
+      it(`preserves big-endian byte order for ${reader}`, async () => {
+        const data = Buffer.from([0x12, 0x34, 0xab, 0xcd, 0x80, 0, 0, 0xff]).subarray(0, bytes);
+        mockEmulator.readMemory.resolves(data);
+        const filename = join(directory, "memory.bin");
+        await evaluateManager.evaluateFormatted({
+          expression: `writeFile(${JSON.stringify(filename)}, ${reader}(0x1000, 2))`, context: "repl",
+        });
+        assert.deepStrictEqual(await readFile(filename), data);
+      });
+    }
+
+    it("rejects invalid data, malformed commands and missing directories", async () => {
+      for (const expression of ['writeFile("bad.bin", 42)', 'writeFile(bad.bin, readBytes(0, 1))']) {
+        await assert.rejects(evaluateManager.evaluateFormatted({ expression, context: "repl" }, null, null, directory), /writeFile/);
+      }
+      mockEmulator.readMemory.resolves(Buffer.from([1]));
+      await assert.rejects(evaluateManager.evaluateFormatted({
+        expression: 'writeFile("missing/dump.bin", readBytes(0, 1))', context: "repl",
+      }, null, null, directory), /ENOENT/);
+    });
+
+    it("does not allow file export from watches or hovers", async () => {
+      for (const context of ["watch", "hover"]) {
+        await assert.rejects(evaluateManager.evaluateFormatted({
+          expression: 'writeFile("dump.bin", readBytes(0, 1))', context,
+        }, null, null, directory));
+      }
+      await assert.rejects(readFile(join(directory, "dump.bin")), /ENOENT/);
+    });
   });
 
   describe("Basic Expression Evaluation", () => {

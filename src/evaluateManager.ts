@@ -1,5 +1,7 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { readFileSync } from "fs";
+import { writeFile } from "fs/promises";
+import { resolve } from "path";
 import { DebugProtocol } from "@vscode/debugprotocol";
 import { Parser } from "expr-eval";
 import { instructionAttrs } from "./sourceParsing";
@@ -283,7 +285,35 @@ export class EvaluateManager {
     }: DebugProtocol.EvaluateRequest["arguments"],
     pc: number | null = null,
     regs: Map<number, number> | null = null,
+    outputDirectory = process.cwd(),
   ): Promise<DebugProtocol.EvaluateResponse["body"]> {
+    // Console-only command: paths are JSON strings, kept out of the numeric
+    // expression parser (which also normalizes assembly-style hex literals).
+    if (context === "repl" && /^writeFile\s*\(/.test(expression.trim())) {
+      const match = /^writeFile\s*\(\s*("(?:[^"\\]|\\.)*")\s*,\s*([\s\S]+)\)\s*$/.exec(expression.trim());
+      if (!match) {
+        throw new Error('Usage: writeFile("path", readBytes(address, count))');
+      }
+      const filename: string = JSON.parse(match[1]);
+      if (!filename || filename.includes("\0")) {
+        throw new Error("writeFile() requires a non-empty file path without null characters");
+      }
+      const { value } = await this.evaluate(match[2]);
+      if (!isMemoryArrayValue(value) || ![1, 2, 4].includes(value.elementSize)) {
+        throw new Error("writeFile() data must be a readBytes(), readWords() or readLongs() result");
+      }
+      const data = Buffer.alloc(value.elements.length * value.elementSize);
+      value.elements.forEach((element, index) => {
+        data.writeUIntBE(element, index * value.elementSize, value.elementSize);
+      });
+      const filenameResolved = resolve(outputDirectory, filename);
+      await writeFile(filenameResolved, data);
+      return {
+        result: `Wrote ${data.length} bytes to ${filenameResolved}`,
+        variablesReference: 0,
+      };
+    }
+
     // C/C++ DWARF path: evaluate a compound C navigation expression (names, `.` `->` `[]` `*` `&`),
     // reusing the exact formatting from the Locals/Globals views. Kept strictly separate from the
     // assembly evaluate path below - on a miss (not a resolvable C expression) we fall through to the
