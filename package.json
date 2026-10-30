@@ -48,7 +48,10 @@
     ".claude/skills/puae-debugging/SKILL.md",
     "THIRD_PARTY_NOTICES.md",
     "LICENSES/",
-    "CHANGELOG.md"
+    "CHANGELOG.md",
+    "out/api.js",
+    "out/api-types/",
+    "docs/javascript-api.md"
   ],
   "contributes": {
     "customEditors": [
@@ -621,7 +624,7 @@
     "lint": "eslint src --ext ts,tsx",
     "test": "npm run test:unit && npm run test:wasm",
     "test:unit": "jest",
-    "test:wasm": "node puae-wasm/test/test_g1.mjs && node puae-wasm/test/test_g2.mjs && node puae-wasm/test/test_g3.mjs && node puae-wasm/test/test_g4.mjs && node puae-wasm/test/test_g5.mjs && node puae-wasm/test/test_g6.mjs && node puae-wasm/test/test_g7_harddrive.mjs && node puae-wasm/test/test_reset.mjs && node puae-wasm/test/test_reverse.mjs && node puae-wasm/test/test_mcp_emulator.mjs",
+    "test:wasm": "node puae-wasm/test/test_g1.mjs && node puae-wasm/test/test_g2.mjs && node puae-wasm/test/test_g3.mjs && node puae-wasm/test/test_g4.mjs && node puae-wasm/test/test_g5.mjs && node puae-wasm/test/test_g6.mjs && node puae-wasm/test/test_g7_harddrive.mjs && node puae-wasm/test/test_reset.mjs && node puae-wasm/test/test_reverse.mjs && node puae-wasm/test/test_mcp_emulator.mjs && node puae-wasm/test/test_js_api.mjs",
     "test:coverage": "jest --coverage",
     "build:wasm": "node scripts/build-wasm.mjs",
     "format": "prettier --write \"src/**/*.{ts,tsx}\"",
@@ -685,5 +688,13 @@
     "setupFilesAfterEnv": [
       "<rootDir>/src/test/jestSetup.ts"
     ]
+  },
+  "exports": {
+    ".": "./out/extension.js",
+    "./api": {
+      "types": "./out/api-types/api/index.d.ts",
+      "default": "./out/api.js"
+    },
+    "./package.json": "./package.json"
   }
 }

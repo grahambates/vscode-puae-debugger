@@ -242,3 +242,7 @@ Full schema with inline documentation is available via IntelliSense in `launch.j
 This project is licensed under the [GNU General Public License version 2](LICENSE.txt). See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for attribution, component licensing, and source provenance.
 
 Emulation is powered by [PUAE](https://github.com/libretro/libretro-uae) (libretro-uae), derived from WinUAE by Toni Wilen and contributors.
+
+## JavaScript automation API
+
+Drive the headless emulator from Node.js with `import { puae } from "puae-debugger/api"`. Launch a program, run to breakpoints, inspect and write memory, send input, rewind, take screenshots and analyse profiles using the same backend as the MCP server. Supports ESM, CommonJS and TypeScript. See the [API guide and examples](docs/javascript-api.md).

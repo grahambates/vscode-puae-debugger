@@ -73,6 +73,22 @@ async function main() {
     }
   }
 
+  const apiCtx = await esbuild.context({
+    entryPoints: ['src/api/index.ts'], bundle: true, format: 'cjs', platform: 'node',
+    outfile: 'out/api.js', minify: production, sourcemap: !production,
+    logLevel: 'silent', plugins: [esbuildProblemMatcherPlugin, {
+      name: 'api-declarations',
+      setup(build) {
+        build.onEnd(result => {
+          if (result.errors.length) return;
+          require('child_process').execFileSync(process.execPath, [
+            require.resolve('typescript/bin/tsc'), '-p', 'tsconfig.api.json',
+          ], { stdio: 'inherit' });
+        });
+      },
+    }],
+  });
+
   // Build extension
   const extensionCtx = await esbuild.context({
     entryPoints: [
@@ -203,6 +219,7 @@ async function main() {
   });
 
   if (watch) {
+    await apiCtx.watch();
     await extensionCtx.watch();
     await standaloneCtx.watch();
     await webviewCtx.watch();
@@ -210,12 +227,14 @@ async function main() {
     await puaeAudioCtx.watch();
     await puaeRpcCtx.watch();
   } else {
+    await apiCtx.rebuild();
     await extensionCtx.rebuild();
     await standaloneCtx.rebuild();
     await webviewCtx.rebuild();
     await puaeAppCtx.rebuild();
     await puaeAudioCtx.rebuild();
     await puaeRpcCtx.rebuild();
+    await apiCtx.dispose();
     await extensionCtx.dispose();
     await standaloneCtx.dispose();
     await webviewCtx.dispose();

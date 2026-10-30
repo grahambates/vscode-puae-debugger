@@ -29,3 +29,8 @@
 !LICENSE.txt
 !THIRD_PARTY_NOTICES.md
 !LICENSES/**
+
+!out/api.js
+!out/api-types/**
+!out/puaeRpc.mjs
+!docs/javascript-api.md
