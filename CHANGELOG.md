@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [1.3.0] - 2026-11-03
+
 ### Added
 
 - JavaScript API colour-clock and retired-instruction timing: checkpoints, measurements between code locations and repeated benchmarks with warmup and min/mean/max costs. Checkpoints detect restores, rewinds and cross-session use.
