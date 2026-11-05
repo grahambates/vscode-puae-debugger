@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- DWARF debug symbols from optimized GCC C++ builds failed to load with "Unknown DW_FORM 0x3" (large `constexpr` arrays emit `DW_FORM_block2`) or "unimplemented DW_OP 0xfa" (`DW_OP_GNU_parameter_ref`). The parser now handles the remaining fixed-size forms (`block2`/`block4`, `ref1`/`ref2`/`ref8`, `indirect`) and the GNU and DWARF 5 typed location ops.
+
 ## [1.3.1] - 2026-11-03
 
 ## [1.3.0] - 2026-11-03

@@ -196,6 +196,29 @@ describe('dwarfParser', () => {
     expect(artificialFiles.length).toBeGreaterThan(0);
   });
 
+  it('should parse DW_FORM_block2 const values and GNU location ops (gcc_dwarf_ext)', () => {
+    // See fixtures/amigaPrograms/gcc_dwarf_ext/big_const.cpp for how this is produced.
+    const testFile = path.join(__dirname, 'fixtures/amigaPrograms/gcc_dwarf_ext/big_const.elf');
+    const result = parseDwarf(readFileSync(testFile));
+
+    const all: any[] = [];
+    const walk = (dies: any[]) => dies.forEach((d) => { all.push(d); walk(d.children); });
+    result.compilationUnits.forEach((cu: any) => walk(cu.dies));
+
+    const table = all.find((d) => d.attributes.some((a: any) => a.name === DW_AT.name && a.value === 'TABLE'));
+    const constValue = table?.attributes.find((a: any) => a.name === DW_AT.const_value);
+    expect(constValue?.form).toBe(DW_FORM.block2);
+    expect(constValue?.value).toBeInstanceOf(Uint8Array);
+    expect(constValue.value.length).toBe(160 * 2);
+    expect(Array.from(constValue.value.slice(0, 4))).toEqual([0, 1, 0, 2]); // big-endian 1, 2
+
+    // A parameter dropped by IPA-SRA is described via DW_OP_GNU_parameter_ref.
+    const opNames = all.flatMap((d) => d.attributes
+      .filter((a: any) => a.name === DW_AT.location && a.value?.ops)
+      .flatMap((a: any) => a.value.ops.map((o: any) => o.op)));
+    expect(opNames).toContain('DW_OP_0xfa');
+  });
+
   it('should get DIEs from 01_inline/simple_c.elf', () => {
     const testFile = path.join(__dirname, 'fixtures/amigaPrograms/simple_c/01_inline/simple_c.elf');
     const buffer = readFileSync(testFile);

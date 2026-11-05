@@ -550,6 +550,26 @@ export const DW_OP = {
   addrx: 0xa1,
   constx: 0xa2,
   entry_value: 0xa3,
+  const_type: 0xa4,
+  regval_type: 0xa5,
+  deref_type: 0xa6,
+  xderef_type: 0xa7,
+  convert: 0xa8,
+  reinterpret: 0xa9,
+  // GNU extensions (emitted by GCC, notably for optimized code).
+  GNU_push_tls_address: 0xe0,
+  GNU_uninit: 0xf0,
+  GNU_implicit_pointer: 0xf2,
+  GNU_entry_value: 0xf3,
+  GNU_const_type: 0xf4,
+  GNU_regval_type: 0xf5,
+  GNU_deref_type: 0xf6,
+  GNU_convert: 0xf7,
+  GNU_reinterpret: 0xf9,
+  GNU_parameter_ref: 0xfa,
+  GNU_addr_index: 0xfb,
+  GNU_const_index: 0xfc,
+  GNU_variable_value: 0xfd,
 } as const;
 
 export const DW_LNS = {
@@ -936,8 +956,14 @@ export function parseDwarf(elfBuffer: Buffer): DWARFData {
         const sleb = readSLEB128(offset);
         return { value: sleb.value, size: sleb.size };
       }
+      case DW_FORM.ref1:
+        return { value: readUInt8(offset), size: 1 };
+      case DW_FORM.ref2:
+        return { value: readUInt16(offset), size: 2 };
       case DW_FORM.ref4:
         return { value: readUInt32(offset), size: 4 };
+      case DW_FORM.ref8:
+        return { value: readUInt64(offset), size: 8 };
       case DW_FORM.ref_udata: {
         const uleb = readULEB128(offset);
         return { value: uleb.value, size: uleb.size };
@@ -948,6 +974,27 @@ export function parseDwarf(elfBuffer: Buffer): DWARFData {
           value: new Uint8Array(elfBuffer.buffer, elfBuffer.byteOffset + offset + 1, length),
           size: 1 + length,
         };
+      }
+      case DW_FORM.block2: {
+        // GCC uses this for DW_AT_const_value of large constant arrays (>255 bytes).
+        const length = readUInt16(offset);
+        return {
+          value: new Uint8Array(elfBuffer.buffer, elfBuffer.byteOffset + offset + 2, length),
+          size: 2 + length,
+        };
+      }
+      case DW_FORM.block4: {
+        const length = readUInt32(offset);
+        return {
+          value: new Uint8Array(elfBuffer.buffer, elfBuffer.byteOffset + offset + 4, length),
+          size: 4 + length,
+        };
+      }
+      case DW_FORM.indirect: {
+        // The actual form is a ULEB128 in the DIE, followed by the value in that form.
+        const actual = readULEB128(offset);
+        const inner = parseAttributeValue(offset + actual.size, actual.value, addressSize);
+        return { value: inner.value, size: actual.size + inner.size };
       }
       case DW_FORM.block: {
         const length = readULEB128(offset);
@@ -1021,8 +1068,24 @@ export function parseDwarf(elfBuffer: Buffer): DWARFData {
           case DW_OP.xor: case DW_OP.eq: case DW_OP.ge: case DW_OP.gt:
           case DW_OP.le: case DW_OP.lt: case DW_OP.ne: case DW_OP.nop:
           case DW_OP.push_object_address: case DW_OP.form_tls_address:
-          case DW_OP.stack_value:
+          case DW_OP.stack_value: case DW_OP.GNU_push_tls_address: case DW_OP.GNU_uninit:
             ops.push({ op: label }); break;
+
+          // Single ULEB operand (type DIE offset / index) we don't interpret.
+          case DW_OP.convert: case DW_OP.reinterpret:
+          case DW_OP.GNU_convert: case DW_OP.GNU_reinterpret:
+          case DW_OP.GNU_addr_index: case DW_OP.GNU_const_index:
+            ops.push({ op: label, value: uleb() }); break;
+
+          // 4-byte DIE reference.
+          case DW_OP.GNU_parameter_ref: case DW_OP.GNU_variable_value:
+            ops.push({ op: label, value: u32() }); break;
+
+          // Typed-stack ops (DWARF 5 and their GNU predecessors).
+          case DW_OP.const_type: case DW_OP.GNU_const_type: { uleb(); i += u8(); ops.push({ op: label }); break; }
+          case DW_OP.regval_type: case DW_OP.GNU_regval_type: ops.push({ op: label, reg: uleb(), value: uleb() }); break;
+          case DW_OP.deref_type: case DW_OP.xderef_type: case DW_OP.GNU_deref_type:
+            ops.push({ op: label, value: u8(), value2: uleb() }); break;
 
           // ULEB operand.
           case DW_OP.constu: ops.push({ op: 'DW_OP_constu', value: uleb() }); break;
@@ -1056,10 +1119,12 @@ export function parseDwarf(elfBuffer: Buffer): DWARFData {
           case DW_OP.bit_piece: ops.push({ op: 'DW_OP_bit_piece', value: uleb(), value2: uleb() }); break;
 
           // ULEB length-prefixed sub-block (skip its body).
-          case DW_OP.implicit_value: case DW_OP.entry_value: { i += uleb(); ops.push({ op: label }); break; }
+          case DW_OP.implicit_value: case DW_OP.entry_value: case DW_OP.GNU_entry_value: {
+            i += uleb(); ops.push({ op: label }); break;
+          }
 
           // 4-byte DIE reference (32-bit DWARF offset) + SLEB.
-          case DW_OP.implicit_pointer: { i += 4; ops.push({ op: label, value: sleb() }); break; }
+          case DW_OP.implicit_pointer: case DW_OP.GNU_implicit_pointer: { i += 4; ops.push({ op: label, value: sleb() }); break; }
 
           default:
             // Operand size unknown → can't advance past this op, so the rest of the
