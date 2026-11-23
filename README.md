@@ -2,7 +2,7 @@
 
 Debug and profile Amiga 68000 programs in VS Code with a [PUAE](https://github.com/libretro/libretro-uae) (WinUAE-derived) emulator running directly inside the editor as a webview — no external emulator process, no platform-specific binaries.
 
-This overview focuses on the VS Code extension, but it's also available as a [standalone DAP-compatible debugger](docs/standalone.md) for any editor that supports the protocol, and as a headless emulator.
+This overview focuses on the [VS Code extension](https://marketplace.visualstudio.com/items?itemName=gigabates.puae-debugger), but it's also available as a [standalone DAP-compatible debugger](docs/standalone.md) for any editor that supports the protocol, and as a headless emulator.
 
 ## Key features
 
