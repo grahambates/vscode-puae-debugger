@@ -1,3 +1,4 @@
+import { resolve } from "node:path";
 import * as vscode from "vscode";
 import { DebugAdapter } from "./debugAdapter";
 import { VscodeMemoryViewerProvider } from "./vscodeMemoryViewerProvider";
@@ -8,8 +9,22 @@ import { ProfileEditorProvider } from "./profileEditorProvider";
 import { ProfilerCodeLensProvider } from "./profilerCodeLensProvider";
 import { ProfilerLineDecorationProvider } from "./profilerLineDecorationProvider";
 import { expressionRangeAt } from "./cExpressionEvaluator";
+import { registerInlineExpansion } from "./inlineExpansion";
+import { registerExpandedSourceCommand } from "./expandedSourceCommand";
 
 export function activate(context: vscode.ExtensionContext) {
+  context.subscriptions.push(
+    registerExpandedSourceCommand(),
+    registerInlineExpansion(),
+    vscode.debug.registerDebugConfigurationProvider("puae", {
+      resolveDebugConfigurationWithSubstitutedVariables(folder, config) {
+        if (folder?.uri.scheme === "file" && typeof config.macroListing === "string" && config.macroListing) {
+          config.macroListing = resolve(folder.uri.fsPath, config.macroListing);
+        }
+        return config;
+      },
+    }),
+  );
   const puaeEmulator = new VscodePuaeEmulator(context.extensionUri);
   const memoryViewer = new VscodeMemoryViewerProvider(
     context.extensionUri,

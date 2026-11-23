@@ -69,6 +69,11 @@
     ],
     "commands": [
       {
+        "command": "puae-debugger.showExpandedSource",
+        "title": "PUAE Debugger: Show Expanded Source",
+        "enablement": "debugType == 'puae' && debugState == 'stopped'"
+      },
+      {
         "command": "puae-debugger.stepBackFrame",
         "title": "Start of Frame",
         "icon": "$(run-above)",
@@ -256,6 +261,10 @@
                 "type": "string",
                 "description": "Optional alternate path to program file containing debug symbols. Defaults to same as 'program'.",
                 "default": null
+              },
+              "macroListing": {
+                "type": "string",
+                "description": "Path to the wide vasm listing from the same directly assembled Hunk executable."
               },
               "stopOnEntry": {
                 "type": "boolean",

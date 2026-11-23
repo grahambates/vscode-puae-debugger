@@ -2,6 +2,8 @@
 import * as assert from "assert";
 import * as sinon from "sinon";
 import { DebugAdapter } from "../debugAdapter";
+import { HunkType } from "../amigaHunkParser";
+import { MacroListing } from "../macroListing";
 import { EvaluateManager, EvaluateResultType } from "../evaluateManager";
 import { CpuInfo } from "../emulatorProtocol";
 import { VscodePuaeEmulator } from "../vscodePuaeEmulator";
@@ -567,6 +569,37 @@ describe("DebugAdapter - Simplified Tests", () => {
   });
 
   describe("Stepping and Execution Control", () => {
+    it.each([["stepInRequest", "stepIn"], ["nextRequest", "next"]])(
+      "%s stops at the next repeat iteration on the same source line",
+      async (method, command) => {
+        const sourceMap = setupMockSourceMap();
+        sourceMap.lookupAddress.returns({ path: "main.asm", line: 2 });
+        const data = Buffer.from("7200720172024e75", "hex");
+        (adapter as any).hunks = [{ hunkType: HunkType.CODE, data }];
+        (adapter as any).segmentOffsets = [0x1000];
+        (adapter as any).macroListing = new MacroListing([
+          '00: "CODE" (0-8)',
+          'Source: "main.asm"',
+          "\t 1:  rept 3",
+          "\t 2:  moveq #REPTN,d1",
+          "\t 3:  endr",
+          "00:00000000 7200 \t 1R  moveq #REPTN,d1",
+          "\t 2R  ",
+          "00:00000002 7201 \t 1R  moveq #REPTN,d1",
+          "\t 2R  ",
+        ].join("\n"), [data.length]);
+        setupMockCpuState({ pc: "0x1000" });
+        mockEmulator.readMemory.resolves(data);
+        const sendEvent = sinon.spy(adapter as any, "sendEvent");
+        await (adapter as any)[method](createMockResponse(command), { threadId: 1, granularity: "line" });
+
+        setupMockCpuState({ pc: "0x1002" });
+        await (adapter as any).handleStep();
+        assert.ok(mockEmulator.stepInto.calledOnce);
+        assert.ok(sendEvent.args.some(([event]) => event.event === "stopped"));
+      },
+    );
+
     it("should handle stepIn request", async () => {
       // Setup: Mock stepInto functionality
       mockEmulator.stepInto.resolves(undefined);

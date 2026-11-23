@@ -34,7 +34,8 @@ import {
   isExecReadyMessage,
 } from "./emulatorProtocol";
 import { Disposable, Emulator } from "./emulator";
-import { Hunk, parseHunks, StabData } from "./amigaHunkParser";
+import { Hunk, HunkType, parseHunks, StabData } from "./amigaHunkParser";
+import { MacroListing, relocatedListingBytes, type ExpandedSource, type InlineExpansion } from "./macroListing";
 import { DWARFData, parseDwarf } from "./dwarfParser";
 import { loadAmigaProgram } from "./amigaHunkLoader";
 import { LoadedProgram } from "./amigaMemoryMapper";
@@ -78,6 +79,8 @@ interface LaunchRequestArguments extends DebugProtocol.LaunchRequestArguments {
   program: string;
   /** Optional path to separate file containing debug symbols (defaults to program path) */
   debugProgram?: string | null;
+  /** Wide vasm listing from the same directly assembled Hunk executable. */
+  macroListing?: string;
   /** Whether to automatically stop on program entry point */
   stopOnEntry?: boolean;
   /** Enable verbose logging of debug adapter protocol messages */
@@ -179,6 +182,8 @@ export class DebugAdapter extends LoggingDebugSession {
   private trace = false;
   private fastLoad = false;
   private programPath = "";
+  private macroListing?: MacroListing;
+  private macroListingError?: string;
   private debugProgramPath = ""; // file the debug symbols (ELF/hunks) were read from
   private segmentOffsets: number[] = []; // loaded segment base addresses (relocation)
   private sourceBaseDir = ""; // baseDir passed to sourceMapFromDwarf (ELF source paths)
@@ -417,6 +422,25 @@ export class DebugAdapter extends LoggingDebugSession {
       );
     }
 
+    this.macroListing = undefined;
+    this.macroListingError = undefined;
+    if (args.macroListing) {
+      try {
+        if (this.debugFormat !== "hunk" || debugProgram !== this.programPath ||
+          !this.hunks.some(hunk => hunk.hunkType === HunkType.CODE && hunk.data)) {
+          throw new Error("Expanded source requires a directly assembled Hunk executable");
+        }
+        this.macroListing = new MacroListing(
+          await readFile(args.macroListing, "utf8"),
+          this.hunks.map(hunk => hunk.dataSize ?? hunk.allocSize),
+        );
+      } catch (error) {
+        this.macroListingError = error instanceof Error ? error.message : String(error);
+        logger.warn(`Unable to load macro listing: ${this.macroListingError}`);
+      }
+    }
+
+
     // Load Kickstart ROM symbols if the configured ROM is one we have symbols for.
     // Best-effort: a missing/unreadable/unknown ROM must not abort the launch.
     const kickstartRomPath =
@@ -518,6 +542,7 @@ export class DebugAdapter extends LoggingDebugSession {
     // All breakpoints etc are set by client now and we can continue...
     if (this.stopOnEntry && this.fastLoad) {
       // Fast load: send stop on entry event - we're already at this address
+      this.isRunning = false;
       const evt: DebugProtocol.StoppedEvent = new StoppedEvent(
         "entry",
         DebugAdapter.THREAD_ID,
@@ -719,11 +744,13 @@ export class DebugAdapter extends LoggingDebugSession {
   ): Promise<void> {
     try {
       this.lastStepGranularity = args.granularity;
-      if (args.granularity !== "instruction") {
+      this.lineStepStart = null;
+      if (args.granularity !== "instruction" && this.sourceMap) {
         // Record start location so handleStep can loop until the source line changes.
         const cpuInfo = await this.emulator.getCpuInfo();
-        const loc = this.sourceMap?.lookupAddress(Number(cpuInfo.pc));
-        if (loc)
+        const pc = Number(cpuInfo.pc);
+        const loc = this.sourceMap.lookupAddress(pc);
+        if (loc && !this.hasExpandedInstruction(pc))
           this.lineStepStart = {
             path: loc.path,
             line: loc.line,
@@ -790,21 +817,21 @@ export class DebugAdapter extends LoggingDebugSession {
     // If current instruction is one of these i.e. it should eventually reach the next line,
     // set tmp breakpoint on next instruction, otherwise just use built-in stepInto.
     const isBranch = currInst.match(/^(jsr|bsr|dbra)/i);
-    if (nextAddr !== undefined && isBranch) {
-      await this.getBreakpointManager().setTmpBreakpoint(nextAddr, "step");
-      await this.emulator.run();
-    } else {
-      this.stepping = true;
-      try {
-        await this.emulator.stepInto();
-      } catch (err) {
-        // See stepInRequest's matching catch: a rejected stepInto() leaves `stepping` stuck
-        // true with nothing else to reset it, misrouting the next unrelated stop event.
-        this.stepping = false;
-        throw err;
-      }
-    }
     this.isRunning = true;
+    try {
+      if (nextAddr !== undefined && isBranch) {
+        await this.getBreakpointManager().setTmpBreakpoint(nextAddr, "step");
+        await this.emulator.run();
+      } else {
+        this.stepping = true;
+        await this.emulator.stepInto();
+      }
+    } catch (err) {
+      this.stepping = false;
+      this.isRunning = false;
+      this.lineStepStart = null;
+      throw err;
+    }
   }
 
   protected async nextRequest(
@@ -812,20 +839,18 @@ export class DebugAdapter extends LoggingDebugSession {
     args: DebugProtocol.NextArguments,
   ): Promise<void> {
     try {
+      this.lastStepGranularity = args.granularity;
+      this.lineStepStart = null;
       if (args.granularity !== "instruction") {
         const cpuInfo = await this.emulator.getCpuInfo();
         const pc = Number(cpuInfo.pc);
         const loc = this.sourceMap?.lookupAddress(pc);
-        if (loc) {
+        if (loc && !this.hasExpandedInstruction(pc)) {
           // Line granularity: loop doInstructionStepOver until the source line changes.
           // This correctly skips function bodies because doInstructionStepOver detects
           // JSR/BSR and sets a temp BP at the return address (never entering the callee).
           this.lineStepStart = { path: loc.path, line: loc.line, isOver: true };
-          await this.doInstructionStepOver();
-          this.sendResponse(response);
-          return;
         }
-        // No source info at current PC — fall through to instruction granularity
       }
       await this.doInstructionStepOver();
       this.sendResponse(response);
@@ -1070,6 +1095,11 @@ export class DebugAdapter extends LoggingDebugSession {
     args: { dataId?: string; length?: number; address?: string },
   ): Promise<void> {
     try {
+      if (command === "showExpandedSource") {
+        response.body = await this.expandedSourceAtPc();
+        this.sendResponse(response);
+        return;
+      }
       if (command === "setWatchpointLength") {
         await this.getBreakpointManager().setWatchpointLengthOverride(
           args.dataId as string,
@@ -1192,6 +1222,104 @@ export class DebugAdapter extends LoggingDebugSession {
         err,
       );
     }
+  }
+
+  private codeHunkIndexAt(pc: number): number {
+    if (this.segmentOffsets.length !== this.hunks.length) return -1;
+    return this.hunks.findIndex((hunk, index) => {
+      const base = this.segmentOffsets[index];
+      return hunk.hunkType === HunkType.CODE && hunk.data &&
+        pc >= base && pc - base < hunk.data.length;
+    });
+  }
+
+  private hasExpandedInstruction(pc: number): boolean {
+    if (!this.macroListing) return false;
+    const index = this.codeHunkIndexAt(pc);
+    if (index < 0) return false;
+    const offset = pc - this.segmentOffsets[index];
+    const row = this.macroListing.instructionAt(index, offset);
+    return !!row && !!this.hunks[index].data?.subarray(offset, offset + row.bytes.length).equals(row.bytes);
+  }
+
+  private shouldContinueLineStep(pc: number): boolean {
+    const start = this.lineStepStart;
+    const loc = this.sourceMap?.lookupAddress(pc);
+    return !!start && loc?.path === start.path && loc?.line === start.line &&
+      !this.hasExpandedInstruction(pc);
+  }
+
+  private async expandedSourceAtPc(): Promise<ExpandedSource> {
+    if (!this.macroListing) {
+      throw new Error(this.macroListingError ?? "Set macroListing in launch.json to the vasm listing from this build");
+    }
+    if (this.isRunning || this.segmentOffsets.length !== this.hunks.length) {
+      throw new Error("Pause in a loaded code Hunk to view expanded source");
+    }
+    const pc = Number((await this.emulator.getCpuInfo()).pc);
+    const hunkIndex = this.codeHunkIndexAt(pc);
+    if (hunkIndex < 0) throw new Error("Pause in a loaded code Hunk to view expanded source");
+    const hunk = this.hunks[hunkIndex];
+    const offset = pc - this.segmentOffsets[hunkIndex];
+    const row = this.macroListing.instructionAt(hunkIndex, offset);
+    if (!row) throw new Error("No macro or repeat expansion at the current instruction");
+    const expected = hunk.data?.subarray(offset, offset + row.bytes.length);
+    const liveBytes = relocatedListingBytes(hunk, offset, row.bytes.length, this.segmentOffsets);
+    if (!expected?.equals(row.bytes) || !liveBytes ||
+      !(await this.emulator.readMemory(pc, row.bytes.length)).equals(liveBytes)) {
+      throw new Error("The listing bytes do not match the stopped instruction");
+    }
+    if (this.isRunning || Number((await this.emulator.getCpuInfo()).pc) !== pc) {
+      throw new Error("The debug position changed while reading the macro expansion");
+    }
+
+    const location = this.sourceMap?.lookupAddress(pc);
+    const { callSite, kind, sourceReference } = row.expansion;
+    const instruction = row.expansion.lines[row.line - 4].trim();
+    const inline = location ? { path: location.path, line: location.line, instruction } : undefined;
+    const annotations = new Map<string, InlineExpansion | undefined>();
+    for (const candidate of row.group) {
+      const hunk = this.hunks[candidate.hunk];
+      const base = this.segmentOffsets[candidate.hunk];
+      if (base === undefined || hunk?.hunkType !== HunkType.CODE ||
+        !hunk.data?.subarray(candidate.offset, candidate.offset + candidate.bytes.length).equals(candidate.bytes)) continue;
+      const position = this.sourceMap?.lookupAddress(base + candidate.offset);
+      if (!position) continue;
+      const instruction = candidate.expansion.lines[candidate.line - 4].trim();
+      const key = `${position.path}:${position.line}`;
+      if (!annotations.has(key)) {
+        annotations.set(key, { path: position.path, line: position.line, instruction });
+      } else if (annotations.get(key)?.instruction !== instruction) {
+        // A single source line can emit several distinct instructions.
+        annotations.set(key, undefined);
+      }
+    }
+    if (inline) annotations.set(`${inline.path}:${inline.line}`, inline);
+    const sourcePaths = path.isAbsolute(callSite.path) ? [] : this.sourceMap?.getSourceFiles()
+      .filter(file => path.isAbsolute(file) && file.endsWith(path.sep + path.normalize(callSite.path)));
+    const invocation = sourcePaths?.length === 1 ? { ...callSite, path: sourcePaths[0] } : callSite;
+    return {
+      source: {
+        name: `${kind === "repeat" ? "Repeat" : "Macro"} expansion — ${path.basename(callSite.path)}:${callSite.line}.asm`,
+        sourceReference,
+        origin: "vasm listing",
+      },
+      line: row.line,
+      callSite: invocation,
+      inline,
+      annotations: Array.from(annotations.values()).filter(annotation => annotation !== undefined),
+      template: location?.address === pc ? { path: location.path, line: location.line } : undefined,
+    };
+  }
+
+  protected sourceRequest(response: DebugProtocol.SourceResponse, args: DebugProtocol.SourceArguments): void {
+    const content = this.macroListing?.source(args.sourceReference);
+    if (content === undefined) {
+      super.sourceRequest(response, args);
+      return;
+    }
+    response.body = { content };
+    this.sendResponse(response);
   }
 
   protected async readMemoryRequest(
@@ -1717,11 +1845,7 @@ export class DebugAdapter extends LoggingDebugSession {
 
     // Line-granularity loop: keep stepping until the source line changes.
     if (this.lineStepStart && pc !== undefined) {
-      const loc = this.sourceMap?.lookupAddress(pc);
-      if (
-        loc?.path === this.lineStepStart.path &&
-        loc?.line === this.lineStepStart.line
-      ) {
+      if (this.shouldContinueLineStep(pc)) {
         // Still on the same source line — fire another step of the appropriate kind.
         if (this.lineStepStart.isOver) {
           await this.doInstructionStepOver();
@@ -1785,12 +1909,7 @@ export class DebugAdapter extends LoggingDebugSession {
       let continueLoop = false;
       try {
         const cpuInfo = await this.emulator.getCpuInfo();
-        const pc = Number(cpuInfo.pc);
-        const loc = this.sourceMap?.lookupAddress(pc);
-
-        continueLoop =
-          loc?.path === this.lineStepStart.path &&
-          loc?.line === this.lineStepStart.line;
+        continueLoop = this.shouldContinueLineStep(Number(cpuInfo.pc));
       } catch {
         /* fall through and stop */
       }
