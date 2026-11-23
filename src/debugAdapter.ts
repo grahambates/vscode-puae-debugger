@@ -1092,9 +1092,16 @@ export class DebugAdapter extends LoggingDebugSession {
   protected async customRequest(
     command: string,
     response: DebugProtocol.Response,
-    args: { dataId?: string; length?: number; address?: string },
+    args: { dataId?: string; length?: number; address?: string; path?: string },
   ): Promise<void> {
     try {
+      if (command === "inactiveSource") {
+        response.body = typeof args?.path === "string"
+          ? this.macroListing?.conditionals.inactiveBlocks(args.path, this.hunks) ?? []
+          : [];
+        this.sendResponse(response);
+        return;
+      }
       if (command === "showExpandedSource") {
         response.body = await this.expandedSourceAtPc();
         this.sendResponse(response);
@@ -1278,6 +1285,7 @@ export class DebugAdapter extends LoggingDebugSession {
     const instruction = row.expansion.lines[row.line - 4].trim();
     const inline = location ? { path: location.path, line: location.line, instruction } : undefined;
     const annotations = new Map<string, InlineExpansion | undefined>();
+    const expandedLines = new Map<string, Set<number>>();
     for (const candidate of row.group) {
       const hunk = this.hunks[candidate.hunk];
       const base = this.segmentOffsets[candidate.hunk];
@@ -1285,6 +1293,11 @@ export class DebugAdapter extends LoggingDebugSession {
         !hunk.data?.subarray(candidate.offset, candidate.offset + candidate.bytes.length).equals(candidate.bytes)) continue;
       const position = this.sourceMap?.lookupAddress(base + candidate.offset);
       if (!position) continue;
+      if (position.address === base + candidate.offset) {
+        const lines = expandedLines.get(position.path) ?? new Set<number>();
+        lines.add(position.line);
+        expandedLines.set(position.path, lines);
+      }
       const instruction = candidate.expansion.lines[candidate.line - 4].trim();
       const key = `${position.path}:${position.line}`;
       if (!annotations.has(key)) {
@@ -1308,6 +1321,10 @@ export class DebugAdapter extends LoggingDebugSession {
       callSite: invocation,
       inline,
       annotations: Array.from(annotations.values()).filter(annotation => annotation !== undefined),
+      inactive: Array.from(expandedLines, ([path, lines]) => ({
+        path,
+        blocks: this.macroListing!.conditionals.inactiveBlocks(path, this.hunks, lines),
+      })).filter(source => source.blocks.length > 0),
       template: location?.address === pc ? { path: location.path, line: location.line } : undefined,
     };
   }

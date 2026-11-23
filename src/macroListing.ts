@@ -1,3 +1,4 @@
+import { ConditionalListing, type InactiveExpansionSource } from "./conditionalListing";
 import type { Hunk } from "./amigaHunkParser";
 
 interface SourcePosition {
@@ -55,10 +56,12 @@ export interface ExpandedSource {
   template?: SourcePosition;
   inline?: InlineExpansion;
   annotations?: InlineExpansion[];
+  inactive?: InactiveExpansionSource[];
 }
 
 /** The wide vasm listing for a directly assembled Hunk executable. */
 export class MacroListing {
+  readonly conditionals = new ConditionalListing();
   private readonly expansions = new Map<number, Expansion>();
   private readonly instructions = new Map<string, InstructionRow>();
 
@@ -100,6 +103,12 @@ export class MacroListing {
       const repeat = closedRepeat;
       closedRepeat = undefined;
       if (kind === ":") {
+        this.conditionals.record(sourcePath, listingLine, {
+          text: sourceText,
+          emission: address && bytes && bytes.length % 2 === 0
+            ? { hunk: parseInt(section, 16), offset: parseInt(address, 16), bytes }
+            : undefined,
+        });
         callSite = { path: sourcePath, line: listingLine };
         callText = sourceText.trim();
         repeats.length = 0;
@@ -165,6 +174,7 @@ export class MacroListing {
           const group = frame?.instructions ?? expansion.instructions;
           const instruction = { expansion, line: expansion.lines.length + 3, bytes: data, hunk, offset, group };
           group.push(instruction);
+          this.conditionals.recordExpansion(expansion.callSite.path, expansion.callSite.line, { hunk, offset, bytes });
           this.instructions.set(`${hunk}:${offset}`, instruction);
         }
       }

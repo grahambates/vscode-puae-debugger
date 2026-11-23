@@ -9,13 +9,16 @@ import { ProfileEditorProvider } from "./profileEditorProvider";
 import { ProfilerCodeLensProvider } from "./profilerCodeLensProvider";
 import { ProfilerLineDecorationProvider } from "./profilerLineDecorationProvider";
 import { expressionRangeAt } from "./cExpressionEvaluator";
+import { registerInactiveSource } from "./inactiveSource";
 import { registerInlineExpansion } from "./inlineExpansion";
 import { registerExpandedSourceCommand } from "./expandedSourceCommand";
 
 export function activate(context: vscode.ExtensionContext) {
+  const inactiveSource = registerInactiveSource();
   context.subscriptions.push(
+    inactiveSource.disposable,
     registerExpandedSourceCommand(),
-    registerInlineExpansion(),
+    registerInlineExpansion(inactiveSource.setExpansion),
     vscode.debug.registerDebugConfigurationProvider("puae", {
       resolveDebugConfigurationWithSubstitutedVariables(folder, config) {
         if (folder?.uri.scheme === "file" && typeof config.macroListing === "string" && config.macroListing) {

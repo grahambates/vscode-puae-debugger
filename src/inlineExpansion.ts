@@ -26,7 +26,9 @@ function compactHintCode(code: string, sharedLabel?: string): string {
   return instruction;
 }
 
-export function registerInlineExpansion(): vscode.Disposable {
+export function registerInlineExpansion(
+  onExpansionChanged?: (sessionId: string, inactive?: ExpandedSource["inactive"]) => void,
+): vscode.Disposable {
   const onDidChangeInlayHints = new vscode.EventEmitter<void>();
   type Stop = {
     expansion?: ExpandedSource;
@@ -75,7 +77,10 @@ export function registerInlineExpansion(): vscode.Disposable {
       createDebugAdapterTracker(session) {
         if (!session.configuration.macroListing) return;
         function clear() {
-          if (stopped.delete(session.id)) onDidChangeInlayHints.fire();
+          if (stopped.delete(session.id)) {
+            onExpansionChanged?.(session.id);
+            onDidChangeInlayHints.fire();
+          }
         }
         return {
           onWillReceiveMessage(message: DebugProtocol.ProtocolMessage) {
@@ -90,6 +95,7 @@ export function registerInlineExpansion(): vscode.Disposable {
             if (event !== "stopped") return;
             const stop: Stop = {};
             stopped.set(session.id, stop);
+            onExpansionChanged?.(session.id);
             onDidChangeInlayHints.fire();
             // Let the adapter finish dispatching the stopped event before requesting its PC.
             void Promise.resolve().then(async () => {
@@ -113,6 +119,7 @@ export function registerInlineExpansion(): vscode.Disposable {
                   return stopped.get(session.id) === stop ? resolved : undefined;
                 };
                 stop.expansion = expansion;
+                onExpansionChanged?.(session.id, expansion.inactive);
                 onDidChangeInlayHints.fire();
               } catch {
                 // Stops outside an expansion and stops superseded by stepping need no annotation.
