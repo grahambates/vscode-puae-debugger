@@ -150,10 +150,47 @@ describe("Amiga Register Parsers - Comprehensive Tests", () => {
       const bits = registerParsers.parseBplcon3Register(0xe0ff);
 
       const bankValue = bits.find((b) => b.name === "15-13: BANK");
-      const spresBit = bits.find((b) => b.name === "06: SPRITE_RES");
+      const spresValue = bits.find((b) => b.name === "07-06: SPRITE_RES");
 
       assert.strictEqual(bankValue?.value, 7, "Maximum color bank");
-      assert.strictEqual(spresBit?.value, true);
+      assert.strictEqual(spresValue?.value, 3, "SHRES sprites");
+    });
+
+    it("should read BEAMCON0 bits from their documented positions", () => {
+      // Hardware Reference Manual, Appendix C: PAL is bit 5, the value
+      // written to switch to PAL.
+      const field = (value: number, name: string) =>
+        registerParsers
+          .parseBeamcon0Register(value)
+          .find((b) => b.name === name)?.value;
+
+      assert.strictEqual(field(0x0020, "05: PAL"), true);
+      assert.strictEqual(field(0x0020, "07: VARBEAMEN"), false);
+      assert.strictEqual(field(0x0080, "07: VARBEAMEN"), true);
+      assert.strictEqual(field(0x0040, "06: DUAL"), true);
+      assert.strictEqual(field(0x4000, "14: HARDDIS"), true);
+      assert.strictEqual(field(0x0001, "00: HSYTRUE"), true);
+      assert.strictEqual(field(0x0002, "01: VSYTRUE"), true);
+    });
+
+    it("should read each BPLCON3 field from its own bits", () => {
+      // Layout from AGA.guide: PF2OF is bits 12-10 (default %011), LOCT
+      // bit 9, and the border bits 5, 4 and 1.
+      const field = (value: number, name: string) =>
+        registerParsers
+          .parseBplcon3Register(value)
+          .find((b) => b.name === name)?.value;
+
+      assert.strictEqual(field(0x0c00, "12-10: PF2OF"), 3, "Default offset 8");
+      assert.strictEqual(field(0x0c00, "15-13: BANK"), 0);
+      assert.strictEqual(field(0x0200, "09: LOCT"), true);
+      assert.strictEqual(field(0x0007, "12-10: PF2OF"), 0);
+      assert.strictEqual(field(0x0020, "05: BORDER_BLANK"), true);
+      assert.strictEqual(field(0x0020, "04: BORDER_OPAQUE"), false);
+      assert.strictEqual(field(0x0010, "04: BORDER_OPAQUE"), true);
+      assert.strictEqual(field(0x0002, "01: BORDER_SPRITES"), true);
+      assert.strictEqual(field(0x0001, "00: EXTBLKEN"), true);
+      assert.strictEqual(field(0x0040, "07-06: SPRITE_RES"), 1, "LORES");
     });
   });
 

@@ -257,22 +257,28 @@ export function parseBplcon2Register(bplcon2: number): RegisterBitField[] {
 }
 
 /**
- * Parses BPLCON3 register bits (Bitplane Control Register 3 - AGA features)
+ * Parses BPLCON3 register bits (Bitplane Control Register 3 - enhanced features)
+ *
+ * Bit layout from AGA.guide. On ECS only BRDRBLNK (5) and BRDNTRAN (4) are
+ * documented (Hardware Reference Manual, Appendix C); BANK, PF2OF, LOCT and
+ * SPRES are AGA. Bits 5, 4, 2, 1 and 0 have no effect unless ECSENA (BPLCON0
+ * bit 0) is set.
  */
 export function parseBplcon3Register(bplcon3: number): RegisterBitField[] {
   const bank = (bplcon3 >> 13) & 0x07; // BANK2-BANK0 (bits 15-13)
-  const pf2of = (bplcon3 >> 3) & 0x07; // PF2OF2-PF2OF0 (bits 5-3)
-  const loct = bplcon3 & 0x07; // LOCT2-LOCT0 (bits 2-0)
+  const pf2of = (bplcon3 >> 10) & 0x07; // PF2OF2-PF2OF0 (bits 12-10)
+  const spres = (bplcon3 >> 6) & 0x03; // SPRES1-SPRES0 (bits 7-6)
 
   return [
     { name: "15-13: BANK", value: bank },
-    { name: "05-03: PF2OF", value: pf2of },
-    { name: "06: SPRITE_RES", value: (bplcon3 & 0x0040) !== 0 },
-    { name: "05: BORDER_SPRITES", value: (bplcon3 & 0x0020) !== 0 },
-    { name: "04: BORDER_TRANSPARENT", value: (bplcon3 & 0x0010) !== 0 },
+    { name: "12-10: PF2OF", value: pf2of },
+    { name: "09: LOCT", value: (bplcon3 & 0x0200) !== 0 },
+    { name: "07-06: SPRITE_RES", value: spres },
+    { name: "05: BORDER_BLANK", value: (bplcon3 & 0x0020) !== 0 },
+    { name: "04: BORDER_OPAQUE", value: (bplcon3 & 0x0010) !== 0 },
     { name: "02: ZDCLKEN", value: (bplcon3 & 0x0004) !== 0 },
-    { name: "03: BORDER_BLANK", value: (bplcon3 & 0x0008) !== 0 },
-    { name: "02-00: LOCT", value: loct },
+    { name: "01: BORDER_SPRITES", value: (bplcon3 & 0x0002) !== 0 },
+    { name: "00: EXTBLKEN", value: (bplcon3 & 0x0001) !== 0 },
   ];
 }
 
@@ -489,21 +495,27 @@ export function parseCopconRegister(copcon: number): RegisterBitField[] {
 
 /**
  * Parses BEAMCON0 register bits (ECS Beam Counter Control)
+ *
+ * Bit layout from the Hardware Reference Manual, Appendix C ("New BEAMCON0
+ * Register"), matching AGA.guide, where bit 3 (BLANKEN) is unused.
  */
 export function parseBeamcon0Register(beamcon0: number): RegisterBitField[] {
   return [
-    { name: "15: HARDDIS", value: (beamcon0 & 0x8000) !== 0 },
-    { name: "14: LPENDIS", value: (beamcon0 & 0x4000) !== 0 },
-    { name: "13: VARCSYEN", value: (beamcon0 & 0x2000) !== 0 },
-    { name: "12: BLANKEN", value: (beamcon0 & 0x1000) !== 0 },
-    { name: "11: CSCBLANKEN", value: (beamcon0 & 0x0800) !== 0 },
-    { name: "10: PAL", value: (beamcon0 & 0x0400) !== 0 },
-    { name: "09: DUAL", value: (beamcon0 & 0x0200) !== 0 },
-    { name: "08: VARVSYEN", value: (beamcon0 & 0x0100) !== 0 },
-    { name: "07: VARHSYEN", value: (beamcon0 & 0x0080) !== 0 },
-    { name: "06: VARBEAMEN", value: (beamcon0 & 0x0040) !== 0 },
-    { name: "01: HSYTRUE", value: (beamcon0 & 0x0002) !== 0 },
-    { name: "00: VSYTRUE", value: (beamcon0 & 0x0001) !== 0 },
+    { name: "14: HARDDIS", value: (beamcon0 & 0x4000) !== 0 },
+    { name: "13: LPENDIS", value: (beamcon0 & 0x2000) !== 0 },
+    { name: "12: VARVBEN", value: (beamcon0 & 0x1000) !== 0 },
+    { name: "11: LOLDIS", value: (beamcon0 & 0x0800) !== 0 },
+    { name: "10: CSCBEN", value: (beamcon0 & 0x0400) !== 0 },
+    { name: "09: VARVSYEN", value: (beamcon0 & 0x0200) !== 0 },
+    { name: "08: VARHSYEN", value: (beamcon0 & 0x0100) !== 0 },
+    { name: "07: VARBEAMEN", value: (beamcon0 & 0x0080) !== 0 },
+    { name: "06: DUAL", value: (beamcon0 & 0x0040) !== 0 },
+    { name: "05: PAL", value: (beamcon0 & 0x0020) !== 0 },
+    { name: "04: VARCSYEN", value: (beamcon0 & 0x0010) !== 0 },
+    { name: "03: BLANKEN", value: (beamcon0 & 0x0008) !== 0 },
+    { name: "02: CSYTRUE", value: (beamcon0 & 0x0004) !== 0 },
+    { name: "01: VSYTRUE", value: (beamcon0 & 0x0002) !== 0 },
+    { name: "00: HSYTRUE", value: (beamcon0 & 0x0001) !== 0 },
   ];
 }
 
